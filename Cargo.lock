@@ -230,6 +230,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hive-card"
+version = "0.1.0"
+dependencies = [
+ "hive-contract",
+]
+
+[[package]]
+name = "hive-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hive-policy"
+version = "0.1.0"
+
+[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -427,9 +446,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "hive-contract",
  "http-body-util",
  "rusqlite",
- "serde",
  "serde_json",
  "tokio",
  "tower",

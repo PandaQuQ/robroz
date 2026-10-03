@@ -1,0 +1,7 @@
+[package]
+name = "hive-card"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hive-contract = { path = "../hive-contract" }

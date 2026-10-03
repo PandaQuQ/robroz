@@ -7,8 +7,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
+use hive_contract::{
+    AddMember, CreateGroup, CreateTask, ErrorBody, Event, Events, Group, Member, Message,
+    MessageKind, PostMessage, Task, TaskState,
+};
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const TENANT_ID: &str = "local";
@@ -86,7 +89,13 @@ fn new_id() -> String {
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
+    (
+        status,
+        Json(ErrorBody {
+            error: message.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 fn db_error(err: rusqlite::Error) -> Response {
@@ -107,20 +116,15 @@ fn group_exists(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(n > 0)
 }
 
-#[derive(Deserialize)]
-struct CreateGroupBody {
-    name: String,
+fn parse_kind(value: String) -> rusqlite::Result<MessageKind> {
+    MessageKind::parse(&value).ok_or_else(|| rusqlite::Error::InvalidParameterName(value))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GroupCreated {
-    id: String,
-    name: String,
-    tenant_id: &'static str,
+fn parse_state(value: String) -> rusqlite::Result<TaskState> {
+    TaskState::parse(&value).ok_or_else(|| rusqlite::Error::InvalidParameterName(value))
 }
 
-async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroupBody>) -> Response {
+async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
     let name = body.name.trim();
     if name.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "请填写名称");
@@ -138,34 +142,19 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
     }
     (
         StatusCode::CREATED,
-        Json(GroupCreated {
+        Json(Group {
             id,
             name: name.to_string(),
-            tenant_id: TENANT_ID,
+            tenant_id: TENANT_ID.to_string(),
         }),
     )
         .into_response()
 }
 
-#[derive(Deserialize)]
-struct AddMemberBody {
-    #[serde(rename = "botId")]
-    bot_id: String,
-    name: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MemberOut {
-    group_id: String,
-    bot_id: String,
-    name: String,
-}
-
 async fn add_member(
     State(state): State<AppState>,
     AxumPath(group_id): AxumPath<String>,
-    Json(body): Json<AddMemberBody>,
+    Json(body): Json<AddMember>,
 ) -> Response {
     let bot_id = body.bot_id.trim();
     let name = body.name.trim();
@@ -204,7 +193,7 @@ async fn add_member(
             };
             (
                 status,
-                Json(MemberOut {
+                Json(Member {
                     group_id,
                     bot_id: bot_id.to_string(),
                     name: stored_name,
@@ -216,33 +205,33 @@ async fn add_member(
     }
 }
 
-#[derive(Deserialize)]
-struct PostMessageBody {
-    kind: String,
-    body: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MessageOut {
-    id: String,
-    kind: String,
-    body: String,
-    created_at: String,
-}
-
-fn valid_kind(kind: &str) -> bool {
-    matches!(kind, "text" | "image" | "file")
-}
-
 async fn post_message(
     State(state): State<AppState>,
     AxumPath(group_id): AxumPath<String>,
-    Json(body): Json<PostMessageBody>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Response {
-    if !valid_kind(&body.kind) {
+    // Unknown kind stays 400 with the existing error. Serde would otherwise
+    // reject MessageKind before the handler and return 422.
+    let kind_is_known = raw
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .and_then(MessageKind::parse)
+        .is_some();
+    if raw.get("kind").is_some() && !kind_is_known {
         return error_response(StatusCode::BAD_REQUEST, "kind 只能是 text、image 或 file");
     }
+    let body: PostMessage = match serde_json::from_value(raw) {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorBody {
+                    error: "请求格式不正确".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
     let text = body.body.trim();
     if text.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "请填写内容");
@@ -257,9 +246,9 @@ async fn post_message(
         let created_at = now_rfc3339();
         conn.execute(
             "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, group_id, body.kind, text, created_at],
+            params![id, group_id, body.kind.as_str(), text, created_at],
         )?;
-        Ok(Some(MessageOut {
+        Ok(Some(Message {
             id,
             kind: body.kind,
             body: text.to_string(),
@@ -275,26 +264,10 @@ async fn post_message(
     }
 }
 
-#[derive(Deserialize)]
-struct CreateTaskBody {
-    #[serde(rename = "assigneeBotId")]
-    assignee_bot_id: String,
-    prompt: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskOut {
-    id: String,
-    assignee_bot_id: String,
-    prompt: String,
-    state: &'static str,
-}
-
 async fn create_task(
     State(state): State<AppState>,
     AxumPath(group_id): AxumPath<String>,
-    Json(body): Json<CreateTaskBody>,
+    Json(body): Json<CreateTask>,
 ) -> Response {
     let prompt = body.prompt.trim();
     if prompt.is_empty() {
@@ -320,16 +293,17 @@ async fn create_task(
         }
         let id = new_id();
         let now = now_rfc3339();
+        let state = TaskState::Queued;
         conn.execute(
             "INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
-            params![id, group_id, assignee, prompt, now, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, group_id, assignee, prompt, state.as_str(), now, now],
         )?;
-        Ok(Ok(TaskOut {
+        Ok(Ok(Task {
             id,
             assignee_bot_id: assignee.to_string(),
             prompt: prompt.to_string(),
-            state: "queued",
+            state,
         }))
     })();
     drop(conn);
@@ -341,38 +315,10 @@ async fn create_task(
     }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all_fields = "camelCase")]
-enum EventOut {
-    #[serde(rename = "message")]
-    Message {
-        id: String,
-        kind: String,
-        body: String,
-        created_at: String,
-    },
-    #[serde(rename = "status")]
-    Status {
-        id: String,
-        task_id: String,
-        bot_id: String,
-        bot_name: String,
-        state: String,
-        label: String,
-        created_at: String,
-        updated_at: String,
-    },
-}
-
-#[derive(Serialize)]
-struct EventsOut {
-    events: Vec<EventOut>,
-}
-
 struct TimedEvent {
     created_at: String,
     id: String,
-    event: EventOut,
+    event: Event,
 }
 
 async fn list_events(
@@ -391,14 +337,16 @@ async fn list_events(
                 "SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1",
             )?;
             let messages = message_stmt.query_map([group_id.as_str()], |row| {
+                let id: String = row.get(0)?;
+                let created_at: String = row.get(3)?;
                 Ok(TimedEvent {
-                    created_at: row.get(3)?,
-                    id: row.get(0)?,
-                    event: EventOut::Message {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
+                    created_at: created_at.clone(),
+                    id: id.clone(),
+                    event: Event::Message {
+                        id,
+                        kind: parse_kind(row.get(1)?)?,
                         body: row.get(2)?,
-                        created_at: row.get(3)?,
+                        created_at,
                     },
                 })
             })?;
@@ -417,16 +365,17 @@ async fn list_events(
             let tasks = task_stmt.query_map([group_id.as_str()], |row| {
                 let id: String = row.get(0)?;
                 let created_at: String = row.get(4)?;
+                let state = parse_state(row.get(3)?)?;
                 Ok(TimedEvent {
                     created_at: created_at.clone(),
                     id: id.clone(),
-                    event: EventOut::Status {
+                    event: Event::Status {
                         id: id.clone(),
                         task_id: id,
                         bot_id: row.get(1)?,
                         bot_name: row.get(2)?,
-                        state: row.get(3)?,
-                        label: "排队".to_string(),
+                        label: state.label().to_string(),
+                        state,
                         created_at,
                         updated_at: row.get(5)?,
                     },
@@ -443,7 +392,7 @@ async fn list_events(
                 .then_with(|| a.id.cmp(&b.id))
         });
         let events = timed.into_iter().map(|item| item.event).collect();
-        Ok(Some(EventsOut { events }))
+        Ok(Some(Events { events }))
     })();
     drop(conn);
 

@@ -23,3 +23,6 @@ SQLite 路径来自环境变量 `OPENBOTS_DB`，默认 `./openbots.db`。监听�
 ```
 cargo test -p openbots-host
 ```
+
+`crates/hive-contract`、`crates/hive-policy`、`crates/hive-card` 是旁边的共享 crate。宿主机目前只依赖 `hive-contract`。`hive-policy` 没有接到宿主机上，这一节点仍然不启动容器。
+
