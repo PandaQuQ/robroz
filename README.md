@@ -24,5 +24,17 @@ SQLite 路径来自环境变量 `OPENBOTS_DB`，默认 `./openbots.db`。监听�
 cargo test -p openbots-host
 ```
 
-`crates/hive-contract`、`crates/hive-policy`、`crates/hive-card` 是旁边的共享 crate。宿主机目前只依赖 `hive-contract`。`hive-policy` 没有接到宿主机上，这一节点仍然不启动容器。
+`crates/hive-contract`、`crates/hive-policy`、`crates/hive-card` 是旁边的共享 crate。宿主机目前只依赖 `hive-contract`。`hive-policy` 没有接到宿主机上。
+
+## 节点 3
+
+`pump` 把排队任务送进本机 Docker。`POST /api/groups/:id/tasks` 仍然马上返回 `queued`。第一次 `pump` 为一个任务启动一个容器，并把同一张状态卡改成 `running`，标签「进行」（`TaskState::label`），`createdAt` 不变，`updatedAt` 更新。容器成功写完结果后，下一次 `pump` 删掉容器，同一张卡改为 `done` / 「完成」，并追加一条 delivery：`summary` 为「已写入结果」，`path` 为 `tasks/{taskId}/result.txt`（相对路径，没有前导斜杠，也不带 `/workspace`），`briefing` 为 false。文件内容是任务的 prompt。
+
+每个群一个目录，`OPENBOTS_VOLUMES/{groupId}`，默认根目录 `./data/groups`，挂到容器内的 `/workspace`。容器删除后目录还在。镜像来自 `OPENBOTS_IMAGE`，默认 `openbots-runner:local`。
+
+```
+docker build -f runner/Dockerfile -t openbots-runner:local .
+```
+
+CI 只编译 `hive-runner`，不构建镜像，测试也不需要 Docker daemon。启动失败时任务保持 `queued`，没有 delivery。容器非 0 退出或结果文件不存在时，删掉容器，任务保持 `running`，不发 delivery，也不发明新状态。本 PR 不调用 `hive-policy`，没有配额、没有 blocked、没有 resume，也没有定时调度。
 
