@@ -5,34 +5,22 @@ on:
   pull_request:
 
 jobs:
-  backend:
+  host:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-      - name: Test
-        run: |
-          if [ ! -f go.mod ]; then
-            echo "no go.mod yet, skip"
-            exit 0
-          fi
-          go test ./...
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test host
+        run: cargo test -p openbots-host
 
   client:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Build
-        run: |
-          if [ ! -f client/package.json ]; then
-            echo "no client yet, skip"
-            exit 0
-          fi
-          cd client
-          npm ci
-          npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build client
+        run: cargo build -p openbots-client
