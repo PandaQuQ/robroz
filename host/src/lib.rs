@@ -388,14 +388,6 @@ async fn create_task(
     }
 }
 
-fn status_label(state: TaskState, container_up: bool) -> String {
-    if state == TaskState::Running && !container_up {
-        "没写出结果".to_string()
-    } else {
-        state.label().to_string()
-    }
-}
-
 fn strip_blocking_actions(prompt: &str) -> String {
     prompt
         .lines()
@@ -515,7 +507,7 @@ async fn list_events(
                         task_id: id,
                         bot_id: row.get(1)?,
                         bot_name: row.get(2)?,
-                        label: status_label(state, container_up),
+                        label: hive_card::status_line(state, container_up).to_string(),
                         state,
                         created_at,
                         updated_at: row.get(5)?,

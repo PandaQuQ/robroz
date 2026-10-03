@@ -100,7 +100,7 @@ pub fn pump(
         let dead = quota_fail || code != 0 || !result_file.is_file();
         if dead {
             // Container is gone and there is no successful result. Stay running
-            // so the card can show 没写出结果 with containerUp false. Not blocked.
+            // with containerUp false so the card uses the dead-run line. Not blocked.
             conn.execute(
                 "UPDATE tasks SET container_up = 0, get_count = ?1, updated_at = ?2
                  WHERE id = ?3 AND state = 'running'",
