@@ -10,8 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test host
-        run: cargo test -p openbots-host
+      - name: Test host and shared crates
+        run: cargo test -p openbots-host -p hive-contract -p hive-policy -p hive-card
 
   client:
     strategy:
