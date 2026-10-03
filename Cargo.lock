@@ -451,6 +451,8 @@ dependencies = [
  "axum",
  "chrono",
  "hive-contract",
+ "hive-policy",
+ "hive-runner",
  "http-body-util",
  "rusqlite",
  "serde_json",

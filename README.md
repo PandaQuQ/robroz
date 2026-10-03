@@ -38,3 +38,11 @@ docker build -f runner/Dockerfile -t openbots-runner:local .
 
 CI 只编译 `hive-runner`，不构建镜像，测试也不需要 Docker daemon。启动失败时任务保持 `queued`，没有 delivery。容器非 0 退出或结果文件不存在时，删掉容器，任务保持 `running`，不发 delivery，也不发明新状态。本 PR 不调用 `hive-policy`，没有配额、没有 blocked、没有 resume，也没有定时调度。
 
+## 节点 4
+
+状态事件增加字段 `containerUp`。排队、完成、卡住，以及容器已经删掉的失败运行，都是 false。只有容器还在跑的 `running` 才是 true。失败运行仍然是 `TaskState::Running`，没有第五种状态：色调和排队一样是灰，标签是「没写出结果」，动作是空。容器还在时标签仍是「进行」。卡住才是琥珀色，动作「去私聊接管」。
+
+GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outbound` 判断，上限是环境变量 `OPENBOTS_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`hive-action:external` 和 `hive-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
+
+`POST /api/tasks/:id/resume` 只接受 blocked：删掉 intent，状态回到 `queued`，`containerUp` false。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
+

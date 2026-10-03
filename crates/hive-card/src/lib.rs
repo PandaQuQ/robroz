@@ -14,14 +14,20 @@ pub struct Appearance {
     pub action: Option<&'static str>,
 }
 
-pub fn appearance(state: TaskState) -> Appearance {
+/// `container_up` is ignored except for a live `running` card.
+/// A dead run stays `Running` and uses the same gray as queued.
+pub fn appearance(state: TaskState, container_up: bool) -> Appearance {
     match state {
         TaskState::Queued => Appearance {
             tone: Tone::Gray,
             action: None,
         },
-        TaskState::Running => Appearance {
+        TaskState::Running if container_up => Appearance {
             tone: Tone::Ink,
+            action: None,
+        },
+        TaskState::Running => Appearance {
+            tone: Tone::Gray,
             action: None,
         },
         TaskState::Done => Appearance {
@@ -46,19 +52,28 @@ mod tests {
     #[test]
     fn appearance_for_each_state() {
         assert_eq!(
-            appearance(TaskState::Queued),
+            appearance(TaskState::Queued, false),
             Appearance { tone: Tone::Gray, action: None }
         );
         assert_eq!(
-            appearance(TaskState::Running),
+            appearance(TaskState::Queued, true),
+            Appearance { tone: Tone::Gray, action: None },
+            "queued ignores container_up"
+        );
+        assert_eq!(
+            appearance(TaskState::Running, true),
             Appearance { tone: Tone::Ink, action: None }
         );
         assert_eq!(
-            appearance(TaskState::Done),
+            appearance(TaskState::Running, false),
+            Appearance { tone: Tone::Gray, action: None }
+        );
+        assert_eq!(
+            appearance(TaskState::Done, false),
             Appearance { tone: Tone::Green, action: None }
         );
         assert_eq!(
-            appearance(TaskState::Blocked),
+            appearance(TaskState::Blocked, false),
             Appearance { tone: Tone::Amber, action: Some("去私聊接管") }
         );
     }

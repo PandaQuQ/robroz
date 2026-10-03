@@ -29,6 +29,7 @@ pub struct Host {
     db: Arc<Mutex<Connection>>,
     volumes_root: std::path::PathBuf,
     image: String,
+    get_limit: u64,
 }
 
 impl Host {
@@ -44,24 +45,33 @@ impl Host {
             db: Arc::new(Mutex::new(conn)),
             volumes_root: volumes_root.into(),
             image: image.into(),
+            get_limit: get_limit_from_env(),
         })
     }
 
     pub fn router(&self) -> Router {
-        router_from(self.db.clone())
+        router_from(self.db.clone(), self.volumes_root.clone())
     }
 
     /// One pass over queued and running tasks. The binary calls this in a loop.
     /// Tests call [`pump`] directly and do not start that loop.
     pub fn pump_once(&self, sandbox: &mut dyn Sandbox) -> rusqlite::Result<()> {
         let conn = self.db.lock().expect("sqlite connection lock poisoned");
-        pump(&conn, sandbox, &self.volumes_root, &self.image)
+        pump(&conn, sandbox, &self.volumes_root, &self.image, self.get_limit)
     }
+}
+
+fn get_limit_from_env() -> u64 {
+    std::env::var("OPENBOTS_GET_LIMIT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8)
 }
 
 #[derive(Clone)]
 struct AppState {
     db: Arc<Mutex<Connection>>,
+    volumes_root: std::path::PathBuf,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
@@ -72,14 +82,15 @@ pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
     Ok(host.router())
 }
 
-fn router_from(db: Arc<Mutex<Connection>>) -> Router {
+fn router_from(db: Arc<Mutex<Connection>>, volumes_root: std::path::PathBuf) -> Router {
     Router::new()
         .route("/api/groups", post(create_group))
         .route("/api/groups/{id}/members", post(add_member))
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
         .route("/api/groups/{id}/events", get(list_events))
-        .with_state(AppState { db })
+        .route("/api/tasks/{id}/resume", post(resume_task))
+        .with_state(AppState { db, volumes_root })
 }
 
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -115,7 +126,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             prompt TEXT NOT NULL,
             state TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            container_up INTEGER NOT NULL DEFAULT 0,
+            get_count INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS deliveries (
             id TEXT PRIMARY KEY,
@@ -128,6 +141,15 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         ",
     )?;
+    // Older databases created before node 4.
+    let _ = conn.execute(
+        "ALTER TABLE tasks ADD COLUMN container_up INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE tasks ADD COLUMN get_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(())
 }
 
@@ -366,6 +388,72 @@ async fn create_task(
     }
 }
 
+fn status_label(state: TaskState, container_up: bool) -> String {
+    if state == TaskState::Running && !container_up {
+        "没写出结果".to_string()
+    } else {
+        state.label().to_string()
+    }
+}
+
+fn strip_blocking_actions(prompt: &str) -> String {
+    prompt
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != "hive-action:external" && trimmed != "hive-action:captcha"
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn resume_task(
+    State(state): State<AppState>,
+    AxumPath(task_id): AxumPath<String>,
+) -> Response {
+    let conn = lock_db(&state);
+    let found = conn.query_row(
+        "SELECT group_id, state, prompt FROM tasks WHERE id = ?1",
+        [&task_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    );
+    let (group_id, task_state, prompt) = match found {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return error_response(StatusCode::NOT_FOUND, "任务不存在");
+        }
+        Err(err) => return db_error(err),
+    };
+    if task_state != TaskState::Blocked.as_str() {
+        return error_response(StatusCode::CONFLICT, "这次不能恢复");
+    }
+    let prompt = strip_blocking_actions(&prompt);
+    let updated_at = now_rfc3339();
+    if let Err(err) = conn.execute(
+        "UPDATE tasks SET state = 'queued', container_up = 0, prompt = ?1, updated_at = ?2 WHERE id = ?3",
+        params![prompt, updated_at, task_id],
+    ) {
+        return db_error(err);
+    }
+    drop(conn);
+    let raw = state.volumes_root.join(&group_id);
+    let _ = std::fs::remove_file(raw.join("tasks").join(&task_id).join("intent"));
+    if let Ok(canon) = std::fs::canonicalize(&raw) {
+        let _ = std::fs::remove_file(canon.join("tasks").join(&task_id).join("intent"));
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "id": task_id, "state": "queued" })),
+    )
+        .into_response()
+}
+
 struct TimedEvent {
     created_at: String,
     id: String,
@@ -408,7 +496,7 @@ async fn list_events(
 
         {
             let mut task_stmt = conn.prepare(
-                "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at
+                "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up
                  FROM tasks t
                  JOIN bots b ON b.id = t.assignee_bot_id
                  WHERE t.group_id = ?1",
@@ -417,6 +505,8 @@ async fn list_events(
                 let id: String = row.get(0)?;
                 let created_at: String = row.get(4)?;
                 let state = parse_state(row.get(3)?)?;
+                let container_up: i64 = row.get(6)?;
+                let container_up = container_up != 0;
                 Ok(TimedEvent {
                     created_at: created_at.clone(),
                     id: id.clone(),
@@ -425,10 +515,11 @@ async fn list_events(
                         task_id: id,
                         bot_id: row.get(1)?,
                         bot_name: row.get(2)?,
-                        label: state.label().to_string(),
+                        label: status_label(state, container_up),
                         state,
                         created_at,
                         updated_at: row.get(5)?,
+                        container_up,
                     },
                 })
             })?;
@@ -881,9 +972,23 @@ mod tests {
     }
 
     fn pump_db(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox) {
+        pump_db_limit(db, volumes, sandbox, 8);
+    }
+
+    fn pump_db_limit(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, limit: u64) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        super::pump(&conn, sandbox, volumes, "openbots-runner:local").unwrap();
+        super::pump(&conn, sandbox, volumes, "openbots-runner:local", limit).unwrap();
+    }
+
+    fn post_empty(uri: &str) -> Request<Body> {
+        Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap()
+    }
+
+    fn app_on(db: &Path, volumes: &Path) -> Router {
+        super::Host::open(db, volumes, "openbots-runner:local")
+            .unwrap()
+            .router()
     }
 
     fn statuses(events: &Value) -> Vec<&Value> {
@@ -931,6 +1036,7 @@ mod tests {
         assert_eq!(cards[0]["id"], task_id);
         assert_eq!(cards[0]["state"], "queued");
         assert_eq!(cards[0]["label"], "排队");
+        assert_eq!(cards[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
 
@@ -956,11 +1062,12 @@ mod tests {
         assert_eq!(cards[0]["taskId"], task_id);
         assert_eq!(cards[0]["state"], "running");
         assert_eq!(cards[0]["label"], "进行");
+        assert_eq!(cards[0]["containerUp"], true);
         assert_eq!(cards[0]["createdAt"], created_at);
         assert_ne!(cards[0]["updatedAt"], updated_queued);
         assert!(deliveries(&running).is_empty());
 
-        fake.finish(0, true);
+        fake.finish(0);
         let group_dir = fake.containers[0].group_dir.clone();
         let recorded = group_dir.join(format!("tasks/{task_id}/result.txt"));
         assert_eq!(std::fs::read(&recorded).unwrap(), prompt.as_bytes());
@@ -978,6 +1085,7 @@ mod tests {
         assert_eq!(cards[0]["id"], task_id);
         assert_eq!(cards[0]["state"], "done");
         assert_eq!(cards[0]["label"], "完成");
+        assert_eq!(cards[0]["containerUp"], false);
         assert_eq!(cards[0]["createdAt"], created_at);
         assert_ne!(cards[0]["updatedAt"], created_at);
         let delivered = deliveries(&done);
@@ -1017,12 +1125,13 @@ mod tests {
         let (group_id, _) = seed_task(&app, "失败退出", "会失败").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        fake.finish(1, true);
+        fake.finish(1);
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "running");
-        assert_eq!(statuses(&events)[0]["label"], "进行");
+        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
 
@@ -1034,11 +1143,13 @@ mod tests {
         let (group_id, _) = seed_task(&app, "没文件", "没有结果").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        fake.finish(0, false);
+        fake.finish_without_output(0);
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
 
@@ -1087,6 +1198,149 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let again = fake.containers.iter().find(|c| c.prompt == "again").unwrap();
         assert_eq!(again.group_dir, dir_a);
+    }
+
+
+    #[tokio::test]
+    async fn get_under_limit_still_finishes_done() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let prompt = "hive-action:get\n画一张草图";
+        let (group_id, task_id) = seed_task(&app, "配额内", prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db_limit(&path, &volumes, &mut fake, 8);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["containerUp"], true);
+        fake.finish(0);
+        let group_dir = fake.containers[0].group_dir.clone();
+        pump_db_limit(&path, &volumes, &mut fake, 8);
+        assert!(fake.names().is_empty());
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert_eq!(statuses(&events)[0]["label"], "完成");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert_eq!(deliveries(&events).len(), 1);
+        assert_eq!(deliveries(&events)[0]["path"], format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), prompt.as_bytes());
+        let conn = Connection::open(&path).unwrap();
+        let gets: i64 = conn.query_row("SELECT get_count FROM tasks WHERE id = ?1", [&task_id], |row| row.get(0)).unwrap();
+        assert_eq!(gets, 1);
+    }
+
+    #[tokio::test]
+    async fn get_over_limit_is_dead_run_not_blocked() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let prompt = "hive-action:get\nhive-action:get\nhive-action:get";
+        let (group_id, _) = seed_task(&app, "超限", prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db_limit(&path, &volumes, &mut fake, 2);
+        fake.finish(0);
+        pump_db_limit(&path, &volumes, &mut fake, 2);
+        assert!(fake.names().is_empty());
+        let events = events_of(&app, &group_id).await;
+        let card = statuses(&events)[0];
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["label"], "没写出结果");
+        assert_eq!(card["containerUp"], false);
+        assert_ne!(card["state"], "blocked");
+        assert!(deliveries(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_get_outbound_fails_without_blocking() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "非GET", "普通写入").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        let outbound = fake.containers[0].group_dir.join(format!("tasks/{task_id}/outbound.txt"));
+        std::fs::write(&outbound, "POST\n").unwrap();
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert!(deliveries(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn captcha_blocks_like_external() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "验证码", "hive-action:captcha").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        let group_dir = fake.containers[0].group_dir.clone();
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "blocked");
+        assert_eq!(statuses(&events)[0]["label"], "卡住");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert!(deliveries(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_blocks_then_resume_rewrites_on_same_directory() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = "hive-action:external\n画一张草图";
+        let (group_id, task_id) = seed_task(&app, "外呼", prompt).await;
+
+        let (status, body) = read_json(call(&app, post_empty("/api/tasks/missing/resume")).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, json!({ "error": "任务不存在" }));
+        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, json!({ "error": "这次不能恢复" }));
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        let group_dir = fake.containers[0].group_dir.clone();
+        assert_eq!(std::fs::read(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap(), b"external");
+        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+        let blocked = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&blocked)[0]["state"], "blocked");
+        assert_eq!(statuses(&blocked)[0]["label"], "卡住");
+        assert_eq!(statuses(&blocked)[0]["containerUp"], false);
+        assert!(deliveries(&blocked).is_empty());
+
+        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "id": task_id, "state": "queued" }));
+        assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
+        let queued = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&queued)[0]["state"], "queued");
+        assert_eq!(statuses(&queued)[0]["containerUp"], false);
+
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.containers.len(), 1);
+        assert_eq!(fake.containers[0].group_dir, group_dir);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+        let result = group_dir.join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read(&result).unwrap(), "画一张草图".as_bytes());
+        assert!(group_dir.is_dir());
+        let done = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&done)[0]["state"], "done");
+        assert_eq!(statuses(&done)[0]["label"], "完成");
+        assert_eq!(statuses(&done)[0]["containerUp"], false);
+        assert_eq!(deliveries(&done).len(), 1);
+        assert_eq!(deliveries(&done)[0]["path"], format!("tasks/{task_id}/result.txt"));
+        assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
 
 }
