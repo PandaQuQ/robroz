@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use hive_policy::{outbound, side_effect, Outbound, SideEffect, SideEffectDecision};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ pub fn pump(
     sandbox: &mut dyn Sandbox,
     volumes_root: &Path,
     image: &str,
+    get_limit: u64,
 ) -> rusqlite::Result<()> {
     let queued = load_tasks(conn, "queued")?;
     for task in queued {
@@ -38,7 +40,8 @@ pub fn pump(
         }
         let updated_at = newer_than(&task.created_at);
         conn.execute(
-            "UPDATE tasks SET state = 'running', updated_at = ?1 WHERE id = ?2 AND state = 'queued'",
+            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1
+             WHERE id = ?2 AND state = 'queued'",
             params![updated_at, task.id],
         )?;
     }
@@ -56,25 +59,71 @@ pub fn pump(
         let ContainerPhase::Exited { code } = phase else {
             continue;
         };
+
+        // Workspace reads of the group volume are allowed. This is not a scheduler.
+        if side_effect(SideEffect::WorkspaceRead) != SideEffectDecision::Allow {
+            eprintln!("pump: workspace read denied for {}", task.id);
+            continue;
+        }
+
+        let group_dir = group_volume(volumes_root, &task.group_id);
         let rel = result_rel(&task.id);
-        let file = volumes_root.join(&task.group_id).join(&rel);
-        let success = code == 0 && file.is_file();
+        let result_file = group_dir.join(&rel);
+        let intent = read_intent(&group_dir, &task.id);
+        let (get_count, quota_fail) = outbound_record(&group_dir, &task.id, get_limit);
+
+        let block = match intent.as_deref() {
+            Some("external") => {
+                side_effect(SideEffect::ExternalWrite) == SideEffectDecision::BlockAndDropContainer
+            }
+            Some("captcha") => {
+                side_effect(SideEffect::Captcha) == SideEffectDecision::BlockAndDropContainer
+            }
+            _ => false,
+        };
+
         if let Err(err) = sandbox.remove(&name) {
             eprintln!("pump: remove {}: {}", task.id, err.message);
             continue;
         }
-        if !success {
-            // Non-zero exit or a missing result file. The container is gone.
-            // This node has no blocked state and does not resume; leave running.
-            eprintln!("pump: task {} finished without a result; left running", task.id);
+
+        let updated_at = newer_than(&task.created_at);
+        if block {
+            conn.execute(
+                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![get_count, updated_at, task.id],
+            )?;
             continue;
         }
-        let updated_at = newer_than(&task.created_at);
+
+        let dead = quota_fail || code != 0 || !result_file.is_file();
+        if dead {
+            // Container is gone and there is no successful result. Stay running
+            // with containerUp false so the card uses the dead-run line. Not blocked.
+            conn.execute(
+                "UPDATE tasks SET container_up = 0, get_count = ?1, updated_at = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![get_count, updated_at, task.id],
+            )?;
+            continue;
+        }
+
+        if side_effect(SideEffect::WorkspaceWrite) != SideEffectDecision::Allow {
+            conn.execute(
+                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![get_count, updated_at, task.id],
+            )?;
+            continue;
+        }
+
         let delivery_id = Uuid::new_v4().to_string();
         let tx = conn.unchecked_transaction()?;
         tx.execute(
-            "UPDATE tasks SET state = 'done', updated_at = ?1 WHERE id = ?2 AND state = 'running'",
-            params![updated_at, task.id],
+            "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2
+             WHERE id = ?3 AND state = 'running'",
+            params![get_count, updated_at, task.id],
         )?;
         tx.execute(
             "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at)
@@ -114,6 +163,43 @@ fn ensure_group_dir(volumes_root: &Path, group_id: &str) -> Option<PathBuf> {
             None
         }
     }
+}
+
+fn group_volume(volumes_root: &Path, group_id: &str) -> PathBuf {
+    let dir = volumes_root.join(group_id);
+    std::fs::canonicalize(&dir).unwrap_or(dir)
+}
+
+fn read_intent(group_dir: &Path, task_id: &str) -> Option<String> {
+    let path = group_dir.join("tasks").join(task_id).join("intent");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Count `GET` lines and ask hive-policy. A non-GET line is Fail and is not blocked.
+fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, bool) {
+    let path = group_dir.join("tasks").join(task_id).join("outbound.txt");
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) => return (0, false),
+    };
+    let mut gets: u64 = 0;
+    let mut non_get_fail = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "GET" {
+            gets += 1;
+        } else if outbound(line, 0, limit) == Outbound::Fail {
+            non_get_fail = true;
+        }
+    }
+    let over = gets > 0 && outbound("GET", gets, limit) == Outbound::Fail;
+    (gets as i64, over || non_get_fail)
 }
 
 fn newer_than(previous: &str) -> String {

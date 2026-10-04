@@ -450,7 +450,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "hive-card",
  "hive-contract",
+ "hive-policy",
+ "hive-runner",
  "http-body-util",
  "rusqlite",
  "serde_json",

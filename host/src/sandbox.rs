@@ -202,20 +202,21 @@ impl FakeSandbox {
         self.containers.iter().map(|c| c.name.clone()).collect()
     }
 
-    /// Simulate the runner finishing. When `write_file` is set, the prompt is
-    /// written under the group directory and left there after removal.
-    pub(crate) fn finish(&mut self, code: i32, write_file: bool) {
+    /// Run the shared runner logic, then mark the container exited.
+    pub(crate) fn finish(&mut self, code: i32) {
+        self.finish_inner(code, true);
+    }
+
+    /// Exit without writing volume files, for the missing-result case.
+    pub(crate) fn finish_without_output(&mut self, code: i32) {
+        self.finish_inner(code, false);
+    }
+
+    fn finish_inner(&mut self, code: i32, apply: bool) {
         for container in &mut self.containers {
-            if write_file {
-                let path = container
-                    .group_dir
-                    .join("tasks")
-                    .join(&container.task_id)
-                    .join("result.txt");
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).expect("create result dir");
-                }
-                std::fs::write(&path, container.prompt.as_bytes()).expect("write result");
+            if apply && container.phase == ContainerPhase::Running {
+                hive_runner::apply_prompt(&container.group_dir, &container.task_id, &container.prompt)
+                    .expect("apply prompt");
             }
             container.phase = ContainerPhase::Exited { code };
         }

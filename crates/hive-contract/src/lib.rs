@@ -157,6 +157,7 @@ pub enum Event {
         label: String,
         created_at: String,
         updated_at: String,
+        container_up: bool,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -215,6 +216,7 @@ mod tests {
                 label: TaskState::Queued.label().into(),
                 created_at: "2026-10-03T19:00:01.000Z".into(),
                 updated_at: "2026-10-03T19:00:01.000Z".into(),
+                container_up: false,
             },
             serde_json::json!({
                 "type": "status",
@@ -225,7 +227,8 @@ mod tests {
                 "state": "queued",
                 "label": "排队",
                 "createdAt": "2026-10-03T19:00:01.000Z",
-                "updatedAt": "2026-10-03T19:00:01.000Z"
+                "updatedAt": "2026-10-03T19:00:01.000Z",
+                "containerUp": false
             }),
         );
     }

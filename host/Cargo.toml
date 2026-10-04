@@ -9,9 +9,12 @@ chrono = { version = "0.4", features = ["clock"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 hive-contract = { path = "../crates/hive-contract" }
+hive-policy = { path = "../crates/hive-policy" }
+hive-card = { path = "../crates/hive-card" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "=1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+hive-runner = { path = "../runner" }
