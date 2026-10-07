@@ -12,6 +12,7 @@ struct TaskRow {
     group_id: String,
     prompt: String,
     created_at: String,
+    briefing: bool,
 }
 
 pub fn pump(
@@ -127,8 +128,8 @@ pub fn pump(
         )?;
         tx.execute(
             "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at)
-             VALUES (?1, ?2, ?3, '已写入结果', ?4, 0, ?5)",
-            params![delivery_id, task.group_id, task.id, rel, updated_at],
+             VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6)",
+            params![delivery_id, task.group_id, task.id, rel, task.briefing as i64, updated_at],
         )?;
         tx.commit()?;
     }
@@ -137,7 +138,7 @@ pub fn pump(
 
 fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, group_id, prompt, created_at FROM tasks WHERE state = ?1 ORDER BY created_at, id",
+        "SELECT id, group_id, prompt, created_at, briefing FROM tasks WHERE state = ?1 ORDER BY created_at, id",
     )?;
     let rows = stmt.query_map([state], |row| {
         Ok(TaskRow {
@@ -145,6 +146,7 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
             group_id: row.get(1)?,
             prompt: row.get(2)?,
             created_at: row.get(3)?,
+            briefing: row.get::<_, i64>(4)? != 0,
         })
     })?;
     rows.collect()

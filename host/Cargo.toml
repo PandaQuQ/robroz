@@ -14,6 +14,7 @@ hive-card = { path = "../crates/hive-card" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "=1.11.0", features = ["v4"] }
+croner = "4.0.1"
 
 [dev-dependencies]
 http-body-util = "0.1"
