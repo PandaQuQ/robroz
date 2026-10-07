@@ -24,3 +24,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build client
         run: cargo build -p openbots-client
+      - name: Test client
+        run: cargo test -p openbots-client
