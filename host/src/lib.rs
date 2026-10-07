@@ -8,16 +8,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use hive_contract::{
-    AddMember, CreateGroup, CreateTask, ErrorBody, Event, Events, Group, Member, Message,
-    MessageKind, PostMessage, Task, TaskState,
+    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Member,
+    Message, MessageKind, PostMessage, Schedule, Task, TaskState,
 };
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 mod pump;
 mod sandbox;
+mod schedule;
 
 pub use pump::pump;
+pub use schedule::{tick, TickReport};
 pub use sandbox::DockerSandbox;
 
 use sandbox::Sandbox;
@@ -59,6 +61,12 @@ impl Host {
         let conn = self.db.lock().expect("sqlite connection lock poisoned");
         pump(&conn, sandbox, &self.volumes_root, &self.image, self.get_limit)
     }
+
+    /// One scheduler pass at `now`. Only creates queued tasks; pump starts containers.
+    pub fn tick_once(&self, now: chrono::DateTime<Utc>) -> rusqlite::Result<TickReport> {
+        let conn = self.db.lock().expect("sqlite connection lock poisoned");
+        tick(&conn, now)
+    }
 }
 
 fn get_limit_from_env() -> u64 {
@@ -90,6 +98,7 @@ fn router_from(db: Arc<Mutex<Connection>>, volumes_root: std::path::PathBuf) -> 
         .route("/api/groups/{id}/tasks", post(create_task))
         .route("/api/groups/{id}/events", get(list_events))
         .route("/api/tasks/{id}/resume", post(resume_task))
+        .route("/api/schedules", post(create_schedule))
         .with_state(AppState { db, volumes_root })
 }
 
@@ -128,7 +137,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             container_up INTEGER NOT NULL DEFAULT 0,
-            get_count INTEGER NOT NULL DEFAULT 0
+            get_count INTEGER NOT NULL DEFAULT 0,
+            briefing INTEGER NOT NULL DEFAULT 0,
+            schedule_id TEXT
         );
         CREATE TABLE IF NOT EXISTS deliveries (
             id TEXT PRIMARY KEY,
@@ -137,6 +148,17 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             summary TEXT NOT NULL,
             path TEXT NOT NULL,
             briefing INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS schedules (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            assignee_bot_id TEXT NOT NULL,
+            cron TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            next_run_at TEXT NOT NULL,
+            last_task_id TEXT,
             created_at TEXT NOT NULL
         );
         ",
@@ -150,6 +172,12 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE tasks ADD COLUMN get_count INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // Node 5: scheduled tasks are briefing tasks.
+    let _ = conn.execute(
+        "ALTER TABLE tasks ADD COLUMN briefing INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN schedule_id TEXT", []);
     Ok(())
 }
 
@@ -444,6 +472,66 @@ async fn resume_task(
         Json(serde_json::json!({ "id": task_id, "state": "queued" })),
     )
         .into_response()
+}
+
+async fn create_schedule(
+    State(state): State<AppState>,
+    Json(body): Json<CreateSchedule>,
+) -> Response {
+    let group_id = body.group_id.trim().to_string();
+    let assignee = body.assignee_bot_id.trim().to_string();
+    let prompt = body.prompt.trim().to_string();
+    let cron_text = body.cron.trim().to_string();
+
+    let conn = lock_db(&state);
+    let result = (|| {
+        if !group_exists(&conn, &group_id)? {
+            return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
+        }
+        let member: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memberships WHERE group_id = ?1 AND bot_id = ?2",
+            params![group_id, assignee],
+            |row| row.get(0),
+        )?;
+        if member == 0 {
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "这个 Bot 不在群里",
+            )));
+        }
+        if prompt.is_empty() {
+            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "请填写内容")));
+        }
+        let Some(next) = schedule::parse_cron(&cron_text)
+            .and_then(|cron| schedule::next_after(&cron, Utc::now()))
+        else {
+            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "cron 格式不对")));
+        };
+        let id = new_id();
+        let next_run_at = schedule::stamp(next);
+        conn.execute(
+            "INSERT INTO schedules (id, tenant_id, group_id, assignee_bot_id, cron, prompt,
+                                    next_run_at, last_task_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+            params![id, TENANT_ID, group_id, assignee, cron_text, prompt, next_run_at, now_rfc3339()],
+        )?;
+        Ok(Ok(Schedule {
+            id,
+            group_id: group_id.clone(),
+            assignee_bot_id: assignee.clone(),
+            cron: cron_text.clone(),
+            prompt: prompt.clone(),
+            next_run_at,
+            last_task_id: None,
+        }))
+    })();
+    drop(conn);
+
+    match result {
+        Ok(Ok(schedule)) => (StatusCode::CREATED, Json(schedule)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => db_error(err),
+    }
 }
 
 struct TimedEvent {
@@ -1335,4 +1423,373 @@ mod tests {
         assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
 
+
+    // ---- node 5: schedules ----
+
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+
+    fn tick_db(db: &Path, now: DateTime<Utc>) -> super::TickReport {
+        let conn = Connection::open(db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        super::tick(&conn, now).unwrap()
+    }
+
+    fn at(stamp: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(stamp).unwrap().with_timezone(&Utc)
+    }
+
+    fn schedule_row(db: &Path, id: &str) -> (String, Option<String>) {
+        let conn = Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT next_run_at, last_task_id FROM schedules WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn task_count(db: &Path) -> i64 {
+        let conn = Connection::open(db).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap()
+    }
+
+    async fn post_schedule(app: &Router, body: Value) -> (StatusCode, Value) {
+        read_json(call(app, post("/api/schedules", body)).await).await
+    }
+
+    /// Group with bot-ada as member, plus a schedule every minute.
+    async fn seed_schedule(app: &Router, name: &str, prompt: &str) -> (String, Value) {
+        let group_id = create_group(app, name).await["id"].as_str().unwrap().to_string();
+        let (status, _) = add_member(app, &group_id, "bot-ada", "Ada").await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, schedule) = post_schedule(
+            app,
+            json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": "* * * * *", "prompt": prompt }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{schedule}");
+        (group_id, schedule)
+    }
+
+    #[tokio::test]
+    async fn create_schedule_validates_and_returns_shape() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "定时").await["id"].as_str().unwrap().to_string();
+        let (status, _) = add_member(&app, &group_id, "bot-ada", "Ada").await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, body) = post_schedule(
+            &app,
+            json!({ "groupId": "missing", "assigneeBotId": "bot-ada", "cron": "* * * * *", "prompt": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, json!({ "error": "群不存在" }));
+
+        let (status, body) = post_schedule(
+            &app,
+            json!({ "groupId": group_id, "assigneeBotId": "bot-zed", "cron": "* * * * *", "prompt": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
+
+        let (status, body) = post_schedule(
+            &app,
+            json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": "* * * * *", "prompt": "  " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({ "error": "请填写内容" }));
+
+        for bad in ["", "nope", "61 * * * *", "* * * *", "0 0 0 * * * 2026", "@daily", "0 0 30 2 *"] {
+            let (status, body) = post_schedule(
+                &app,
+                json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": bad, "prompt": "x" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "cron {bad:?}");
+            assert_eq!(body, json!({ "error": "cron 格式不对" }), "cron {bad:?}");
+        }
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM schedules", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 0, "rejected schedules are not stored");
+        drop(conn);
+
+        let before = Utc::now();
+        let (status, schedule) = post_schedule(
+            &app,
+            json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": "0 9 * * *", "prompt": "早报" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{schedule}");
+        let mut keys: Vec<&str> = schedule.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["assigneeBotId", "cron", "groupId", "id", "lastTaskId", "nextRunAt", "prompt"]
+        );
+        assert_eq!(schedule["groupId"], group_id);
+        assert_eq!(schedule["assigneeBotId"], "bot-ada");
+        assert_eq!(schedule["cron"], "0 9 * * *");
+        assert_eq!(schedule["prompt"], "早报");
+        assert_eq!(schedule["lastTaskId"], Value::Null);
+        let next = at(schedule["nextRunAt"].as_str().unwrap());
+        assert!(next > before);
+        assert_eq!(next.format("%H:%M:%S").to_string(), "09:00:00", "cron is UTC");
+
+        let (status, six) = post_schedule(
+            &app,
+            json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": "*/30 * * * * *", "prompt": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "6-field cron with seconds: {six}");
+
+        let conn = Connection::open(&path).unwrap();
+        let tenant: String = conn
+            .query_row("SELECT tenant_id FROM schedules WHERE id = ?1", [schedule["id"].as_str().unwrap()], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tenant, "local");
+        assert_eq!(task_count(&path), 0, "creating a schedule does not create a task");
+    }
+
+    #[tokio::test]
+    async fn tick_before_due_creates_nothing() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (_, schedule) = seed_schedule(&app, "未到点", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let next = at(schedule["nextRunAt"].as_str().unwrap());
+
+        let report = tick_db(&path, next - ChronoDuration::seconds(1));
+        assert!(report.created.is_empty());
+        assert!(report.skipped.is_empty());
+        assert_eq!(task_count(&path), 0);
+        assert_eq!(schedule_row(&path, id), (schedule["nextRunAt"].as_str().unwrap().to_string(), None));
+    }
+
+    #[tokio::test]
+    async fn tick_at_due_creates_one_queued_task_and_advances() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (group_id, schedule) = seed_schedule(&app, "到点", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let next = at(schedule["nextRunAt"].as_str().unwrap());
+
+        let report = tick_db(&path, next);
+        assert_eq!(report.created.len(), 1);
+        let task_id = report.created[0].clone();
+        assert_eq!(task_count(&path), 1);
+
+        let (next_run_at, last) = schedule_row(&path, id);
+        assert_eq!(last.as_deref(), Some(task_id.as_str()));
+        assert_eq!(at(&next_run_at), next + ChronoDuration::minutes(1), "strictly after now");
+
+        let events = events_of(&app, &group_id).await;
+        let cards = statuses(&events);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["id"], task_id);
+        assert_eq!(cards[0]["botId"], "bot-ada");
+        assert_eq!(cards[0]["state"], "queued");
+        assert_eq!(cards[0]["label"], "排队");
+        assert_eq!(cards[0]["containerUp"], false, "tick does not start a container");
+        assert!(deliveries(&events).is_empty());
+
+        let conn = Connection::open(&path).unwrap();
+        let (briefing, schedule_id): (i64, String) = conn
+            .query_row("SELECT briefing, schedule_id FROM tasks WHERE id = ?1", [&task_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(briefing, 1);
+        assert_eq!(schedule_id, id);
+        drop(conn);
+
+        // Same instant again: no longer due.
+        let again = tick_db(&path, next);
+        assert!(again.created.is_empty());
+        assert_eq!(task_count(&path), 1);
+    }
+
+    #[tokio::test]
+    async fn tick_does_not_backfill_missed_runs() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (_, schedule) = seed_schedule(&app, "补跑", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let next = at(schedule["nextRunAt"].as_str().unwrap());
+        let late = next + ChronoDuration::minutes(10) + ChronoDuration::seconds(5);
+
+        let report = tick_db(&path, late);
+        assert_eq!(report.created.len(), 1, "one task, not ten");
+        let (next_run_at, _) = schedule_row(&path, id);
+        assert!(at(&next_run_at) > late);
+        assert_eq!(at(&next_run_at), next + ChronoDuration::minutes(11));
+    }
+
+    #[tokio::test]
+    async fn scheduled_task_delivers_briefing_and_normal_task_does_not() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = "今日简报";
+        let (group_id, schedule) = seed_schedule(&app, "简报群", prompt).await;
+        let next = at(schedule["nextRunAt"].as_str().unwrap());
+
+        let scheduled = tick_db(&path, next).created[0].clone();
+        let (status, normal) = read_json(
+            call(
+                &app,
+                post(
+                    &format!("/api/groups/{group_id}/tasks"),
+                    json!({ "assigneeBotId": "bot-ada", "prompt": "普通任务" }),
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let normal_id = normal["id"].as_str().unwrap().to_string();
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.containers.len(), 2);
+        let running = events_of(&app, &group_id).await;
+        for card in statuses(&running) {
+            assert_eq!(card["state"], "running");
+            assert_eq!(card["label"], "进行");
+            assert_eq!(card["containerUp"], true);
+        }
+
+        fake.finish(0);
+        let group_dir = fake.containers[0].group_dir.clone();
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty(), "container list is empty afterwards");
+
+        let scheduled_file = group_dir.join(format!("tasks/{scheduled}/result.txt"));
+        assert!(group_dir.ends_with(&group_id));
+        assert_eq!(std::fs::read(&scheduled_file).unwrap(), prompt.as_bytes());
+
+        let done = events_of(&app, &group_id).await;
+        let cards = statuses(&done);
+        assert_eq!(cards.len(), 2);
+        for card in &cards {
+            assert_eq!(card["state"], "done");
+            assert_eq!(card["label"], "完成");
+            assert_eq!(card["containerUp"], false);
+        }
+        let delivered = deliveries(&done);
+        assert_eq!(delivered.len(), 2);
+        let by_path = |task: &str| {
+            let rel = format!("tasks/{task}/result.txt");
+            delivered.iter().find(|d| d["path"] == rel.as_str()).copied().unwrap()
+        };
+        assert_eq!(by_path(&scheduled)["briefing"], true);
+        assert_eq!(by_path(&scheduled)["summary"], "已写入结果");
+        assert_eq!(by_path(&normal_id)["briefing"], false);
+        assert_eq!(hive_card::briefing_badge(), "简报");
+    }
+
+    #[tokio::test]
+    async fn tick_skips_while_previous_run_is_live_but_advances() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, schedule) = seed_schedule(&app, "跳过", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let first_due = at(schedule["nextRunAt"].as_str().unwrap());
+
+        let first = tick_db(&path, first_due).created[0].clone();
+
+        // Still queued: skip.
+        let second_due = first_due + ChronoDuration::minutes(1);
+        let report = tick_db(&path, second_due);
+        assert!(report.created.is_empty());
+        assert_eq!(report.skipped, vec![id.to_string()]);
+        assert_eq!(task_count(&path), 1);
+        let (next_run_at, last) = schedule_row(&path, id);
+        assert_eq!(at(&next_run_at), second_due + ChronoDuration::minutes(1));
+        assert_eq!(last.as_deref(), Some(first.as_str()));
+
+        // Running with a live container: skip.
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.names().len(), 1);
+        let third_due = at(&next_run_at);
+        let report = tick_db(&path, third_due);
+        assert!(report.created.is_empty(), "no second task while containerUp is true");
+        assert_eq!(task_count(&path), 1);
+        let (next_run_at, last) = schedule_row(&path, id);
+        assert!(at(&next_run_at) > third_due);
+        assert_eq!(at(&next_run_at), third_due + ChronoDuration::minutes(1));
+        assert_eq!(last.as_deref(), Some(first.as_str()));
+        assert_eq!(fake.names().len(), 1, "tick never starts containers");
+
+        // After it finishes, the next occurrence runs again.
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let report = tick_db(&path, at(&next_run_at));
+        assert_eq!(report.created.len(), 1);
+        assert_eq!(task_count(&path), 2);
+    }
+
+    #[tokio::test]
+    async fn dead_scheduled_run_does_not_hold_the_schedule() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, schedule) = seed_schedule(&app, "死跑", "早报").await;
+        let due = at(schedule["nextRunAt"].as_str().unwrap());
+        tick_db(&path, due);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish_without_output(0);
+        pump_db(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert_eq!(statuses(&events)[0]["label"], hive_card::status_line(hive_contract::TaskState::Running, false));
+        assert!(deliveries(&events).is_empty());
+
+        let report = tick_db(&path, due + ChronoDuration::minutes(1));
+        assert_eq!(report.created.len(), 1, "containerUp false is not a live run");
+    }
+
+    #[tokio::test]
+    async fn blocked_scheduled_task_resumes_and_keeps_briefing() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, schedule) = seed_schedule(&app, "卡住简报", "hive-action:external\n简报正文").await;
+        let due = at(schedule["nextRunAt"].as_str().unwrap());
+        let task_id = tick_db(&path, due).created[0].clone();
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        let group_dir = fake.containers[0].group_dir.clone();
+        pump_db(&path, &volumes, &mut fake);
+        let blocked = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&blocked)[0]["state"], "blocked");
+        assert_eq!(statuses(&blocked)[0]["label"], "卡住");
+        assert!(deliveries(&blocked).is_empty());
+
+        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "id": task_id, "state": "queued" }));
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.containers[0].group_dir, group_dir);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+
+        let done = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&done)[0]["state"], "done");
+        let delivered = deliveries(&done);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0]["briefing"], true);
+        assert_eq!(delivered[0]["path"], format!("tasks/{task_id}/result.txt"));
+        assert!(group_dir.join(format!("tasks/{task_id}/result.txt")).is_file());
+    }
 }

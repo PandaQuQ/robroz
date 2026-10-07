@@ -27,6 +27,10 @@ async fn main() {
     tokio::spawn(async move {
         let mut sandbox = DockerSandbox::new();
         loop {
+            // Schedules only create queued tasks; pump is what starts containers.
+            if let Err(err) = pumping.tick_once(chrono::Utc::now()) {
+                eprintln!("tick: {err}");
+            }
             if let Err(err) = pumping.pump_once(&mut sandbox) {
                 eprintln!("pump: {err}");
             }
