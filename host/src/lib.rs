@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use hive_contract::{
-    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Member,
+    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups, Member,
     Message, MessageKind, PostMessage, Schedule, Task, TaskState,
 };
 use rusqlite::{params, Connection};
@@ -92,7 +92,7 @@ pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
 
 fn router_from(db: Arc<Mutex<Connection>>, volumes_root: std::path::PathBuf) -> Router {
     Router::new()
-        .route("/api/groups", post(create_group))
+        .route("/api/groups", post(create_group).get(list_groups))
         .route("/api/groups/{id}/members", post(add_member))
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
@@ -223,6 +223,28 @@ fn parse_kind(value: String) -> rusqlite::Result<MessageKind> {
 
 fn parse_state(value: String) -> rusqlite::Result<TaskState> {
     TaskState::parse(&value).ok_or_else(|| rusqlite::Error::InvalidParameterName(value))
+}
+
+async fn list_groups(State(state): State<AppState>) -> Response {
+    let conn = lock_db(&state);
+    let result = (|| {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, tenant_id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
+        )?;
+        let rows = stmt.query_map([TENANT_ID], |row| {
+            Ok(Group {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                tenant_id: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })();
+    drop(conn);
+    match result {
+        Ok(groups) => (StatusCode::OK, Json(Groups { groups })).into_response(),
+        Err(err) => db_error(err),
+    }
 }
 
 async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
@@ -1791,5 +1813,33 @@ mod tests {
         assert_eq!(delivered[0]["briefing"], true);
         assert_eq!(delivered[0]["path"], format!("tasks/{task_id}/result.txt"));
         assert!(group_dir.join(format!("tasks/{task_id}/result.txt")).is_file());
+    }
+
+    #[tokio::test]
+    async fn list_groups_empty() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (status, body) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "groups": [] }));
+    }
+
+    #[tokio::test]
+    async fn list_groups_in_creation_order() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let first = create_group(&app, "设计群").await;
+        let second = create_group(&app, "运营群").await;
+        let (status, body) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "groups": [
+                    { "id": first["id"], "name": "设计群", "tenantId": "local" },
+                    { "id": second["id"], "name": "运营群", "tenantId": "local" }
+                ]
+            })
+        );
     }
 }
