@@ -34,7 +34,7 @@ cargo test -p openbots-host
 
 容器按宿主机进程的 uid/gid 跑（`--user {uid}:{gid}`，非 unix 平台不加），容器在群目录里写出的文件都归宿主机用户，宿主机删得掉。要换用户就设 `OPENBOTS_CONTAINER_USER`，比如 `1000:1000`。镜像不带 `--user` 时默认是 nobody（65534），不是 root。
 
-prompt 不走环境变量：宿主机启动容器前把它写进群目录的 `tasks/{taskId}/prompt.txt`，runner 读容器内的 `/workspace/tasks/{taskId}/prompt.txt`。环境变量只剩 `OPENBOTS_TASK_ID`，`docker inspect` 看不到 prompt。每个任务另有一个控制目录 `OPENBOTS_CONTROL/{taskId}`，只读挂到 `/control`（见节点 4 的接管标记）。
+prompt 不走环境变量，也不放进群目录：宿主机启动容器前把它写进这个任务的控制目录 `OPENBOTS_CONTROL/{taskId}/prompt.txt`，runner 只读容器内的 `/control/prompt.txt`（只读挂载），不会退回去读 `/workspace`。环境变量只剩 `OPENBOTS_TASK_ID`，`docker inspect` 看不到 prompt，容器也改不了它。容器只有两个挂载：群目录 `/workspace`（可写）和自己任务的控制目录 `/control`（只读，里面是 `prompt.txt` 和接管标记 `takeover`，见节点 4）。
 
 Docker 调用不在数据库锁里。pump 在宿主机自己的线程上跑：先在锁内读任务，把 `queued` 改成 `running`（同一个任务不会被取两次），放锁后再 `docker run` / `inspect` / `rm`，最后重新加锁写结果。慢容器不会卡住 HTTP。`docker run` 失败时任务改回 `queued`。
 
@@ -50,9 +50,9 @@ CI 只编译 `hive-runner`，不构建镜像，测试也不需要 Docker daemon�
 
 GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outbound` 判断，上限是环境变量 `OPENBOTS_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`hive-action:external` 和 `hive-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
 
-`POST /api/tasks/:id/resume` 只接受 blocked：任务不存在返回 404「任务不存在」，不是 blocked 返回 409「这次不能恢复」。成功返回 200 `{"id","state":"queued"}`：删掉 intent，写接管标记，状态回到 `queued`，`containerUp` false。intent 本来就不在也算成功。删 intent 失败（除了“文件不存在”以外的任何错误）返回 500 `{"error":"恢复失败，无法清理卡住记录"}`，任务留在 `blocked`，状态和 `updatedAt` 都不变，也不写接管标记，修好以后可以再恢复一次。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
+`POST /api/tasks/:id/resume` 只接受 blocked：任务不存在返回 404「任务不存在」，不是 blocked 返回 409「这次不能恢复」。成功返回 200 `{"id","state":"queued"}`：按库里存的卡住记录写接管标记，清掉这条记录，状态回到 `queued`，`containerUp` false。resume 不读群目录。库里没有这条卡住记录（比如这次升级前就卡住的任务，或者容器写的 intent 没通过核对）返回 500 `{"error":"恢复失败，找不到卡住记录"}`；写接管标记失败返回 500 `{"error":"恢复失败，无法写入接管标记"}`。这两种情况任务都留在 `blocked`，状态和 `updatedAt` 都不变，也不写标记。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
-接管标记：runner 碰到 `hive-action:external` / `hive-action:captcha` 时，在 `tasks/{taskId}/intent` 里写三行：类型、这一行原文的 sha256、这一行原文。resume 时宿主机核对这一行确实出现在库里存的 prompt 里、类型也对得上，自己重算 sha256，追加到 `OPENBOTS_CONTROL/{taskId}/takeover`（每行一个哈希）。这个目录在群目录外面，只有宿主机写；容器只拿到自己任务的那一个，只读挂在 `/control`。runner 只读 `/control/takeover`，只跳过 sha256 和标记对得上的那一行，跳过的行不写进 `result.txt`；碰到别的阻塞行照样卡住，再接管一次就再追加一个哈希。`/workspace` 里任何地方的 takeover 文件（包括 Bot 自己伪造的）一律不认。同一行原文在 prompt 里出现多次时，接管一次就都放行。库里存的 prompt 不改写。
+接管标记：runner 碰到 `hive-action:external` / `hive-action:captcha` 时，在群目录的 `tasks/{taskId}/intent` 里写三行：类型、这一行原文的 sha256、这一行原文。宿主机只在容器退出时读一次：核对这一行确实出现在库里存的 prompt 里、类型也对得上，自己重算 sha256，把类型、原文和哈希存进库里这个任务的 `intent_kind` / `intent_line` / `intent_hash`，然后删掉群目录里的 intent（下次启动容器前也会再清一次）。之后群目录里的 intent 再怎么改都不影响 resume。resume 只用库里这份，把哈希追加到 `OPENBOTS_CONTROL/{taskId}/takeover`（每行一个哈希）。这个目录在群目录外面，只有宿主机写；容器只拿到自己任务的那一个，只读挂在 `/control`。runner 只读 `/control/takeover`，只跳过 sha256 和标记对得上的那一行，跳过的行不写进 `result.txt`；碰到别的阻塞行照样卡住，再接管一次就再追加一个哈希。`/workspace` 里任何地方的 takeover 文件（包括 Bot 自己伪造的）一律不认。同一行原文在 prompt 里出现多次时，接管一次就都放行。库里存的 prompt 不改写。旧数据库打开时自动加上这三列，原有数据不动。
 
 
 ## 节点 5：定时
@@ -88,7 +88,7 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - `OPENBOTS_ADDR`：监听地址，默认 `127.0.0.1:8790`
 - `OPENBOTS_DB`：SQLite 路径，默认 `./openbots.db`
 - `OPENBOTS_VOLUMES`：群目录根，默认 `./data/groups`，每个群一个子目录，挂到 `/workspace`
-- `OPENBOTS_CONTROL`：任务控制目录根（接管标记），默认 `./data/control`。必须在 `OPENBOTS_VOLUMES` 外面，否则宿主机拒绝启动
+- `OPENBOTS_CONTROL`：任务控制目录根（每个任务的 `prompt.txt` 和接管标记 `takeover`），默认 `./data/control`。必须在 `OPENBOTS_VOLUMES` 外面，否则宿主机拒绝启动
 - `OPENBOTS_IMAGE`：runner 镜像，默认 `openbots-runner:local`
 - `OPENBOTS_CONTAINER_USER`：容器的 `--user`，默认宿主机进程的 `uid:gid`
 - `OPENBOTS_GET_LIMIT`：每个任务的 GET 上限，默认 8

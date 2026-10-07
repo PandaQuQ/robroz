@@ -1,10 +1,13 @@
 //! In-container executor, plus the file formats the host shares with it.
 //!
 //! Files in the group volume (mounted at `/workspace`, writable by the container):
-//! - `tasks/{taskId}/prompt.txt`: written by the host before `docker run`.
 //! - `tasks/{taskId}/result.txt`, `outbound.txt`, `intent`: written by the runner.
+//!   The host reads `intent` once when the container exits, keeps a validated copy
+//!   in its database and deletes the file.
 //!
-//! Files in the task's control dir (mounted read-only at `/control`):
+//! Files in the task's control dir (mounted read-only at `/control`, written only
+//! by the host):
+//! - `prompt.txt`: the task prompt, written before `docker run`.
 //! - `takeover`: written only by the host on resume. One sha256 per line, each the
 //!   hash of an exact `hive-action:` line a person already took over.
 
@@ -31,8 +34,9 @@ pub fn intent_path(root: &Path, task_id: &str) -> PathBuf {
     task_dir(root, task_id).join("intent")
 }
 
-pub fn prompt_path(root: &Path, task_id: &str) -> PathBuf {
-    task_dir(root, task_id).join("prompt.txt")
+/// `prompt.txt` inside one task's control dir (`/control/prompt.txt` in the container).
+pub fn prompt_path(control: &Path) -> PathBuf {
+    control.join("prompt.txt")
 }
 
 /// `takeover` inside one task's control dir (`/control` in the container).
@@ -85,12 +89,20 @@ pub fn parse_intent(text: &str) -> Option<Intent> {
     })
 }
 
-/// Host side: the hash to put in `takeover` for a blocked task.
+/// A blocking action the host checked against the stored prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidIntent {
+    pub kind: String,
+    pub line: String,
+    pub hash: String,
+}
+
+/// Host side: check an `intent` written by the container.
 ///
-/// The intent file is written by the container, so it is not trusted on its own.
-/// Only a line that is a blocking action of the stated kind and appears verbatim
-/// in the task's stored prompt is accepted, and the hash is recomputed here.
-pub fn takeover_hash(prompt: &str, intent: &str) -> Option<String> {
+/// The container controls that file, so it is not trusted on its own. Only a line
+/// that is a blocking action of the stated kind and appears verbatim in the task's
+/// stored prompt is accepted, and the hash is recomputed here.
+pub fn validate_intent(prompt: &str, intent: &str) -> Option<ValidIntent> {
     let intent = parse_intent(intent)?;
     let line = intent.line?;
     if blocking_kind(&line) != Some(intent.kind.as_str()) {
@@ -99,7 +111,16 @@ pub fn takeover_hash(prompt: &str, intent: &str) -> Option<String> {
     if !prompt.lines().any(|candidate| candidate == line) {
         return None;
     }
-    Some(action_hash(&line))
+    Some(ValidIntent {
+        kind: intent.kind,
+        hash: action_hash(&line),
+        line,
+    })
+}
+
+/// Host side: the hash to put in `takeover`, from [`validate_intent`].
+pub fn takeover_hash(prompt: &str, intent: &str) -> Option<String> {
+    validate_intent(prompt, intent).map(|valid| valid.hash)
 }
 
 /// Hashes listed in `takeover`. Missing file means nothing was taken over.
@@ -132,10 +153,11 @@ pub fn append_takeover(control: &Path, hash: &str) -> io::Result<()> {
     fs::write(path, body)
 }
 
-/// Container entry: prompt from `{workspace}/tasks/{taskId}/prompt.txt`,
-/// takeovers only from `{control}/takeover`.
+/// Container entry: prompt and takeovers only from the read-only control dir
+/// (`{control}/prompt.txt`, `{control}/takeover`). Nothing under `workspace` is
+/// read; results are written there.
 pub fn run(workspace: &Path, control: &Path, task_id: &str) -> io::Result<()> {
-    let prompt = fs::read_to_string(prompt_path(workspace, task_id))?;
+    let prompt = fs::read_to_string(prompt_path(control))?;
     let approved = read_takeover(control);
     apply_prompt_with(workspace, task_id, &prompt, &approved)
 }
@@ -225,7 +247,7 @@ mod tests {
         let control = base.join("control");
         fs::create_dir_all(task_dir(&workspace, task_id)).unwrap();
         fs::create_dir_all(&control).unwrap();
-        fs::write(prompt_path(&workspace, task_id), prompt).unwrap();
+        fs::write(prompt_path(&control), prompt).unwrap();
         (base, workspace, control)
     }
 
@@ -376,5 +398,35 @@ mod tests {
         append_takeover(&control, "aa").unwrap();
         append_takeover(&control, "bb").unwrap();
         assert_eq!(fs::read_to_string(takeover_path(&control)).unwrap(), "aa\nbb\n");
+    }
+
+    #[test]
+    fn run_reads_control_prompt_and_ignores_workspace_prompt() {
+        let (base, workspace, control) = mounts("t1", "真正的任务");
+        // A prompt file the container could plant in the volume.
+        fs::write(task_dir(&workspace, "t1").join("prompt.txt"), "伪造的任务").unwrap();
+        run(&workspace, &control, "t1").unwrap();
+        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "真正的任务");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn run_does_not_fall_back_to_workspace_prompt() {
+        let (base, workspace, control) = mounts("t1", "x");
+        fs::remove_file(prompt_path(&control)).unwrap();
+        fs::write(task_dir(&workspace, "t1").join("prompt.txt"), "伪造的任务").unwrap();
+        assert!(run(&workspace, &control, "t1").is_err());
+        assert!(!result_path(&workspace, "t1").exists());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn validate_intent_returns_kind_line_and_recomputed_hash() {
+        let prompt = "hive-action:external\n正文";
+        let valid = validate_intent(prompt, "external\nbogus\nhive-action:external").unwrap();
+        assert_eq!(valid.kind, "external");
+        assert_eq!(valid.line, "hive-action:external");
+        assert_eq!(valid.hash, action_hash("hive-action:external"));
+        assert_eq!(validate_intent(prompt, &format_intent("captcha", "hive-action:captcha")), None);
     }
 }
