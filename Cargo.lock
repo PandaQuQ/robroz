@@ -1425,12 +1425,15 @@ dependencies = [
 [[package]]
 name = "hive-policy"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "hive-runner"
 version = "0.1.0"
 dependencies = [
- "sha2",
+ "hive-policy",
 ]
 
 [[package]]

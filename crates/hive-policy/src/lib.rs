@@ -1,5 +1,9 @@
 /// Pure decisions. This crate does not start containers or touch the clock.
 
+use std::collections::HashSet;
+
+use sha2::{Digest, Sha256};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outbound {
     Allow,
@@ -40,6 +44,55 @@ pub fn should_start_container(due: bool, already_running: bool) -> bool {
     due && !already_running
 }
 
+/// Kind of a blocking action line, or None. Matching ignores surrounding spaces.
+pub fn blocking_kind(line: &str) -> Option<&'static str> {
+    match line.trim() {
+        "hive-action:external" => Some("external"),
+        "hive-action:captcha" => Some("captcha"),
+        _ => None,
+    }
+}
+
+/// Lowercase hex sha256 of the exact line bytes (no newline).
+pub fn action_hash(line: &str) -> String {
+    Sha256::digest(line.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Where a task stops: a blocking action line nobody has taken over yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockingLine {
+    pub kind: &'static str,
+    /// The exact line from the prompt (surrounding spaces kept).
+    pub line: String,
+    /// [`action_hash`] of `line`.
+    pub hash: String,
+}
+
+/// The first `hive-action:external` / `hive-action:captcha` line of `prompt`, in
+/// order, whose sha256 is not in `approved`. None when every blocking line has
+/// been taken over (or there are none).
+///
+/// The runner uses this to decide where to stop; the host uses it after the
+/// container exits, from the stored prompt and the takeover hashes, to know where
+/// it stopped. Identical lines share a hash, so one takeover approves all of them.
+pub fn blocking_line(prompt: &str, approved: &HashSet<String>) -> Option<BlockingLine> {
+    prompt.lines().find_map(|line| {
+        let kind = blocking_kind(line)?;
+        let hash = action_hash(line);
+        if approved.contains(&hash) {
+            return None;
+        }
+        Some(BlockingLine {
+            kind,
+            line: line.to_string(),
+            hash,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +128,57 @@ mod tests {
         assert!(!should_start_container(true, true));
         assert!(!should_start_container(false, false));
         assert!(!should_start_container(false, true));
+    }
+
+    fn set(lines: &[&str]) -> HashSet<String> {
+        lines.iter().map(|line| action_hash(line)).collect()
+    }
+
+    #[test]
+    fn action_hash_is_sha256_hex() {
+        assert_eq!(
+            action_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn blocking_line_none_without_blocking_actions() {
+        assert_eq!(blocking_line("", &HashSet::new()), None);
+        assert_eq!(blocking_line("正文\nhive-action:get\nhive-action:other", &HashSet::new()), None);
+    }
+
+    #[test]
+    fn blocking_line_returns_first_in_order() {
+        let prompt = "开头\nhive-action:captcha\nhive-action:external";
+        let found = blocking_line(prompt, &HashSet::new()).unwrap();
+        assert_eq!(found.kind, "captcha");
+        assert_eq!(found.line, "hive-action:captcha");
+        assert_eq!(found.hash, action_hash("hive-action:captcha"));
+    }
+
+    #[test]
+    fn blocking_line_skips_approved_lines() {
+        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let found = blocking_line(prompt, &set(&["hive-action:external"])).unwrap();
+        assert_eq!(found.kind, "captcha");
+        assert_eq!(blocking_line(prompt, &set(&["hive-action:external", "hive-action:captcha"])), None);
+        // Approving the later line does not skip the earlier one.
+        let found = blocking_line(prompt, &set(&["hive-action:captcha"])).unwrap();
+        assert_eq!(found.kind, "external");
+    }
+
+    #[test]
+    fn blocking_line_hashes_exact_line_and_shares_identical_lines() {
+        let prompt = "  hive-action:external \nhive-action:external";
+        let found = blocking_line(prompt, &HashSet::new()).unwrap();
+        assert_eq!(found.line, "  hive-action:external ");
+        assert_eq!(found.hash, action_hash("  hive-action:external "));
+        // Different bytes, different hash: the second line still blocks.
+        let found = blocking_line(prompt, &set(&["  hive-action:external "])).unwrap();
+        assert_eq!(found.line, "hive-action:external");
+        // Identical lines share approval.
+        let twice = "hive-action:external\n正文\nhive-action:external";
+        assert_eq!(blocking_line(twice, &set(&["hive-action:external"])), None);
     }
 }

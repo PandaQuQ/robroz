@@ -452,8 +452,8 @@ const RESUME_MARKER_FAILED: &str = "恢复失败，无法写入接管标记";
 
 /// Resume a blocked task. Never reads the group volume.
 ///
-/// 1. Take the intent the host stored when the container exited (validated
-///    against the prompt, hash computed by the host). None stored: 500, stays blocked.
+/// 1. Take the blocking line the host computed when the container exited (from
+///    the stored prompt and takeover hashes). None stored: 500, stays blocked.
 /// 2. Append its sha256 to `{control_root}/{id}/takeover`. Only the host writes
 ///    there. Failure: 500, stays blocked.
 /// 3. Clear the stored intent and set the task back to queued. The next pump
@@ -2044,7 +2044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intent_not_in_prompt_blocks_without_approval() {
+    async fn intent_without_blocking_line_is_dead_run_not_blocked() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
@@ -2052,7 +2052,7 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
         let group_dir = fake.containers[0].group_dir.clone();
-        // The container writes an intent for a line its prompt never had.
+        // The container claims it is blocked on a line its prompt never had.
         fake.finish_without_output(0);
         std::fs::create_dir_all(group_dir.join(format!("tasks/{task_id}"))).unwrap();
         std::fs::write(
@@ -2061,11 +2061,77 @@ mod tests {
         )
         .unwrap();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert!(fake.names().is_empty());
+        let events = events_of(&app, &group_id).await;
+        let card = statuses(&events)[0];
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], false);
+        assert_eq!(card["label"], "没写出结果");
+        assert!(deliveries(&events).is_empty());
         assert_eq!(stored_intent(&path, &task_id), (None, None, None));
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
-        assert_eq!(resume(&app, &task_id).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::CONFLICT);
         assert!(!takeover_file(&volumes, &task_id).exists());
+    }
+
+    #[tokio::test]
+    async fn intent_after_every_line_taken_over_is_dead_run() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "全接管", "hive-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+
+        // Next run: the only blocking line is approved, yet the container still
+        // drops an intent and writes no result.
+        pump_db(&path, &volumes, &mut fake);
+        let group_dir = fake.containers[0].group_dir.clone();
+        fake.finish_without_output(0);
+        std::fs::write(group_dir.join(format!("tasks/{task_id}/intent")), "external").unwrap();
+        pump_db(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(stored_intent(&path, &task_id), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn forged_intent_content_at_exit_has_no_effect() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let (group_id, task_id) = seed_task(&app, "伪造内容", prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let group_dir = fake.containers[0].group_dir.clone();
+        fake.finish(0);
+        // Before the host looks, the bot rewrites intent to the other real
+        // blocking line, so that line would be the one approved.
+        let intent = group_dir.join(format!("tasks/{task_id}/intent"));
+        std::fs::write(&intent, hive_runner::format_intent("captcha", "hive-action:captcha")).unwrap();
+        pump_db(&path, &volumes, &mut fake);
+
+        let external = hive_runner::action_hash("hive-action:external");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            stored_intent(&path, &task_id),
+            (Some("external".into()), Some("hive-action:external".into()), Some(external.clone())),
+            "host computes the first unapproved line; intent content is ignored"
+        );
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(), format!("{external}\n"));
+
+        // Still needs a second takeover for captcha.
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("captcha"));
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 
     #[tokio::test]
