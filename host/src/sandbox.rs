@@ -23,7 +23,7 @@ pub enum ContainerPhase {
 }
 
 /// What `docker run` needs. The prompt is not here: the host writes it to
-/// `tasks/{taskId}/prompt.txt` in the group volume before starting.
+/// `{control_dir}/prompt.txt` (read-only `/control/prompt.txt`) before starting.
 pub struct RunRequest<'a> {
     pub name: &'a str,
     pub image: &'a str,
@@ -223,7 +223,7 @@ pub(crate) struct FakeContainer {
     pub group_dir: std::path::PathBuf,
     pub control_dir: std::path::PathBuf,
     pub task_id: String,
-    /// Read from `prompt.txt` at start, for assertions.
+    /// Read from the control dir's `prompt.txt` at start, for assertions.
     pub prompt: String,
     pub phase: ContainerPhase,
 }
@@ -274,9 +274,13 @@ impl Sandbox for FakeSandbox {
         if self.fail_start {
             return Err(SandboxError::new("fake start failed"));
         }
-        let prompt = std::fs::read_to_string(hive_runner::prompt_path(req.group_dir, req.task_id))
-            .map_err(|err| SandboxError::new(format!("prompt.txt missing: {err}")))?;
         assert!(req.control_dir.is_dir(), "control dir exists before start");
+        let prompt = std::fs::read_to_string(hive_runner::prompt_path(req.control_dir))
+            .map_err(|err| SandboxError::new(format!("control prompt.txt missing: {err}")))?;
+        assert!(
+            !hive_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
+            "prompt must not be written into the group volume"
+        );
         self.containers.push(FakeContainer {
             name: req.name.to_string(),
             group_dir: req.group_dir.to_path_buf(),

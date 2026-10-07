@@ -45,7 +45,8 @@ struct TaskRow {
 
 /// What pump decided for an exited container, written back under the lock.
 enum Outcome {
-    Blocked,
+    /// With the validated intent, if the runner left a valid one.
+    Blocked(Option<hive_runner::ValidIntent>),
     Dead,
     Done,
 }
@@ -97,8 +98,13 @@ fn start_task(
     let Some(control_dir) = ensure_dir(&cfg.control_root.join(&task.id)) else {
         return Ok(());
     };
-    if let Err(err) = write_prompt(&group_dir, &task.id, &task.prompt) {
+    if let Err(err) = write_prompt(&control_dir, &task.prompt) {
         eprintln!("pump: write prompt for {}: {err}; task stays queued", task.id);
+        return Ok(());
+    }
+    // A leftover intent would make this run look blocked again.
+    if let Err(err) = remove_intent(&group_dir, &task.id) {
+        eprintln!("pump: clear old intent for {}: {err}; task stays queued", task.id);
         return Ok(());
     }
 
@@ -164,7 +170,16 @@ fn collect_task(
     let group_dir = group_volume(cfg.volumes_root, &task.group_id);
     let rel = result_rel(&task.id);
     let result_file = group_dir.join(&rel);
-    let intent = read_intent(&group_dir, &task.id);
+    // The only time the host reads `intent`. A validated copy goes into the DB
+    // and resume uses that, so later edits in the volume change nothing.
+    let intent_text = std::fs::read_to_string(hive_runner::intent_path(&group_dir, &task.id)).ok();
+    let intent = intent_text
+        .as_deref()
+        .and_then(hive_runner::parse_intent)
+        .map(|parsed| parsed.kind);
+    let valid = intent_text
+        .as_deref()
+        .and_then(|text| hive_runner::validate_intent(&task.prompt, text));
     let (get_count, quota_fail) = outbound_record(&group_dir, &task.id, cfg.get_limit);
 
     let block = match intent.as_deref() {
@@ -181,19 +196,24 @@ fn collect_task(
     }
 
     let outcome = if block {
-        Outcome::Blocked
+        Outcome::Blocked(valid)
     } else if quota_fail || code != 0 || !result_file.is_file() {
         // Container is gone and there is no successful result. Stay running
         // with containerUp false so the card uses the dead-run line. Not blocked.
         Outcome::Dead
     } else if side_effect(SideEffect::WorkspaceWrite) != SideEffectDecision::Allow {
-        Outcome::Blocked
+        Outcome::Blocked(None)
     } else {
         Outcome::Done
     };
 
     let updated_at = newer_than(&task.updated_at);
-    db.with(|conn| write_outcome(conn, task, &outcome, get_count, &updated_at, &rel))
+    db.with(|conn| write_outcome(conn, task, &outcome, get_count, &updated_at, &rel))?;
+    if let Err(err) = remove_intent(&group_dir, &task.id) {
+        // The next start clears it again before docker run.
+        eprintln!("pump: remove intent for {}: {err}", task.id);
+    }
+    Ok(())
 }
 
 fn write_outcome(
@@ -205,11 +225,19 @@ fn write_outcome(
     rel: &str,
 ) -> rusqlite::Result<()> {
     match outcome {
-        Outcome::Blocked => {
+        Outcome::Blocked(valid) => {
             conn.execute(
-                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2
+                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2,
+                                  intent_kind = ?4, intent_line = ?5, intent_hash = ?6
                  WHERE id = ?3 AND state = 'running'",
-                params![get_count, updated_at, task.id],
+                params![
+                    get_count,
+                    updated_at,
+                    task.id,
+                    valid.as_ref().map(|v| v.kind.as_str()),
+                    valid.as_ref().map(|v| v.line.as_str()),
+                    valid.as_ref().map(|v| v.hash.as_str()),
+                ],
             )?;
         }
         Outcome::Dead => {
@@ -260,14 +288,18 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
     rows.collect()
 }
 
-/// The runner reads `/workspace/tasks/{taskId}/prompt.txt`. Rewritten on every
-/// start so the volume copy always matches the stored prompt.
-fn write_prompt(group_dir: &Path, task_id: &str, prompt: &str) -> std::io::Result<()> {
-    let path = hive_runner::prompt_path(group_dir, task_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// The runner reads `/control/prompt.txt`: the task's control dir, outside the
+/// group volume and mounted read-only, so no container can change it.
+fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
+    std::fs::write(hive_runner::prompt_path(control_dir), prompt)
+}
+
+/// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
+fn remove_intent(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(hive_runner::intent_path(group_dir, task_id)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
     }
-    std::fs::write(path, prompt)
 }
 
 fn ensure_dir(dir: &Path) -> Option<PathBuf> {
@@ -287,15 +319,6 @@ fn ensure_dir(dir: &Path) -> Option<PathBuf> {
 pub(crate) fn group_volume(volumes_root: &Path, group_id: &str) -> PathBuf {
     let dir = volumes_root.join(group_id);
     std::fs::canonicalize(&dir).unwrap_or(dir)
-}
-
-/// Kind of the blocking action, from the first line of `intent`.
-fn read_intent(group_dir: &Path, task_id: &str) -> Option<String> {
-    let path = hive_runner::intent_path(group_dir, task_id);
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| hive_runner::parse_intent(&text))
-        .map(|intent| intent.kind)
 }
 
 /// Count `GET` lines and ask hive-policy. A non-GET line is Fail and is not blocked.
