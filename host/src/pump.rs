@@ -45,8 +45,8 @@ struct TaskRow {
 
 /// What pump decided for an exited container, written back under the lock.
 enum Outcome {
-    /// With the validated intent, if the runner left a valid one.
-    Blocked(Option<hive_runner::ValidIntent>),
+    /// With the host-computed blocking line, when there is one.
+    Blocked(Option<hive_policy::BlockingLine>),
     Dead,
     Done,
 }
@@ -170,25 +170,28 @@ fn collect_task(
     let group_dir = group_volume(cfg.volumes_root, &task.group_id);
     let rel = result_rel(&task.id);
     let result_file = group_dir.join(&rel);
-    // The only time the host reads `intent`. A validated copy goes into the DB
-    // and resume uses that, so later edits in the volume change nothing.
-    let intent_text = std::fs::read_to_string(hive_runner::intent_path(&group_dir, &task.id)).ok();
-    let intent = intent_text
-        .as_deref()
-        .and_then(hive_runner::parse_intent)
-        .map(|parsed| parsed.kind);
-    let valid = intent_text
-        .as_deref()
-        .and_then(|text| hive_runner::validate_intent(&task.prompt, text));
+    // `intent` only signals "blocked"; its content is never read. Where the task
+    // stopped is recomputed here from the stored prompt and the host's takeover
+    // hashes, with the same function the runner uses.
+    let claims_blocked = std::fs::symlink_metadata(hive_runner::intent_path(&group_dir, &task.id)).is_ok();
+    let stop = if claims_blocked {
+        let approved = hive_runner::read_takeover(&cfg.control_root.join(&task.id));
+        hive_policy::blocking_line(&task.prompt, &approved)
+    } else {
+        None
+    };
     let (get_count, quota_fail) = outbound_record(&group_dir, &task.id, cfg.get_limit);
 
-    let block = match intent.as_deref() {
+    let block = match stop.as_ref().map(|stop| stop.kind) {
         Some("external") => {
             side_effect(SideEffect::ExternalWrite) == SideEffectDecision::BlockAndDropContainer
         }
         Some("captcha") => side_effect(SideEffect::Captcha) == SideEffectDecision::BlockAndDropContainer,
         _ => false,
     };
+    // Claims to be blocked, but every blocking line is already taken over (or there
+    // are none): not blocked, a run that produced no result.
+    let bogus_block = claims_blocked && stop.is_none();
 
     if let Err(err) = sandbox.remove(&name) {
         eprintln!("pump: remove {}: {}", task.id, err.message);
@@ -196,8 +199,8 @@ fn collect_task(
     }
 
     let outcome = if block {
-        Outcome::Blocked(valid)
-    } else if quota_fail || code != 0 || !result_file.is_file() {
+        Outcome::Blocked(stop)
+    } else if bogus_block || quota_fail || code != 0 || !result_file.is_file() {
         // Container is gone and there is no successful result. Stay running
         // with containerUp false so the card uses the dead-run line. Not blocked.
         Outcome::Dead
@@ -225,7 +228,7 @@ fn write_outcome(
     rel: &str,
 ) -> rusqlite::Result<()> {
     match outcome {
-        Outcome::Blocked(valid) => {
+        Outcome::Blocked(stop) => {
             conn.execute(
                 "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2,
                                   intent_kind = ?4, intent_line = ?5, intent_hash = ?6
@@ -234,9 +237,9 @@ fn write_outcome(
                     get_count,
                     updated_at,
                     task.id,
-                    valid.as_ref().map(|v| v.kind.as_str()),
-                    valid.as_ref().map(|v| v.line.as_str()),
-                    valid.as_ref().map(|v| v.hash.as_str()),
+                    stop.as_ref().map(|v| v.kind),
+                    stop.as_ref().map(|v| v.line.as_str()),
+                    stop.as_ref().map(|v| v.hash.as_str()),
                 ],
             )?;
         }
