@@ -1,26 +1,25 @@
-//! openbots desktop client, phase-1 shell.
+//! openbots desktop client.
 //!
 //! Left: groups. Right: the selected group's message stream. Events come from
-//! an [`EventSource`]; this build only wires the scripted [`FakeSource`].
+//! an [`EventSource`]: the live host by default, or the scripted fake with
+//! `--fake` / `OPENBOTS_FAKE=1`.
 
 mod model;
 mod source;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hive_card::Palette;
-use hive_contract::Group;
 use iced::widget::{button, column, container, row, scrollable, space, text};
-use iced::{Border, Color, Element, Fill, Font, Length, Subscription, Theme};
+use iced::{Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 use model::{attachment_label, DeliveryCard, Feed, Row, StatusCard};
-use source::{EventSource, FakeSource};
-
-const FAKE_TICK: Duration = Duration::from_millis(900);
+use source::{EventSource, FakeSource, GroupEvent, GroupTab, HttpSource, SourceError};
 
 pub fn main() -> iced::Result {
-    iced::application(App::new, App::update, App::view)
+    iced::application(App::boot, App::update, App::view)
         .title("openbots")
         .subscription(App::subscription)
         .theme(App::theme)
@@ -28,56 +27,137 @@ pub fn main() -> iced::Result {
         .run()
 }
 
+fn wants_fake() -> bool {
+    std::env::args().any(|a| a == "--fake")
+        || std::env::var("OPENBOTS_FAKE").is_ok_and(|v| v == "1")
+}
+
+type Shared = Arc<Mutex<Box<dyn EventSource>>>;
+
+#[derive(Debug, Clone)]
+struct Polled {
+    events: Vec<GroupEvent>,
+    has_more: bool,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     Select(String),
     Tick,
+    Loaded(Result<Vec<GroupTab>, SourceError>),
+    Polled(Result<Polled, SourceError>),
     TakeOver(String),
 }
 
 struct App {
-    source: Box<dyn EventSource>,
-    groups: Vec<Group>,
+    source: Shared,
+    origin: String,
+    interval: Duration,
+    groups: Vec<GroupTab>,
     feeds: HashMap<String, Feed>,
     selected: Option<String>,
+    loaded: bool,
+    in_flight: bool,
+    has_more: bool,
+    error: Option<String>,
+}
+
+/// Run a blocking source call off the UI thread.
+fn blocking<T: Send + 'static>(
+    source: &Shared,
+    f: impl FnOnce(&mut dyn EventSource) -> T + Send + 'static,
+) -> impl std::future::Future<Output = T> {
+    let source = source.clone();
+    async move {
+        tokio::task::spawn_blocking(move || {
+            let mut guard = source.lock().expect("event source lock poisoned");
+            f(guard.as_mut())
+        })
+        .await
+        .expect("event source task panicked")
+    }
 }
 
 impl App {
-    fn new() -> Self {
-        Self::with_source(Box::new(FakeSource::new()))
-    }
-
-    fn with_source(source: Box<dyn EventSource>) -> Self {
-        let groups = source.groups();
-        let selected = groups.first().map(|g| g.id.clone());
-        let mut app = Self {
-            source,
-            groups,
-            feeds: HashMap::new(),
-            selected,
+    fn boot() -> (Self, Task<Message>) {
+        let (source, origin): (Box<dyn EventSource>, String) = if wants_fake() {
+            (Box::new(FakeSource::new()), "假事件".into())
+        } else {
+            let http = HttpSource::from_env();
+            let origin = http.base().to_string();
+            (Box::new(http), origin)
         };
-        app.pull();
-        app
+        let interval = source.interval();
+        let app = Self {
+            source: Arc::new(Mutex::new(source)),
+            origin,
+            interval,
+            groups: Vec::new(),
+            feeds: HashMap::new(),
+            selected: None,
+            loaded: false,
+            in_flight: true,
+            has_more: true,
+            error: None,
+        };
+        let load = blocking(&app.source, |s| s.groups());
+        (app, Task::perform(load, Message::Loaded))
     }
 
-    fn pull(&mut self) {
-        for ge in self.source.poll() {
-            self.feeds.entry(ge.group_id).or_default().apply(&ge.event);
+    fn poll(&mut self) -> Task<Message> {
+        if self.in_flight || !self.loaded || !self.has_more {
+            return Task::none();
         }
+        self.in_flight = true;
+        let poll = blocking(&self.source, |s| {
+            s.poll().map(|events| Polled {
+                events,
+                has_more: s.has_more(),
+            })
+        });
+        Task::perform(poll, Message::Polled)
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Select(id) => self.selected = Some(id),
-            Message::Tick => self.pull(),
-            // Node 6 opens the private chat. For now this only logs.
+            Message::Tick => return self.poll(),
+            Message::Loaded(result) => {
+                self.in_flight = false;
+                match result {
+                    Ok(groups) => {
+                        self.selected = groups.first().map(|g| g.id.clone());
+                        self.groups = groups;
+                        self.loaded = true;
+                        self.error = None;
+                        return self.poll();
+                    }
+                    Err(err) => self.error = Some(err.0),
+                }
+            }
+            Message::Polled(result) => {
+                self.in_flight = false;
+                match result {
+                    Ok(polled) => {
+                        for ge in polled.events {
+                            self.feeds.entry(ge.group_id).or_default().apply(&ge.event);
+                        }
+                        self.has_more = polled.has_more;
+                        self.error = None;
+                    }
+                    // Keep what is on screen and try again next tick.
+                    Err(err) => self.error = Some(err.0),
+                }
+            }
+            // Opening the private chat is not wired yet; this only logs.
             Message::TakeOver(task_id) => eprintln!("去私聊接管: task {task_id} (not wired yet)"),
         }
+        Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        if self.source.has_more() {
-            iced::time::every(FAKE_TICK).map(|_| Message::Tick)
+        if self.loaded && self.has_more {
+            iced::time::every(self.interval).map(|_| Message::Tick)
         } else {
             Subscription::none()
         }
@@ -88,7 +168,12 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        row![self.group_list(), self.stream()].height(Fill).into()
+        let main = row![self.group_list(), self.stream()].height(Fill);
+        let footer = match &self.error {
+            Some(err) => text(err.as_str()).size(12),
+            None => text(self.origin.as_str()).size(12),
+        };
+        column![main, container(footer).padding([4, 10])].into()
     }
 
     fn group_list(&self) -> Element<'_, Message> {

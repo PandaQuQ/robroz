@@ -1,32 +1,14 @@
-//! Where events come from.
-//!
-//! This PR only ships [`FakeSource`]. The real source will poll
-//! `GET /api/groups/:id/events` on the host and implement the same trait;
-//! the app and [`crate::model::Feed`] do not change when it lands.
+//! Scripted events for offline runs (`--fake`) and unit tests. No network.
 
-use hive_contract::{Event, Group, MessageKind, TaskState};
+use std::time::Duration;
 
-/// One contract event tagged with the group it belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupEvent {
-    pub group_id: String,
-    pub event: Event,
-}
+use hive_contract::{Event, MessageKind, TaskState};
 
-pub trait EventSource {
-    /// Groups to show in the left column.
-    fn groups(&self) -> Vec<Group>;
-    /// Events since the last poll. Returning the full snapshot is also fine,
-    /// because `Feed::apply` is idempotent.
-    fn poll(&mut self) -> Vec<GroupEvent>;
-    /// False once a source knows nothing more will arrive. The fake source
-    /// uses this to stop ticking; a live source stays true.
-    fn has_more(&self) -> bool;
-}
+use super::{EventSource, GroupEvent, GroupTab, SourceError};
 
 /// Scripted events, released one step per `poll`. No network.
 pub struct FakeSource {
-    groups: Vec<Group>,
+    groups: Vec<GroupTab>,
     steps: Vec<Vec<GroupEvent>>,
     next: usize,
 }
@@ -134,30 +116,33 @@ impl Default for FakeSource {
 }
 
 impl EventSource for FakeSource {
-    fn groups(&self) -> Vec<Group> {
-        self.groups.clone()
+    fn groups(&mut self) -> Result<Vec<GroupTab>, SourceError> {
+        Ok(self.groups.clone())
     }
 
-    fn poll(&mut self) -> Vec<GroupEvent> {
-        match self.steps.get(self.next) {
+    fn poll(&mut self) -> Result<Vec<GroupEvent>, SourceError> {
+        Ok(match self.steps.get(self.next) {
             Some(step) => {
                 self.next += 1;
                 step.clone()
             }
             None => Vec::new(),
-        }
+        })
     }
 
     fn has_more(&self) -> bool {
         self.next < self.steps.len()
     }
+
+    fn interval(&self) -> Duration {
+        Duration::from_millis(900)
+    }
 }
 
-fn group(id: &str, name: &str) -> Group {
-    Group {
+fn group(id: &str, name: &str) -> GroupTab {
+    GroupTab {
         id: id.into(),
         name: name.into(),
-        tenant_id: "local".into(),
     }
 }
 
@@ -224,18 +209,18 @@ mod tests {
         let mut source = FakeSource::new();
         let mut feeds: HashMap<String, Feed> = HashMap::new();
         while source.has_more() {
-            for ge in source.poll() {
+            for ge in source.poll().unwrap() {
                 feeds.entry(ge.group_id).or_default().apply(&ge.event);
             }
         }
-        assert!(source.poll().is_empty());
+        assert!(source.poll().unwrap().is_empty());
         feeds
     }
 
     #[test]
     fn fake_script_covers_every_case() {
-        let source = FakeSource::new();
-        assert_eq!(source.groups().len(), 2);
+        let mut source = FakeSource::new();
+        assert_eq!(source.groups().unwrap().len(), 2);
         let feeds = drain();
         let site: Vec<_> = feeds[SITE].rows().cloned().collect();
         let ops: Vec<_> = feeds[OPS].rows().cloned().collect();

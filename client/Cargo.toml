@@ -7,3 +7,13 @@ edition = "2021"
 hive-contract = { path = "../crates/hive-contract" }
 hive-card = { path = "../crates/hive-card" }
 iced = { version = "0.14.0", features = ["tokio"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+# Plain HTTP to the local host only; no TLS stack, so no extra system deps.
+ureq = { version = "3", default-features = false }
+
+[dev-dependencies]
+openbots-host = { path = "../host" }
+axum = "0.8"
+serde = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }

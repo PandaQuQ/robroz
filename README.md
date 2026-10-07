@@ -56,17 +56,20 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 定时任务的状态卡和普通任务一样。成功完成时 delivery 的 `briefing` 为 true，路径仍是该群目录里的 `tasks/{taskId}/result.txt`；普通任务的 `briefing` 仍为 false。卡住、失败和 resume 的行为与节点 4 相同。
 
-## 客户端外壳（假事件）
+## 节点 6：客户端
 
 `client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡和交付卡。
 
 状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `hive-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `hive-card::briefing_badge`）。
 
-这一期只用假事件（`client/src/source.rs` 的 `FakeSource`），不连宿主机。事件来源藏在 `EventSource` trait 后面，之后换成轮询 `GET /api/groups/:id/events` 的实现，界面和 `Feed` 不用改。
+事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `hive-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。宿主机地址用 `OPENBOTS_HOST`，默认 `http://127.0.0.1:8790`。宿主机还没有列群接口，群用 `OPENBOTS_GROUPS` 指定，逗号分隔，每项是 `id` 或 `id=名字`。`--fake` 或 `OPENBOTS_FAKE=1` 改用离线的 `FakeSource`（单测也用它）。连不上时保留已显示的内容，下一秒再试。
 
 ```
-cargo run -p openbots-client
+OPENBOTS_GROUPS=<groupId>=官网 cargo run -p openbots-client
+cargo run -p openbots-client -- --fake
 cargo test -p openbots-client
 ```
+
+`cargo test -p openbots-client` 会在进程内起一份真实宿主机路由，用 `HttpSource` 读回来，不需要 Docker。
 
 Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行库；编译本身不需要额外的开发包。
