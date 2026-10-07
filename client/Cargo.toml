@@ -2,3 +2,8 @@
 name = "openbots-client"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+hive-contract = { path = "../crates/hive-contract" }
+hive-card = { path = "../crates/hive-card" }
+iced = { version = "0.14.0", features = ["tokio"] }

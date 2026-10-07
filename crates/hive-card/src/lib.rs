@@ -55,6 +55,35 @@ pub fn briefing_badge() -> &'static str {
     "简报"
 }
 
+/// sRGB fill and text colour for a card tone. Clients paint exactly these
+/// values and never pick their own colour for a task state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub fill: [u8; 3],
+    pub text: [u8; 3],
+}
+
+pub fn palette(tone: Tone) -> Palette {
+    match tone {
+        Tone::Gray => Palette {
+            fill: [0xE3, 0xE3, 0xE3],
+            text: [0x4A, 0x4A, 0x4A],
+        },
+        Tone::Ink => Palette {
+            fill: [0x1F, 0x23, 0x28],
+            text: [0xFF, 0xFF, 0xFF],
+        },
+        Tone::Green => Palette {
+            fill: [0x2E, 0x7D, 0x32],
+            text: [0xFF, 0xFF, 0xFF],
+        },
+        Tone::Amber => Palette {
+            fill: [0xF5, 0xB7, 0x00],
+            text: [0x1F, 0x23, 0x28],
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +130,21 @@ mod tests {
     #[test]
     fn briefing_badge_text() {
         assert_eq!(briefing_badge(), "简报");
+    }
+
+    #[test]
+    fn palette_per_tone_is_distinct() {
+        let tones = [Tone::Gray, Tone::Ink, Tone::Green, Tone::Amber];
+        for (i, a) in tones.iter().enumerate() {
+            for b in &tones[i + 1..] {
+                assert_ne!(palette(*a).fill, palette(*b).fill);
+            }
+            assert_ne!(palette(*a).fill, palette(*a).text);
+        }
+        // A dead run paints exactly like queued.
+        assert_eq!(
+            palette(appearance(TaskState::Running, false).tone),
+            palette(appearance(TaskState::Queued, false).tone)
+        );
     }
 }

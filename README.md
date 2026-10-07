@@ -46,3 +46,17 @@ GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outb
 
 `POST /api/tasks/:id/resume` 只接受 blocked：删掉 intent，状态回到 `queued`，`containerUp` false。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
+## 客户端外壳（假事件）
+
+`client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡和交付卡。
+
+状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `hive-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `hive-card::briefing_badge`）。
+
+这一期只用假事件（`client/src/source.rs` 的 `FakeSource`），不连宿主机。事件来源藏在 `EventSource` trait 后面，之后换成轮询 `GET /api/groups/:id/events` 的实现，界面和 `Feed` 不用改。
+
+```
+cargo run -p openbots-client
+cargo test -p openbots-client
+```
+
+Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行库；编译本身不需要额外的开发包。
