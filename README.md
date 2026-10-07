@@ -46,3 +46,13 @@ GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outb
 
 `POST /api/tasks/:id/resume` 只接受 blocked：删掉 intent，状态回到 `queued`，`containerUp` false。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
+## 节点 5：定时
+
+`POST /api/schedules`，请求体 `{"groupId","assigneeBotId","cron","prompt"}`，返回 201 `{"id","groupId","assigneeBotId","cron","prompt","nextRunAt","lastTaskId"}`，`lastTaskId` 第一次运行前是 `null`。群不存在返回 404「群不存在」，Bot 不在群里返回 400「这个 Bot 不在群里」，prompt 为空返回 400「请填写内容」，cron 不合法返回 400「cron 格式不对」。定时存在 SQLite，`tenant_id` 为 `local`。
+
+cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 日 月 周`）或 6 段（`秒 分 时 日 月 周`），不接受年份字段和 `@daily` 这类别名，也拒绝永远不会触发的表达式（比如 2 月 30 日）。容器里没有 cron。
+
+宿主机循环里 `tick(now)` 和 `pump` 一起跑。到点的定时会调用 `hive_policy::should_start_container`：上一次的任务还在排队，或者还在运行且 `containerUp` 为 true，就跳过这一次；否则新建一个普通的 `queued` 任务。两种情况都把 `nextRunAt` 推到严格晚于当前时间的下一次，错过的不补跑。`tick` 只建排队任务，不启动容器，容器只由 `pump` 启动。
+
+定时任务的状态卡和普通任务一样。成功完成时 delivery 的 `briefing` 为 true，路径仍是该群目录里的 `tasks/{taskId}/result.txt`；普通任务的 `briefing` 仍为 false。卡住、失败和 resume 的行为与节点 4 相同。
+

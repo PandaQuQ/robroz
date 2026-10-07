@@ -131,6 +131,28 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSchedule {
+    pub group_id: String,
+    pub assignee_bot_id: String,
+    pub cron: String,
+    pub prompt: String,
+}
+
+/// `lastTaskId` is always present and is `null` until the first run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Schedule {
+    pub id: String,
+    pub group_id: String,
+    pub assignee_bot_id: String,
+    pub cron: String,
+    pub prompt: String,
+    pub next_run_at: String,
+    pub last_task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
 }
@@ -252,6 +274,50 @@ mod tests {
                 "createdAt": "2026-10-03T19:00:02.000Z"
             }),
         );
+    }
+
+    #[test]
+    fn schedule_json() {
+        let request: CreateSchedule = serde_json::from_value(serde_json::json!({
+            "groupId": "g1",
+            "assigneeBotId": "bot-ada",
+            "cron": "0 9 * * *",
+            "prompt": "早报"
+        }))
+        .unwrap();
+        assert_eq!(request.group_id, "g1");
+        assert_eq!(request.assignee_bot_id, "bot-ada");
+
+        let schedule = Schedule {
+            id: "s1".into(),
+            group_id: "g1".into(),
+            assignee_bot_id: "bot-ada".into(),
+            cron: "0 9 * * *".into(),
+            prompt: "早报".into(),
+            next_run_at: "2026-10-08T09:00:00.000Z".into(),
+            last_task_id: None,
+        };
+        let value = serde_json::to_value(&schedule).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "s1",
+                "groupId": "g1",
+                "assigneeBotId": "bot-ada",
+                "cron": "0 9 * * *",
+                "prompt": "早报",
+                "nextRunAt": "2026-10-08T09:00:00.000Z",
+                "lastTaskId": null
+            })
+        );
+        let back: Schedule = serde_json::from_value(value).unwrap();
+        assert_eq!(back, schedule);
+
+        let ran = Schedule {
+            last_task_id: Some("t1".into()),
+            ..schedule
+        };
+        assert_eq!(serde_json::to_value(&ran).unwrap()["lastTaskId"], "t1");
     }
 
     #[test]
