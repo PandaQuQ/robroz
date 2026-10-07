@@ -22,12 +22,15 @@ pub enum ContainerPhase {
     Missing,
 }
 
+/// What `docker run` needs. The prompt is not here: the host writes it to
+/// `tasks/{taskId}/prompt.txt` in the group volume before starting.
 pub struct RunRequest<'a> {
     pub name: &'a str,
     pub image: &'a str,
     pub group_dir: &'a Path,
+    /// This task's control dir. Mounted read-only at `/control`.
+    pub control_dir: &'a Path,
     pub task_id: &'a str,
-    pub prompt: &'a str,
 }
 
 pub trait Sandbox {
@@ -80,17 +83,50 @@ impl CommandExec for RecordingExec {
 
 pub struct DockerSandbox {
     exec: Box<dyn CommandExec>,
+    /// `--user` value. None means docker's default (the image's USER).
+    user: Option<String>,
 }
 
 impl DockerSandbox {
+    /// Containers run as `OPENBOTS_CONTAINER_USER` if set, else the host
+    /// process's uid:gid (unix only), so volume files stay owned by the host user.
     pub fn new() -> Self {
-        Self { exec: Box::new(SystemExec) }
+        Self {
+            exec: Box::new(SystemExec),
+            user: container_user(std::env::var("OPENBOTS_CONTAINER_USER").ok()),
+        }
     }
 
     #[cfg(test)]
-    fn with_exec(exec: Box<dyn CommandExec>) -> Self {
-        Self { exec }
+    fn with_exec(exec: Box<dyn CommandExec>, user: Option<String>) -> Self {
+        Self { exec, user }
     }
+}
+
+impl Default for DockerSandbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Explicit override wins; empty override falls back to the host user.
+fn container_user(env_override: Option<String>) -> Option<String> {
+    env_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(host_user)
+}
+
+#[cfg(unix)]
+fn host_user() -> Option<String> {
+    // SAFETY: getuid/getgid have no preconditions and cannot fail.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    Some(format!("{uid}:{gid}"))
+}
+
+#[cfg(not(unix))]
+fn host_user() -> Option<String> {
+    None
 }
 
 pub fn container_name(task_id: &str) -> String {
@@ -101,23 +137,30 @@ pub fn result_rel(task_id: &str) -> String {
     format!("tasks/{task_id}/result.txt")
 }
 
-fn run_argv(req: &RunRequest<'_>) -> Vec<String> {
-    vec![
+fn run_argv(req: &RunRequest<'_>, user: Option<&str>) -> Vec<String> {
+    let mut argv: Vec<String> = vec![
         "docker".into(),
         "run".into(),
         "-d".into(),
         "--name".into(),
         req.name.to_string(),
+    ];
+    if let Some(user) = user {
+        argv.push("--user".into());
+        argv.push(user.to_string());
+    }
+    argv.extend([
         "--network".into(),
         "none".into(),
         "-v".into(),
         format!("{}:/workspace", req.group_dir.display()),
+        "-v".into(),
+        format!("{}:/control:ro", req.control_dir.display()),
         "-e".into(),
         format!("OPENBOTS_TASK_ID={}", req.task_id),
-        "-e".into(),
-        format!("OPENBOTS_PROMPT={}", req.prompt),
         req.image.to_string(),
-    ]
+    ]);
+    argv
 }
 
 fn inspect_argv(name: &str) -> Vec<String> {
@@ -136,7 +179,7 @@ fn rm_argv(name: &str) -> Vec<String> {
 
 impl Sandbox for DockerSandbox {
     fn start(&mut self, req: &RunRequest<'_>) -> Result<(), SandboxError> {
-        let args = run_argv(req);
+        let args = run_argv(req, self.user.as_deref());
         let output = self.exec.exec(&args).map_err(|err| SandboxError::new(err.to_string()))?;
         if output.code != 0 {
             return Err(SandboxError::new(format!("docker run exited {}", output.code)));
@@ -178,7 +221,9 @@ impl Sandbox for DockerSandbox {
 pub(crate) struct FakeContainer {
     pub name: String,
     pub group_dir: std::path::PathBuf,
+    pub control_dir: std::path::PathBuf,
     pub task_id: String,
+    /// Read from `prompt.txt` at start, for assertions.
     pub prompt: String,
     pub phase: ContainerPhase,
 }
@@ -202,7 +247,7 @@ impl FakeSandbox {
         self.containers.iter().map(|c| c.name.clone()).collect()
     }
 
-    /// Run the shared runner logic, then mark the container exited.
+    /// Run the shared runner entry (same as the container), then mark exited.
     pub(crate) fn finish(&mut self, code: i32) {
         self.finish_inner(code, true);
     }
@@ -215,8 +260,8 @@ impl FakeSandbox {
     fn finish_inner(&mut self, code: i32, apply: bool) {
         for container in &mut self.containers {
             if apply && container.phase == ContainerPhase::Running {
-                hive_runner::apply_prompt(&container.group_dir, &container.task_id, &container.prompt)
-                    .expect("apply prompt");
+                hive_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
+                    .expect("runner");
             }
             container.phase = ContainerPhase::Exited { code };
         }
@@ -229,11 +274,15 @@ impl Sandbox for FakeSandbox {
         if self.fail_start {
             return Err(SandboxError::new("fake start failed"));
         }
+        let prompt = std::fs::read_to_string(hive_runner::prompt_path(req.group_dir, req.task_id))
+            .map_err(|err| SandboxError::new(format!("prompt.txt missing: {err}")))?;
+        assert!(req.control_dir.is_dir(), "control dir exists before start");
         self.containers.push(FakeContainer {
             name: req.name.to_string(),
             group_dir: req.group_dir.to_path_buf(),
+            control_dir: req.control_dir.to_path_buf(),
             task_id: req.task_id.to_string(),
-            prompt: req.prompt.to_string(),
+            prompt,
             phase: ContainerPhase::Running,
         });
         Ok(())
@@ -258,34 +307,84 @@ impl Sandbox for FakeSandbox {
 mod tests {
     use super::*;
 
-    #[test]
-    fn docker_run_argv_mounts_workspace_without_socket() {
+    fn recorded_run(user: Option<String>) -> Vec<String> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut sandbox = DockerSandbox::with_exec(Box::new(RecordingExec {
-            calls: calls.clone(),
-            code: 0,
-            stdout: String::new(),
-        }));
-        let dir = Path::new("/var/openbots/groups/group-1");
+        let mut sandbox = DockerSandbox::with_exec(
+            Box::new(RecordingExec {
+                calls: calls.clone(),
+                code: 0,
+                stdout: String::new(),
+            }),
+            user,
+        );
         sandbox
             .start(&RunRequest {
                 name: "openbots-task-1",
                 image: "openbots-runner:local",
-                group_dir: dir,
+                group_dir: Path::new("/var/openbots/groups/group-1"),
+                control_dir: Path::new("/var/openbots/control/task-1"),
                 task_id: "task-1",
-                prompt: "画一张草图",
             })
             .unwrap();
-
         let argv = calls.lock().unwrap()[0].clone();
+        argv
+    }
+
+    #[test]
+    fn docker_run_argv_mounts_workspace_without_socket() {
+        let argv = recorded_run(Some("1000:1000".into()));
         assert_eq!(argv[0], "docker");
         assert!(argv.windows(2).any(|pair| pair == ["--network", "none"]));
-        assert!(argv.iter().any(|arg| arg.ends_with(":/workspace")));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["-v", "/var/openbots/groups/group-1:/workspace"]));
         assert!(argv.iter().all(|arg| !arg.contains("docker.sock")));
         assert!(!argv.iter().any(|arg| arg == "host" || arg == "--network=host"));
         assert!(argv.windows(2).any(|pair| pair == ["--name", "openbots-task-1"]));
         assert!(argv.iter().any(|arg| arg == "OPENBOTS_TASK_ID=task-1"));
-        assert!(argv.iter().any(|arg| arg == "OPENBOTS_PROMPT=画一张草图"));
         assert_eq!(argv.last().map(String::as_str), Some("openbots-runner:local"));
+    }
+
+    #[test]
+    fn docker_run_argv_sets_user_control_ro_and_no_prompt_env() {
+        let argv = recorded_run(Some("1000:1000".into()));
+        assert!(argv.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["-v", "/var/openbots/control/task-1:/control:ro"]));
+        // Only the task's own control dir, and only read-only.
+        let control_mounts: Vec<&String> = argv.iter().filter(|arg| arg.contains(":/control")).collect();
+        assert_eq!(control_mounts.len(), 1);
+        assert!(!argv.iter().any(|arg| arg.contains("OPENBOTS_PROMPT")));
+        let envs: Vec<&String> = argv
+            .windows(2)
+            .filter(|pair| pair[0] == "-e")
+            .map(|pair| &pair[1])
+            .collect();
+        assert_eq!(envs, [&"OPENBOTS_TASK_ID=task-1".to_string()]);
+        // --user comes before the image, so docker treats it as an option.
+        let user_at = argv.iter().position(|arg| arg == "--user").unwrap();
+        assert!(user_at < argv.len() - 1);
+    }
+
+    #[test]
+    fn docker_run_argv_omits_user_when_unset() {
+        let argv = recorded_run(None);
+        assert!(!argv.iter().any(|arg| arg == "--user"));
+    }
+
+    #[test]
+    fn container_user_prefers_override_then_host() {
+        assert_eq!(container_user(Some(" 1234:5678 ".into())), Some("1234:5678".into()));
+        #[cfg(unix)]
+        {
+            let host = container_user(None).expect("unix host user");
+            let mut parts = host.split(':');
+            assert!(parts.next().unwrap().parse::<u32>().is_ok());
+            assert!(parts.next().unwrap().parse::<u32>().is_ok());
+            assert_eq!(container_user(Some("  ".into())), Some(host));
+        }
+        #[cfg(not(unix))]
+        assert_eq!(container_user(None), None);
     }
 }

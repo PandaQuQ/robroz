@@ -2,7 +2,20 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use openbots_host::{DockerSandbox, Host};
+use openbots_host::{DockerSandbox, Host, DEFAULT_CONTROL_ROOT};
+
+/// Containers can write anywhere in the group volumes, so takeover markers must
+/// live outside them.
+fn ensure_control_outside_volumes(control: &std::path::Path, volumes: &std::path::Path) {
+    for dir in [control, volumes] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|err| panic!("无法创建 {}: {err}", dir.display()));
+    }
+    let control = std::fs::canonicalize(control).expect("OPENBOTS_CONTROL 无法解析");
+    let volumes = std::fs::canonicalize(volumes).expect("OPENBOTS_VOLUMES 无法解析");
+    if control.starts_with(&volumes) || volumes.starts_with(&control) {
+        panic!("OPENBOTS_CONTROL 必须在 OPENBOTS_VOLUMES 外面");
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -16,27 +29,38 @@ async fn main() {
     let volumes = std::env::var("OPENBOTS_VOLUMES")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./data/groups"));
+    let control = std::env::var("OPENBOTS_CONTROL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_CONTROL_ROOT));
+    ensure_control_outside_volumes(&control, &volumes);
     let image = std::env::var("OPENBOTS_IMAGE").unwrap_or_else(|_| "openbots-runner:local".to_string());
 
-    let host = Host::open(&db_path, volumes, image).unwrap_or_else(|err| {
-        panic!("无法打开数据库 {}: {err}", db_path.display());
-    });
+    let host = Host::open(&db_path, volumes, image)
+        .unwrap_or_else(|err| {
+            panic!("无法打开数据库 {}: {err}", db_path.display());
+        })
+        .with_control_root(control);
     let app = host.router();
     let pumping = host.clone();
 
-    tokio::spawn(async move {
-        let mut sandbox = DockerSandbox::new();
-        loop {
-            // Schedules only create queued tasks; pump is what starts containers.
-            if let Err(err) = pumping.tick_once(chrono::Utc::now()) {
-                eprintln!("tick: {err}");
+    // Docker CLI calls block, so the loop runs on its own OS thread, not on a
+    // tokio worker. pump only takes the DB lock for SQL, so HTTP keeps serving.
+    std::thread::Builder::new()
+        .name("openbots-pump".into())
+        .spawn(move || {
+            let mut sandbox = DockerSandbox::new();
+            loop {
+                // Schedules only create queued tasks; pump is what starts containers.
+                if let Err(err) = pumping.tick_once(chrono::Utc::now()) {
+                    eprintln!("tick: {err}");
+                }
+                if let Err(err) = pumping.pump_once(&mut sandbox) {
+                    eprintln!("pump: {err}");
+                }
+                std::thread::sleep(Duration::from_secs(1));
             }
-            if let Err(err) = pumping.pump_once(&mut sandbox) {
-                eprintln!("pump: {err}");
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    });
+        })
+        .expect("无法启动 pump 线程");
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
