@@ -18,11 +18,14 @@ mod pump;
 mod sandbox;
 mod schedule;
 
-pub use pump::pump;
+pub use pump::{pump, pump_with, Db, PumpConfig};
 pub use schedule::{tick, TickReport};
 pub use sandbox::DockerSandbox;
 
 use sandbox::Sandbox;
+
+/// Default root for per-task control dirs, outside the group volumes.
+pub const DEFAULT_CONTROL_ROOT: &str = "./data/control";
 
 const TENANT_ID: &str = "local";
 
@@ -30,6 +33,7 @@ const TENANT_ID: &str = "local";
 pub struct Host {
     db: Arc<Mutex<Connection>>,
     volumes_root: std::path::PathBuf,
+    control_root: std::path::PathBuf,
     image: String,
     get_limit: u64,
 }
@@ -46,20 +50,41 @@ impl Host {
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             volumes_root: volumes_root.into(),
+            control_root: std::path::PathBuf::from(DEFAULT_CONTROL_ROOT),
             image: image.into(),
             get_limit: get_limit_from_env(),
         })
     }
 
-    pub fn router(&self) -> Router {
-        router_from(self.db.clone(), self.volumes_root.clone())
+    /// Root for per-task control dirs (`{root}/{taskId}/takeover`). Only the host
+    /// writes there; containers get their own task dir read-only at `/control`.
+    pub fn with_control_root(mut self, control_root: impl Into<std::path::PathBuf>) -> Self {
+        self.control_root = control_root.into();
+        self
     }
 
-    /// One pass over queued and running tasks. The binary calls this in a loop.
+    pub fn router(&self) -> Router {
+        router_from(AppState {
+            db: self.db.clone(),
+            volumes_root: self.volumes_root.clone(),
+            control_root: self.control_root.clone(),
+        })
+    }
+
+    /// One pass over queued and running tasks. The binary calls this in a loop on
+    /// its own thread. The DB lock is only held for SQL, never across docker calls.
     /// Tests call [`pump`] directly and do not start that loop.
     pub fn pump_once(&self, sandbox: &mut dyn Sandbox) -> rusqlite::Result<()> {
-        let conn = self.db.lock().expect("sqlite connection lock poisoned");
-        pump(&conn, sandbox, &self.volumes_root, &self.image, self.get_limit)
+        pump_with(
+            &*self.db,
+            sandbox,
+            &PumpConfig {
+                volumes_root: &self.volumes_root,
+                control_root: &self.control_root,
+                image: &self.image,
+                get_limit: self.get_limit,
+            },
+        )
     }
 
     /// One scheduler pass at `now`. Only creates queued tasks; pump starts containers.
@@ -80,6 +105,7 @@ fn get_limit_from_env() -> u64 {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     volumes_root: std::path::PathBuf,
+    control_root: std::path::PathBuf,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
@@ -90,7 +116,7 @@ pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
     Ok(host.router())
 }
 
-fn router_from(db: Arc<Mutex<Connection>>, volumes_root: std::path::PathBuf) -> Router {
+fn router_from(state: AppState) -> Router {
     Router::new()
         .route("/api/groups", post(create_group))
         .route("/api/groups/{id}/members", post(add_member))
@@ -99,7 +125,7 @@ fn router_from(db: Arc<Mutex<Connection>>, volumes_root: std::path::PathBuf) -> 
         .route("/api/groups/{id}/events", get(list_events))
         .route("/api/tasks/{id}/resume", post(resume_task))
         .route("/api/schedules", post(create_schedule))
-        .with_state(AppState { db, volumes_root })
+        .with_state(state)
 }
 
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -416,17 +442,19 @@ async fn create_task(
     }
 }
 
-fn strip_blocking_actions(prompt: &str) -> String {
-    prompt
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            trimmed != "hive-action:external" && trimmed != "hive-action:captcha"
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+const RESUME_FAILED: &str = "恢复失败，无法清理卡住记录";
 
+/// Resume a blocked task.
+///
+/// 1. Remove `tasks/{id}/intent` from the group volume. Missing is fine; any
+///    other error is 500 and the task stays blocked with no marker written.
+/// 2. If the intent names a blocking line from the stored prompt, append its
+///    sha256 to `{control_root}/{id}/takeover`. Only the host writes there.
+/// 3. Set the task back to queued. The next pump starts a container that mounts
+///    the control dir read-only and skips exactly that line.
+///
+/// The DB lock is held throughout so two resumes can't race; this is only
+/// small local file work, never docker.
 async fn resume_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
@@ -453,20 +481,43 @@ async fn resume_task(
     if task_state != TaskState::Blocked.as_str() {
         return error_response(StatusCode::CONFLICT, "这次不能恢复");
     }
-    let prompt = strip_blocking_actions(&prompt);
+
+    let group_dir = pump::group_volume(&state.volumes_root, &group_id);
+    let intent_path = hive_runner::intent_path(&group_dir, &task_id);
+    let intent_text = std::fs::read_to_string(&intent_path).ok();
+    match std::fs::remove_file(&intent_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            eprintln!("resume {task_id}: remove {}: {err}", intent_path.display());
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, RESUME_FAILED);
+        }
+    }
+
+    if let Some(hash) = intent_text
+        .as_deref()
+        .and_then(|text| hive_runner::takeover_hash(&prompt, text))
+    {
+        let control_dir = state.control_root.join(&task_id);
+        if let Err(err) = hive_runner::append_takeover(&control_dir, &hash) {
+            eprintln!("resume {task_id}: write takeover in {}: {err}", control_dir.display());
+            // Put the intent back so a retry can still approve the same line.
+            if let Some(text) = intent_text.as_deref() {
+                let _ = std::fs::write(&intent_path, text);
+            }
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, RESUME_FAILED);
+        }
+    }
+
     let updated_at = now_rfc3339();
     if let Err(err) = conn.execute(
-        "UPDATE tasks SET state = 'queued', container_up = 0, prompt = ?1, updated_at = ?2 WHERE id = ?3",
-        params![prompt, updated_at, task_id],
+        "UPDATE tasks SET state = 'queued', container_up = 0, updated_at = ?1
+         WHERE id = ?2 AND state = 'blocked'",
+        params![updated_at, task_id],
     ) {
         return db_error(err);
     }
     drop(conn);
-    let raw = state.volumes_root.join(&group_id);
-    let _ = std::fs::remove_file(raw.join("tasks").join(&task_id).join("intent"));
-    if let Ok(canon) = std::fs::canonicalize(&raw) {
-        let _ = std::fs::remove_file(canon.join("tasks").join(&task_id).join("intent"));
-    }
     (
         StatusCode::OK,
         Json(serde_json::json!({ "id": task_id, "state": "queued" })),
@@ -1058,16 +1109,22 @@ mod tests {
     fn pump_db_limit(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, limit: u64) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        super::pump(&conn, sandbox, volumes, "openbots-runner:local", limit).unwrap();
+        super::pump(&conn, sandbox, volumes, &control_of(volumes), "openbots-runner:local", limit).unwrap();
     }
 
     fn post_empty(uri: &str) -> Request<Body> {
         Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap()
     }
 
+    /// Control root next to (never inside) the test volumes root.
+    fn control_of(volumes: &Path) -> PathBuf {
+        volumes.with_extension("control")
+    }
+
     fn app_on(db: &Path, volumes: &Path) -> Router {
         super::Host::open(db, volumes, "openbots-runner:local")
             .unwrap()
+            .with_control_root(control_of(volumes))
             .router()
     }
 
@@ -1387,7 +1444,8 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         fake.finish(0);
         let group_dir = fake.containers[0].group_dir.clone();
-        assert_eq!(std::fs::read(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap(), b"external");
+        let intent = std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap();
+        assert_eq!(intent.lines().next(), Some("external"));
         assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
@@ -1791,5 +1849,254 @@ mod tests {
         assert_eq!(delivered[0]["briefing"], true);
         assert_eq!(delivered[0]["path"], format!("tasks/{task_id}/result.txt"));
         assert!(group_dir.join(format!("tasks/{task_id}/result.txt")).is_file());
+    }
+
+    // ---- sandbox user / prompt file / takeover marker ----
+
+    async fn resume(app: &Router, task_id: &str) -> (StatusCode, Value) {
+        read_json(call(app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await
+    }
+
+    fn takeover_file(volumes: &Path, task_id: &str) -> PathBuf {
+        control_of(volumes).join(task_id).join("takeover")
+    }
+
+    /// Pump, let the fake container run the real runner, pump again.
+    fn run_once(db: &Path, volumes: &Path, fake: &mut super::sandbox::FakeSandbox) -> PathBuf {
+        pump_db(db, volumes, fake);
+        let group_dir = fake.containers.last().expect("container started").group_dir.clone();
+        fake.finish(0);
+        pump_db(db, volumes, fake);
+        assert!(fake.names().is_empty());
+        group_dir
+    }
+
+    #[tokio::test]
+    async fn pump_writes_prompt_file_and_control_dir_before_start() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, task_id) = seed_task(&app, "提示词文件", "第一行\n第二行").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let container = &fake.containers[0];
+        assert_eq!(container.prompt, "第一行\n第二行");
+        let file = container.group_dir.join(format!("tasks/{task_id}/prompt.txt"));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "第一行\n第二行");
+        assert_eq!(
+            container.control_dir,
+            std::fs::canonicalize(control_of(&volumes).join(&task_id)).unwrap()
+        );
+        assert!(!container.control_dir.starts_with(&container.group_dir));
+        assert!(!container.control_dir.starts_with(std::fs::canonicalize(&volumes).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn resume_writes_marker_with_line_hash_and_reaches_done() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "接管", "hive-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert!(!takeover_file(&volumes, &task_id).exists(), "no marker before resume");
+
+        let (status, body) = resume(&app, &task_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(),
+            format!("{}\n", hive_runner::action_hash("hive-action:external"))
+        );
+        assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
+        assert!(!group_dir.join(format!("tasks/{task_id}/takeover")).exists());
+
+        run_once(&path, &volumes, &mut fake);
+        let done = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&done).len(), 1, "same card");
+        assert_eq!(statuses(&done)[0]["state"], "done");
+        assert_eq!(deliveries(&done).len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            "正文"
+        );
+    }
+
+    #[tokio::test]
+    async fn forged_marker_in_volume_does_not_skip() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "伪造", "hive-action:external\n正文").await;
+        // What a bot in the group volume could write for itself.
+        let task_dir = volumes.join(&group_id).join("tasks").join(&task_id);
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let hash = hive_runner::action_hash("hive-action:external");
+        std::fs::write(task_dir.join("takeover"), format!("{hash}\n")).unwrap();
+        std::fs::write(volumes.join(&group_id).join("takeover"), format!("{hash}\n")).unwrap();
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "blocked");
+        assert_eq!(statuses(&events)[0]["label"], "卡住");
+        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        assert!(deliveries(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn marker_skips_only_its_line_second_action_still_blocks() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let (group_id, task_id) = seed_task(&app, "两步", prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "blocked", "captcha was not taken over yet");
+        let intent = std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap();
+        assert_eq!(intent.lines().next(), Some("captcha"));
+        assert!(deliveries(&events).is_empty());
+
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        let marker = std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap();
+        assert_eq!(
+            marker,
+            format!(
+                "{}\n{}\n",
+                hive_runner::action_hash("hive-action:external"),
+                hive_runner::action_hash("hive-action:captcha")
+            )
+        );
+        run_once(&path, &volumes, &mut fake);
+        let done = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&done).len(), 1);
+        assert_eq!(statuses(&done)[0]["state"], "done");
+        assert_eq!(deliveries(&done).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn resume_failure_is_500_stays_blocked_without_marker() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "删不掉", "hive-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        let blocked = statuses(&events_of(&app, &group_id).await)[0].clone();
+        assert_eq!(blocked["state"], "blocked");
+
+        // An intent that can't be removed with remove_file, without needing root.
+        let intent = group_dir.join(format!("tasks/{task_id}/intent"));
+        std::fs::remove_file(&intent).unwrap();
+        std::fs::create_dir_all(intent.join("stuck")).unwrap();
+        std::fs::write(intent.join("stuck/file"), "x").unwrap();
+
+        let (status, body) = resume(&app, &task_id).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body, json!({ "error": "恢复失败，无法清理卡住记录" }));
+        let after = statuses(&events_of(&app, &group_id).await)[0].clone();
+        assert_eq!(after, blocked, "state and updatedAt unchanged");
+        assert!(!takeover_file(&volumes, &task_id).exists(), "no marker written");
+        assert!(intent.is_dir());
+
+        // Nothing queued: pump starts no container.
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_without_intent_file_still_queues() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "没意图", "hive-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        std::fs::remove_file(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap();
+        let (status, body) = resume(&app, &task_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "id": task_id, "state": "queued" }));
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "queued");
+        assert!(!takeover_file(&volumes, &task_id).exists());
+    }
+
+    #[tokio::test]
+    async fn forged_intent_line_not_in_prompt_writes_no_marker() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, task_id) = seed_task(&app, "改意图", "hive-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        // The bot rewrites intent to get a different line approved.
+        std::fs::write(
+            group_dir.join(format!("tasks/{task_id}/intent")),
+            hive_runner::format_intent("captcha", "hive-action:captcha"),
+        )
+        .unwrap();
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        assert!(!takeover_file(&volumes, &task_id).exists());
+    }
+
+    /// Wraps the fake and records whether the DB lock was free during each docker call.
+    struct LockProbe {
+        db: std::sync::Arc<std::sync::Mutex<Connection>>,
+        inner: super::sandbox::FakeSandbox,
+        calls: usize,
+        locked: usize,
+    }
+
+    impl LockProbe {
+        fn check(&mut self) {
+            self.calls += 1;
+            if self.db.try_lock().is_err() {
+                self.locked += 1;
+            }
+        }
+    }
+
+    impl super::Sandbox for LockProbe {
+        fn start(&mut self, req: &super::sandbox::RunRequest<'_>) -> Result<(), super::sandbox::SandboxError> {
+            self.check();
+            self.inner.start(req)
+        }
+        fn phase(&mut self, name: &str) -> Result<super::sandbox::ContainerPhase, super::sandbox::SandboxError> {
+            self.check();
+            self.inner.phase(name)
+        }
+        fn remove(&mut self, name: &str) -> Result<(), super::sandbox::SandboxError> {
+            self.check();
+            self.inner.remove(name)
+        }
+    }
+
+    #[tokio::test]
+    async fn pump_once_does_not_hold_db_lock_during_docker_calls() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let host = super::Host::open(&path, &volumes, "openbots-runner:local")
+            .unwrap()
+            .with_control_root(control_of(&volumes));
+        let app = host.router();
+        let (group_id, _) = seed_task(&app, "锁", "画一张草图").await;
+        let mut probe = LockProbe {
+            db: host.db.clone(),
+            inner: super::sandbox::FakeSandbox::new(),
+            calls: 0,
+            locked: 0,
+        };
+        host.pump_once(&mut probe).unwrap();
+        probe.inner.finish(0);
+        host.pump_once(&mut probe).unwrap();
+        assert!(probe.calls >= 3, "start, inspect, remove");
+        assert_eq!(probe.locked, 0, "DB lock held during a docker call");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 }
