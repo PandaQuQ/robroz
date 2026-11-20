@@ -70,7 +70,7 @@ CI 只编译 `robroz-runner`，不构建镜像，测试也不需要 Docker daemo
 权限分三级，都在 `robroz-policy::tier`：
 - 放行（`Allow`）：工作区读写，不通知人，成功时把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
 - 计数（`Metered`）：出网只允许 GET，次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz-policy::meter` 按任务计数，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8（用满上限仍算正常）。超限或非 GET：删掉容器，任务以 `done` 结束，带 `failure`「出网超额：已用 N 次，上限 M」或「出网只允许 GET：用了 POST」，不发 delivery，也不改成 blocked。
-- 接管（`Takeover`）：`robroz-action:external` 和 `robroz-action:captcha`，不代填凭据，删掉容器，变成 blocked /「卡住」（external 另发审批卡），人到私聊接管，`POST /api/tasks/:id/resume` 恢复时挂回原来的群目录。
+- 接管（`Takeover`）：`robroz-action:external` 和 `robroz-action:captcha`，不代填凭据，删掉容器，变成 blocked /「卡住」（external 另发审批卡，状态卡 `waitingFor` 为 `approval`；captcha 为 `takeover`，见「等什么（`waitingFor`）」），人到私聊接管，`POST /api/tasks/:id/resume` 恢复时挂回原来的群目录。
 
 `POST /api/tasks/:id/resume` 只接受 blocked：任务不存在返回 404「任务不存在」，不是 blocked 返回 409「这次不能恢复」。成功返回 200 `{"id","state":"queued"}`：按库里存的卡住记录写接管标记，清掉这条记录，状态回到 `queued`，`containerUp` false。resume 不读群目录。库里没有这条卡住记录（比如宿主机存这条记录之前就卡住的旧任务）返回 500 `{"error":"恢复失败，找不到卡住记录"}`；写接管标记失败返回 500 `{"error":"恢复失败，无法写入接管标记"}`。这两种情况任务都留在 `blocked`，状态和 `updatedAt` 都不变，也不写标记。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
@@ -172,6 +172,15 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - 状态卡只在 `done` 时带 `failure`。任务再次开跑时会清掉它，不会沿用上一次的。
 - 客户端只要看到 `failure`，就把卡显示成灰色的「没做成：原因」，不显示绿色的完成，也没有按钮。
 
+## 等什么（`waitingFor`）
+
+状态卡有一个冻结后新增的可选字段 `waitingFor`，说明卡住的任务在等人做什么。不改冻住的字段和任务状态，旧 JSON 照样能解析。
+
+- 只在 `blocked` 时带，其他状态都不带这个键。
+- `approval`：这个任务有一张还没回答、而且对应它当前卡住那一行的审批卡（`robroz-action:external`）。去回答审批卡就行，同意后任务重新排队，拒绝后变成带 `failure` 的 `done`。
+- `takeover`：没有这样的审批卡，比如验证码（`robroz-action:captcha`），得有人去私聊接管，再 `POST /api/tasks/:id/resume`。
+- 同一个任务始终只有一张状态卡，按 `taskId` 原地更新。`waitingFor` 只改这张卡怎么显示，不另出卡。
+
 ## 进度（`progress`）
 
 状态卡有一个冻结后新增的可选字段 `progress`：bro 正在干什么，原地更新在同一张状态卡上，不新增卡片类型，也不发消息。
@@ -253,7 +262,7 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 - `ROBROZ_CONTROL`：任务控制目录根（每个任务的 `prompt.txt` 和接管标记 `takeover`），默认 `./data/control`。必须在 `ROBROZ_VOLUMES` 外面，否则宿主机拒绝启动
 - `ROBROZ_IMAGE`：runner 镜像，默认 `robroz-runner:local`
 - `ROBROZ_CONTAINER_USER`：容器的 `--user`，默认宿主机进程的 `uid:gid`
-- `ROBROZ_GET_LIMIT`：每个任务的 GET 上限，默认 8
+- `ROBROZ_GET_LIMIT`：每个任务允许的出网 GET 次数，默认 8。用满 8 次仍算正常，第 9 次任务以 `done` 结束并带 `failure`「出网超额：已用 9 次，上限 8」
 - `ROBROZ_MODEL_BASE_URL`：OpenAI 兼容服务的地址，比如 `https://api.openai.com/v1`，要以 `http://` 或 `https://` 开头。设了密钥就必须设
 - `ROBROZ_MODEL`：模型名，比如 `gpt-4o-mini`。设了密钥就必须设
 - `ROBROZ_MODEL_KEY`：模型密钥。不设就不接模型，bro 原样回显
