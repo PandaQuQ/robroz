@@ -141,7 +141,17 @@ impl ApprovalCard {
     /// Build from the `approval` event. Returns `None` for any other event.
     /// The host has no "answered by" field yet, so an answer reads as 「我」.
     pub fn from_event(event: &Event) -> Option<Self> {
-        let Event::Approval { id, bot_name, action, summary, path, decision, answered_at, .. } = event else {
+        let Event::Approval {
+            id,
+            bot_name,
+            action,
+            summary,
+            path,
+            decision,
+            answered_at,
+            ..
+        } = event
+        else {
             return None;
         };
         let at = answered_at
@@ -159,7 +169,14 @@ impl ApprovalCard {
             ApprovalAction::Send => ActionKind::Send,
             ApprovalAction::Spend => ActionKind::Spend,
         };
-        Some(Self { id: id.clone(), bot: bot_name.clone(), kind, summary: summary.clone(), path: path.clone(), state })
+        Some(Self {
+            id: id.clone(),
+            bot: bot_name.clone(),
+            kind,
+            summary: summary.clone(),
+            path: path.clone(),
+            state,
+        })
     }
 }
 
