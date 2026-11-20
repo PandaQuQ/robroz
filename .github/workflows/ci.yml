@@ -1,8 +1,14 @@
 name: CI
 
+# Save Actions minutes: PRs run Linux only; macOS and Windows run after
+# merging to main and once a day. Pushes to PR branches don't double-run.
 on:
   push:
+    branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
 
 jobs:
   host:
@@ -17,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
