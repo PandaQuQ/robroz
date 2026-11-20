@@ -802,8 +802,9 @@ mod tests {
         path
     }
 
+    /// Volumes and control dirs go to temp, never `./data` in the repo.
     fn test_app(path: &Path) -> Router {
-        super::router(path).expect("open test database")
+        app_on(path, &temp_volumes())
     }
 
     async fn call(app: &Router, request: Request<Body>) -> Response<Body> {
