@@ -5,7 +5,7 @@
 
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind};
-use robroz_ui::cards::{Card, ChoiceCard};
+use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -141,6 +141,11 @@ fn to_row(event: &Event) -> (Key, Row) {
         Event::Choice { id, .. } => {
             let card = ChoiceCard::from_event(event).expect("choice event");
             (Key::Event(id.clone()), Row::Card(Card::Choice(card)))
+        }
+        // Same as choice: the answered snapshot replaces the pending card.
+        Event::Approval { id, .. } => {
+            let card = ApprovalCard::from_event(event).expect("approval event");
+            (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
         }
     }
 }
