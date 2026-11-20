@@ -94,7 +94,7 @@ impl Host {
 }
 
 fn get_limit_from_env() -> u64 {
-    std::env::var("OPENBOTS_GET_LIMIT")
+    std::env::var("ROBROZ_GET_LIMIT")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(8)
@@ -108,9 +108,9 @@ struct AppState {
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
 /// and ensures the node-2 schema. Callers, including tests, pass an explicit
-/// path; this function does not read `OPENBOTS_DB`.
+/// path; this function does not read `ROBROZ_DB`.
 pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
-    let host = Host::open(db_path, "./data/groups", "openbots-runner:local")?;
+    let host = Host::open(db_path, "./data/groups", "robroz-runner:local")?;
     Ok(host.router())
 }
 
@@ -699,10 +699,10 @@ mod tests {
     use tower::ServiceExt;
 
     fn temp_db() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("openbots-test-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("robroz-test-{}.db", uuid::Uuid::new_v4()));
         assert_ne!(
             path,
-            PathBuf::from("./openbots.db"),
+            PathBuf::from("./robroz.db"),
             "tests must not use the default database path"
         );
         path
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     fn temp_volumes() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("openbots-vol-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("robroz-vol-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
     }
@@ -1094,7 +1094,7 @@ mod tests {
     fn pump_db_limit(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, limit: u64) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        super::pump(&conn, sandbox, volumes, &control_of(volumes), "openbots-runner:local", limit).unwrap();
+        super::pump(&conn, sandbox, volumes, &control_of(volumes), "robroz-runner:local", limit).unwrap();
     }
 
     fn post_empty(uri: &str) -> Request<Body> {
@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     fn app_on(db: &Path, volumes: &Path) -> Router {
-        super::Host::open(db, volumes, "openbots-runner:local")
+        super::Host::open(db, volumes, "robroz-runner:local")
             .unwrap()
             .with_control_root(control_of(volumes))
             .router()
@@ -1175,7 +1175,7 @@ mod tests {
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(fake.names(), vec![format!("openbots-{task_id}")]);
+        assert_eq!(fake.names(), vec![format!("robroz-{task_id}")]);
 
         let running = events_of(&app, &group_id).await;
         let cards = statuses(&running);
@@ -2235,7 +2235,7 @@ mod tests {
     async fn pump_once_does_not_hold_db_lock_during_docker_calls() {
         let path = temp_db();
         let volumes = temp_volumes();
-        let host = super::Host::open(&path, &volumes, "openbots-runner:local")
+        let host = super::Host::open(&path, &volumes, "robroz-runner:local")
             .unwrap()
             .with_control_root(control_of(&volumes));
         let app = host.router();

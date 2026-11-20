@@ -2502,41 +2502,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openbots-client"
-version = "0.1.0"
-dependencies = [
- "axum",
- "hive-card",
- "hive-contract",
- "iced",
- "openbots-host",
- "serde",
- "serde_json",
- "tokio",
- "ureq",
-]
-
-[[package]]
-name = "openbots-host"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "croner",
- "hive-card",
- "hive-contract",
- "hive-policy",
- "hive-runner",
- "http-body-util",
- "libc",
- "rusqlite",
- "serde_json",
- "tokio",
- "tower",
- "uuid",
-]
-
-[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2831,6 +2796,41 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "robroz-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hive-card",
+ "hive-contract",
+ "iced",
+ "robroz-host",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
+name = "robroz-host"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "croner",
+ "hive-card",
+ "hive-contract",
+ "hive-policy",
+ "hive-runner",
+ "http-body-util",
+ "libc",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+ "tower",
+ "uuid",
+]
 
 [[package]]
 name = "roxmltree"

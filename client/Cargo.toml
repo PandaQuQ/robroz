@@ -1,5 +1,5 @@
 [package]
-name = "openbots-client"
+name = "robroz-client"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,7 +13,7 @@ tokio = { version = "1", features = ["rt"] }
 ureq = { version = "3", default-features = false }
 
 [dev-dependencies]
-openbots-host = { path = "../host" }
+robroz-host = { path = "../host" }
 axum = "0.8"
 serde = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }

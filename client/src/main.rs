@@ -1,8 +1,8 @@
-//! openbots desktop client.
+//! robroz desktop client.
 //!
 //! Left: groups. Right: the selected group's message stream. Events come from
 //! an [`EventSource`]: the live host by default, or the scripted fake with
-//! `--fake` / `OPENBOTS_FAKE=1`.
+//! `--fake` / `ROBROZ_FAKE=1`.
 
 mod model;
 mod source;
@@ -20,7 +20,7 @@ use source::{EventSource, FakeSource, GroupEvent, GroupTab, HttpSource, SourceEr
 
 pub fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
-        .title("openbots")
+        .title("robroz")
         .subscription(App::subscription)
         .theme(App::theme)
         .window_size((1040.0, 680.0))
@@ -29,7 +29,7 @@ pub fn main() -> iced::Result {
 
 fn wants_fake() -> bool {
     std::env::args().any(|a| a == "--fake")
-        || std::env::var("OPENBOTS_FAKE").is_ok_and(|v| v == "1")
+        || std::env::var("ROBROZ_FAKE").is_ok_and(|v| v == "1")
 }
 
 type Shared = Arc<Mutex<Box<dyn EventSource>>>;

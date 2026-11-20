@@ -1,5 +1,5 @@
 [package]
-name = "openbots-host"
+name = "robroz-host"
 version = "0.1.0"
 edition = "2021"
 

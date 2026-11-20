@@ -1,7 +1,7 @@
 //! Live events from the host over plain HTTP.
 //!
-//! Base URL: `OPENBOTS_HOST`, default `http://127.0.0.1:8790`.
-//! Groups: `OPENBOTS_GROUPS`, comma-separated `id` or `id=名字`. The host
+//! Base URL: `ROBROZ_HOST`, default `http://127.0.0.1:8790`.
+//! Groups: `ROBROZ_GROUPS`, comma-separated `id` or `id=名字`. The host
 //! has no `GET /api/groups` yet, so the client cannot discover groups on its
 //! own. When that endpoint lands, `groups()` switches to it.
 
@@ -34,8 +34,8 @@ impl HttpSource {
     }
 
     pub fn from_env() -> Self {
-        let base = std::env::var("OPENBOTS_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
-        let groups = std::env::var("OPENBOTS_GROUPS")
+        let base = std::env::var("ROBROZ_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
+        let groups = std::env::var("ROBROZ_GROUPS")
             .map(|v| parse_groups(&v))
             .unwrap_or_default();
         Self::new(base, groups)
@@ -71,7 +71,7 @@ impl EventSource for HttpSource {
     fn groups(&mut self) -> Result<Vec<GroupTab>, SourceError> {
         if self.groups.is_empty() {
             return Err(SourceError(
-                "没有群：宿主机还没有列群接口，请用 OPENBOTS_GROUPS=<id>[=名字],… 指定".into(),
+                "没有群：宿主机还没有列群接口，请用 ROBROZ_GROUPS=<id>[=名字],… 指定".into(),
             ));
         }
         Ok(self.groups.clone())
@@ -160,14 +160,14 @@ mod tests {
 
         fn spawn_host() -> String {
             let db = std::env::temp_dir().join(format!(
-                "openbots-client-test-{}-{}.db",
+                "robroz-client-test-{}-{}.db",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
-            let router = openbots_host::router(&db).unwrap();
+            let router = robroz_host::router(&db).unwrap();
             let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             std_listener.set_nonblocking(true).unwrap();
             let addr = std_listener.local_addr().unwrap();
