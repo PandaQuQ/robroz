@@ -367,6 +367,7 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
             path: path.into(),
             briefing,
             created_at: at("03"),
+            failure: None,
         },
     }
 }
