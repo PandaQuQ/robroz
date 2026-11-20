@@ -93,6 +93,20 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 回传是 `POST /api/choices/:id/answer`，请求体 `{"choice":[ids]}`，单选也传数组，且必须恰好一个；多选传一个或多个，不能重复。成功返回 200，仍是同一张卡：`choice` 为所选 `id`（多选保留请求顺序），`answeredAt` 为回答时间。每张只能答一次，再答返回 409「已经选过了」。选项卡不存在返回 404「选项卡不存在」。未知的选项 `id`、单选选了多个、多选一个都没选、或 `id` 重复，返回 400，说明为「没有这个选项」「只能选一个」「至少选一个」或「选项重复」。`GET /api/groups/:id/events` 按 `createdAt` 升序一并返回选项卡，已回答的仍是同一张卡。
 
+## 审批卡
+
+群里的 bro 要删除、发送或花钱之前，先出一张审批卡问人。这是事件流里单独的 `approval` 事件，排在 `choice` 之后新增，原有事件不变。
+
+- 发卡：`POST /api/groups/{id}/approvals`，请求体 `{"botId","action","summary","path"?}`，返回 201 和这张卡。
+  - `action` 是 `delete`、`send` 或 `spend`。
+  - `summary` 去掉首尾空白后不能为空，只能一行，最多 200 字。
+  - `path` 选填，只用来展示；去掉空白后为空就当没填。
+  - 群不存在返回 404「群不存在」，bro 不在群里返回 400「这个 Bot 不在群里」，`summary` 为空返回 400「请填写要做什么」，太长或有换行返回 400「说明只能一行，最多 200 字」。
+- 回答：`POST /api/approvals/{id}/approve` 表示同意，`POST /api/approvals/{id}/deny` 表示拒绝，都不带请求体。成功返回 200，还是同一张卡，`decision` 变成 `approved` 或 `denied`，`answeredAt` 是回答时间。每张只能答一次，再答返回 409「已经答过了」；卡不存在返回 404「审批卡不存在」。
+- 卡的字段：`id`、`botId`、`botName`、`action`、`summary`、`path`、`decision`、`createdAt`、`answeredAt`。`path`、`decision` 和 `answeredAt` 一定会出现，后两个在回答前是 `null`。
+- 审批卡会出现在 `GET /api/groups/{id}/events` 和实时推送里，新卡算一条未读。
+- 客户端碰到不认识的事件类型应当跳过，以后新增事件时旧客户端才不会出错。
+
 ## 节点 6：客户端
 
 `client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡、交付卡和选项卡。
@@ -142,8 +156,8 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - `GET /api/groups/{id}/unread`：返回一个群的 `Unread`。群不存在返回 404。
 - `POST /api/groups/{id}/read`：标记已读，请求体是 `{"readAt"?: 时间}`，不填就用当前时间。已读位置只会往后走，传一个更早的时间不会回退。时间不合法返回 400，群不存在返回 404，成功时返回更新后的 `Unread`。
 - `Unread` 的字段：`groupId`、`readAt`（从没读过时为 `null`）、`unread`、`lastActivityAt`（群里没有任何活动时为 `null`）。
-- 计入未读的只有 bro 发来、需要你看的东西：`readAt` 之后的交付卡、选项卡，以及变成卡住的任务。你自己发的消息，以及任务排队、进行中、完成这类状态变化，都不计入；但完成时的交付卡要计入。
-- `lastActivityAt` 取消息、任务、交付卡和选项卡（已回答的按回答时间）里最新的一次变化，会话列表用它排序。
+- 计入未读的只有 bro 发来、需要你看的东西：`readAt` 之后的交付卡、选项卡、审批卡，以及变成卡住的任务。你自己发的消息，以及任务排队、进行中、完成这类状态变化，都不计入；但完成时的交付卡要计入。
+- `lastActivityAt` 取消息、任务、交付卡、选项卡和审批卡（已回答的按回答时间）里最新的一次变化，会话列表用它排序。
 
 ## bro 和私聊
 
