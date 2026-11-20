@@ -175,23 +175,11 @@ impl Gallery {
                 ),
                 sample(
                     "approval · approved",
-                    approval(
-                        ApprovalState::Approved {
-                            by: "Panda".into(),
-                            at: at(2),
-                        },
-                        "后端",
-                    ),
+                    approval(ApprovalState::Approved { at: at(2) }, "后端"),
                 ),
                 sample(
                     "approval · denied",
-                    approval(
-                        ApprovalState::Denied {
-                            by: "Panda".into(),
-                            at: at(3),
-                        },
-                        "后端",
-                    ),
+                    approval(ApprovalState::Denied { at: at(3) }, "后端"),
                 ),
                 sample(
                     "approval · needs owner sign-in（群里只给这一个按钮）",

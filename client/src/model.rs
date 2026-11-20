@@ -402,6 +402,7 @@ mod tests {
             choice: choice.map(|v| vec![v.to_string()]),
             created_at: "2026-10-03T19:00:00.000Z".into(),
             answered_at: choice.map(|_| "2026-10-03T19:01:00.000Z".into()),
+            answered_by: None,
         };
         let mut feed = Feed::default();
         feed.apply(&card(None));
@@ -437,10 +438,7 @@ mod tests {
         feed.apply(&text("m1", "先问一下"));
         feed.apply_card(card(ApprovalState::Pending));
         feed.apply(&text("m2", "后面的话"));
-        feed.apply_card(card(ApprovalState::Approved {
-            by: "Panda".into(),
-            at: 0,
-        }));
+        feed.apply_card(card(ApprovalState::Approved { at: 0 }));
         assert_eq!(feed.len(), 3, "one approval card, not two");
         assert!(matches!(
             feed.card("a1"),

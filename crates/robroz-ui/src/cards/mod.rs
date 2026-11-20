@@ -132,14 +132,20 @@ pub struct ApprovalCard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalState {
     Pending,
-    Approved { by: String, at: i64 },
-    Denied { by: String, at: i64 },
+    /// `at`: the host's `answeredAt` (unix seconds). No "by" until the
+    /// contract has an answeredBy field.
+    Approved {
+        at: i64,
+    },
+    Denied {
+        at: i64,
+    },
     NeedsOwner,
 }
 
 impl ApprovalCard {
     /// Build from the `approval` event. Returns `None` for any other event.
-    /// The host has no "answered by" field yet, so an answer reads as 「我」.
+    /// The host has no "answered by" field yet, so no person is shown.
     pub fn from_event(event: &Event) -> Option<Self> {
         let Event::Approval {
             id,
@@ -158,11 +164,10 @@ impl ApprovalCard {
             .as_deref()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .map_or(0, |t| t.timestamp());
-        let by = String::from("我");
         let state = match decision {
             None => ApprovalState::Pending,
-            Some(ApprovalDecision::Approved) => ApprovalState::Approved { by, at },
-            Some(ApprovalDecision::Denied) => ApprovalState::Denied { by, at },
+            Some(ApprovalDecision::Approved) => ApprovalState::Approved { at },
+            Some(ApprovalDecision::Denied) => ApprovalState::Denied { at },
         };
         let kind = match action {
             ApprovalAction::Delete => ActionKind::Delete,
@@ -209,6 +214,32 @@ pub enum DraftState {
 mod tests {
     use super::*;
 
+    #[test]
+    fn answered_approval_shows_no_person_and_host_time() {
+        let event = |decision| Event::Approval {
+            id: "a1".into(),
+            bot_id: "bot-doc".into(),
+            bot_name: "文档哥".into(),
+            action: ApprovalAction::Send,
+            summary: "发周报".into(),
+            path: None,
+            decision: Some(decision),
+            created_at: "2026-11-20T08:40:00Z".into(),
+            answered_at: Some("2026-11-20T08:48:00Z".into()),
+            answered_by: None,
+        };
+        let utc = chrono::Utc;
+        for (d, want) in [
+            (ApprovalDecision::Approved, "已批准 · 08:48"),
+            (ApprovalDecision::Denied, "已拒绝 · 08:48"),
+        ] {
+            let card = ApprovalCard::from_event(&event(d)).unwrap();
+            let foot = status::approval_footnote(&card.state, &utc).unwrap();
+            assert_eq!(foot, want);
+            assert!(!foot.contains('我'));
+        }
+    }
+
     pub(crate) fn opt(id: &str, label: &str, primary: bool) -> ChoiceOption {
         ChoiceOption {
             id: id.into(),
@@ -231,6 +262,7 @@ mod tests {
             choice: choice.map(|v| v.into_iter().map(String::from).collect()),
             created_at: "2026-11-20T01:50:00.000Z".into(),
             answered_at: None,
+            answered_by: None,
         }
     }
 

@@ -126,17 +126,19 @@ where
     }
 }
 
+/// Footnote under an answered approval card: 「已批准 · HH:MM」 /
+/// 「已拒绝 · HH:MM」, time from the host's `answeredAt`. No person: the
+/// contract has no answeredBy yet, and 「我」 would be wrong when someone
+/// else or another device answered (UI decision after #40).
+// TODO(answeredBy): once the host sends it, show 「我」 for this user and
+// the other person's name otherwise, for approval and choice cards.
 pub fn approval_footnote<Tz: TimeZone>(state: &ApprovalState, tz: &Tz) -> Option<String>
 where
     Tz::Offset: std::fmt::Display,
 {
     match state {
-        ApprovalState::Approved { by, at } => {
-            Some(with_time(format!("{by} 批准"), &clock_in(*at, tz)))
-        }
-        ApprovalState::Denied { by, at } => {
-            Some(with_time(format!("{by} 拒绝"), &clock_in(*at, tz)))
-        }
+        ApprovalState::Approved { at } => Some(with_time("已批准".into(), &clock_in(*at, tz))),
+        ApprovalState::Denied { at } => Some(with_time("已拒绝".into(), &clock_in(*at, tz))),
         ApprovalState::Pending | ApprovalState::NeedsOwner => None,
     }
 }
@@ -330,17 +332,11 @@ mod tests {
             ("等你批准", Dot::Waiting)
         );
         assert_eq!(
-            approval_status(&ApprovalState::Approved {
-                by: "P".into(),
-                at: 0
-            }),
+            approval_status(&ApprovalState::Approved { at: 0 }),
             ("已批准", Dot::Done)
         );
         assert_eq!(
-            approval_status(&ApprovalState::Denied {
-                by: "P".into(),
-                at: 0
-            }),
+            approval_status(&ApprovalState::Denied { at: 0 }),
             ("已拒绝", Dot::Void)
         );
         assert_eq!(
@@ -381,24 +377,12 @@ mod tests {
     fn footnotes() {
         let at = dt(2026, 11, 20, 1, 52).and_utc().timestamp();
         assert_eq!(
-            approval_footnote(
-                &ApprovalState::Approved {
-                    by: "Panda".into(),
-                    at
-                },
-                &Utc
-            ),
-            Some("Panda 批准 · 01:52".into())
+            approval_footnote(&ApprovalState::Approved { at }, &Utc),
+            Some("已批准 · 01:52".into())
         );
         assert_eq!(
-            approval_footnote(
-                &ApprovalState::Denied {
-                    by: "Panda".into(),
-                    at
-                },
-                &Utc
-            ),
-            Some("Panda 拒绝 · 01:52".into())
+            approval_footnote(&ApprovalState::Denied { at }, &Utc),
+            Some("已拒绝 · 01:52".into())
         );
         assert_eq!(approval_footnote(&ApprovalState::NeedsOwner, &Utc), None);
         assert_eq!(
