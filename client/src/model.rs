@@ -24,12 +24,26 @@ pub struct DeliveryCard {
     pub badge: Option<&'static str>,
 }
 
+/// A bot's question with fixed options. Display only here; sending the pick
+/// (`POST /api/choices/:id/answer`) is wired by the source layer later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceCard {
+    pub choice_id: String,
+    pub bot_name: String,
+    pub prompt: String,
+    /// `(value, label)` in the order the bot gave them.
+    pub options: Vec<(String, String)>,
+    /// The picked `value`, once answered.
+    pub choice: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Text { body: String },
     Attachment { kind: MessageKind, name: String },
     Status(StatusCard),
     Delivery(DeliveryCard),
+    Choice(ChoiceCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +123,27 @@ fn to_row(event: &Event) -> (Key, Row) {
                 badge: briefing.then(robroz_card::briefing_badge),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
+        }
+        // Keyed by id, so the answered snapshot replaces the open card in place.
+        Event::Choice {
+            id,
+            bot_name,
+            prompt,
+            options,
+            choice,
+            ..
+        } => {
+            let card = ChoiceCard {
+                choice_id: id.clone(),
+                bot_name: bot_name.clone(),
+                prompt: prompt.clone(),
+                options: options
+                    .iter()
+                    .map(|o| (o.value.clone(), o.label.clone()))
+                    .collect(),
+                choice: choice.clone(),
+            };
+            (Key::Event(id.clone()), Row::Choice(card))
         }
     }
 }
@@ -290,5 +325,33 @@ mod tests {
                 name: "hero.png".into()
             })
         );
+    }
+
+    #[test]
+    fn answered_choice_replaces_open_card_in_place() {
+        let card = |choice: Option<&str>| Event::Choice {
+            id: "c1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            prompt: "用哪个？".into(),
+            options: vec![
+                robroz_contract::ChoiceOption { value: "a".into(), label: "A".into() },
+                robroz_contract::ChoiceOption { value: "b".into(), label: "B".into() },
+            ],
+            choice: choice.map(Into::into),
+            created_at: "2026-10-03T19:00:00.000Z".into(),
+            answered_at: choice.map(|_| "2026-10-03T19:01:00.000Z".into()),
+        };
+        let mut feed = Feed::default();
+        feed.apply(&card(None));
+        feed.apply(&card(Some("b")));
+        assert_eq!(feed.len(), 1);
+        match feed.rows().next().unwrap() {
+            Row::Choice(c) => {
+                assert_eq!(c.choice.as_deref(), Some("b"));
+                assert_eq!(c.options.len(), 2);
+            }
+            other => panic!("expected choice row, got {other:?}"),
+        }
     }
 }

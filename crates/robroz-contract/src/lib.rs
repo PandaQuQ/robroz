@@ -152,6 +152,54 @@ pub struct Schedule {
     pub last_task_id: Option<String>,
 }
 
+/// A schedule as listed for the routines view: the frozen [`Schedule`] fields
+/// plus `paused`. `POST /api/schedules` still returns a plain [`Schedule`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleEntry {
+    #[serde(flatten)]
+    pub schedule: Schedule,
+    pub paused: bool,
+}
+
+/// `GET /api/groups/{id}/schedules` body, oldest schedule first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Schedules {
+    pub schedules: Vec<ScheduleEntry>,
+}
+
+/// `PATCH /api/schedules/{id}` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSchedule {
+    pub paused: bool,
+}
+
+/// One option on a choice card. `value` is what comes back as `choice`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChoiceOption {
+    pub value: String,
+    pub label: String,
+}
+
+/// `POST /api/groups/{id}/choices` body: a bot in the group asks the person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChoice {
+    pub bot_id: String,
+    pub prompt: String,
+    pub options: Vec<ChoiceOption>,
+}
+
+/// `POST /api/choices/{id}/answer` body. `choice` must be one option's `value`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerChoice {
+    pub choice: String,
+}
+
+/// Choice cards hold 2 to 6 options with distinct, non-empty values.
+pub const CHOICE_OPTIONS_MIN: usize = 2;
+pub const CHOICE_OPTIONS_MAX: usize = 6;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
@@ -188,6 +236,19 @@ pub enum Event {
         path: String,
         briefing: bool,
         created_at: String,
+    },
+    /// Added after the node-1 freeze; the three types above are unchanged.
+    /// `choice` and `answeredAt` are always present and `null` until answered.
+    #[serde(rename = "choice")]
+    Choice {
+        id: String,
+        bot_id: String,
+        bot_name: String,
+        prompt: String,
+        options: Vec<ChoiceOption>,
+        choice: Option<String>,
+        created_at: String,
+        answered_at: Option<String>,
     },
 }
 
@@ -318,6 +379,83 @@ mod tests {
             ..schedule
         };
         assert_eq!(serde_json::to_value(&ran).unwrap()["lastTaskId"], "t1");
+    }
+
+    #[test]
+    fn choice_event_json() {
+        let options = vec![
+            ChoiceOption { value: "a".into(), label: "方案 A".into() },
+            ChoiceOption { value: "b".into(), label: "方案 B".into() },
+        ];
+        assert_round_trip(
+            &Event::Choice {
+                id: "c1".into(),
+                bot_id: "bot-ada".into(),
+                bot_name: "Ada".into(),
+                prompt: "用哪个方案？".into(),
+                options: options.clone(),
+                choice: None,
+                created_at: "2026-10-03T19:00:03.000Z".into(),
+                answered_at: None,
+            },
+            serde_json::json!({
+                "type": "choice",
+                "id": "c1",
+                "botId": "bot-ada",
+                "botName": "Ada",
+                "prompt": "用哪个方案？",
+                "options": [
+                    { "value": "a", "label": "方案 A" },
+                    { "value": "b", "label": "方案 B" }
+                ],
+                "choice": null,
+                "createdAt": "2026-10-03T19:00:03.000Z",
+                "answeredAt": null
+            }),
+        );
+        let request: CreateChoice = serde_json::from_value(serde_json::json!({
+            "botId": "bot-ada",
+            "prompt": "用哪个方案？",
+            "options": [{ "value": "a", "label": "方案 A" }]
+        }))
+        .unwrap();
+        assert_eq!(request.bot_id, "bot-ada");
+        let answer: AnswerChoice = serde_json::from_value(serde_json::json!({ "choice": "b" })).unwrap();
+        assert_eq!(answer.choice, "b");
+    }
+
+    #[test]
+    fn schedule_entry_flattens_and_adds_paused() {
+        let entry = ScheduleEntry {
+            schedule: Schedule {
+                id: "s1".into(),
+                group_id: "g1".into(),
+                assignee_bot_id: "bot-ada".into(),
+                cron: "0 9 * * *".into(),
+                prompt: "早报".into(),
+                next_run_at: "2026-10-08T09:00:00.000Z".into(),
+                last_task_id: None,
+            },
+            paused: true,
+        };
+        let value = serde_json::to_value(&Schedules { schedules: vec![entry.clone()] }).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "schedules": [{
+                "id": "s1",
+                "groupId": "g1",
+                "assigneeBotId": "bot-ada",
+                "cron": "0 9 * * *",
+                "prompt": "早报",
+                "nextRunAt": "2026-10-08T09:00:00.000Z",
+                "lastTaskId": null,
+                "paused": true
+            }]})
+        );
+        let back: Schedules = serde_json::from_value(value).unwrap();
+        assert_eq!(back.schedules[0], entry);
+        let patch: UpdateSchedule = serde_json::from_value(serde_json::json!({ "paused": false })).unwrap();
+        assert!(!patch.paused);
     }
 
     #[test]

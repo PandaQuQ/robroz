@@ -15,7 +15,7 @@ use robroz_card::Palette;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
-use model::{attachment_label, DeliveryCard, Feed, Row, StatusCard};
+use model::{attachment_label, ChoiceCard, DeliveryCard, Feed, Row, StatusCard};
 use source::{EventSource, FakeSource, GroupEvent, GroupTab, HttpSource, SourceError};
 
 pub fn main() -> iced::Result {
@@ -241,7 +241,22 @@ fn row_view(r: &Row) -> Element<'_, Message> {
         .into(),
         Row::Status(card) => status_view(card),
         Row::Delivery(card) => delivery_view(card),
+        Row::Choice(card) => choice_view(card),
     }
+}
+
+fn choice_view(card: &ChoiceCard) -> Element<'_, Message> {
+    let mut options = row![].spacing(8);
+    for (value, label) in &card.options {
+        let picked = card.choice.as_deref() == Some(value.as_str());
+        let style = if picked { button::primary } else { button::secondary };
+        options = options.push(button(text(label).size(13)).style(style));
+    }
+    container(column![text(&card.bot_name).size(12), text(&card.prompt), options].spacing(6))
+        .padding([10, 14])
+        .width(Fill)
+        .style(container::rounded_box)
+        .into()
 }
 
 fn card_style(p: Palette) -> impl Fn(&Theme) -> container::Style {
