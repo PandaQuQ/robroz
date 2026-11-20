@@ -223,6 +223,44 @@ pub fn clamp_lines(text: &str, cols: usize, max_lines: usize) -> String {
     out
 }
 
+/// WCAG relative luminance of an sRGB colour.
+fn luminance(c: [u8; 3]) -> f32 {
+    let ch = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.039_28 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+}
+
+/// WCAG contrast ratio between two colours (1.0 to 21.0).
+pub fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Colour of the progress line on a status card with this frozen palette.
+/// It is the secondary text one step lighter than the page's grey small
+/// text: on a dark fill (the running card) the dark skin's `text2`, on a
+/// light fill the light skin's. When that misses the text contrast floor
+/// on this fill, it falls back to the card's own text colour.
+pub fn progress_rgb(fill: [u8; 3], text: [u8; 3]) -> [u8; 3] {
+    use robroz_tokens::solid;
+    let candidate = if luminance(fill) < 0.18 {
+        solid::dark::palette::TEXT2
+    } else {
+        solid::light::palette::TEXT2
+    };
+    if contrast(candidate, fill) >= robroz_tokens::base::contrast::TEXT_MIN {
+        candidate
+    } else {
+        text
+    }
+}
+
 /// Narrow screens show at most this many characters of a bot name.
 pub const NARROW_NAME_CHARS: usize = 8;
 
@@ -284,6 +322,34 @@ pub fn middle_ellipsis(path: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_line_is_lighter_grey_and_legible_on_the_running_card() {
+        use robroz_card::{appearance, palette, Tone};
+        let ink = palette(appearance(robroz_contract::TaskState::Running, true).tone);
+        let c = progress_rgb(ink.fill, ink.text);
+        assert_eq!(c, robroz_tokens::solid::dark::palette::TEXT2);
+        // Lighter than the grey small text the page uses on paper ...
+        assert!(luminance(c) > luminance(robroz_tokens::solid::light::palette::TEXT2));
+        assert!(luminance(c) > luminance(robroz_tokens::solid::dark::palette::TEXT3));
+        // ... dimmer than the bro name, and readable on the dark fill.
+        assert!(luminance(c) < luminance(ink.text));
+        assert!(contrast(c, ink.fill) >= robroz_tokens::base::contrast::TEXT_MIN);
+        for tone in [Tone::Gray, Tone::Ink, Tone::Green, Tone::Amber] {
+            let p = palette(tone);
+            let c = progress_rgb(p.fill, p.text);
+            assert!(contrast(c, p.fill) >= 4.5, "{tone:?}");
+        }
+    }
+
+    #[test]
+    fn progress_fits_one_line_with_an_ellipsis() {
+        let long = "在沙箱里跑：正在逐个检查日志文件并汇总出错的请求和时间点";
+        let line = clamp_lines(long, 20, 1);
+        assert!(line.ends_with('…'));
+        assert!(line.chars().map(units).sum::<usize>() <= 20);
+        assert_eq!(clamp_lines("开始干活", 20, 1), "开始干活");
+    }
     use crate::cards::tests::opt;
 
     #[test]

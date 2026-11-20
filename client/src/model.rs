@@ -16,6 +16,9 @@ pub struct StatusCard {
     pub tone: Tone,
     pub palette: Palette,
     pub action: Option<&'static str>,
+    /// What the bro is doing right now, one line. Only on a live run
+    /// (`running` with the container up and no `failure`).
+    pub progress: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +179,7 @@ fn to_row(event: &Event) -> (Key, Row) {
             state,
             container_up,
             failure,
+            progress,
             ..
         } => {
             // A failed task is grey with no action, like a dead run, never
@@ -197,6 +201,7 @@ fn to_row(event: &Event) -> (Key, Row) {
                 tone: look.tone,
                 palette: robroz_card::palette(look.tone),
                 action: look.action,
+                progress: progress_line(*state, *container_up, failure.as_deref(), progress),
             };
             (Key::Task(task_id.clone()), Row::Status(card))
         }
@@ -233,6 +238,26 @@ fn to_row(event: &Event) -> (Key, Row) {
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
         }
     }
+}
+
+/// The progress line a status card shows, if any. The host already sends it
+/// only on a live run, but the card also checks, so an old or odd event never
+/// puts a stale line next to 完成 or 没做成. Whitespace collapses to one line.
+fn progress_line(
+    state: TaskState,
+    container_up: bool,
+    failure: Option<&str>,
+    progress: &Option<String>,
+) -> Option<String> {
+    if state != TaskState::Running || !container_up || failure.is_some() {
+        return None;
+    }
+    let line = progress
+        .as_deref()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!line.is_empty()).then_some(line)
 }
 
 /// Plain label for an attachment row. Not a task state, so it lives here.
@@ -339,6 +364,91 @@ mod tests {
         // Still in its original slot, between the two messages.
         assert!(matches!(feed.rows().nth(1), Some(Row::Status(_))));
         assert!(matches!(feed.rows().nth(3), Some(Row::Delivery(_))));
+    }
+
+    fn with_progress(mut e: Event, text: Option<&str>) -> Event {
+        if let Event::Status { progress, .. } = &mut e {
+            *progress = text.map(Into::into);
+        }
+        e
+    }
+
+    #[test]
+    fn progress_shows_on_a_live_run_and_updates_in_place() {
+        let mut feed = Feed::default();
+        let run = status("t1", "Ada", TaskState::Running, true);
+        feed.apply(&with_progress(run.clone(), Some("开始干活")));
+        assert_eq!(status_cards(&feed)[0].progress.as_deref(), Some("开始干活"));
+
+        feed.apply(&with_progress(run.clone(), Some("在沙箱里跑")));
+        assert_eq!(feed.len(), 1, "same card, new line");
+        assert_eq!(
+            status_cards(&feed)[0].progress.as_deref(),
+            Some("在沙箱里跑")
+        );
+
+        // The host drops the field: the card goes back to one line.
+        feed.apply(&with_progress(run, None));
+        assert_eq!(status_cards(&feed)[0].progress, None);
+        assert_eq!(
+            actual(status_cards(&feed)[0]),
+            expected(TaskState::Running, true)
+        );
+    }
+
+    #[test]
+    fn progress_is_one_line_and_never_on_a_finished_or_stuck_card() {
+        let line = |e: Event| match to_row(&e).1 {
+            Row::Status(c) => c.progress,
+            _ => unreachable!(),
+        };
+        let p = Some("  在想\n怎么   回 ");
+        assert_eq!(
+            line(with_progress(
+                status("t", "Ada", TaskState::Running, true),
+                p
+            ))
+            .as_deref(),
+            Some("在想 怎么 回")
+        );
+        assert_eq!(
+            line(with_progress(
+                status("t", "Ada", TaskState::Running, true),
+                Some(" \n ")
+            )),
+            None,
+            "blank progress takes no room"
+        );
+        for (state, up) in [
+            (TaskState::Queued, false),
+            (TaskState::Running, false),
+            (TaskState::Blocked, false),
+            (TaskState::Done, false),
+        ] {
+            assert_eq!(line(with_progress(status("t", "Ada", state, up), p)), None);
+        }
+        let mut failed = with_progress(status("t", "Ada", TaskState::Running, true), p);
+        if let Event::Status { failure, .. } = &mut failed {
+            *failure = Some("模型没回：超时".into());
+        }
+        assert_eq!(line(failed), None, "没做成 never carries a progress line");
+    }
+
+    #[test]
+    fn progress_from_host_json() {
+        let json = serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "bot-ada",
+            "botName": "Ada", "state": "running", "label": "进行中",
+            "createdAt": "2026-11-20T10:00:00.000Z", "updatedAt": "2026-11-20T10:00:01.000Z",
+            "containerUp": true, "progress": "在沙箱里跑"
+        });
+        let event: Event = serde_json::from_value(json).unwrap();
+        let mut feed = Feed::default();
+        feed.apply(&event);
+        assert_eq!(
+            status_cards(&feed)[0].progress.as_deref(),
+            Some("在沙箱里跑")
+        );
     }
 
     #[test]
