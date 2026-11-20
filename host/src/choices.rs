@@ -112,7 +112,9 @@ pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Resul
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;
         let created_at: String = row.get(6)?;
-        Ok(TimedEvent { created_at, id, event: event_from_row(row)? })
+        let answered_at: Option<String> = row.get(7)?;
+        let changed_at = answered_at.unwrap_or_else(|| created_at.clone());
+        Ok(TimedEvent { created_at, changed_at, id, event: event_from_row(row)? })
     })?;
     rows.collect()
 }

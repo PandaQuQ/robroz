@@ -157,8 +157,18 @@ fn collect_task(
             return Ok(());
         }
     };
-    let ContainerPhase::Exited { code } = phase else {
-        return Ok(());
+    let code = match phase {
+        ContainerPhase::Running => return Ok(()),
+        ContainerPhase::Exited { code } => code,
+        // The container vanished mid-run (host or docker restart, manual rm).
+        // Never re-queue: the run may have half-changed the volume, and a rerun
+        // would repeat it. Mark it a dead run and leave it for a person.
+        ContainerPhase::Missing => {
+            eprintln!("pump: container for {} is gone; marking interrupted, not rerunning", task.id);
+            let updated_at = newer_than(&task.updated_at);
+            let rel = result_rel(&task.id);
+            return db.with(|conn| write_outcome(conn, task, &Outcome::Dead, 0, &updated_at, &rel));
+        }
     };
 
     // Workspace reads of the group volume are allowed. This is not a scheduler.
