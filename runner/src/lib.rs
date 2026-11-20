@@ -10,6 +10,8 @@
 //! Files in the task's control dir (mounted read-only at `/control`, written only
 //! by the host):
 //! - `prompt.txt`: the task prompt, written before `docker run`.
+//! - `reply.txt`: the model's answer, written by the host before `docker run`
+//!   when a model is configured. Absent means no model: the prompt is echoed.
 //! - `takeover`: written only by the host on resume. One sha256 per line, each the
 //!   hash of an exact `robroz-action:` line a person already took over.
 
@@ -39,6 +41,11 @@ pub fn intent_path(root: &Path, task_id: &str) -> PathBuf {
 /// `prompt.txt` inside one task's control dir (`/control/prompt.txt` in the container).
 pub fn prompt_path(control: &Path) -> PathBuf {
     control.join("prompt.txt")
+}
+
+/// `reply.txt` inside one task's control dir: the model's answer, if any.
+pub fn reply_path(control: &Path) -> PathBuf {
+    control.join("reply.txt")
 }
 
 /// `takeover` inside one task's control dir (`/control` in the container).
@@ -112,7 +119,15 @@ pub fn append_takeover(control: &Path, hash: &str) -> io::Result<()> {
 pub fn run(workspace: &Path, control: &Path, task_id: &str) -> io::Result<()> {
     let prompt = fs::read_to_string(prompt_path(control))?;
     let approved = read_takeover(control);
-    apply_prompt_with(workspace, task_id, &prompt, &approved)
+    apply_prompt_with(workspace, task_id, &prompt, &approved)?;
+    // Blocking and outbound still come from the prompt; the model only
+    // replaces the echoed text once the task is allowed to finish.
+    match fs::read_to_string(reply_path(control)) {
+        Ok(reply) if result_path(workspace, task_id).exists() => fs::write(result_path(workspace, task_id), reply),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// [`apply_prompt_with`] with nothing taken over.
@@ -365,5 +380,21 @@ mod tests {
             let _ = fs::remove_dir_all(&base);
         }
         assert_eq!(approved.len(), 3, "three distinct blocking lines, three takeovers");
+    }
+
+    #[test]
+    fn model_reply_replaces_echo_but_not_blocking() {
+        let (base, workspace, control) = mounts("t1", "写周报");
+        fs::write(reply_path(&control), "周报：本周完成三项").unwrap();
+        run(&workspace, &control, "t1").unwrap();
+        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
+        let _ = fs::remove_dir_all(&base);
+
+        let (base, workspace, control) = mounts("t2", "发邮件\nrobroz-action:external");
+        fs::write(reply_path(&control), "已发送").unwrap();
+        run(&workspace, &control, "t2").unwrap();
+        assert!(!result_path(&workspace, "t2").exists(), "still blocked, reply unused");
+        assert!(intent_path(&workspace, "t2").exists());
+        let _ = fs::remove_dir_all(&base);
     }
 }

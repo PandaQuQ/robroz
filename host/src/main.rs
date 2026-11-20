@@ -41,6 +41,13 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_CONTROL_ROOT));
     ensure_control_outside_volumes(&control, &volumes);
+    // Errors name the variable, never the key.
+    let model = robroz_model::config_from_env().unwrap_or_else(|err| fail(&err));
+    match &model {
+        Some(cfg) => eprintln!("robroz-host: 模型 {} @ {}", cfg.model, cfg.base_url),
+        None => eprintln!("robroz-host: 没配模型密钥，bro 原样回显"),
+    }
+    let model = model.map(|cfg| std::sync::Arc::new(robroz_model::OpenAiCompat::new(cfg)) as std::sync::Arc<dyn robroz_model::Model>);
     let image = std::env::var("ROBROZ_IMAGE").unwrap_or_else(|_| "robroz-runner:local".to_string());
 
     let host = Host::open(&db_path, volumes, image)
@@ -48,7 +55,8 @@ async fn main() {
             panic!("无法打开数据库 {}: {err}", db_path.display());
         })
         .with_control_root(control)
-        .with_token(token.clone());
+        .with_token(token.clone())
+        .with_model(model);
     let app = host.router();
     let pumping = host.clone();
 
