@@ -34,6 +34,7 @@ CI 跑宿主机测试，并在 Windows、Linux、macOS 上构建客户端。
 - `POST /api/groups/:id/members`：把 Bot 加入群；同一个 Bot 重复加入成功且不重复记账
 - `POST /api/groups/:id/messages`：保存消息，`kind` 为 `text`、`image` 或 `file`。只落库，不写文件
 - `POST /api/groups/:id/tasks`：给已在群里的 Bot 派任务，`state` 固定为 `queued`
+- `POST /api/groups/:id/say` `{"body"}`：发一句话。先存成 text 消息，再看要不要派任务：私聊直接派给那个 bro；群里只有以 `@名字 内容`（或 `＠`）开头、名字是群成员时才派，名字取最长匹配，内容为空不派。返回 201 `{"message","task"}`，没派任务时 `task` 为 `null`。空内容 400「请填写内容」，群不存在 404「群不存在」。解析规则是 `robroz_contract::route_mention`，客户端可直接复用。`/messages` 和 `/tasks` 不变
 - `GET /api/groups/:id/events`：按 `createdAt` 升序返回消息，以及每个任务恰好一张状态卡片（`label` 为「排队」）
 
 SQLite 路径来自环境变量 `ROBROZ_DB`，默认 `./robroz.db`。监听地址来自 `ROBROZ_ADDR`，默认 `127.0.0.1:8790`。
