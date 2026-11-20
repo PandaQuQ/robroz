@@ -265,6 +265,7 @@ mod tests {
             created_at: "2026-11-20T08:40:00Z".into(),
             answered_at: Some("2026-11-20T08:48:00Z".into()),
             answered_by: by.map(Into::into),
+            task_id: None,
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";

@@ -20,6 +20,7 @@ mod approvals;
 mod choices;
 mod memories;
 mod progress;
+mod proposals;
 mod pump;
 mod routines;
 mod sandbox;
@@ -271,6 +272,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["task_id", "intent_hash"] {
         let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
     }
+    // Confirm cards: what a bro proposed (`subject_kind`, `subject_id`).
+    proposals::migrate(conn)?;
     // Why a run did not get done; copied from the task onto its delivery.
     for table in ["tasks", "deliveries"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN failure TEXT"), []);
@@ -839,6 +842,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     timed.extend(choices::timed_events(conn, group_id)?);
     timed.extend(approvals::timed_events(conn, group_id)?);
+    timed.extend(proposals::timed_events(conn, group_id)?);
     if let Some(since) = since {
         timed.retain(|item| item.changed_at.as_str() > since);
     }
@@ -3751,5 +3755,275 @@ mod tests {
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(task_state(&path, &external), "queued");
+    }
+
+    // ---- bro proposals and confirm cards ----
+
+    fn confirms_in(events: &Value) -> Vec<Value> {
+        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "confirm").cloned().collect()
+    }
+
+    fn memory_line(kind: &str, text: &str) -> String {
+        format!("robroz-memory:{}", json!({ "kind": kind, "text": text }))
+    }
+
+    async fn memories_with(app: &Router, query: &str) -> Vec<Value> {
+        let (status, body) = read_json(call(app, get(&format!("/api/memories{query}"))).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["memories"].as_array().unwrap().clone()
+    }
+
+    fn delete_req(uri: &str) -> Request<Body> {
+        Request::builder().method("DELETE").uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn proposal_raises_a_confirm_card_and_approve_keeps_it() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = format!("{}\n写周报", memory_line("habit", "周报用中文"));
+        let (group_id, task_id) = seed_task(&app, "记忆", &prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &task_id), "done");
+        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "写周报");
+        assert!(!group_dir.join(format!("tasks/{task_id}/proposals.jsonl")).exists(), "read once, then removed");
+
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        let card = &cards[0];
+        assert_eq!(card["subject"], "memory");
+        assert_eq!(card["kind"], "habit");
+        assert_eq!(card["text"], "周报用中文");
+        assert_eq!(card["scope"], "bot:bot-ada", "defaults to the bro that ran it");
+        assert_eq!(card["taskId"], task_id.as_str());
+        assert_eq!(card["botId"], "bot-ada");
+        assert_eq!(card["botName"], "Ada");
+        assert_eq!(card["decision"], Value::Null);
+        assert_eq!(card["answeredAt"], Value::Null);
+        assert!(card.get("slug").is_none() && card.get("title").is_none());
+        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "not an approval card");
+        let card_id = card["id"].as_str().unwrap().to_string();
+
+        let pending = memories_with(&app, "?status=pending").await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["source"], "bot");
+        assert_eq!(pending[0]["id"], card["memoryId"]);
+        assert_eq!(pending[0]["confirmId"], card_id.as_str(), "the memory page answers through this card");
+        let memory_id = pending[0]["id"].as_str().unwrap().to_string();
+
+        // Editing while pending shows on the card, and the card is sent again.
+        let before = card["createdAt"].as_str().unwrap().to_string();
+        let resp = call(&app, patch(&format!("/api/memories/{memory_id}"), json!({ "text": "周报一律用中文" }))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let since = format!("/api/groups/{group_id}/events?since={before}");
+        let (_, fresh) = read_json(call(&app, get(&since)).await).await;
+        assert_eq!(confirms_in(&fresh)[0]["text"], "周报一律用中文");
+
+        let (status, answered) =
+            read_json(call(&app, post(&format!("/api/approvals/{card_id}/approve"), json!({ "answeredBy": "Mac" }))).await).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(answered["type"], "confirm");
+        assert_eq!(answered["decision"], "approved");
+        assert_eq!(answered["answeredBy"], "Mac");
+        let kept = memories_with(&app, "?status=kept").await;
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["text"], "周报一律用中文");
+        assert!(kept[0].get("confirmId").is_none(), "answered: nothing left to confirm");
+
+        for verb in ["approve", "deny"] {
+            let (status, _) = decide(&app, &card_id, verb).await;
+            assert_eq!(status, StatusCode::CONFLICT, "only one answer");
+        }
+        assert_eq!(memories_with(&app, "?status=kept").await.len(), 1, "still kept");
+        assert_eq!(confirms_in(&events_of(&app, &group_id).await)[0]["decision"], "approved");
+    }
+
+    #[tokio::test]
+    async fn deny_rejects_and_a_repeat_raises_no_new_card() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = format!("{}\n{}\n写周报", memory_line("habit", "周报用中文"), memory_line("project", "robroz 用 Rust"));
+        let (group_id, _) = seed_task(&app, "记忆", &prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 2);
+        let card = |text: &str| cards.iter().find(|c| c["text"] == text).unwrap()["id"].as_str().unwrap().to_string();
+        let (status, denied) = decide(&app, &card("周报用中文"), "deny").await;
+        assert_eq!(status, StatusCode::OK, "{denied}");
+        assert_eq!(denied["decision"], "denied");
+        let (status, _) = decide(&app, &card("robroz 用 Rust"), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let rejected = memories_with(&app, "?status=rejected").await;
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0]["text"], "周报用中文");
+        assert!(memories_with(&app, "").await.iter().all(|m| m["text"] != "周报用中文"), "rejected is not in use");
+
+        // Same scope, kind and text (spaces aside), rejected or kept: no new card.
+        let again = format!("{}\n{}\n又写周报", memory_line("habit", "  周报用中文 "), memory_line("project", "robroz  用 Rust"));
+        let (_, second) = seed_task_in(&app, &group_id, &again).await;
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &second), "done");
+        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 2, "no new card");
+        // Another kind is another memory.
+        let other = format!("{}\n再写", memory_line("profile", "周报用中文"));
+        seed_task_in(&app, &group_id, &other).await;
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn bad_proposal_lines_are_skipped_and_one_task_is_capped() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let lines = [
+            "robroz-memory:不是 json".to_string(),
+            r#"robroz-memory:{"kind":"mood","text":"x"}"#.to_string(),
+            r#"robroz-memory:{"kind":"habit","text":"   "}"#.to_string(),
+            r#"robroz-memory:{"kind":"habit"}"#.to_string(),
+            r#"robroz-memory:{"kind":"habit","text":"x","scope":"bot:nobody"}"#.to_string(),
+            r#"robroz-memory:{"kind":"habit","text":"x","scope":"group:g1"}"#.to_string(),
+            format!(r#"robroz-memory:{{"kind":"habit","text":"{}"}}"#, "长".repeat(2001)),
+            r#"robroz-memory:{"kind":"profile","text":"叫 Panda","scope":"user"}"#.to_string(),
+            "正文".to_string(),
+        ];
+        let (group_id, task_id) = seed_task(&app, "记忆", &lines.join("\n")).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &task_id), "done", "bad lines never fail the task");
+        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "正文");
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        assert_eq!(cards[0]["scope"], "user");
+
+        let many: Vec<String> = (0..25).map(|i| memory_line("project", &format!("第 {i} 条"))).collect();
+        seed_task_in(&app, &group_id, &format!("{}\n正文", many.join("\n"))).await;
+        run_once(&path, &volumes, &mut fake);
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1 + robroz_contract::PROPOSALS_PER_TASK_MAX);
+        assert!(cards.iter().any(|c| c["text"] == "第 19 条") && !cards.iter().any(|c| c["text"] == "第 20 条"), "first 20 in order");
+    }
+
+    #[tokio::test]
+    async fn model_reply_memory_line_raises_a_card_and_stays_out_of_the_result() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "记忆", "写周报").await;
+        let model = FakeModel { answer: Ok(format!("{}\n周报写好了", memory_line("habit", "周五交周报"))), calls: Default::default() };
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["text"], "周五交周报");
+        assert_eq!(cards[0]["taskId"], task_id.as_str());
+
+        // A run that did not get done proposes nothing.
+        let failing = FakeModel { answer: Err("模型服务返回 500".into()), calls: Default::default() };
+        seed_task_in(&app, &group_id, &format!("{}\n再写", memory_line("habit", "失败也想记"))).await;
+        pump_with_model(&path, &volumes, &mut fake, &failing);
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &failing);
+        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 1, "failed run: no card");
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_pending_memory_closes_its_card_and_patch_cannot_settle() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = format!("{}\n{}\n写", memory_line("habit", "A"), memory_line("habit", "B"));
+        let (group_id, _) = seed_task(&app, "记忆", &prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let pending = memories_with(&app, "?status=pending").await;
+        assert_eq!(pending.len(), 2);
+        let a = pending.iter().find(|m| m["text"] == "A").unwrap().clone();
+        let b = pending.iter().find(|m| m["text"] == "B").unwrap().clone();
+
+        // PATCH has no status: the body is "nothing to change", status stays pending.
+        let resp = call(&app, patch(&format!("/api/memories/{}", b["id"].as_str().unwrap()), json!({ "status": "kept" }))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = call(&app, patch(&format!("/api/memories/{}", b["id"].as_str().unwrap()), json!({ "status": "kept", "text": "B2" }))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let b_now = memories_with(&app, "?status=pending").await.into_iter().find(|m| m["id"] == b["id"]).unwrap();
+        assert_eq!((b_now["status"].clone(), b_now["text"].clone()), (json!("pending"), json!("B2")));
+        assert_eq!(b_now["confirmId"], b["confirmId"]);
+
+        let resp = call(&app, delete_req(&format!("/api/memories/{}", a["id"].as_str().unwrap()))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        let closed = cards.iter().find(|c| c["memoryId"] == a["id"]).unwrap();
+        assert_eq!(closed["decision"], "denied", "forgotten: closed as denied");
+        assert_eq!(closed["answeredBy"], Value::Null);
+        let (status, _) = decide(&app, a["confirmId"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(memories_with(&app, "?status=kept").await.is_empty(), "a forgotten one is never kept");
+        let open = cards.iter().find(|c| c["memoryId"] == b["id"]).unwrap();
+        assert_eq!(open["decision"], Value::Null, "the other card is untouched");
+
+        let (status, _) = decide(&app, "no-such-card", "approve").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn approval_cards_carry_the_task_id_when_a_task_raised_them() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "审批闸", "发周报\nrobroz-action:external").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let (status, posted) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": "发邮件" })).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(posted.get("taskId").is_none(), "a bot's own card has no task");
+        let cards = approvals_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 2);
+        let gated = cards.iter().find(|c| c["id"] != posted["id"]).unwrap();
+        assert_eq!(gated["taskId"], task_id.as_str());
+        let (_, answered) = decide(&app, gated["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(answered["taskId"], task_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn stream_pushes_confirm_cards_and_their_answer() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, _) = seed_task(&app, "记忆", &format!("{}\n写", memory_line("habit", "周报用中文"))).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+
+        let wait = std::time::Duration::from_secs(3);
+        let mut body = open_stream(&app, &group_id, None).await.into_body();
+        let backlog = sse_take(&mut body, 3, wait).await;
+        assert_events_once(&backlog, &["status", "delivery", "confirm"]);
+        let (_, _, card) = backlog.iter().find(|(name, _, _)| name == "confirm").unwrap();
+        assert_eq!(card["text"], "周报用中文");
+        assert!(card["taskId"].is_string());
+
+        let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::OK);
+        let pushed = sse_take(&mut body, 1, wait).await;
+        assert_events_once(&pushed, &["confirm"]);
+        assert_eq!(pushed[0].2["decision"], "denied");
+    }
+
+    #[test]
+    fn confirm_columns_are_added_once() {
+        let path = temp_db();
+        let _app = test_app(&path);
+        let _again = test_app(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.prepare("SELECT subject_kind, subject_id FROM approvals").unwrap();
     }
 }

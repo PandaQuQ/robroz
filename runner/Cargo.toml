@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 robroz-policy = { path = "../crates/robroz-policy" }
+robroz-contract = { path = "../crates/robroz-contract" }

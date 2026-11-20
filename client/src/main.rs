@@ -486,6 +486,11 @@ impl App {
     }
 
     fn apply_event(&mut self, group: String, event: &Event) {
+        // Confirm cards (bro proposals) get their own card in a later client
+        // PR; until then they are skipped like an unknown event type.
+        if matches!(event, Event::Confirm { .. }) {
+            return;
+        }
         // Newest change time wins the list preview; a tie goes to the
         // outcome (see `model::preview_wins`), not to arrival order.
         let at = change_time(event);
