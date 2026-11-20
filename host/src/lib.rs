@@ -731,7 +731,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut task_stmt = conn.prepare(
-            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up
+            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1",
@@ -743,6 +743,8 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             let container_up: i64 = row.get(6)?;
             let container_up = container_up != 0;
             let updated_at: String = row.get(5)?;
+            // Only a finished task reports why it was not done.
+            let failure: Option<String> = if state == TaskState::Done { row.get(7)? } else { None };
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -757,6 +759,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     created_at,
                     updated_at,
                     container_up,
+                    failure,
                 },
             })
         })?;
@@ -3355,6 +3358,7 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(deliveries(&events)[0]["failure"], "模型没回：模型服务返回 401", "card can say it was not done");
+        assert_eq!(statuses(&events)[0]["failure"], "模型没回：模型服务返回 401", "status card too");
 
         // The next task with a working model gets a normal delivery: no failure key at all.
         let ok = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
@@ -3366,6 +3370,7 @@ mod tests {
         let delivered = deliveries(&events);
         assert_eq!(delivered.len(), 2, "{next}");
         assert!(delivered.iter().filter(|d| d.get("failure").is_some()).count() == 1);
+        assert!(statuses(&events).iter().filter(|t| t.get("failure").is_some()).count() == 1);
     }
 
     #[tokio::test]

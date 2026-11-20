@@ -354,6 +354,7 @@ fn status(
             created_at: at("01"),
             updated_at: at("02"),
             container_up,
+            failure: None,
         },
     }
 }

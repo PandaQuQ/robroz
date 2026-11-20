@@ -406,6 +406,10 @@ pub enum Event {
         created_at: String,
         updated_at: String,
         container_up: bool,
+        /// Added after the freeze: a `done` task that did not get done (model
+        /// failed, approval denied). Absent otherwise, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<String>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -565,6 +569,7 @@ mod tests {
                 created_at: "2026-10-03T19:00:01.000Z".into(),
                 updated_at: "2026-10-03T19:00:01.000Z".into(),
                 container_up: false,
+            failure: None,
             },
             serde_json::json!({
                 "type": "status",

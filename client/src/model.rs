@@ -225,6 +225,7 @@ mod tests {
             created_at: "2026-10-07T19:00:00.000Z".into(),
             updated_at: "2026-10-07T19:00:00.000Z".into(),
             container_up,
+            failure: None,
         }
     }
 
