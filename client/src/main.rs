@@ -672,17 +672,21 @@ impl App {
                     self.bros = bros.clone();
                     // `--fake` + `ROBROZ_RENAME=<draft>`: open the rename box
                     // on the selected DM (screenshots).
-                    if let Some(draft) = std::env::var("ROBROZ_RENAME").ok().filter(|_| self.fake) {
-                        if let Some(g) = self.selected.clone().filter(|g| self.dm_bro(g).is_some())
-                        {
-                            self.rename = Some((g, draft));
-                        }
-                    }
-                    let tasks: Vec<_> = bros
+                    let mut tasks: Vec<_> = bros
                         .into_iter()
                         .filter_map(|b| b.dm_group_id.map(|id| GroupTab { id, name: b.name }))
                         .map(|tab| self.learn_group(tab, true))
                         .collect();
+                    if let Some(draft) = std::env::var("ROBROZ_RENAME").ok().filter(|_| self.fake) {
+                        if let Some(g) = self.selected.clone().filter(|g| self.dm_bro(g).is_some())
+                        {
+                            self.rename = Some((g, draft));
+                            // `ROBROZ_RENAME_SAVE=1`: also press 保存.
+                            if std::env::var("ROBROZ_RENAME_SAVE").is_ok_and(|v| v == "1") {
+                                tasks.push(self.save_rename());
+                            }
+                        }
+                    }
                     return Task::batch(tasks);
                 }
             }
@@ -706,7 +710,7 @@ impl App {
                     let open = self.open_chat(dm);
                     return Task::batch([learn, open]);
                 }
-                Err(err) => self.error = Some(format!("没能引入新 bro：{}", err.note().text())),
+                Err(err) => self.error = Some(format!("没能引入新 bro：{}", err.reason())),
             },
             Message::GroupsReloaded(result) => {
                 if let Ok(groups) = result {
@@ -735,7 +739,7 @@ impl App {
                         );
                     }
                     Err(err) => {
-                        self.rename_note = Some((group, format!("没改成：{}", err.note().text())));
+                        self.rename_note = Some((group, format!("没改成：{}", err.reason())));
                     }
                 }
             }
@@ -759,7 +763,7 @@ impl App {
                         if let Some(Err(err)) = task {
                             self.send_note.insert(
                                 group,
-                                format!("消息已发出，但没能交给 bro：{}", err.note().text()),
+                                format!("消息已发出，但没能交给 bro：{}", err.reason()),
                             );
                         }
                         // Pick up the new status card without waiting a tick.
@@ -767,7 +771,7 @@ impl App {
                     }
                     Err(err) => {
                         self.send_note
-                            .insert(group, format!("没发出去：{}", err.note().text()));
+                            .insert(group, format!("没发出去：{}", err.reason()));
                     }
                 }
             }

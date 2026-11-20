@@ -1200,7 +1200,8 @@ pub const RENAME_INPUT: &str = "robroz-rename-bro";
 /// Top of the chat page: the group or bro name (and `私聊` for a DM).
 /// `back` adds 「‹」 for narrow screens, where the chat covers the list.
 /// With `rename` (bro DMs) the name is a button that turns into an input:
-/// Enter saves, Esc or 取消 cancels.
+/// Enter or 保存 saves (保存 is off while the name is empty or unchanged),
+/// Esc or 取消 cancels.
 pub fn chat_header<'a>(
     t: &Skin,
     name: &str,
@@ -1246,13 +1247,23 @@ pub fn chat_header<'a>(
                     .on_input(|text| Action::RenameEdit { text })
                     .on_submit(Action::RenameSave);
             }
-            bar = bar.push(container(input).width(Fill)).push(btn(
-                t,
-                "取消".into(),
-                Look::Secondary,
-                Leading::None,
-                (!saving).then_some(Action::RenameCancel),
-            ));
+            let changed = !draft.trim().is_empty() && draft.trim() != name.trim();
+            bar = bar
+                .push(container(input).width(Fill))
+                .push(btn(
+                    t,
+                    "保存".into(),
+                    Look::Primary,
+                    Leading::None,
+                    (!saving && changed).then_some(Action::RenameSave),
+                ))
+                .push(btn(
+                    t,
+                    "取消".into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!saving).then_some(Action::RenameCancel),
+                ));
         }
         Some(_) => {
             bar = bar.push(

@@ -127,6 +127,19 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Plain reason for notes outside cards (send, rename, new bro):
+    /// the host's message, or 「连不上主机」.
+    pub fn reason(&self) -> String {
+        match self {
+            ApiError::Transport(_) => "连不上主机".into(),
+            ApiError::Conflict(msg)
+            | ApiError::BadRequest(msg)
+            | ApiError::NotFound(msg)
+            | ApiError::Status(_, msg)
+            | ApiError::Decode(msg) => msg.clone(),
+        }
+    }
+
     /// Footnote for a card whose action failed.
     pub fn note(&self) -> Note {
         match self {
@@ -358,6 +371,9 @@ impl CardApi for FakeApi {
         if name.is_empty() {
             return Err(ApiError::BadRequest("请填写名称".into()));
         }
+        if name.chars().count() > robroz_contract::BRO_NAME_MAX {
+            return Err(ApiError::BadRequest("名字太长".into()));
+        }
         let mut bros = self.bros.lock().expect("fake bros lock");
         let bro = bros
             .iter_mut()
@@ -469,6 +485,12 @@ mod tests {
             Note::Rejected("没有这个选项".into())
         );
         assert_eq!(ApiError::Transport("down".into()).note(), Note::Retry);
+    }
+
+    #[test]
+    fn plain_reasons() {
+        assert_eq!(ApiError::BadRequest("名字太长".into()).reason(), "名字太长");
+        assert_eq!(ApiError::Transport("refused".into()).reason(), "连不上主机");
     }
 
     #[test]
