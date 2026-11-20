@@ -39,8 +39,9 @@ fn awaits_approval(state: TaskState, waiting_for: Option<WaitingFor>) -> bool {
 }
 
 /// How much a preview candidate counts when two events share a change time.
-/// An outcome (`failure`) beats the answer that caused it; an answered card
-/// is the weakest because its result follows it.
+/// An outcome (`failure`) beats the answer that caused it, and 「等你批准」
+/// beats the approval card it points at; an answered card is the weakest
+/// because its result follows it.
 pub fn preview_rank(event: &Event) -> u8 {
     match event {
         Event::Status {
@@ -49,6 +50,11 @@ pub fn preview_rank(event: &Event) -> u8 {
         | Event::Delivery {
             failure: Some(_), ..
         } => 2,
+        // The status summarises the wait; its approval card is created at
+        // the same instant and must not take over the preview.
+        Event::Status {
+            state, waiting_for, ..
+        } if awaits_approval(*state, *waiting_for) => 2,
         Event::Choice {
             answered_at: Some(_),
             ..
@@ -515,6 +521,45 @@ mod tests {
         assert_eq!(
             actual(status_cards(&feed)[0]),
             expected(TaskState::Queued, false)
+        );
+    }
+
+    #[test]
+    fn takeover_to_approval_replaces_the_same_card_in_place() {
+        // First poll (list) says takeover, then SSE says approval for the
+        // same task: one card, updated where it was.
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "帮我发周报"));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Takeover)));
+        feed.apply(&text("m2", "之后"));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Approval)));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Approval)));
+        assert_eq!(feed.len(), 3, "one status card, not two");
+        let cards = status_cards(&feed);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status_line, "等你批准");
+        assert_eq!(cards[0].action, None);
+        assert!(
+            matches!(feed.rows().nth(1), Some(Row::Status(_))),
+            "kept its slot"
+        );
+        // And back: approval -> takeover (card answered elsewhere, captcha next).
+        feed.apply(&blocked_waiting(Some(WaitingFor::Takeover)));
+        assert_eq!(status_cards(&feed).len(), 1);
+        assert_eq!(status_cards(&feed)[0].action, Some("去私聊接管"));
+    }
+
+    #[test]
+    fn awaiting_status_beats_its_approval_card_in_the_preview() {
+        let at = "2026-11-20T10:29:00.000Z";
+        let status = blocked_waiting(Some(WaitingFor::Approval));
+        assert_eq!(preview_rank(&status), 2);
+        let card = (at, 1); // unanswered approval created at the same instant
+        assert!(!preview_wins(card, Some((at, preview_rank(&status)))));
+        assert!(preview_wins((at, preview_rank(&status)), Some(card)));
+        assert_eq!(
+            preview_rank(&blocked_waiting(Some(WaitingFor::Takeover))),
+            1
         );
     }
 
