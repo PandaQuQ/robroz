@@ -45,6 +45,7 @@ pub struct Host {
     image: String,
     get_limit: u64,
     token: Option<auth::ApiToken>,
+    model: Option<Arc<dyn robroz_model::Model>>,
 }
 
 impl Host {
@@ -63,6 +64,7 @@ impl Host {
             image: image.into(),
             get_limit: get_limit_from_env(),
             token: None,
+            model: None,
         })
     }
 
@@ -76,6 +78,12 @@ impl Host {
     /// Require `Authorization: Bearer <token>` on every request. `None` keeps it open.
     pub fn with_token(mut self, token: Option<auth::ApiToken>) -> Self {
         self.token = token;
+        self
+    }
+
+    /// Let bros think with `model`. Without it the runner echoes the prompt.
+    pub fn with_model(mut self, model: Option<Arc<dyn robroz_model::Model>>) -> Self {
+        self.model = model;
         self
     }
 
@@ -99,6 +107,7 @@ impl Host {
                 control_root: &self.control_root,
                 image: &self.image,
                 get_limit: self.get_limit,
+                model: self.model.as_deref(),
             },
         )
     }
@@ -3273,6 +3282,78 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "群不存在");
         assert_eq!(events_of(&app, &group).await["events"].as_array().unwrap().len(), 0);
+    }
+
+    /// Fake model: answers or fails, and counts calls.
+    struct FakeModel {
+        answer: Result<String, String>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl robroz_model::Model for FakeModel {
+        fn reply(&self, prompt: &str) -> Result<String, robroz_model::ModelError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.answer
+                .clone()
+                .map(|a| format!("{a}（{prompt}）"))
+                .map_err(robroz_model::ModelError)
+        }
+    }
+
+    fn pump_with_model(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, model: &FakeModel) {
+        let conn = Connection::open(db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let control = control_of(volumes);
+        super::pump_with(
+            &conn,
+            sandbox,
+            &super::PumpConfig {
+                volumes_root: volumes,
+                control_root: &control,
+                image: "robroz-runner:local",
+                get_limit: 8,
+                model: Some(model),
+            },
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_reply_becomes_the_result_once_per_start() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
+        let model = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        assert_eq!(fake.containers[0].prompt, "写周报", "prompt.txt unchanged");
+        let reply = control_of(&volumes).join(&task_id).join("reply.txt");
+        assert!(!reply.starts_with(&volumes), "reply lives in the control dir, not the volume");
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "running tasks are not asked again");
+
+        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+    }
+
+    #[tokio::test]
+    async fn model_failure_is_written_as_the_result() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
+        let model = FakeModel { answer: Err("模型服务返回 401".into()), calls: Default::default() };
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read_to_string(result).unwrap(), "模型没回：模型服务返回 401");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 
     #[tokio::test]

@@ -33,6 +33,8 @@ pub struct PumpConfig<'a> {
     pub control_root: &'a Path,
     pub image: &'a str,
     pub get_limit: u64,
+    /// `None`: no model, the runner echoes the prompt.
+    pub model: Option<&'a dyn robroz_model::Model>,
 }
 
 struct TaskRow {
@@ -68,6 +70,7 @@ pub fn pump(
             control_root,
             image,
             get_limit,
+            model: None,
         },
     )
 }
@@ -119,6 +122,9 @@ fn start_task(
     })?;
     if claimed == 0 {
         return Ok(());
+    }
+    if let Some(model) = cfg.model {
+        write_reply(&control_dir, &task.id, &task.prompt, model);
     }
 
     let name = container_name(&task.id);
@@ -314,6 +320,21 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 }
 
 /// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
+/// Ask the model outside the DB lock and leave its answer for the runner.
+/// A failed call becomes the result text, so the task still finishes and the
+/// person sees why. Old replies are removed first so a retry never reuses one.
+fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) {
+    let path = robroz_runner::reply_path(control_dir);
+    let _ = std::fs::remove_file(&path);
+    let text = model.reply(prompt).unwrap_or_else(|err| {
+        eprintln!("pump: model for {task_id}: {err}");
+        format!("模型没回：{err}")
+    });
+    if let Err(err) = std::fs::write(&path, text) {
+        eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
+    }
+}
+
 fn remove_intent(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
     match std::fs::remove_file(robroz_runner::intent_path(group_dir, task_id)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
