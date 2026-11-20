@@ -22,6 +22,17 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 - 选项卡：新增卡片类型 `choice`，带 `options[]`，用户的选择以 `{"choice":[ids]}` 回传，单选也传数组。状态卡保持冻结，不加字段。
 - 例行任务：新增 `GET` 列表接口和 `PATCH` 的 `paused` 字段。
 
+## IM 基础（2026-11-20 进第一期）
+
+robroz 做成 IM 软件，对标微信和 WhatsApp。下面四项 2026-11-20 由 PM 定为第一期，后端按顺序做，每项单独一个 PR，都只做新增，不改已有字段：
+
+| 顺序 | 功能 | 用户能看到什么 | 第一期做法 | 勾选 |
+| --- | --- | --- | --- | --- |
+| 1 | 监听地址加令牌鉴权 | 手机、网页版等远程客户端能连上宿主机。 | 监听地址可配置。默认仍只听 `127.0.0.1`，本机不用令牌；监听地址不是本机时，没配令牌就拒绝启动。令牌只放配置文件或 `ROBROZ_*` 环境变量，不写进日志。 | [x] |
+| 2 | 实时推送 | 新消息和卡片变化立刻出现，不用等下一轮刷新。 | 新增一个事件流接口推送更新。现有 `GET /api/groups/:id/events` 轮询（含 `?since=`）留着做兜底。 | [x] |
+| 3 | 未读数 | 会话列表每行有未读红点和数字。 | 每个群记一个已读位置，未读数由它算出。 | [x] |
+| 4 | 私聊 | 和单个 bot 一对一聊天，与群聊混在同一个会话列表里，按时间排序。 | 实现上就是只有你和一个 bot 的群，不新造概念。 | [x] |
+
 ## 目的与规则
 
 - 只参考功能和行为，用来对照 robroz 已有节点（节点 1 契约、节点 2 宿主机编排、节点 3 沙盒和共享卷、节点 4 权限、节点 5 定时、节点 6 客户端、节点 7 联调）。不新增节点；对不上已有节点的标「后续（第一期范围外）」。
@@ -71,7 +82,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
 | 同一张状态卡原地更新 | 一个任务一张卡，状态变化就地改，不另起一张。 | robroz 卡片规范；[Comma：Cards only project status](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle) | 节点 6 | 是 | [x] |
-| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（第一期用 `GET /api/groups/:id/events` 轮询，不另开通道）；WebSocket 桌面流为否 | [x] |
+| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（最初用 `GET /api/groups/:id/events` 轮询；2026-11-20 起新增事件流接口做实时推送，轮询留作兜底，见「IM 基础」）；WebSocket 桌面流为否 | [x] |
 
 ## 多 agent 与群聊
 
@@ -80,7 +91,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 建群、拉多个 Bot、指定执行者 | 一个群里可以有多个人和一个或多个 Bot；派任务时指定执行的 Bot。 | robroz 节点 2；[OpenBot：To 里放两个以上 Bot 即开群](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot 频道与可编辑 roster](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 是 | [x] |
 | 群聊里多个 Bot 分工 | 被点到的 Bot 用自己的名字回答，不由另一个 Bot 代述。可把工作交给队友，按接收方自己的权限跑。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/architecture.md「One Bot handing work to another」](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#one-bot-handing-work-to-another)；[OpenMausBot 审批文档中的队友交接](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md) | 节点 2 | 否（第一期只做建群、拉 Bot、派任务；Bot 互派和自动分工为后续） | [ ] |
 | 本地 agent 按 bot 接入 | 侧栏里每个 bot 是一台本地 agent（本机已登录的 Claude / Codex / Grok 命令行，或设置里接入的兼容引擎）。本机 127.0.0.1 上的 harness 托管这些进程；应用发命令、收一条事件流。可在对话中途换模型。数据和密钥默认留在本机目录。 | [OpenMausBot README「Why」「Pick a brain per bot」「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#why)；[OpenMausBot docs/custom-engines.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/custom-engines.md) | 节点 3 | 否（第一期执行器仍是本机 Docker 里的 Rust runner，不接外部 CLI） | [ ] |
-| 把 Bot 当联系人管理 | 侧栏像聊天列表：置顶、未读、改资料、复制、隐藏、删除；可暂停某个 bot、整个部门或全部 bot，恢复后数据和例行任务还在。 | [OpenMausBot README「Manage bots like chats」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/pausing-bots.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/pausing-bots.md) | 节点 2、节点 6（第一期只有群列表，没有 Bot 详情页和暂停） | 否 | [ ] |
+| 把 Bot 当联系人管理 | 侧栏像聊天列表：置顶、未读、改资料、复制、隐藏、删除；可暂停某个 bot、整个部门或全部 bot，恢复后数据和例行任务还在。 | [OpenMausBot README「Manage bots like chats」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/pausing-bots.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/pausing-bots.md) | 节点 2、节点 6（第一期只有群列表，没有 Bot 详情页和暂停） | 否（其中未读数和私聊 2026-11-20 起进第一期，见「IM 基础」） | [ ] |
 | 频道 / 房间组织 | 工作、日常、项目分频道，各有自己的记录、共用说明、工作目录、应答规则和可编辑的 bot 名单。未点名的消息可由决策模型选一个合适的 bot，拿不准就交给房间负责人。 | [OpenMausBot README「Channels」「Fast decisions with Jev」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/decision-model.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/decision-model.md) | 节点 2（群） | 否（第二期；第一期仍是每个群一个 Docker。原备注：分群是；自动选 Bot 和频道级说明为否） | [ ] |
 | 整队导入与分享 | 用一份说明文件安装一组 bot、频道和建议例行任务；连接默认关闭，例行任务默认暂停，不携带会话、记忆、密钥或电脑权限。分享时只带角色、技能和要用的应用名。 | [OpenMausBot README「Install a complete team」「Share a bot or a department」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 否 | [ ] |
 
