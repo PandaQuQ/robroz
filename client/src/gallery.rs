@@ -134,7 +134,7 @@ impl Gallery {
                 },
             }
         };
-        let mut answered_here = sample(
+        let answered = sample(
             "choice · answered（同一张卡就地更新）",
             install(ChoiceState::Answered {
                 selected: vec!["both".into()],
@@ -142,7 +142,6 @@ impl Gallery {
                 elsewhere: false,
             }),
         );
-        answered_here.ui.answered_here = true;
 
         let row = |id: &str, name: &str, hours: i64, paused: bool| RoutineRow {
             id: id.into(),
@@ -165,17 +164,9 @@ impl Gallery {
         Self {
             choice: vec![
                 sample("choice · open · single", install(ChoiceState::Open)),
-                answered_here,
+                answered,
                 multi(vec!["chat", "routines"]),
                 sample("choice · expired", install(ChoiceState::Expired)),
-                sample(
-                    "choice · answered elsewhere",
-                    install(ChoiceState::Answered {
-                        selected: vec!["cargo".into()],
-                        at: None,
-                        elsewhere: true,
-                    }),
-                ),
             ],
             approval: vec![
                 sample(

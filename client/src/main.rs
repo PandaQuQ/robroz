@@ -22,7 +22,7 @@ use robroz_contract::{Event, ScheduleEntry};
 use robroz_ui::cards::interact::CardUi;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
-use robroz_ui::view::{self, color, Action};
+use robroz_ui::view::{self, color, Action, Caps};
 use robroz_ui::{Mode, Skin};
 
 use api::{ApiError, CardApi, FakeApi, HttpApi};
@@ -118,6 +118,8 @@ enum Message {
 struct App {
     source: Shared,
     api: Arc<dyn CardApi>,
+    /// Which card buttons the backend can serve (drafts: fake only).
+    caps: Caps,
     origin: String,
     interval: Duration,
     groups: Vec<GroupTab>,
@@ -192,6 +194,7 @@ impl App {
         let app = Self {
             source: Arc::new(Mutex::new(source)),
             api,
+            caps: if fake { Caps::FAKE } else { Caps::HOST },
             origin,
             interval,
             groups: Vec::new(),
@@ -311,6 +314,11 @@ impl App {
                     card: format!("{}{card}", if approve { "+" } else { "-" }),
                     result,
                 })
+            }
+            // Drafts are phase 2: the button is not drawn against a real host,
+            // and a stray action is dropped rather than sent to a 404.
+            Action::SendDraft { .. } | Action::EditDraftInDm { .. } if !self.caps.draft_actions => {
+                Task::none()
             }
             Action::SendDraft { card } => {
                 if !self.ui.entry(card.clone()).or_default().begin_action() {
@@ -653,7 +661,7 @@ impl App {
             .get(id)
             .into_iter()
             .flat_map(Feed::rows)
-            .map(|r| row_view(t, r, &self.ui, &empty, width));
+            .map(|r| row_view(t, r, &self.ui, &empty, self.caps, width));
         scrollable(
             column(rows)
                 .spacing(t.metrics.stream_spacing)
@@ -692,9 +700,9 @@ impl App {
             |name: &'static str, samples: &'a [gallery::Sample]| -> Element<'a, Message> {
                 let mut c = column![title(name)].spacing(6);
                 for s in samples {
-                    c = c
-                        .push(caption(s.caption))
-                        .push(view::card(t, &s.card, &s.ui, col_width).map(Message::Ui));
+                    c = c.push(caption(s.caption)).push(
+                        view::card(t, &s.card, &s.ui, Caps::FAKE, col_width).map(Message::Ui),
+                    );
                 }
                 c.into()
             };
@@ -751,6 +759,7 @@ fn row_view<'a>(
     r: &'a Row,
     ui: &HashMap<String, CardUi>,
     empty: &CardUi,
+    caps: Caps,
     width: f32,
 ) -> Element<'a, Message> {
     match r {
@@ -772,7 +781,7 @@ fn row_view<'a>(
         Row::Delivery(card) => delivery_view(t, card, width),
         Row::Card(card) => {
             let state = ui.get(card.id()).unwrap_or(empty);
-            view::card(t, card, state, width).map(Message::Ui)
+            view::card(t, card, state, caps, width).map(Message::Ui)
         }
     }
 }

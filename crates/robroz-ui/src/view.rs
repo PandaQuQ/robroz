@@ -490,13 +490,38 @@ fn frame<'a>(t: &Skin, content: Element<'a, Action>) -> Element<'a, Action> {
 
 // ---------- Cards ----------
 
+/// What the connected backend can do, so the view never draws a button
+/// whose endpoint does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Caps {
+    /// Draft 发送 / 修改. Drafts are phase 2: only the fake source has them.
+    pub draft_actions: bool,
+}
+
+impl Caps {
+    /// Real host (phase 1): no draft buttons.
+    pub const HOST: Caps = Caps {
+        draft_actions: false,
+    };
+    /// `--fake` / `--gallery`: every card fully clickable.
+    pub const FAKE: Caps = Caps {
+        draft_actions: true,
+    };
+}
+
 /// One new card. `width` is the stream's content width (for clamping the
 /// draft preview); `ui` is that card's local state.
-pub fn card<'a>(t: &Skin, card: &'a Card, ui: &CardUi, width: f32) -> Element<'a, Action> {
+pub fn card<'a>(
+    t: &Skin,
+    card: &'a Card,
+    ui: &CardUi,
+    caps: Caps,
+    width: f32,
+) -> Element<'a, Action> {
     match card {
         Card::Choice(c) => choice(t, c, ui),
         Card::Approval(c) => approval(t, c, ui, width),
-        Card::Draft(c) => draft(t, c, ui, width),
+        Card::Draft(c) => draft(t, c, ui, caps, width),
     }
 }
 
@@ -562,7 +587,7 @@ pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Ac
         .note
         .as_ref()
         .map(|n| n.text())
-        .or_else(|| status::choice_footnote(card, ui.answered_here, &Local));
+        .or_else(|| status::choice_footnote(card, &Local));
     if let Some(foot) = foot {
         col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, foot));
     }
@@ -655,7 +680,13 @@ pub fn approval<'a>(
     frame(t, col.into())
 }
 
-pub fn draft<'a>(t: &Skin, card: &'a DraftCard, ui: &CardUi, width: f32) -> Element<'a, Action> {
+pub fn draft<'a>(
+    t: &Skin,
+    card: &'a DraftCard,
+    ui: &CardUi,
+    caps: Caps,
+    width: f32,
+) -> Element<'a, Action> {
     let (label, d) = status::draft_status(&card.state);
     let lines = status::draft_preview_lines(&card.state);
     let inner = width - 2.0 * (t.controls.card_pad_h + t.metrics.preview_pad + t.stroke.card);
@@ -706,7 +737,7 @@ pub fn draft<'a>(t: &Skin, card: &'a DraftCard, ui: &CardUi, width: f32) -> Elem
         gap(t.metrics.head_gap),
         preview_box,
     ];
-    if let Some(enabled) = interact::draft_actions(card, ui) {
+    if let Some(enabled) = interact::draft_actions(card, ui, caps.draft_actions) {
         let id = &card.id;
         col = col.push(gap(t.metrics.body_gap)).push(buttons_row(
             t,

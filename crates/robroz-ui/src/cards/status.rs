@@ -99,24 +99,19 @@ fn with_time(text: String, time: &str) -> String {
     }
 }
 
-/// Footnote under a choice card. `answered_here` is true when this client
-/// sent the answer in this session; `tz` is the computer's local zone.
-pub fn choice_footnote<Tz: TimeZone>(
-    card: &ChoiceCard,
-    answered_here: bool,
-    tz: &Tz,
-) -> Option<String>
+/// Footnote under a choice card; `tz` is the computer's local zone.
+///
+/// Answered cards always read 「已选「…」 · HH:MM」. The contract has no
+/// who/where field yet (backend adds an optional one with DMs), so there is
+/// no 你选了 / 已在私聊里回答 wording until then (UI decision on #24).
+pub fn choice_footnote<Tz: TimeZone>(card: &ChoiceCard, tz: &Tz) -> Option<String>
 where
     Tz::Offset: std::fmt::Display,
 {
     match &card.state {
         ChoiceState::Open => None,
         ChoiceState::Expired => Some("已过期，没有人作答".into()),
-        ChoiceState::Answered {
-            selected,
-            at,
-            elsewhere,
-        } => {
+        ChoiceState::Answered { selected, at, .. } => {
             let labels = selected
                 .iter()
                 .map(|id| card.label_of(id).unwrap_or(id).to_string())
@@ -126,13 +121,7 @@ where
                 .as_deref()
                 .map(|a| clock_iso_in(a, tz))
                 .unwrap_or_default();
-            Some(if *elsewhere {
-                format!("已在私聊里回答：{labels}")
-            } else if answered_here {
-                with_time(format!("你选了「{labels}」"), &time)
-            } else {
-                with_time(format!("已选「{labels}」"), &time)
-            })
+            Some(with_time(format!("已选「{labels}」"), &time))
         }
     }
 }
@@ -449,34 +438,28 @@ mod tests {
             multi: false,
             state: ChoiceState::Open,
         };
-        assert_eq!(choice_footnote(&card, false, &Utc), None);
+        assert_eq!(choice_footnote(&card, &Utc), None);
         card.state = ChoiceState::Answered {
             selected: vec!["a".into()],
             at: Some("2026-11-20T01:52:00.000Z".into()),
             elsewhere: false,
         };
         assert_eq!(
-            choice_footnote(&card, true, &Utc).unwrap(),
-            "你选了「两种都写」 · 01:52"
-        );
-        assert_eq!(
-            choice_footnote(&card, false, &Utc).unwrap(),
+            choice_footnote(&card, &Utc).unwrap(),
             "已选「两种都写」 · 01:52"
         );
+        // No who/where field yet: same wording whoever answered, wherever.
         card.state = ChoiceState::Answered {
-            selected: vec!["b".into()],
-            at: None,
+            selected: vec!["a".into(), "b".into()],
+            at: Some("2026-11-20T01:52:00.000Z".into()),
             elsewhere: true,
         };
         assert_eq!(
-            choice_footnote(&card, false, &Utc).unwrap(),
-            "已在私聊里回答：cargo install"
+            choice_footnote(&card, &Utc).unwrap(),
+            "已选「两种都写、cargo install」 · 01:52"
         );
         card.state = ChoiceState::Expired;
-        assert_eq!(
-            choice_footnote(&card, false, &Utc).unwrap(),
-            "已过期，没有人作答"
-        );
+        assert_eq!(choice_footnote(&card, &Utc).unwrap(), "已过期，没有人作答");
     }
 
     #[test]

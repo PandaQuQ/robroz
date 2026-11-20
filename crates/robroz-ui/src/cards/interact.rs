@@ -65,8 +65,6 @@ pub struct CardUi {
     /// Approval / draft action in flight.
     pub busy: bool,
     pub note: Option<Note>,
-    /// This client sent the answer in this session.
-    pub answered_here: bool,
     /// Narrow screens: the user tapped the shortened bot name to see it all.
     pub name_expanded: bool,
 }
@@ -107,7 +105,6 @@ impl CardUi {
     pub fn choice_sent(&mut self) {
         self.submitting = None;
         self.picks.clear();
-        self.answered_here = true;
         self.note = None;
     }
 
@@ -216,9 +213,11 @@ pub fn approval_actions(card: &ApprovalCard, ui: &CardUi) -> ApprovalActions {
     }
 }
 
-/// Draft: 发送 (primary) + 修改 (secondary) while pending.
-pub fn draft_actions(card: &DraftCard, ui: &CardUi) -> Option<bool> {
-    matches!(card.state, DraftState::Pending).then_some(!ui.busy)
+/// Draft: 发送 (primary) + 修改 (secondary) while pending, and only when
+/// `live` (the fake source). Drafts are phase 2: against a real host the
+/// buttons are not drawn at all (PM decision on #24).
+pub fn draft_actions(card: &DraftCard, ui: &CardUi, live: bool) -> Option<bool> {
+    (live && matches!(card.state, DraftState::Pending)).then_some(!ui.busy)
 }
 
 /// Every card draws at most one orange button. Used by tests and as a
@@ -437,11 +436,12 @@ mod tests {
             state: DraftState::Pending,
         };
         let ui = CardUi::default();
-        assert_eq!(draft_actions(&d, &ui), Some(true));
+        assert_eq!(draft_actions(&d, &ui, true), Some(true));
+        assert_eq!(draft_actions(&d, &ui, false), None, "real host: no buttons");
         d.state = DraftState::Sent {
             by: "Panda".into(),
             at: 0,
         };
-        assert_eq!(draft_actions(&d, &ui), None);
+        assert_eq!(draft_actions(&d, &ui, true), None);
     }
 }
