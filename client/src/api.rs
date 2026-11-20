@@ -7,8 +7,9 @@
 //!   `GET /api/groups/:id/schedules`, `PATCH /api/schedules/:id`.
 //! - Unread uses robroz#26: `GET /api/unread`, `POST /api/groups/:id/read`.
 //! - Bros and DMs use robroz#28: `GET /api/bros`, `POST /api/bros`.
-//! - The composer uses the existing `POST /api/groups/:id/messages` (store
-//!   the text) and `POST /api/groups/:id/tasks` (queue it for a bro).
+//! - The composer uses robroz#39: `POST /api/groups/:id/say` stores the
+//!   text and, in a DM or after `@名字` in a group, queues a task (the host
+//!   decides who, in one transaction).
 //! - `approval` uses robroz#32: `POST /api/approvals/:id/approve` and
 //!   `/deny`, no body, answered once (409 after).
 //! - `draft` has no backend endpoint yet (phase 2). It uses the UI SPEC §9
@@ -17,9 +18,9 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, AnswerChoice, Bro, Bros, CreateBro, CreateTask, ErrorBody, Event, Message,
-    MessageKind, PostMessage, RenameBro, ScheduleEntry, Schedules, Task, TaskState, Unread,
-    Unreads, UpdateSchedule,
+    next_bro_name, route_mention, AnswerChoice, Bro, Bros, CreateBro, ErrorBody, Event, Message,
+    MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
+    UpdateSchedule,
 };
 use robroz_ui::cards::interact::Note;
 
@@ -50,13 +51,9 @@ pub mod paths {
     pub fn bro(id: &str) -> String {
         format!("/api/bros/{id}")
     }
-    /// Existing host route: store a user message in a group.
-    pub fn messages(group_id: &str) -> String {
-        format!("/api/groups/{group_id}/messages")
-    }
-    /// Existing host route: queue a task for a bro in a group.
-    pub fn tasks(group_id: &str) -> String {
-        format!("/api/groups/{group_id}/tasks")
+    /// robroz#39: what the person typed; the host routes it.
+    pub fn say(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/say")
     }
     /// robroz#32: approve or deny an approval card, once.
     pub fn approval_decision(id: &str, approve: bool) -> String {
@@ -81,22 +78,12 @@ pub mod bodies {
         .expect("serialize answer")
     }
 
-    /// `{"kind":"text","body":…}`.
-    pub fn text(body: &str) -> String {
-        serde_json::to_string(&PostMessage {
-            kind: MessageKind::Text,
+    /// `{"body":…}`.
+    pub fn say(body: &str) -> String {
+        serde_json::to_string(&Say {
             body: body.to_string(),
         })
-        .expect("serialize message")
-    }
-
-    /// `{"assigneeBotId":…,"prompt":…}`.
-    pub fn task(bot_id: &str, prompt: &str) -> String {
-        serde_json::to_string(&CreateTask {
-            assignee_bot_id: bot_id.to_string(),
-            prompt: prompt.to_string(),
-        })
-        .expect("serialize task")
+        .expect("serialize say")
     }
 
     /// `{"name":…}`.
@@ -163,10 +150,8 @@ pub trait CardApi: Send + Sync {
     fn create_bro(&self) -> Result<Bro, ApiError>;
     /// Rename a bro; the host renames its DM too.
     fn rename_bro(&self, id: &str, name: &str) -> Result<Bro, ApiError>;
-    /// Composer: store a text message in a group.
-    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError>;
-    /// Composer: queue `prompt` for a bro who is in the group.
-    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError>;
+    /// Composer: store the text; the host queues a task when a bro is meant.
+    fn say(&self, group_id: &str, body: &str) -> Result<Said, ApiError>;
     /// Returns the updated `choice` event when the host sends it back.
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError>;
     /// Returns the answered `approval` event when the host sends it back.
@@ -265,12 +250,8 @@ impl CardApi for HttpApi {
         decode(&self.patch(&paths::bro(id), bodies::rename(name))?)
     }
 
-    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError> {
-        decode(&self.post(&paths::messages(group_id), Some(bodies::text(body)))?)
-    }
-
-    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
-        decode(&self.post(&paths::tasks(group_id), Some(bodies::task(bot_id, prompt)))?)
+    fn say(&self, group_id: &str, body: &str) -> Result<Said, ApiError> {
+        decode(&self.post(&paths::say(group_id), Some(bodies::say(body)))?)
     }
 
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError> {
@@ -379,24 +360,34 @@ impl CardApi for FakeApi {
         Ok(bro.clone())
     }
 
-    fn send_message(&self, _: &str, body: &str) -> Result<Message, ApiError> {
-        if body.trim().is_empty() {
+    /// Same rule as the host: a DM goes to its bro; a group routes a
+    /// leading `@名字` (the fake treats every known bro as a member).
+    fn say(&self, group_id: &str, body: &str) -> Result<Said, ApiError> {
+        let body = body.trim();
+        if body.is_empty() {
             return Err(ApiError::BadRequest("请填写内容".into()));
         }
-        Ok(Message {
-            id: format!("fake-msg-{}", uuid_ish()),
-            kind: MessageKind::Text,
-            body: body.to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        })
-    }
-
-    fn create_task(&self, _: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
-        Ok(Task {
-            id: format!("fake-task-{}", uuid_ish()),
-            assignee_bot_id: bot_id.to_string(),
-            prompt: prompt.to_string(),
-            state: TaskState::Queued,
+        let bros = self.bros.lock().expect("fake bros lock");
+        let route = match bros
+            .iter()
+            .find(|b| b.dm_group_id.as_deref() == Some(group_id))
+        {
+            Some(bro) => Some((bro.id.clone(), body.to_string())),
+            None => route_mention(body, bros.iter().map(|b| (b.id.as_str(), b.name.as_str()))),
+        };
+        Ok(Said {
+            message: Message {
+                id: format!("fake-msg-{}", uuid_ish()),
+                kind: MessageKind::Text,
+                body: body.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+            task: route.map(|(bot, prompt)| Task {
+                id: format!("fake-task-{}", uuid_ish()),
+                assignee_bot_id: bot,
+                prompt,
+                state: TaskState::Queued,
+            }),
         })
     }
 
@@ -463,8 +454,7 @@ mod tests {
         assert_eq!(paths::UNREAD, "/api/unread");
         assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
         assert_eq!(paths::BROS, "/api/bros");
-        assert_eq!(paths::messages("g1"), "/api/groups/g1/messages");
-        assert_eq!(paths::tasks("g1"), "/api/groups/g1/tasks");
+        assert_eq!(paths::say("g1"), "/api/groups/g1/say");
         assert_eq!(paths::bro("b1"), "/api/bros/b1");
         assert_eq!(bodies::rename("Ada"), r#"{"name":"Ada"}"#);
     }
@@ -477,6 +467,31 @@ mod tests {
             r#"{"choice":["a","b"]}"#
         );
         assert_eq!(bodies::paused(false), r#"{"paused":false}"#);
+    }
+
+    #[test]
+    fn fake_say_routes_like_the_host() {
+        let bro = |id: &str, name: &str| Bro {
+            id: id.into(),
+            name: name.into(),
+            dm_group_id: Some(format!("dm-{id}")),
+        };
+        let api = FakeApi::new(Vec::new())
+            .with_chats(Vec::new(), vec![bro("b1", "bro"), bro("b2", "bro 2")]);
+        let said = api.say("dm-b1", " 整理周报 ").unwrap();
+        assert_eq!(said.message.body, "整理周报");
+        let task = said.task.unwrap();
+        assert_eq!(
+            (task.assignee_bot_id.as_str(), task.prompt.as_str()),
+            ("b1", "整理周报")
+        );
+        let task = api.say("g1", "@bro 2 写 README").unwrap().task.unwrap();
+        assert_eq!(
+            (task.assignee_bot_id.as_str(), task.prompt.as_str()),
+            ("b2", "写 README")
+        );
+        assert_eq!(api.say("g1", "大家早").unwrap().task, None);
+        assert!(matches!(api.say("g1", "  "), Err(ApiError::BadRequest(_))));
     }
 
     #[test]
@@ -699,21 +714,30 @@ mod tests {
         }
 
         #[test]
-        fn composer_posts_message_and_queues_task() {
+        fn composer_says_and_the_host_routes() {
             let base = spawn_host();
             let group = group_with_bot(&base);
             let api = HttpApi::new(Conn::new(&base));
-            // Group: the text is stored as a message.
-            let sent = api.send_message(&group.id, "@文档哥 写 README").unwrap();
-            assert_eq!(sent.body, "@文档哥 写 README");
-            assert!(matches!(
-                api.send_message(&group.id, "  "),
-                Err(ApiError::BadRequest(_))
-            ));
-            // An @mention queues the rest for that bro.
-            let task = api.create_task(&group.id, "bot-doc", "写 README").unwrap();
+            // Group, no @: stored, nobody asked.
+            let said = api.say(&group.id, "大家早").unwrap();
+            assert_eq!(said.message.body, "大家早");
+            assert_eq!(said.task, None);
+            // Group, @member: stored as typed, the rest queued for that bro.
+            let said = api.say(&group.id, "  @文档哥 写 README ").unwrap();
+            assert_eq!(said.message.body, "@文档哥 写 README");
+            let task = said.task.expect("task for the mentioned bro");
+            assert_eq!(task.assignee_bot_id, "bot-doc");
+            assert_eq!(task.prompt, "写 README");
             assert_eq!(task.state, TaskState::Queued);
-            assert!(api.create_task(&group.id, "bot-nobody", "x").is_err());
+            // @ someone not in the group: just a message.
+            assert_eq!(api.say(&group.id, "@路人 帮忙").unwrap().task, None);
+            let err = api.say(&group.id, "  ").unwrap_err();
+            assert!(matches!(err, ApiError::BadRequest(_)));
+            assert_eq!(err.reason(), "请填写内容");
+            assert!(matches!(
+                api.say("no-such-group", "hi"),
+                Err(ApiError::NotFound(_))
+            ));
             let seen = events(&base, &group.id);
             assert!(seen
                 .iter()
@@ -725,9 +749,10 @@ mod tests {
             // DM: the bro behind it gets the task.
             let bro = api.create_bro().unwrap();
             let dm = bro.dm_group_id.clone().unwrap();
-            api.send_message(&dm, "整理一下周报").unwrap();
-            let task = api.create_task(&dm, &bro.id, "整理一下周报").unwrap();
+            let said = api.say(&dm, "整理一下周报").unwrap();
+            let task = said.task.expect("a DM always asks its bro");
             assert_eq!(task.assignee_bot_id, bro.id);
+            assert_eq!(task.prompt, "整理一下周报");
             let seen = events(&base, &dm);
             assert!(seen
                 .iter()

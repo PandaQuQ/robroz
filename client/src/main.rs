@@ -15,7 +15,6 @@
 //! the footer button toggles).
 
 mod api;
-mod compose;
 mod conn;
 mod gallery;
 mod model;
@@ -27,9 +26,7 @@ use std::time::Duration;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
-use robroz_contract::{
-    Bro, Event, Message as HostMessage, ScheduleEntry, Task as HostTask, Unread,
-};
+use robroz_contract::{Bro, Event, Said, ScheduleEntry, Unread};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
@@ -142,11 +139,10 @@ enum Message {
         group: String,
         result: Result<Bro, ApiError>,
     },
-    /// Composer result: the stored message, then the queued task if any.
+    /// Composer result from `/say`: the stored message (+ task, if any).
     Sent {
         group: String,
-        message: Result<HostMessage, ApiError>,
-        task: Option<Result<HostTask, ApiError>>,
+        result: Result<Said, ApiError>,
     },
     /// Narrow screens: back from a chat to the list.
     Back,
@@ -169,7 +165,7 @@ struct App {
     stream_up: bool,
     /// Narrow screens: a chat (or routines) is open over the list.
     narrow_open: bool,
-    /// Known bros (DM owners, @mention targets).
+    /// Known bros (DM owners, the rename box).
     bros: Vec<Bro>,
     /// Composer text per chat.
     drafts: HashMap<String, String>,
@@ -415,7 +411,7 @@ impl App {
         )
     }
 
-    /// Composer: store the text, then queue it for a bro when one is meant.
+    /// Composer: one `/say`; the host stores it and picks the bro, if any.
     fn send(&mut self) -> Task<Message> {
         if self.sending {
             return Task::none();
@@ -424,23 +420,16 @@ impl App {
             return Task::none();
         };
         let draft = self.drafts.get(&group).cloned().unwrap_or_default();
-        let Some(out) = compose::plan(&draft, &group, &self.bros) else {
+        let body = draft.trim().to_string();
+        if body.is_empty() {
             return Task::none();
-        };
+        }
         self.sending = true;
         let g = group.clone();
-        let job = call(&self.api, move |api| {
-            let message = api.send_message(&g, &out.body);
-            let task = match (&message, out.task) {
-                (Ok(_), Some((bot, prompt))) => Some(api.create_task(&g, &bot, &prompt)),
-                _ => None,
-            };
-            (message, task)
-        });
-        Task::perform(job, move |(message, task)| Message::Sent {
+        let job = call(&self.api, move |api| api.say(&g, &body));
+        Task::perform(job, move |result| Message::Sent {
             group: group.clone(),
-            message,
-            task,
+            result,
         })
     }
 
@@ -767,14 +756,10 @@ impl App {
                     }
                 }
             }
-            Message::Sent {
-                group,
-                message,
-                task,
-            } => {
+            Message::Sent { group, result } => {
                 self.sending = false;
-                match message {
-                    Ok(m) => {
+                match result {
+                    Ok(Said { message: m, .. }) => {
                         self.drafts.remove(&group);
                         self.send_note.remove(&group);
                         let event = Event::Message {
@@ -784,12 +769,6 @@ impl App {
                             created_at: m.created_at,
                         };
                         self.apply_event(group.clone(), &event);
-                        if let Some(Err(err)) = task {
-                            self.send_note.insert(
-                                group,
-                                format!("消息已发出，但没能交给 bro：{}", err.reason()),
-                            );
-                        }
                         // Pick up the new status card without waiting a tick.
                         return self.poll();
                     }
