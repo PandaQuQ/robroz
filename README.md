@@ -231,7 +231,7 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 
 ## 记忆（memories）
 
-bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。bro 提议的记忆先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。拼进模型提示和技能在后面的 PR 里做。
+bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。bro 提议的记忆先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。技能在后面的 PR 里做。
 
 - `GET /api/memories?kind=&scope=&status=`：返回 `{memories:[Memory]}`，按 `updatedAt` 从新到旧。三个参数都可选，留空等于不筛。不传 `status` 时只返回 `kept` 和 `pending`，`rejected` 要写 `status=rejected` 才返回。忘掉的永远不返回。参数不合法返回 400。
 - `POST /api/memories`：你自己记一条，请求体 `{"scope", "kind", "text"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Memory`。
@@ -242,6 +242,8 @@ bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`
 - `text` 会去掉首尾空白，不能为空，最长 2000 个字，不符合时返回 400。
 - `Memory` 的字段：`id`、`scope`、`kind`、`text`、`source`、`status`、`createdAt`、`updatedAt`，以及后来新增的可选字段 `confirmId`：`pending` 且确认卡还没回答时带这张卡的 id，其他时候不带。
 - 和其他 `/api` 一样，设了令牌就要带 `Authorization: Bearer <令牌>`。
+- 注入模型：任务开始、宿主机调用模型时，把这个 bro 能用的已记下记忆（`scope` 为 `user` 或 `bot:<这个 bro>`，`status=kept`，没忘掉的）拼进 system 提示，加在固定开场白后面。格式是一段「你记得这些：」，下面每条一行，写成 `[kind] 原文`（`kind` 是 `profile` / `habit` / `project`），按 `updatedAt` 从新到旧。整段最多 4000 个字（按字符计），超出就整条丢掉最旧的，不截半条。一条都没有时不加这段。`pending`、`rejected` 和忘掉的都不会进去。
+
 
 ## 确认卡（confirm）
 
@@ -274,6 +276,7 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 
 - 没设密钥就不接模型，bro 把 prompt 原样写进结果。CI 和端到端测试都走这条路。
 - 设了密钥，就必须同时设 `ROBROZ_MODEL_BASE_URL` 和 `ROBROZ_MODEL`。两个密钥变量都设了、密钥文件是空的、密钥里有空白，或者地址不以 `http://` / `https://` 开头，宿主机都拒绝启动，报错里只写变量名，不写值。
+- 调用时会把该 bro 已记下的记忆拼进 system 提示，规则见「记忆」一节。任务的 prompt 还是用户那一条，不会改。
 - 模型由宿主机调用，单次调用最长等 120 秒。密钥不进容器，也不进群目录，日志和报错里都不会出现。沙箱照样不联网。
 - 宿主机在 `docker run` 之前把模型的回答写进这个任务的 `/control/reply.txt`（容器里只读），runner 用它代替回显，写进 `result.txt`。每次运行前都会先删掉旧的回答，重试时不会拿到上一次的。
 - 任务会不会卡住，仍然只看 prompt 里的 `robroz-action:` 行，跟模型回答了什么无关。

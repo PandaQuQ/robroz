@@ -14,6 +14,9 @@
 //! (see [`crate::proposals`]); `confirmId` names that card while it is open.
 //! Only answering the card moves a memory out of `pending`: `PATCH` never
 //! changes `status`. Forgetting a pending memory closes its card as denied.
+//!
+//! When a task starts and a model is configured, [`kept_for`] plus
+//! [`prompt_section`] append a short paragraph to the system prompt.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -85,7 +88,6 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
 
 /// Kept, not forgotten memories a bro may use: everyone's (`user`) plus its own
 /// (`bot:<id>`), newest `updatedAt` first. For building the model prompt.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn kept_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(&format!(
         "{SELECT} WHERE scope IN ('user', ?1) AND status = 'kept' AND forgotten_at IS NULL {ORDER}"
@@ -93,6 +95,48 @@ pub(crate) fn kept_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Vec<
     let own = MemoryScope::for_bot(bot_id).to_string();
     let rows = stmt.query_map([own], from_row)?;
     rows.collect()
+}
+
+/// Max length of the memory paragraph in the system prompt, in Unicode scalar
+/// values. Over this, oldest whole memories are dropped; a line is never cut.
+pub(crate) const MEMORY_PROMPT_MAX: usize = 4000;
+
+const MEMORY_PROMPT_HEADER: &str = "你记得这些：";
+
+/// One line per memory. Newlines in the text are flattened so the paragraph
+/// stays one memory per line.
+fn prompt_line(memory: &Memory) -> String {
+    let text = memory.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("[{}] {}", memory.kind.as_str(), text)
+}
+
+/// The paragraph to append to the system prompt, or `None` when there is
+/// nothing to add. `memories` must already be newest-first, as [`kept_for`]
+/// returns them. Entries that would go past `max_chars` are dropped from the
+/// oldest end.
+pub(crate) fn prompt_section(memories: &[Memory]) -> Option<String> {
+    prompt_section_with(memories, MEMORY_PROMPT_MAX)
+}
+
+pub(crate) fn prompt_section_with(memories: &[Memory], max_chars: usize) -> Option<String> {
+    if memories.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    let mut total = MEMORY_PROMPT_HEADER.chars().count();
+    for memory in memories {
+        let line = prompt_line(memory);
+        let add = 1 + line.chars().count();
+        if total + add > max_chars {
+            break;
+        }
+        lines.push(line);
+        total += add;
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!("{MEMORY_PROMPT_HEADER}\n{}", lines.join("\n")))
 }
 
 pub(crate) fn clean_text(raw: &str) -> Result<String, &'static str> {
@@ -309,7 +353,7 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    use super::{kept_for, SCHEMA};
+    use super::{kept_for, prompt_section, prompt_section_with, SCHEMA};
 
     fn temp_path(ext: &str) -> PathBuf {
         std::env::temp_dir().join(format!("robroz-mem-test-{}.{ext}", uuid::Uuid::new_v4()))
@@ -521,5 +565,98 @@ mod tests {
         assert_eq!(ids("bob"), ["bob", "shared"]);
         assert_eq!(ids("carol"), ["shared"]);
         assert_eq!(ids("ad"), ["shared"], "no prefix matching");
+    }
+
+    fn sample(kind: robroz_contract::MemoryKind, text: &str) -> robroz_contract::Memory {
+        use robroz_contract::{Memory, MemorySource, MemoryStatus};
+        Memory {
+            id: text.to_string(),
+            scope: "user".into(),
+            kind,
+            text: text.into(),
+            source: MemorySource::User,
+            status: MemoryStatus::Kept,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+            confirm_id: None,
+        }
+    }
+
+    #[test]
+    fn prompt_section_is_newest_first_and_empty_adds_nothing() {
+        use robroz_contract::MemoryKind;
+        assert_eq!(prompt_section(&[]), None);
+        let section = prompt_section(&[
+            sample(MemoryKind::Project, "新项目"),
+            sample(MemoryKind::Habit, "周五交周报"),
+            sample(MemoryKind::Profile, "叫 Panda"),
+        ])
+        .unwrap();
+        assert_eq!(
+            section,
+            "你记得这些：\n[project] 新项目\n[habit] 周五交周报\n[profile] 叫 Panda"
+        );
+        let wrapped = sample(MemoryKind::Habit, "第一行\n  第二行");
+        assert_eq!(
+            prompt_section(&[wrapped]).as_deref(),
+            Some("你记得这些：\n[habit] 第一行 第二行")
+        );
+    }
+
+    #[test]
+    fn prompt_section_drops_oldest_whole_entries_at_the_budget() {
+        use robroz_contract::MemoryKind;
+        let newer = sample(MemoryKind::Habit, "新");
+        let older = sample(MemoryKind::Habit, "旧");
+        let line_len = "[habit] 新".chars().count();
+        let header_len = "你记得这些：".chars().count();
+        let one = header_len + 1 + line_len;
+        let two = one + 1 + "[habit] 旧".chars().count();
+        assert_eq!(
+            prompt_section_with(&[newer.clone(), older.clone()], two).as_deref(),
+            Some("你记得这些：\n[habit] 新\n[habit] 旧")
+        );
+        assert_eq!(
+            prompt_section_with(&[newer.clone(), older.clone()], two - 1).as_deref(),
+            Some("你记得这些：\n[habit] 新")
+        );
+        assert_eq!(prompt_section_with(&[newer, older], one - 1), None);
+        assert!(
+            prompt_section(&[sample(MemoryKind::Habit, "短")]).unwrap().chars().count()
+                <= super::MEMORY_PROMPT_MAX
+        );
+    }
+
+    #[test]
+    fn prompt_section_from_kept_for_skips_other_bros_and_unusable_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(crate::approvals::SCHEMA).unwrap();
+        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []).unwrap();
+        crate::proposals::migrate(&conn).unwrap();
+        let rows = [
+            ("shared", "user", "kept", None, "2026-01-01T00:00:01.000Z"),
+            ("ada-old", "bot:ada", "kept", None, "2026-01-01T00:00:00.000Z"),
+            ("ada-new", "bot:ada", "kept", None, "2026-01-01T00:00:02.000Z"),
+            ("bob", "bot:bob", "kept", None, "2026-01-01T00:00:03.000Z"),
+            ("pending", "user", "pending", None, "2026-01-01T00:00:04.000Z"),
+            ("rejected", "bot:ada", "rejected", None, "2026-01-01T00:00:05.000Z"),
+            ("forgotten", "user", "kept", Some("2026-01-02T00:00:00.000Z"), "2026-01-01T00:00:06.000Z"),
+        ];
+        for (id, scope, status, forgotten, at) in rows {
+            conn.execute(
+                "INSERT INTO memories (id, scope, kind, text, source, status, created_at, updated_at, forgotten_at)
+                 VALUES (?1, ?2, 'habit', ?1, 'user', ?3, ?5, ?5, ?4)",
+                rusqlite::params![id, scope, status, forgotten, at],
+            )
+            .unwrap();
+        }
+        let section = prompt_section(&kept_for(&conn, "ada").unwrap()).unwrap();
+        assert_eq!(section, "你记得这些：\n[habit] ada-new\n[habit] shared\n[habit] ada-old");
+        assert!(!section.contains("bob") && !section.contains("pending") && !section.contains("rejected") && !section.contains("forgotten"));
+        assert_eq!(
+            prompt_section(&kept_for(&conn, "carol").unwrap()).as_deref(),
+            Some("你记得这些：\n[habit] shared")
+        );
     }
 }
