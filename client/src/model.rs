@@ -93,7 +93,7 @@ impl Feed {
 }
 
 /// When this card last changed, as the host defines it for `?since=`:
-/// `updatedAt` for status cards, `answeredAt` for answered choices,
+/// `updatedAt` for status cards, `answeredAt` for answered choices and approvals,
 /// otherwise `createdAt`.
 pub fn change_time(event: &Event) -> &str {
     match event {
@@ -101,8 +101,13 @@ pub fn change_time(event: &Event) -> &str {
         Event::Choice {
             answered_at: Some(at),
             ..
+        }
+        | Event::Approval {
+            answered_at: Some(at),
+            ..
         } => at,
         Event::Choice { created_at, .. }
+        | Event::Approval { created_at, .. }
         | Event::Message { created_at, .. }
         | Event::Delivery { created_at, .. } => created_at,
     }
@@ -130,6 +135,9 @@ pub fn preview(event: &Event) -> String {
         Event::Choice {
             bot_name, prompt, ..
         } => format!("{bot_name}：{prompt}"),
+        Event::Approval {
+            bot_name, summary, ..
+        } => format!("{bot_name}：{summary}"),
     }
 }
 
