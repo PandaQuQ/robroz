@@ -969,7 +969,7 @@ fn avatar_size(t: &Skin) -> f32 {
 const BADGE_W: f32 = 30.0;
 /// Time column width estimate (`10月7日`, `昨天`, `23:59`).
 const TIME_W: f32 = 52.0;
-/// Accent bar on the open chat's row.
+/// Accent bar on the open chat's row (drawn in the row's left padding).
 const SELECTED_BAR: f32 = 3.0;
 const ROW_PAD_H: f32 = 8.0;
 const ROW_GAP: f32 = 10.0;
@@ -1037,8 +1037,8 @@ fn conversation_row<'a>(
         .map(|at| conversations::list_time(at, now, &Local))
         .unwrap_or_default();
     let badge = conversations::badge(c.unread);
-    // Text column: row minus padding, accent bar, avatar and gap.
-    let body_w = width - 2.0 * ROW_PAD_H - SELECTED_BAR - ROW_GAP - avatar_size(t);
+    // Text column: row minus padding, avatar and gap.
+    let body_w = width - 2.0 * ROW_PAD_H - ROW_GAP - avatar_size(t);
     let name = conversations::fit(&c.name, units_in(t, body_w - TIME_W, t.type_.row_name));
     let preview_w = body_w - if badge.is_some() { BADGE_W } else { 0.0 };
     let preview = conversations::fit(
@@ -1075,32 +1075,49 @@ fn conversation_row<'a>(
     if let Some(b) = badge {
         bottom = bottom.push(unread_badge(t, b));
     }
-    let bar_color = if selected {
-        Some(t.palette.accent)
-    } else {
-        None
-    };
-    let bar = container(Space::new())
-        .width(Length::Fixed(SELECTED_BAR))
-        .height(Length::Fixed(avatar_size(t)))
-        .style(move |_| container::Style {
-            background: bar_color.map(|c| color(c).into()),
-            border: Border::default().rounded(SELECTED_BAR / 2.0),
-            ..container::Style::default()
-        });
     let body = column![top, bottom].spacing(2).width(Fill).clip(true);
-    button(
-        row![bar, avatar(t, &c.name), body]
+    let content: Element<'a, Action> = container(
+        row![avatar(t, &c.name), body]
             .spacing(ROW_GAP)
             .align_y(Alignment::Center),
     )
     .width(Fill)
     .padding(Padding::from([6.0, ROW_PAD_H]))
-    .style(conversation_row_style(*t, selected))
-    .on_press(Action::OpenChat {
-        group: c.group_id.clone(),
-    })
-    .into()
+    .into();
+    // The open chat gets an accent bar drawn inside the left padding, so
+    // it takes no layout space and every row's avatar lines up flush.
+    let inner: Element<'a, Action> = if selected {
+        let accent = t.palette.accent;
+        let bar = container(Space::new())
+            .width(Length::Fixed(SELECTED_BAR))
+            .height(Length::Fixed(avatar_size(t) - 8.0))
+            .style(move |_| container::Style {
+                background: Some(color(accent).into()),
+                border: Border::default().rounded(SELECTED_BAR / 2.0),
+                ..container::Style::default()
+            });
+        iced::widget::stack![
+            content,
+            container(bar)
+                .height(Fill)
+                .align_y(Alignment::Center)
+                .padding(Padding {
+                    left: 2.0,
+                    ..Padding::ZERO
+                }),
+        ]
+        .into()
+    } else {
+        content
+    };
+    button(inner)
+        .width(Fill)
+        .padding(0)
+        .style(conversation_row_style(*t, selected))
+        .on_press(Action::OpenChat {
+            group: c.group_id.clone(),
+        })
+        .into()
 }
 
 /// The IM list: heading with 「引入一个 bro」, then every group and DM,
