@@ -3,9 +3,12 @@
 
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
+use axum::body::Bytes;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use robroz_contract::{ApprovalAction, ApprovalDecision, CreateApproval, Event, APPROVAL_SUMMARY_MAX};
+use robroz_contract::{
+    clean_answered_by, Answer, ApprovalAction, ApprovalDecision, CreateApproval, Event, APPROVAL_SUMMARY_MAX,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent};
@@ -24,7 +27,7 @@ pub(crate) const SCHEMA: &str = "
     );
 ";
 
-const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at
+const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by
      FROM approvals a JOIN bots b ON b.id = a.bot_id";
 
 fn action_text(action: ApprovalAction) -> &'static str {
@@ -74,6 +77,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         decision,
         created_at: row.get(7)?,
         answered_at: row.get(8)?,
+        answered_by: row.get(9)?,
     })
 }
 
@@ -148,15 +152,19 @@ pub(crate) async fn create_approval(
 
 /// One answer per card: the update only matches an unanswered row, so a
 /// second click (or a race) gets 409 and the first answer stands.
-fn decide(state: &AppState, id: &str, decision: ApprovalDecision) -> Response {
+fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -> Response {
+    let by = match answered_by(body) {
+        Ok(by) => by,
+        Err((status, message)) => return error_response(status, message),
+    };
     let conn = lock_db(state);
     let result = (|| {
         if load(&conn, id)?.is_none() {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
         }
         let changed = conn.execute(
-            "UPDATE approvals SET decision = ?1, answered_at = ?2 WHERE id = ?3 AND decision IS NULL",
-            params![decision_text(decision), now_rfc3339(), id],
+            "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4 WHERE id = ?3 AND decision IS NULL",
+            params![decision_text(decision), now_rfc3339(), id, by],
         )?;
         if changed == 0 {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
@@ -171,12 +179,23 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision) -> Response {
     }
 }
 
-pub(crate) async fn approve(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
-    decide(&state, &id, ApprovalDecision::Approved)
+/// The optional `{"answeredBy"}` body. Empty body is the old request.
+/// Errors are `(status, message)`.
+fn answered_by(body: &[u8]) -> Result<Option<String>, (StatusCode, &'static str)> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let answer: Answer =
+        serde_json::from_slice(body).map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
+    clean_answered_by(answer.answered_by.as_deref()).map_err(|m| (StatusCode::BAD_REQUEST, m))
 }
 
-pub(crate) async fn deny(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
-    decide(&state, &id, ApprovalDecision::Denied)
+pub(crate) async fn approve(State(state): State<AppState>, AxumPath(id): AxumPath<String>, body: Bytes) -> Response {
+    decide(&state, &id, ApprovalDecision::Approved, &body)
+}
+
+pub(crate) async fn deny(State(state): State<AppState>, AxumPath(id): AxumPath<String>, body: Bytes) -> Response {
+    decide(&state, &id, ApprovalDecision::Denied, &body)
 }
 
 #[cfg(test)]

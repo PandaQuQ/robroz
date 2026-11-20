@@ -74,6 +74,7 @@ pub mod bodies {
     pub fn answer(choice: &[String]) -> String {
         serde_json::to_string(&AnswerChoice {
             choice: choice.to_vec(),
+            answered_by: None,
         })
         .expect("serialize answer")
     }
