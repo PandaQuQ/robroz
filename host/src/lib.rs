@@ -1830,6 +1830,19 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
     }
 
+    /// Stream contract is the set of events, not their cross-type order.
+    /// README「实时推送」promises framing, `Last-Event-ID` / `?since=`, and no
+    /// push when nothing changed. It does not promise order. A single snapshot
+    /// follows `GET …/events` (`createdAt`, then `id`), so two cards written in
+    /// the same millisecond may arrive either way.
+    fn assert_events_once(events: &[(String, String, Value)], want: &[&str]) {
+        let mut got: Vec<&str> = events.iter().map(|(name, _, _)| name.as_str()).collect();
+        let mut expect = want.to_vec();
+        got.sort_unstable();
+        expect.sort_unstable();
+        assert_eq!(got, expect, "complete and not repeated: {events:?}");
+    }
+
     #[tokio::test]
     async fn stream_pushes_new_and_changed_cards_once() {
         let path = temp_db();
@@ -1844,9 +1857,10 @@ mod tests {
         let mut body = resp.into_body();
         let wait = std::time::Duration::from_secs(3);
         let backlog = sse_take(&mut body, 2, wait).await;
-        let names: Vec<&str> = backlog.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, ["status", "message"]);
-        assert_eq!(backlog[0].2["state"], "queued");
+        assert_events_once(&backlog, &["status", "message"]);
+        let status = backlog.iter().find(|(name, _, _)| name == "status").unwrap();
+        assert_eq!(status.2["state"], "queued");
+        assert!(backlog.iter().any(|(name, _, data)| name == "message" && data["body"] == "第一条"));
 
         // Nothing changed: nothing arrives.
         assert!(sse_take(&mut body, 1, super::stream::POLL * 4).await.is_empty());
@@ -1870,9 +1884,10 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let mut body = open_stream(&app, &group_id, Some(&last)).await.into_body();
         let resumed = sse_take(&mut body, 3, wait).await;
-        let names: Vec<&str> = resumed.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, ["status", "delivery"], "{resumed:?}");
-        assert_eq!(resumed[0].2["state"], "done");
+        assert_events_once(&resumed, &["status", "delivery"]);
+        let status = resumed.iter().find(|(name, _, _)| name == "status").unwrap();
+        assert_eq!(status.2["id"], task_id);
+        assert_eq!(status.2["state"], "done");
     }
 
     #[tokio::test]
