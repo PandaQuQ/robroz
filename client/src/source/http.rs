@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use hive_contract::Events;
+use robroz_contract::Events;
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
 
@@ -154,7 +154,7 @@ mod tests {
     mod against_host {
         use super::*;
         use crate::model::{Feed, Row};
-        use hive_contract::{
+        use robroz_contract::{
             AddMember, CreateGroup, CreateTask, Group, MessageKind, PostMessage, Task, TaskState,
         };
 
@@ -254,7 +254,7 @@ mod tests {
                     assert_eq!(card.bot_name, "Ada");
                     assert_eq!(
                         card.status_line,
-                        hive_card::status_line(TaskState::Queued, false)
+                        robroz_card::status_line(TaskState::Queued, false)
                     );
                 }
                 other => panic!("expected status card, got {other:?}"),

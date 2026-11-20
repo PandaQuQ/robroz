@@ -2,9 +2,9 @@
 members = [
     "host",
     "client",
-    "crates/hive-contract",
-    "crates/hive-policy",
-    "crates/hive-card",
+    "crates/robroz-contract",
+    "crates/robroz-policy",
+    "crates/robroz-card",
     "runner",
 ]
 resolver = "2"

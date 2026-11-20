@@ -1,10 +1,10 @@
 //! Maps contract events to the card models the view draws.
 //!
-//! Every colour, status line, action and badge comes from `hive-card`.
+//! Every colour, status line, action and badge comes from `robroz-card`.
 //! This module only decides where a card sits in the stream.
 
-use hive_card::{Palette, Tone};
-use hive_contract::{Event, MessageKind};
+use robroz_card::{Palette, Tone};
+use robroz_contract::{Event, MessageKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -83,13 +83,13 @@ fn to_row(event: &Event) -> (Key, Row) {
             container_up,
             ..
         } => {
-            let look = hive_card::appearance(*state, *container_up);
+            let look = robroz_card::appearance(*state, *container_up);
             let card = StatusCard {
                 task_id: task_id.clone(),
                 bot_name: bot_name.clone(),
-                status_line: hive_card::status_line(*state, *container_up),
+                status_line: robroz_card::status_line(*state, *container_up),
                 tone: look.tone,
-                palette: hive_card::palette(look.tone),
+                palette: robroz_card::palette(look.tone),
                 action: look.action,
             };
             (Key::Task(task_id.clone()), Row::Status(card))
@@ -106,7 +106,7 @@ fn to_row(event: &Event) -> (Key, Row) {
             let card = DeliveryCard {
                 summary: summary.clone(),
                 path: path.clone(),
-                badge: briefing.then(hive_card::briefing_badge),
+                badge: briefing.then(robroz_card::briefing_badge),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
         }
@@ -125,7 +125,7 @@ pub fn attachment_label(kind: MessageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hive_contract::TaskState;
+    use robroz_contract::TaskState;
 
     fn status(task: &str, bot: &str, state: TaskState, container_up: bool) -> Event {
         Event::Status {
@@ -173,11 +173,11 @@ mod tests {
         state: TaskState,
         container_up: bool,
     ) -> (&'static str, Tone, Palette, Option<&'static str>) {
-        let look = hive_card::appearance(state, container_up);
+        let look = robroz_card::appearance(state, container_up);
         (
-            hive_card::status_line(state, container_up),
+            robroz_card::status_line(state, container_up),
             look.tone,
-            hive_card::palette(look.tone),
+            robroz_card::palette(look.tone),
             look.action,
         )
     }
@@ -252,7 +252,7 @@ mod tests {
             .collect();
         assert_eq!(cards[0].badge, None);
         assert_eq!(cards[0].path, "tasks/t1/result.txt");
-        assert_eq!(cards[1].badge, Some(hive_card::briefing_badge()));
+        assert_eq!(cards[1].badge, Some(robroz_card::briefing_badge()));
         assert_eq!(cards[1].path, "tasks/t-brief/result.txt");
     }
 

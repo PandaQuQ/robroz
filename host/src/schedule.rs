@@ -3,7 +3,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use croner::parser::{CronParser, Seconds, Year};
 use croner::Cron;
-use hive_policy::should_start_container;
+use robroz_policy::should_start_container;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 

@@ -47,8 +47,8 @@ pub fn should_start_container(due: bool, already_running: bool) -> bool {
 /// Kind of a blocking action line, or None. Matching ignores surrounding spaces.
 pub fn blocking_kind(line: &str) -> Option<&'static str> {
     match line.trim() {
-        "hive-action:external" => Some("external"),
-        "hive-action:captcha" => Some("captcha"),
+        "robroz-action:external" => Some("external"),
+        "robroz-action:captcha" => Some("captcha"),
         _ => None,
     }
 }
@@ -71,7 +71,7 @@ pub struct BlockingLine {
     pub hash: String,
 }
 
-/// The first `hive-action:external` / `hive-action:captcha` line of `prompt`, in
+/// The first `robroz-action:external` / `robroz-action:captcha` line of `prompt`, in
 /// order, whose sha256 is not in `approved`. None when every blocking line has
 /// been taken over (or there are none).
 ///
@@ -145,40 +145,40 @@ mod tests {
     #[test]
     fn blocking_line_none_without_blocking_actions() {
         assert_eq!(blocking_line("", &HashSet::new()), None);
-        assert_eq!(blocking_line("正文\nhive-action:get\nhive-action:other", &HashSet::new()), None);
+        assert_eq!(blocking_line("正文\nrobroz-action:get\nrobroz-action:other", &HashSet::new()), None);
     }
 
     #[test]
     fn blocking_line_returns_first_in_order() {
-        let prompt = "开头\nhive-action:captcha\nhive-action:external";
+        let prompt = "开头\nrobroz-action:captcha\nrobroz-action:external";
         let found = blocking_line(prompt, &HashSet::new()).unwrap();
         assert_eq!(found.kind, "captcha");
-        assert_eq!(found.line, "hive-action:captcha");
-        assert_eq!(found.hash, action_hash("hive-action:captcha"));
+        assert_eq!(found.line, "robroz-action:captcha");
+        assert_eq!(found.hash, action_hash("robroz-action:captcha"));
     }
 
     #[test]
     fn blocking_line_skips_approved_lines() {
-        let prompt = "hive-action:external\n正文\nhive-action:captcha";
-        let found = blocking_line(prompt, &set(&["hive-action:external"])).unwrap();
+        let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
+        let found = blocking_line(prompt, &set(&["robroz-action:external"])).unwrap();
         assert_eq!(found.kind, "captcha");
-        assert_eq!(blocking_line(prompt, &set(&["hive-action:external", "hive-action:captcha"])), None);
+        assert_eq!(blocking_line(prompt, &set(&["robroz-action:external", "robroz-action:captcha"])), None);
         // Approving the later line does not skip the earlier one.
-        let found = blocking_line(prompt, &set(&["hive-action:captcha"])).unwrap();
+        let found = blocking_line(prompt, &set(&["robroz-action:captcha"])).unwrap();
         assert_eq!(found.kind, "external");
     }
 
     #[test]
     fn blocking_line_hashes_exact_line_and_shares_identical_lines() {
-        let prompt = "  hive-action:external \nhive-action:external";
+        let prompt = "  robroz-action:external \nrobroz-action:external";
         let found = blocking_line(prompt, &HashSet::new()).unwrap();
-        assert_eq!(found.line, "  hive-action:external ");
-        assert_eq!(found.hash, action_hash("  hive-action:external "));
+        assert_eq!(found.line, "  robroz-action:external ");
+        assert_eq!(found.hash, action_hash("  robroz-action:external "));
         // Different bytes, different hash: the second line still blocks.
-        let found = blocking_line(prompt, &set(&["  hive-action:external "])).unwrap();
-        assert_eq!(found.line, "hive-action:external");
+        let found = blocking_line(prompt, &set(&["  robroz-action:external "])).unwrap();
+        assert_eq!(found.line, "robroz-action:external");
         // Identical lines share approval.
-        let twice = "hive-action:external\n正文\nhive-action:external";
-        assert_eq!(blocking_line(twice, &set(&["hive-action:external"])), None);
+        let twice = "robroz-action:external\n正文\nrobroz-action:external";
+        assert_eq!(blocking_line(twice, &set(&["robroz-action:external"])), None);
     }
 }

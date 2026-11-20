@@ -4,21 +4,21 @@
 //! - `tasks/{taskId}/result.txt`, `outbound.txt`, `intent`: written by the runner.
 //!   `intent` only signals "blocked". The host never reads its content: when the
 //!   container exits it recomputes the blocking line itself with
-//!   [`hive_policy::blocking_line`] from the stored prompt and the takeover hashes,
+//!   [`robroz_policy::blocking_line`] from the stored prompt and the takeover hashes,
 //!   then deletes the file.
 //!
 //! Files in the task's control dir (mounted read-only at `/control`, written only
 //! by the host):
 //! - `prompt.txt`: the task prompt, written before `docker run`.
 //! - `takeover`: written only by the host on resume. One sha256 per line, each the
-//!   hash of an exact `hive-action:` line a person already took over.
+//!   hash of an exact `robroz-action:` line a person already took over.
 
 use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use hive_policy::{action_hash, blocking_kind, blocking_line, BlockingLine};
+pub use robroz_policy::{action_hash, blocking_kind, blocking_line, BlockingLine};
 
 pub fn task_dir(root: &Path, task_id: &str) -> PathBuf {
     root.join("tasks").join(task_id)
@@ -122,7 +122,7 @@ pub fn apply_prompt(root: &Path, task_id: &str, prompt: &str) -> io::Result<()> 
 
 /// Apply a prompt to the group volume.
 ///
-/// `hive-action:get` lines are recorded as `GET` in `outbound.txt`.
+/// `robroz-action:get` lines are recorded as `GET` in `outbound.txt`.
 /// Where to stop comes from [`blocking_line`] (shared with the host): if it finds
 /// an unapproved blocking line, write `intent` and skip `result.txt`. Otherwise
 /// write the prompt to `result.txt`, leaving out approved blocking lines (byte for
@@ -136,7 +136,7 @@ pub fn apply_prompt_with(
     let dir = task_dir(root, task_id);
     fs::create_dir_all(&dir)?;
 
-    let gets = prompt.lines().filter(|line| line.trim() == "hive-action:get").count();
+    let gets = prompt.lines().filter(|line| line.trim() == "robroz-action:get").count();
     if gets > 0 {
         fs::write(outbound_path(root, task_id), "GET\n".repeat(gets))?;
     }
@@ -160,7 +160,7 @@ mod tests {
 
     fn scratch() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "hive-runner-{}-{}",
+            "robroz-runner-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn get_lines_are_recorded_and_result_is_still_written() {
         let root = scratch();
-        let prompt = "hive-action:get\nhive-action:get\n画一张草图";
+        let prompt = "robroz-action:get\nrobroz-action:get\n画一张草图";
         apply_prompt(&root, "task-1", prompt).unwrap();
         assert_eq!(fs::read(outbound_path(&root, "task-1")).unwrap(), b"GET\nGET\n");
         assert_eq!(fs::read(result_path(&root, "task-1")).unwrap(), prompt.as_bytes());
@@ -212,11 +212,11 @@ mod tests {
     #[test]
     fn external_and_captcha_write_intent_without_result() {
         let root = scratch();
-        apply_prompt(&root, "ext", "hive-action:external\n画一张草图").unwrap();
+        apply_prompt(&root, "ext", "robroz-action:external\n画一张草图").unwrap();
         assert_eq!(intent_kind(&root, "ext"), "external");
         assert!(!result_path(&root, "ext").exists());
 
-        apply_prompt(&root, "cap", "请看\nhive-action:captcha").unwrap();
+        apply_prompt(&root, "cap", "请看\nrobroz-action:captcha").unwrap();
         assert_eq!(intent_kind(&root, "cap"), "captcha");
         assert!(!result_path(&root, "cap").exists());
         let _ = fs::remove_dir_all(&root);
@@ -225,12 +225,12 @@ mod tests {
     #[test]
     fn intent_records_kind_exact_line_and_hash() {
         let root = scratch();
-        apply_prompt(&root, "ext", "开头\n  hive-action:external \n结尾").unwrap();
+        apply_prompt(&root, "ext", "开头\n  robroz-action:external \n结尾").unwrap();
         let text = fs::read_to_string(intent_path(&root, "ext")).unwrap();
         let intent = parse_intent(&text).unwrap();
         assert_eq!(intent.kind, "external");
-        assert_eq!(intent.line.as_deref(), Some("  hive-action:external "));
-        assert_eq!(intent.hash, Some(action_hash("  hive-action:external ")));
+        assert_eq!(intent.line.as_deref(), Some("  robroz-action:external "));
+        assert_eq!(intent.hash, Some(action_hash("  robroz-action:external ")));
         assert_eq!(text.lines().next(), Some("external"));
         let _ = fs::remove_dir_all(&root);
     }
@@ -263,8 +263,8 @@ mod tests {
 
     #[test]
     fn forged_marker_inside_workspace_does_not_skip() {
-        let line = "hive-action:external";
-        let (base, workspace, control) = mounts("t1", "hive-action:external\n正文");
+        let line = "robroz-action:external";
+        let (base, workspace, control) = mounts("t1", "robroz-action:external\n正文");
         // The container can write anywhere under /workspace. None of these count.
         fs::write(task_dir(&workspace, "t1").join("takeover"), format!("{}\n", action_hash(line))).unwrap();
         fs::write(workspace.join("takeover"), format!("{}\n", action_hash(line))).unwrap();
@@ -279,9 +279,9 @@ mod tests {
 
     #[test]
     fn marker_with_different_hash_does_not_skip() {
-        let (base, workspace, control) = mounts("t1", "hive-action:external\n正文");
-        append_takeover(&control, &action_hash("hive-action:captcha")).unwrap();
-        append_takeover(&control, &action_hash(" hive-action:external")).unwrap();
+        let (base, workspace, control) = mounts("t1", "robroz-action:external\n正文");
+        append_takeover(&control, &action_hash("robroz-action:captcha")).unwrap();
+        append_takeover(&control, &action_hash(" robroz-action:external")).unwrap();
         run(&workspace, &control, "t1").unwrap();
         assert_eq!(intent_kind(&workspace, "t1"), "external");
         assert!(!result_path(&workspace, "t1").exists());
@@ -290,18 +290,18 @@ mod tests {
 
     #[test]
     fn matching_marker_skips_only_that_line() {
-        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
         let (base, workspace, control) = mounts("t1", prompt);
-        append_takeover(&control, &action_hash("hive-action:external")).unwrap();
+        append_takeover(&control, &action_hash("robroz-action:external")).unwrap();
 
         run(&workspace, &control, "t1").unwrap();
         let intent = parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap()).unwrap();
         assert_eq!(intent.kind, "captcha", "a different blocking line still blocks");
-        assert_eq!(intent.line.as_deref(), Some("hive-action:captcha"));
+        assert_eq!(intent.line.as_deref(), Some("robroz-action:captcha"));
         assert!(!result_path(&workspace, "t1").exists());
 
         fs::remove_file(intent_path(&workspace, "t1")).unwrap();
-        append_takeover(&control, &action_hash("hive-action:captcha")).unwrap();
+        append_takeover(&control, &action_hash("robroz-action:captcha")).unwrap();
         run(&workspace, &control, "t1").unwrap();
         assert!(!intent_path(&workspace, "t1").exists());
         assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "正文");
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn runner_stops_where_shared_blocking_line_says() {
-        let prompt = "开头\n hive-action:captcha\n正文\nhive-action:external\nhive-action:captcha";
+        let prompt = "开头\n robroz-action:captcha\n正文\nrobroz-action:external\nrobroz-action:captcha";
         let mut approved = HashSet::<String>::new();
         loop {
             let (base, workspace, control) = mounts("t1", prompt);
@@ -347,7 +347,7 @@ mod tests {
                 append_takeover(&control, hash).unwrap();
             }
             run(&workspace, &control, "t1").unwrap();
-            match hive_policy::blocking_line(prompt, &approved) {
+            match robroz_policy::blocking_line(prompt, &approved) {
                 Some(expected) => {
                     let intent = parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap()).unwrap();
                     assert_eq!(intent.kind, expected.kind);
