@@ -20,6 +20,7 @@ mod pump;
 mod routines;
 mod sandbox;
 mod schedule;
+mod unread;
 mod stream;
 
 pub use pump::{pump, pump_with, Db, PumpConfig};
@@ -134,6 +135,9 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
         .route("/api/groups/{id}/events", get(list_events))
+        .route("/api/groups/{id}/unread", get(unread::group_unread))
+        .route("/api/groups/{id}/read", post(unread::mark_read))
+        .route("/api/unread", get(unread::list_unread))
         .route("/api/groups/{id}/stream", get(stream::stream_events))
         .route("/api/tasks/{id}/resume", post(resume_task))
         .route("/api/schedules", post(create_schedule))
@@ -231,6 +235,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Routines: a paused schedule is skipped by tick.
     let _ = conn.execute("ALTER TABLE schedules ADD COLUMN paused_at TEXT", []);
     conn.execute_batch(choices::SCHEMA)?;
+    conn.execute_batch(unread::SCHEMA)?;
     Ok(())
 }
 
@@ -1545,6 +1550,107 @@ mod tests {
         assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
 
+
+    // ---- unread ----
+
+    async fn unread_of(app: &Router, group_id: &str) -> Value {
+        let (status, body) = read_json(call(app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    async fn mark_read(app: &Router, group_id: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let uri = format!("/api/groups/{group_id}/read");
+        read_json(call(app, match body { Some(b) => post(&uri, b), None => post_empty(&uri) }).await).await
+    }
+
+    #[tokio::test]
+    async fn unread_counts_what_bros_sent_since_read() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, _) = seed_task(&app, "未读", "robroz-action:external\n画一张草图").await;
+        let fresh = unread_of(&app, &group_id).await;
+        assert_eq!(fresh["readAt"], Value::Null);
+        assert_eq!(fresh["unread"], 0, "a queued card and my own messages do not count");
+        assert!(fresh["lastActivityAt"].is_string());
+
+        // Stuck task needs you: counts.
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(unread_of(&app, &group_id).await["unread"], 0, "running does not count");
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(unread_of(&app, &group_id).await["unread"], 1);
+
+        // Reading clears it; the response already carries the new count.
+        let (status, read) = mark_read(&app, &group_id, None).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        assert_eq!(read["unread"], 0);
+        let read_at = read["readAt"].as_str().unwrap().to_string();
+
+        // A choice card and a delivery after that count again.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let (status, _) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "选一个", "options": [{ "id": "a", "label": "A" }, { "id": "b", "label": "B" }] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = resume(&app, &statuses(&events_of(&app, &group_id).await)[0]["id"].as_str().unwrap().to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(unread_of(&app, &group_id).await["unread"], 1, "resuming is not news");
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(unread_of(&app, &group_id).await["unread"], 2, "choice + delivery");
+
+        // Read position only moves forward.
+        let (_, back) = mark_read(&app, &group_id, Some(json!({ "readAt": "2000-01-01T00:00:00Z" }))).await;
+        assert_eq!(back["readAt"], read_at);
+        assert_eq!(back["unread"], 2);
+    }
+
+    #[tokio::test]
+    async fn unread_list_sorts_by_activity_and_validates() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let quiet = create_group(&app, "安静").await["id"].as_str().unwrap().to_string();
+        let older = create_group(&app, "旧").await["id"].as_str().unwrap().to_string();
+        let newer = create_group(&app, "新").await["id"].as_str().unwrap().to_string();
+        for (g, text) in [(&older, "a"), (&newer, "b")] {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let (status, _) = read_json(call(&app, post(&format!("/api/groups/{g}/messages"), json!({ "kind": "text", "body": text }))).await).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let (status, body) = read_json(call(&app, get("/api/unread")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let order: Vec<&str> = body["groups"].as_array().unwrap().iter().map(|g| g["groupId"].as_str().unwrap()).collect();
+        assert_eq!(order, [newer.as_str(), older.as_str(), quiet.as_str()]);
+        assert_eq!(body["groups"][2]["lastActivityAt"], Value::Null);
+
+        let (status, _) = read_json(call(&app, get("/api/groups/missing/unread")).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = mark_read(&app, "missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = mark_read(&app, &quiet, Some(json!({ "readAt": "soon" }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = mark_read(&app, &quiet, Some(json!({}))).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[test]
+    fn unread_table_migrates_old_db() {
+        let path = temp_db();
+        { super::Host::open(&path, temp_volumes(), "x").unwrap(); }
+        Connection::open(&path).unwrap().execute("DROP TABLE group_reads", []).unwrap();
+        super::Host::open(&path, temp_volumes(), "x").unwrap();
+        super::Host::open(&path, temp_volumes(), "x").unwrap();
+        let n: i64 = Connection::open(&path).unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'group_reads'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
 
     // ---- live stream ----
 
