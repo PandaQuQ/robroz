@@ -126,13 +126,16 @@ fn start_task(
 
     // Claim before docker run so a second pass can't pick the task again.
     // The first progress rides on the claim itself: one status event, not two.
-    // Memories are loaded in the same lock, before the claim, so a load error
-    // leaves the task queued.
+    // Memories and skills are loaded in the same lock, before the claim, so a
+    // load error leaves the task queued.
     let claimed_at = newer_than(&task.updated_at);
     let first = if cfg.model.is_some() { progress::THINKING } else { progress::STARTED };
     let (claimed, memory_section) = db.with(|conn| -> rusqlite::Result<_> {
         let section = if cfg.model.is_some() {
-            crate::memories::prompt_section(&crate::memories::kept_for(conn, &task.assignee_bot_id)?)
+            system_extra(
+                crate::memories::prompt_section(&crate::memories::kept_for(conn, &task.assignee_bot_id)?),
+                crate::skills::prompt_section(&crate::skills::kept_for(conn, &task.assignee_bot_id, &task.group_id)?),
+            )
         } else {
             None
         };
@@ -384,6 +387,16 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 }
 
 /// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
+/// Join the memory and skill paragraphs, in that order. Missing ones are omitted.
+fn system_extra(memory: Option<String>, skill: Option<String>) -> Option<String> {
+    let parts: Vec<String> = [memory, skill].into_iter().flatten().filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// Ask the model outside the DB lock and leave its answer for the runner.
 /// A failed call becomes the result text, so the task still finishes and the
 /// person sees why; the reason is also returned so the delivery can say the

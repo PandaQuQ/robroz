@@ -231,7 +231,7 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 
 ## 记忆（memories）
 
-bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。bro 提议的记忆先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。技能在后面的 PR 里做。
+bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。bro 提议的记忆先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。
 
 - `GET /api/memories?kind=&scope=&status=`：返回 `{memories:[Memory]}`，按 `updatedAt` 从新到旧。三个参数都可选，留空等于不筛。不传 `status` 时只返回 `kept` 和 `pending`，`rejected` 要写 `status=rejected` 才返回。忘掉的永远不返回。参数不合法返回 400。
 - `POST /api/memories`：你自己记一条，请求体 `{"scope", "kind", "text"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Memory`。
@@ -254,18 +254,33 @@ bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`
 - 「记一条」要先选范围，没选时那一行显示「选一下谁能用这条」，选好后换成灰色的「只给 Bob 用」或「所有 bro 都能用」。这一行一直占着位置，「保存」不会跳。
 - 「保存」在没写内容、没改动、超过 2000 字或者没选范围时是灰的。保存成功后更新时间刷新，旁边标「已保存」；失败就在原地提示「没保存：原因」，草稿还在。
 
+## 技能（skills）
+
+bro 会的做法，只是一段提示文字：标题、`slug` 和说明。权限还是由策略决定，技能本身不开放任何能力。bro 提议的技能先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。
+
+- `GET /api/skills?scope=&status=`：返回 `{skills:[Skill]}`，按 `updatedAt` 从新到旧。两个参数都可选。不传 `status` 时只返回 `kept` 和 `pending`，`rejected` 要写 `status=rejected` 才返回。忘掉的永远不返回。参数不合法返回 400。
+- `POST /api/skills`：你自己写一条，请求体 `{"scope", "slug", "title", "instruction"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Skill`。已经有同样的 `slug` 且没忘掉时返回 409「这个 slug 已经有了」。
+- `PATCH /api/skills/{slug}`：请求体 `{"title"?, "instruction"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。`status` 和 `slug` 不能用 `PATCH` 改。
+- `DELETE /api/skills/{slug}`：忘掉。只是软删。返回 204；重复忘掉也返回 204；从没有过的 slug 返回 404。忘掉一条还在 `pending` 的技能时，它那张没回答的确认卡会一起关掉，记成 `denied`，`answeredBy` 是 `null`。忘掉以后这个 slug 可以再写一条。
+- `PUT /api/groups/{id}/skills/{slug}`：在这个群里启用这条技能。群或技能不存在（或已忘掉）返回 404。已经启用再点一次也是 204。
+- `DELETE /api/groups/{id}/skills/{slug}`：关掉。群或技能不存在返回 404；本来就没启用也是 204。
+- `scope` 和记忆一样：`user` 是所有 bro 都能用，`bot:<botId>` 只给这个 bro。
+- `slug` 是小写字母、数字和单个连字符，不能开头或结尾是连字符，最长 64 个字。`title` 最长 80 个字，`instruction` 最长 8000 个字，都会去掉首尾空白，不能为空。
+- `Skill` 的字段：`id`、`scope`、`slug`、`title`、`instruction`、`source`、`status`、`createdAt`、`updatedAt`，以及可选的 `confirmId`：`pending` 且确认卡还没回答时带这张卡的 id，其他时候不带。
+- 注入模型：任务开始、宿主机调用模型时，把这个 bro 能用、并且已在该群启用的已记下技能（`scope` 为 `user` 或 `bot:<这个 bro>`，`status=kept`，没忘掉的）另拼一段进 system 提示，加在记忆段后面（没有记忆就直接加在开场白后面）。格式是一段「你会这些技能：」，下面每条是 `### 标题 (slug)` 再加说明，按 `updatedAt` 从新到旧。整段最多 8000 个字（按字符计），超出就整条丢掉最旧的，不截半条。一条都没有、或这个群里一条都没启用时不加这段。`pending`、`rejected` 和忘掉的都不会进去。
+
 ## 确认卡（confirm）
 
-bro 想记下点什么时不会直接记，而是提一条，等你在确认卡上点「记下」或「不用」。这是事件流里新增的 `confirm` 事件，原有事件和任务状态都没变。现在只有记忆，以后技能也用这种卡。
+bro 想记下一条记忆或收下一项技能时不会直接写入，而是提一条，等你在确认卡上点「记下／保存」或「不用」。这是事件流里的 `confirm` 事件，原有事件和任务状态都没变。记忆和技能用同一种卡。
 
-- bro 怎么提：在 prompt 或模型回复里写一行 `robroz-memory:{"kind":"habit","text":"周报用中文","scope":"user"}`。`kind` 和 `text` 必填，`scope` 选填，不填就是 `bot:<执行这个任务的 bro>`。runner 把这些行写进群目录的 `tasks/{taskId}/proposals.jsonl`，每行是 `{"type":"memory",...}`。这些行不会出现在 `result.txt` 里；没有这种行时结果一个字节都不变。
+- bro 怎么提：在 prompt 或模型回复里写一行 `robroz-memory:{"kind":"habit","text":"周报用中文","scope":"user"}`，或一行 `robroz-skill:{"slug":"weekly-report","title":"写周报","instruction":"先列三点","scope":"user"}`。记忆的 `kind` 和 `text` 必填，技能的 `slug`、`title` 和 `instruction` 必填，`scope` 都选填，不填就是 `bot:<执行这个任务的 bro>`。runner 把这些行写进群目录的 `tasks/{taskId}/proposals.jsonl`，每行是 `{"type":"memory",...}` 或 `{"type":"skill",...}`。这些行不会出现在 `result.txt` 里；没有这种行时结果一个字节都不变。
 - 什么时候收：任务成功跑完（`done` 且没有 `failure`）后，宿主机读这个文件，读完就删。没跑完、卡住、带 `failure` 的任务提的都不收。
-- 哪些不收：JSON 不对、`type` 不认识、`kind` 不对、`text` 为空或超过 2000 字、`scope` 写法不对或 bro 不存在，这些行直接跳过，不报错，也不影响任务。已经有同一 `scope`、同一 `kind`、同样文字（连续空白算一个）的记忆，而且没忘掉的，不论是 `pending`、`kept` 还是 `rejected`，都不再提。一个任务最多收前 20 条。
-- 每收一条，就存一条 `source=bot`、`status=pending` 的记忆，再发一张确认卡。
-- 回答：和审批卡用同一组接口。`POST /api/approvals/{id}/approve` 是「记下」，记忆变成 `kept`；`POST /api/approvals/{id}/deny` 是「不用」，记忆变成 `rejected`，记录留着，但不会拼进提示，bro 也不会再提同一条。请求体、`answeredBy`、返回 200 和这张卡、只能答一次（再答 409「已经答过了」）都和审批卡一样；卡不存在返回 404。记忆的 `status` 只能这样改，记忆页对 `pending` 条目点「记下」「不用」时，用 `Memory.confirmId` 调这两个接口。
+- 哪些不收：JSON 不对、`type` 不认识、必填字段不对或超长、`scope` 写法不对或 bro 不存在，这些行直接跳过，不报错，也不影响任务。已经有同一 `scope`、同一 `kind`、同样文字（连续空白算一个）的记忆，而且没忘掉的，不论是 `pending`、`kept` 还是 `rejected`，都不再提。已经有同样 `slug`、而且没忘掉的技能，不论状态，都不再提。一个任务最多收前 20 条，记忆和技能加在一起算。
+- 每收一条，就存一条 `source=bot`、`status=pending` 的记忆或技能，再发一张确认卡。
+- 回答：和审批卡用同一组接口。`POST /api/approvals/{id}/approve` 是「记下／保存」，变成 `kept`；`POST /api/approvals/{id}/deny` 是「不用」，变成 `rejected`，记录留着，但不会拼进提示，bro 也不会再提同一条。请求体、`answeredBy`、返回 200 和这张卡、只能答一次（再答 409「已经答过了」）都和审批卡一样；卡不存在返回 404。`status` 只能这样改，列表里对 `pending` 条目作答时用 `confirmId` 调这两个接口。
 - 卡的字段：`id`、`botId`、`botName`、`subject`、`taskId`、`decision`、`createdAt`、`answeredAt`、`answeredBy`，这几个一定会出现（`taskId`、`decision`、`answeredAt`、`answeredBy` 可能是 `null`）。
   - `subject` 是 `memory` 时还有 `memoryId`、`kind`、`text`、`scope`，卡上要显示的内容都在这里，客户端不用再另外请求。`text` 和 `scope` 是记忆现在的样子，`pending` 时用 `PATCH` 改了，这张卡也会再推一次。
-  - `subject` 是 `skill` 的卡留给后面的技能 PR，会带 `slug`、`title`、`instruction`。没有的字段不出现。
+  - `subject` 是 `skill` 时还有 `slug`、`title`、`instruction`、`scope`。`title`、`instruction` 和 `scope` 是技能现在的样子，`pending` 时用 `PATCH` 改了，这张卡也会再推一次。没有的字段不出现。
   - 同一个任务提了很多条时，客户端可以按 `taskId` 把超过 3 条的折叠起来。
 - 客户端：卡的左上角是「记忆」标签，下面是完整原文和一行范围（「所有 bro」或「只给 Ada」），按钮是「记下」和「不用」。回答以后按钮消失，换成「记下了 · 我 · HH:MM」或灰色的「不用了 · …」，处理人的规则和审批卡一样。别人先答了（409）时，卡上原地显示别人的结果。在记忆页忘掉一条待确认的记忆，卡显示「不用了 · HH:MM」，不带名字。同一个任务待确认的卡超过 3 张时，从第 4 张起收成「还有 N 条待确认」，点开再逐条确认。
 - 确认卡会出现在 `GET /api/groups/{id}/events` 和实时推送里，新卡算一条未读。它和审批卡存在同一张表里，但不会以 `approval` 事件出现，也不影响状态卡的 `waitingFor`。
@@ -286,7 +301,7 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 
 - 没设密钥就不接模型，bro 把 prompt 原样写进结果。CI 和端到端测试都走这条路。
 - 设了密钥，就必须同时设 `ROBROZ_MODEL_BASE_URL` 和 `ROBROZ_MODEL`。两个密钥变量都设了、密钥文件是空的、密钥里有空白，或者地址不以 `http://` / `https://` 开头，宿主机都拒绝启动，报错里只写变量名，不写值。
-- 调用时会把该 bro 已记下的记忆拼进 system 提示，规则见「记忆」一节。任务的 prompt 还是用户那一条，不会改。
+- 调用时会把该 bro 已记下的记忆，以及已在该群启用的技能，拼进 system 提示，规则见「记忆」和「技能」两节。任务的 prompt 还是用户那一条，不会改。
 - 模型由宿主机调用，单次调用最长等 120 秒。密钥不进容器，也不进群目录，日志和报错里都不会出现。沙箱照样不联网。
 - 宿主机在 `docker run` 之前把模型的回答写进这个任务的 `/control/reply.txt`（容器里只读），runner 用它代替回显，写进 `result.txt`。每次运行前都会先删掉旧的回答，重试时不会拿到上一次的。
 - 任务会不会卡住，仍然只看 prompt 里的 `robroz-action:` 行，跟模型回答了什么无关。

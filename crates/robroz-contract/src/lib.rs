@@ -555,7 +555,88 @@ pub struct UpdateMemory {
 /// Longest memory text, in characters, after trimming.
 pub const MEMORY_TEXT_MAX: usize = 2000;
 
-/// What a `confirm` card asks the person to keep: a memory now, a skill later.
+/// Longest skill instruction, in characters, after trimming.
+pub const SKILL_INSTRUCTION_MAX: usize = 8000;
+/// Longest skill title, in characters, after trimming.
+pub const SKILL_TITLE_MAX: usize = 80;
+/// Longest skill slug, in characters.
+pub const SKILL_SLUG_MAX: usize = 64;
+
+/// A kebab-case slug: lowercase letters, digits and single hyphens, not
+/// starting or ending with a hyphen. `None` if it does not fit.
+pub fn parse_skill_slug(raw: &str) -> Option<&str> {
+    let slug = raw.trim();
+    if slug.is_empty() || slug.chars().count() > SKILL_SLUG_MAX {
+        return None;
+    }
+    let mut need_alnum = true;
+    for c in slug.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            need_alnum = false;
+        } else if c == '-' && !need_alnum {
+            need_alnum = true;
+        } else {
+            return None;
+        }
+    }
+    if need_alnum {
+        return None;
+    }
+    Some(slug)
+}
+
+/// One skill. `scope` is the wire string of [`MemoryScope`]. Forgotten
+/// skills are never returned, so there is no `forgottenAt` here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skill {
+    pub id: String,
+    pub scope: String,
+    pub slug: String,
+    pub title: String,
+    pub instruction: String,
+    pub source: MemorySource,
+    pub status: MemoryStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    /// The unanswered `confirm` card for a `pending` skill, if any. Answer it
+    /// with `POST /api/approvals/{confirmId}/approve` (keep) or `/deny`.
+    /// Absent otherwise, so old JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_id: Option<String>,
+}
+
+/// `GET /api/skills`, newest `updatedAt` first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skills {
+    pub skills: Vec<Skill>,
+}
+
+/// `POST /api/skills` body: the person writes a skill down. It is `kept` at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSkill {
+    pub scope: String,
+    pub slug: String,
+    pub title: String,
+    pub instruction: String,
+}
+
+/// `PATCH /api/skills/{slug}` body. Only the fields given change. `slug` and
+/// `status` are not here: the slug is the identity, and status only changes
+/// through the confirm card.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSkill {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// What a `confirm` card asks the person to keep: a memory or a skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfirmSubject {
@@ -586,12 +667,23 @@ pub struct MemoryProposal {
     pub text: String,
 }
 
+/// A bro proposes a skill: one `robroz-skill:{json}` line. `scope` defaults
+/// to the bro that ran the task. Length and slug rules are checked by the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillProposal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub slug: String,
+    pub title: String,
+    pub instruction: String,
+}
+
 /// One line of `tasks/{taskId}/proposals.jsonl`, tagged on `type`.
-/// Only `memory` for now; skills are added here later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Proposal {
     Memory(MemoryProposal),
+    Skill(SkillProposal),
 }
 
 /// At most this many proposals are taken from one task.
@@ -616,6 +708,16 @@ impl Proposal {
             return None;
         };
         fields.insert("type".into(), serde_json::Value::String("memory".into()));
+        Some(serde_json::Value::Object(fields).to_string())
+    }
+
+    /// The `proposals.jsonl` line for a `robroz-skill:` payload, with
+    /// `"type":"skill"` set. `None` when the payload is not a JSON object.
+    pub fn skill_line(payload: &str) -> Option<String> {
+        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()? else {
+            return None;
+        };
+        fields.insert("type".into(), serde_json::Value::String("skill".into()));
         Some(serde_json::Value::Object(fields).to_string())
     }
 }
@@ -719,7 +821,7 @@ pub enum Event {
     /// Everything the card shows is here, so no second request is needed.
     /// `decision`, `answeredAt` and `answeredBy` behave as on `approval`.
     /// Memory cards carry `memoryId`, `kind`, `text`, `scope`; skill cards
-    /// (later) carry `slug`, `title`, `instruction`. Absent fields are omitted.
+    /// carry `slug`, `title`, `instruction` and `scope`. Absent fields are omitted.
     #[serde(rename = "confirm")]
     Confirm {
         id: String,
@@ -886,6 +988,38 @@ mod tests {
         }
         let scoped = Proposal::parse_line(r#"{"type":"memory","scope":"user","kind":"profile","text":"叫 Panda"}"#);
         assert!(matches!(scoped, Some(Proposal::Memory(MemoryProposal { scope: Some(_), .. }))));
+        let skill = Proposal::skill_line(r#"{"slug":"weekly-report","title":"写周报","instruction":"先列三点","type":"memory"}"#).unwrap();
+        let Some(Proposal::Skill(s)) = Proposal::parse_line(&skill) else { panic!("{skill}") };
+        assert_eq!((s.slug.as_str(), s.title.as_str(), s.instruction.as_str(), s.scope.as_deref()), ("weekly-report", "写周报", "先列三点", None));
+        assert_eq!(Proposal::skill_line("不是 json"), None);
+        assert_eq!(Proposal::skill_line("[1]"), None);
+        let scoped_skill = Proposal::parse_line(r#"{"type":"skill","slug":"weekly-report","title":"写周报","instruction":"先列三点","scope":"user"}"#);
+        assert!(matches!(scoped_skill, Some(Proposal::Skill(SkillProposal { scope: Some(_), .. }))));
+    }
+
+    #[test]
+    fn skill_slug_and_confirm_id_round_trip() {
+        use super::{parse_skill_slug, CreateSkill, Skill, MemorySource, MemoryStatus, SKILL_SLUG_MAX};
+        assert_eq!(parse_skill_slug(" weekly-report "), Some("weekly-report"));
+        assert_eq!(parse_skill_slug("a"), Some("a"));
+        assert_eq!(parse_skill_slug(&"a".repeat(SKILL_SLUG_MAX)), Some(&*"a".repeat(SKILL_SLUG_MAX)));
+        for bad in ["", "Weekly", "weekly_report", "-weekly", "weekly-", "weekly--report", " weekly report ", &"a".repeat(SKILL_SLUG_MAX + 1)] {
+            assert_eq!(parse_skill_slug(bad), None, "{bad:?}");
+        }
+        let body: CreateSkill = serde_json::from_value(serde_json::json!({
+            "scope": "user", "slug": "weekly-report", "title": "写周报", "instruction": "先列三点"
+        })).unwrap();
+        assert_eq!(body.slug, "weekly-report");
+        let json = serde_json::json!({
+            "id": "s1", "scope": "user", "slug": "weekly-report", "title": "写周报",
+            "instruction": "先列三点", "source": "user", "status": "kept",
+            "createdAt": "2026-11-20T08:30:00.000Z", "updatedAt": "2026-11-20T08:30:00.000Z"
+        });
+        let old: Skill = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old.confirm_id, None);
+        assert_eq!(old.source, MemorySource::User);
+        assert_eq!(old.status, MemoryStatus::Kept);
+        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
     }
 
     #[test]

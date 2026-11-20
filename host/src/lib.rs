@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
@@ -19,6 +19,7 @@ pub mod auth;
 mod approvals;
 mod choices;
 mod memories;
+mod skills;
 mod progress;
 mod proposals;
 mod pump;
@@ -173,6 +174,15 @@ fn router_from(state: AppState) -> Router {
             "/api/memories/{id}",
             patch(memories::update_memory).delete(memories::forget_memory),
         )
+        .route("/api/skills", get(skills::list_skills).post(skills::create_skill))
+        .route(
+            "/api/skills/{slug}",
+            patch(skills::update_skill).delete(skills::forget_skill),
+        )
+        .route(
+            "/api/groups/{id}/skills/{slug}",
+            put(skills::enable_skill).delete(skills::disable_skill),
+        )
         .with_state(state)
 }
 
@@ -283,6 +293,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     conn.execute_batch(memories::SCHEMA)?;
+    conn.execute_batch(skills::SCHEMA)?;
     Ok(())
 }
 
@@ -2223,6 +2234,10 @@ mod tests {
             .unwrap()
     }
 
+    fn put(uri: &str) -> Request<Body> {
+        Request::builder().method("PUT").uri(uri).body(Body::empty()).unwrap()
+    }
+
     async fn set_paused(app: &Router, id: &str, paused: bool) -> (StatusCode, Value) {
         read_json(call(app, patch(&format!("/api/schedules/{id}"), json!({ "paused": paused }))).await).await
     }
@@ -4093,6 +4108,150 @@ mod tests {
         assert_eq!(pushed[0].2["decision"], "denied");
     }
 
+    fn skill_line(slug: &str, title: &str, instruction: &str) -> String {
+        format!("robroz-skill:{}", json!({ "slug": slug, "title": title, "instruction": instruction }))
+    }
+
+    async fn skills_with(app: &Router, query: &str) -> Vec<Value> {
+        let (status, body) = read_json(call(app, get(&format!("/api/skills{query}"))).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["skills"].as_array().unwrap().clone()
+    }
+
+    async fn post_skill(app: &Router, scope: &str, slug: &str, title: &str, instruction: &str) -> Value {
+        let (status, body) = read_json(
+            call(app, post("/api/skills", json!({ "scope": scope, "slug": slug, "title": title, "instruction": instruction }))).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body
+    }
+
+    #[tokio::test]
+    async fn skill_proposal_raises_a_card_and_approve_keeps_it() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = format!("{}\n写周报", skill_line("weekly-report", "写周报", "先列三点"));
+        let (group_id, task_id) = seed_task(&app, "技能", &prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &task_id), "done");
+        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "写周报");
+        assert!(!group_dir.join(format!("tasks/{task_id}/proposals.jsonl")).exists());
+
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        let card = &cards[0];
+        assert_eq!(card["subject"], "skill");
+        assert_eq!(card["slug"], "weekly-report");
+        assert_eq!(card["title"], "写周报");
+        assert_eq!(card["instruction"], "先列三点");
+        assert_eq!(card["scope"], "bot:bot-ada");
+        assert_eq!(card["taskId"], task_id.as_str());
+        assert!(card.get("memoryId").is_none());
+        let pending = skills_with(&app, "?status=pending").await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["confirmId"], card["id"]);
+
+        let (status, answered) = decide(&app, card["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(answered["decision"], "approved");
+        assert_eq!(skills_with(&app, "?status=kept").await[0]["slug"], "weekly-report");
+        let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // Same slug is not proposed again, even after keep.
+        seed_task_in(&app, &group_id, &format!("{}\n再写", skill_line("weekly-report", "写周报", "先列三点"))).await;
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 1, "duplicate slug dropped");
+    }
+
+    #[tokio::test]
+    async fn skill_deny_and_forgetting_pending_close_the_card() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = format!("{}\n{}\n写", skill_line("keep-me", "留下", "留下说明"), skill_line("drop-me", "丢掉", "丢掉说明"));
+        let (group_id, _) = seed_task(&app, "技能", &prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 2);
+        let drop = cards.iter().find(|c| c["slug"] == "drop-me").unwrap();
+                let (status, denied) = decide(&app, drop["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(denied["decision"], "denied");
+        assert_eq!(skills_with(&app, "?status=rejected").await[0]["slug"], "drop-me");
+
+        let resp = call(&app, delete_req("/api/skills/keep-me")).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let closed = confirms_in(&events_of(&app, &group_id).await).into_iter().find(|c| c["slug"] == "keep-me").unwrap();
+        assert_eq!(closed["decision"], "denied");
+        assert!(closed["answeredBy"].is_null());
+        assert!(skills_with(&app, "").await.iter().all(|s| s["slug"] != "keep-me"));
+    }
+
+    #[tokio::test]
+    async fn skill_and_memory_proposals_share_the_per_task_cap() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let mut lines: Vec<String> = (0..12).map(|i| memory_line("habit", &format!("记 {i}"))).collect();
+        lines.extend((0..12).map(|i| skill_line(&format!("s-{i}"), &format!("技 {i}"), "说明")));
+        lines.push("正文".into());
+        let (group_id, _) = seed_task(&app, "技能", &lines.join("\n")).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let cards = confirms_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), robroz_contract::PROPOSALS_PER_TASK_MAX);
+        assert!(cards.iter().any(|c| c["subject"] == "memory") && cards.iter().any(|c| c["subject"] == "skill"));
+        assert!(!cards.iter().any(|c| c["slug"] == "s-8"), "memories first, then skills, cap 20");
+    }
+
+    #[tokio::test]
+    async fn kept_enabled_skills_are_injected_into_the_system_prompt() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, _) = seed_task(&app, "技能注入", "先跑一次").await;
+        let (status, _) = add_member(&app, &group_id, "bot-bob", "Bob").await;
+        assert_eq!(status, StatusCode::CREATED);
+        post_skill(&app, "user", "weekly-report", "写周报", "先列三点").await;
+        post_skill(&app, "bot:bot-ada", "ada-notes", "Ada 笔记", "只给 Ada").await;
+        post_skill(&app, "bot:bot-bob", "bob-notes", "Bob 笔记", "Ada 不该看到").await;
+        post_skill(&app, "user", "unused", "未启用", "不该出现").await;
+
+        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/weekly-report"))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/ada-notes"))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/bob-notes"))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        // unused stays disabled
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let (_, next) = seed_task_in(&app, &group_id, "再写周报").await;
+        let model = FakeModel::new(Ok("周报写好了".into()));
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        // Two queued tasks: "先跑一次" (older) and "再写周报". Pump starts both if
+        // both are queued. Check the call for 再写周报.
+        let seen = model.seen.lock().unwrap().clone();
+        let section = seen
+            .iter()
+            .find(|(prompt, _)| prompt == "再写周报")
+            .map(|(_, s)| s.clone())
+            .or_else(|| seen.last().map(|(_, s)| s.clone()))
+            .flatten()
+            .expect("kept enabled skills go into the system prompt");
+        assert!(section.contains("你会这些技能："), "{section}");
+        assert!(section.contains("### 写周报 (weekly-report)\n先列三点"), "{section}");
+        assert!(section.contains("### Ada 笔记 (ada-notes)\n只给 Ada"), "{section}");
+        assert!(!section.contains("Bob") && !section.contains("未启用") && !section.contains("unused"), "{section}");
+        let started = fake.containers.iter().find(|c| c.task_id == next).expect("second task started");
+        assert_eq!(started.prompt, "再写周报");
+    }
+
     #[test]
     fn confirm_columns_are_added_once() {
         let path = temp_db();
@@ -4100,5 +4259,6 @@ mod tests {
         let _again = test_app(&path);
         let conn = Connection::open(&path).unwrap();
         conn.prepare("SELECT subject_kind, subject_id FROM approvals").unwrap();
+        conn.prepare("SELECT slug, title, instruction FROM skills").unwrap();
     }
 }
