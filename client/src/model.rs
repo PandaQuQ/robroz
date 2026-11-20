@@ -437,10 +437,7 @@ mod tests {
         feed.apply(&text("m1", "先问一下"));
         feed.apply_card(card(ApprovalState::Pending));
         feed.apply(&text("m2", "后面的话"));
-        feed.apply_card(card(ApprovalState::Approved {
-            by: "Panda".into(),
-            at: 0,
-        }));
+        feed.apply_card(card(ApprovalState::Approved { at: 0 }));
         assert_eq!(feed.len(), 3, "one approval card, not two");
         assert!(matches!(
             feed.card("a1"),

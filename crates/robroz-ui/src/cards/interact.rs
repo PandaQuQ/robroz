@@ -451,10 +451,7 @@ mod tests {
         a.state = ApprovalState::Pending;
         ui.action_done(Some(Note::AlreadyDecided));
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
-        a.state = ApprovalState::Approved {
-            by: "Panda".into(),
-            at: 0,
-        };
+        a.state = ApprovalState::Approved { at: 0 };
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
 
         let mut d = DraftCard {
