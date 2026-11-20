@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use robroz_contract::{ChoiceOption, Event, MessageKind, Schedule, ScheduleEntry, TaskState};
+use robroz_contract::{
+    Bro, ChoiceOption, Event, MessageKind, Schedule, ScheduleEntry, TaskState, Unread,
+};
 use robroz_ui::cards::{
     ActionKind, ApprovalCard, ApprovalState, Card, DraftCard, DraftChannel, DraftState,
 };
@@ -20,10 +22,16 @@ pub struct FakeSource {
 
 const SITE: &str = "g-site";
 const OPS: &str = "g-ops";
+/// A bro's private chat: a group whose only member is that bro.
+const DM: &str = "dm-ada";
 
 impl FakeSource {
     pub fn new() -> Self {
-        let groups = vec![group(SITE, "公司官网建设"), group(OPS, "运营日报")];
+        let groups = vec![
+            group(SITE, "公司官网建设"),
+            group(OPS, "运营日报"),
+            group(DM, "Ada"),
+        ];
         let steps = vec![
             vec![
                 msg(
@@ -41,6 +49,12 @@ impl FakeSource {
                     "每天早上 8 点出一份询价简报。",
                 ),
                 status(OPS, "t-crawl", "bot-cy", "Cy", TaskState::Queued, false),
+                msg(
+                    DM,
+                    "m-dm1",
+                    MessageKind::Text,
+                    "你好，我是 Ada。有事直接在这里找我。",
+                ),
             ],
             vec![status(
                 SITE,
@@ -262,6 +276,28 @@ fn choice(group: &str, id: &str, multi: bool) -> GroupEvent {
 }
 
 /// Schedules for the offline API, one per fake group plus a paused one.
+/// Unread counts and bros for the fake chats (`--fake`).
+pub fn fake_chats() -> (Vec<Unread>, Vec<Bro>) {
+    let unread = |g: &str, n: u64, sec: &str| Unread {
+        group_id: g.into(),
+        read_at: None,
+        unread: n,
+        last_activity_at: Some(at(sec)),
+    };
+    (
+        vec![
+            unread(SITE, 3, "40"),
+            unread(DM, 1, "30"),
+            unread(OPS, 0, "20"),
+        ],
+        vec![Bro {
+            id: "bot-ada".into(),
+            name: "Ada".into(),
+            dm_group_id: Some(DM.into()),
+        }],
+    )
+}
+
 pub fn fake_schedules() -> Vec<ScheduleEntry> {
     let now = chrono::Utc::now();
     let entry = |id: &str, group: &str, prompt: &str, hours: i64, paused: bool| ScheduleEntry {
@@ -358,7 +394,7 @@ mod tests {
     #[test]
     fn fake_script_covers_every_case() {
         let mut source = FakeSource::new();
-        assert_eq!(source.groups().unwrap().len(), 2);
+        assert_eq!(source.groups().unwrap().len(), 3);
         let feeds = drain();
         let site: Vec<_> = feeds[SITE].rows().cloned().collect();
         let ops: Vec<_> = feeds[OPS].rows().cloned().collect();

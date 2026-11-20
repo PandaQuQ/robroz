@@ -115,9 +115,53 @@ cargo test -p robroz-client
 
 Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行库；编译本身不需要额外的开发包。
 
+## 监听地址和令牌
+
+- 默认只监听本机 `127.0.0.1:8790`，本机使用不用令牌。
+- `ROBROZ_ADDR` 不是本机回环地址、又没设令牌时，宿主机拒绝启动，并提示先设 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`。
+- 令牌只从 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`（文件路径）读，两个只能设一个。读进来时去掉首尾空白，空值等于没设。至少 16 个字符，中间不能有空白。
+- 设了令牌以后，所有接口都要带 `Authorization: Bearer <令牌>`，监听本机时也一样。没带或带错返回 401，响应头带 `WWW-Authenticate: Bearer`。比对按常数时间做。
+- 令牌不进日志，也不进任何报错信息。
+- 客户端设了 `ROBROZ_TOKEN` 就会自动带上。
+
+## 实时推送
+
+`GET /api/groups/{id}/stream` 用 Server-Sent Events（`text/event-stream`）推送这个群的事件，和 `/events` 一样要带令牌。
+
+- 每条推送是一个契约里的 `Event`：`event:` 是它的 `type`，`data:` 是事件的 JSON，`id:` 是这张卡的变化时间。
+- 同一张卡再变化时会用同一个 `data.id` 再推一次，客户端按 id 原地替换，和轮询 `/events` 的处理方式相同。
+- 断线重连时带标准的 `Last-Event-ID` 请求头，或者 `?since=`，只补推这个时间之后的变化。两者都带时以 `Last-Event-ID` 为准。时间不合法返回 400，群不存在返回 404。
+- 没有变化就不推，只每 15 秒发一次保活注释。宿主机大约每 250 毫秒查一次库，不改任何写入路径。
+- 轮询 `GET /api/groups/{id}/events?since=` 留作兜底。
+
+## 未读数
+
+每个群记一个已读位置。现在是单用户，一个群只有一份已读位置。
+
+- `GET /api/unread`：返回所有群的 `{groups:[Unread]}`，按 `lastActivityAt` 从新到旧排序，私聊也在里面。还没有任何活动的群排在最后，按建群顺序。
+- `GET /api/groups/{id}/unread`：返回一个群的 `Unread`。群不存在返回 404。
+- `POST /api/groups/{id}/read`：标记已读，请求体是 `{"readAt"?: 时间}`，不填就用当前时间。已读位置只会往后走，传一个更早的时间不会回退。时间不合法返回 400，群不存在返回 404，成功时返回更新后的 `Unread`。
+- `Unread` 的字段：`groupId`、`readAt`（从没读过时为 `null`）、`unread`、`lastActivityAt`（群里没有任何活动时为 `null`）。
+- 计入未读的只有 bro 发来、需要你看的东西：`readAt` 之后的交付卡、选项卡，以及变成卡住的任务。你自己发的消息，以及任务排队、进行中、完成这类状态变化，都不计入；但完成时的交付卡要计入。
+- `lastActivityAt` 取消息、任务、交付卡和选项卡（已回答的按回答时间）里最新的一次变化，会话列表用它排序。
+
+## bro 和私聊
+
+bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所以消息、任务、事件、实时推送和未读数都直接可用，不另造概念。术语见上面的「术语表」。
+
+- `POST /api/bros`：新建一个 bro，同时建好它的私聊，返回 201 和 `Bro`。请求体是 `{"name"?: 名字}`，不填名字时用默认名：没有叫 `bro` 的就叫 `bro`，否则从 `bro 2` 往上，取第一个没被占用的名字。
+- `GET /api/bros`：返回 `{bros:[Bro]}`，按新建顺序排列。
+- `PATCH /api/bros/{id}`：改名，请求体是 `{"name": 名字}`，私聊的群名也跟着改。bro 不存在返回 404。
+- `POST /api/bros/{id}/dm`：取这个 bro 的私聊，没有就新建一个。新建时返回 201，已经有了返回 200。bro 不存在返回 404。
+- `Bro` 的字段：`id`、`name`、`dmGroupId`。
+- 名字会去掉首尾空白，不能为空，最长 64 个字符，不符合时返回 400。
+- 私聊里只能有这一个 bro。往私聊里加别的 bro，`POST /api/groups/{id}/members` 会返回 409。
+
 ## 宿主机环境变量
 
-- `ROBROZ_ADDR`：监听地址，默认 `127.0.0.1:8790`
+- `ROBROZ_ADDR`：监听地址，默认 `127.0.0.1:8790`。不是本机回环地址时必须设令牌
+- `ROBROZ_TOKEN`：接口令牌，至少 16 个字符。不设就不鉴权
+- `ROBROZ_TOKEN_FILE`：从这个文件读令牌，和 `ROBROZ_TOKEN` 只能设一个
 - `ROBROZ_DB`：SQLite 路径，默认 `./robroz.db`
 - `ROBROZ_VOLUMES`：群目录根，默认 `./data/groups`，每个群一个子目录，挂到 `/workspace`
 - `ROBROZ_CONTROL`：任务控制目录根（每个任务的 `prompt.txt` 和接管标记 `takeover`），默认 `./data/control`。必须在 `ROBROZ_VOLUMES` 外面，否则宿主机拒绝启动

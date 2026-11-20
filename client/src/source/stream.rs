@@ -1,0 +1,497 @@
+//! Live events for one chat over the host's SSE stream (robroz#25):
+//! `GET /api/groups/{id}/stream`.
+//!
+//! Each SSE message is one contract `Event` as JSON in `data:`, with the
+//! card's change time as `id:`. On a drop the reader waits (1s, 2s, 4s … up
+//! to 30s) and reconnects with `Last-Event-ID`, so the host only sends what
+//! changed while it was away. While the stream is down the app polls
+//! `…/events?since=` every tick ([`poll_interval`]); while it is up, polling
+//! slows to a safety net. Only the open chat is streamed; other chats
+//! update through that poll and `GET /api/unread`.
+
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
+use std::time::Duration;
+
+use robroz_contract::Event;
+
+use crate::conn::Conn;
+
+/// What the reader reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamItem {
+    /// 200 and `text/event-stream`: events flow.
+    Connected,
+    Event(Event),
+    /// Keep-alive comment; lets the reader notice nobody is listening.
+    Ping,
+    /// The connection ended or could not be made; it will retry.
+    Down(String),
+}
+
+/// How often the app polls: fast while the stream is down, slow while up.
+pub fn poll_interval(stream_up: bool, base: Duration) -> Duration {
+    if stream_up {
+        SAFETY_NET
+    } else {
+        base
+    }
+}
+
+/// Poll period while the stream is up.
+pub const SAFETY_NET: Duration = Duration::from_secs(10);
+
+pub fn path(group_id: &str) -> String {
+    format!("/api/groups/{group_id}/stream")
+}
+
+/// One complete SSE message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Frame {
+    pub event: Option<String>,
+    pub id: Option<String>,
+    pub data: String,
+}
+
+/// Line-by-line SSE parser (the subset the host sends: `event`, `id`,
+/// `data`, comments).
+#[derive(Debug, Default)]
+pub struct Parser {
+    event: Option<String>,
+    id: Option<String>,
+    data: Vec<String>,
+}
+
+pub enum Line {
+    Frame(Frame),
+    Comment,
+    Nothing,
+}
+
+impl Parser {
+    pub fn line(&mut self, raw: &str) -> Line {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.is_empty() {
+            if self.data.is_empty() {
+                self.event = None;
+                return Line::Nothing;
+            }
+            let frame = Frame {
+                event: self.event.take(),
+                id: self.id.take(),
+                data: std::mem::take(&mut self.data).join("\n"),
+            };
+            return Line::Frame(frame);
+        }
+        if line.starts_with(':') {
+            return Line::Comment;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        match field {
+            "event" => self.event = Some(value.to_string()),
+            "id" => self.id = Some(value.to_string()),
+            "data" => self.data.push(value.to_string()),
+            _ => {}
+        }
+        Line::Nothing
+    }
+}
+
+/// Reconnect delays: doubles from `min` to `max`, back to `min` after a
+/// successful connect.
+#[derive(Debug, Clone)]
+pub struct Backoff {
+    min: Duration,
+    max: Duration,
+    next: Duration,
+}
+
+impl Backoff {
+    pub fn new(min: Duration, max: Duration) -> Self {
+        Self {
+            min,
+            max,
+            next: min,
+        }
+    }
+
+    pub fn next_delay(&mut self) -> Duration {
+        let d = self.next;
+        self.next = (self.next * 2).min(self.max);
+        d
+    }
+
+    pub fn reset(&mut self) {
+        self.next = self.min;
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(1), Duration::from_secs(30))
+    }
+}
+
+/// One connection. Returns `Ok(true)` when the sink asked to stop,
+/// `Ok(false)` on a clean end of stream, `Err` on a failed connect or read.
+/// `last_id` is sent as `Last-Event-ID` and advanced per frame.
+pub fn read_once(
+    conn: &Conn,
+    group_id: &str,
+    last_id: &mut Option<String>,
+    sink: &mut dyn FnMut(StreamItem) -> bool,
+) -> Result<bool, String> {
+    let mut req = conn
+        .get(&path(group_id))
+        .header("Accept", "text/event-stream");
+    if let Some(id) = last_id.as_deref() {
+        req = req.header("Last-Event-ID", id);
+    }
+    let response = req
+        .call()
+        .map_err(|e| format!("连不上宿主机 {}: {e}", conn.base()))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(format!("GET {} 返回 {status}", path(group_id)));
+    }
+    if !sink(StreamItem::Connected) {
+        return Ok(true);
+    }
+    let reader = BufReader::new(response.into_body().into_reader());
+    let mut parser = Parser::default();
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("实时推送断开: {e}"))?;
+        let item = match parser.line(&line) {
+            Line::Frame(frame) => {
+                if let Some(id) = frame.id {
+                    *last_id = Some(id);
+                }
+                match serde_json::from_str::<Event>(&frame.data) {
+                    Ok(event) => StreamItem::Event(event),
+                    // A newer host may send a kind this client does not
+                    // know yet: skip it rather than drop the stream.
+                    Err(_) => continue,
+                }
+            }
+            Line::Comment => StreamItem::Ping,
+            Line::Nothing => continue,
+        };
+        if !sink(item) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Read, and on any drop wait and reconnect, until the sink returns false.
+pub fn run(
+    conn: &Conn,
+    group_id: &str,
+    mut backoff: Backoff,
+    mut sink: impl FnMut(StreamItem) -> bool,
+) {
+    let mut last_id = None;
+    loop {
+        let mut connected = false;
+        let result = read_once(conn, group_id, &mut last_id, &mut |item| {
+            if item == StreamItem::Connected {
+                connected = true;
+            }
+            sink(item)
+        });
+        let reason = match result {
+            Ok(true) => return,
+            Ok(false) => "实时推送断开".to_string(),
+            Err(e) => e,
+        };
+        if connected {
+            backoff.reset();
+        }
+        if !sink(StreamItem::Down(reason)) {
+            return;
+        }
+        std::thread::sleep(backoff.next_delay());
+    }
+}
+
+/// Subscription key: one stream per host and group. The token rides along
+/// but is not part of the hash.
+#[derive(Debug, Clone)]
+pub struct Key {
+    pub conn: Conn,
+    pub group_id: String,
+}
+
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.conn.base().hash(state);
+        self.group_id.hash(state);
+    }
+}
+
+/// `(group, item)` for the app.
+pub type Live = (String, StreamItem);
+
+/// iced stream for one chat: runs [`run`] on a blocking thread and forwards
+/// items until the subscription is dropped.
+pub fn subscribe(key: &Key) -> impl iced::futures::Stream<Item = Live> {
+    let conn = key.conn.streaming();
+    let group = key.group_id.clone();
+    iced::stream::channel(
+        64,
+        async move |mut tx: iced::futures::channel::mpsc::Sender<Live>| {
+            let _ = tokio::task::spawn_blocking(move || {
+                run(&conn, &group, Backoff::default(), |item| {
+                    if item == StreamItem::Ping {
+                        return !tx.is_closed();
+                    }
+                    let mut msg = (group.clone(), item);
+                    loop {
+                        match tx.try_send(msg) {
+                            Ok(()) => return true,
+                            Err(e) if e.is_full() => {
+                                msg = e.into_inner();
+                                std::thread::sleep(Duration::from_millis(20));
+                            }
+                            Err(_) => return false,
+                        }
+                    }
+                })
+            })
+            .await;
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    #[test]
+    fn parses_host_frames() {
+        let mut p = Parser::default();
+        let mut frames = Vec::new();
+        for l in [
+            ": keep-alive",
+            "event: message",
+            "id: 2026-11-20T02:00:00.000Z",
+            "data: {\"a\":1}",
+            "",
+            "",
+            "data:x",
+            "data: y",
+            "",
+        ] {
+            if let Line::Frame(f) = p.line(l) {
+                frames.push(f);
+            }
+        }
+        assert_eq!(
+            frames,
+            vec![
+                Frame {
+                    event: Some("message".into()),
+                    id: Some("2026-11-20T02:00:00.000Z".into()),
+                    data: "{\"a\":1}".into()
+                },
+                Frame {
+                    event: None,
+                    id: None,
+                    data: "x\ny".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn backoff_doubles_caps_and_resets() {
+        let mut b = Backoff::new(Duration::from_secs(1), Duration::from_secs(5));
+        let got: Vec<u64> = (0..5).map(|_| b.next_delay().as_secs()).collect();
+        assert_eq!(got, [1, 2, 4, 5, 5]);
+        b.reset();
+        assert_eq!(b.next_delay().as_secs(), 1);
+    }
+
+    #[test]
+    fn polling_is_the_fallback() {
+        let base = Duration::from_secs(1);
+        assert_eq!(
+            poll_interval(false, base),
+            base,
+            "stream down: poll every tick"
+        );
+        assert_eq!(
+            poll_interval(true, base),
+            SAFETY_NET,
+            "stream up: slow safety net"
+        );
+    }
+
+    fn message_json(id: &str, body: &str) -> String {
+        serde_json::json!({
+            "type": "message", "id": id, "kind": "text", "body": body,
+            "createdAt": "2026-11-20T02:00:00.000Z"
+        })
+        .to_string()
+    }
+
+    /// A one-shot SSE server per connection: sends `frames`, then closes.
+    /// Returns each request's raw head so the test can check headers.
+    fn flaky_server(script: Vec<Vec<(String, String)>>) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for frames in script {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut head = Vec::new();
+                let mut buf = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if sock.read(&mut buf).unwrap() == 0 {
+                        break;
+                    }
+                    head.push(buf[0]);
+                }
+                tx.send(String::from_utf8_lossy(&head).to_lowercase())
+                    .unwrap();
+                let mut body = String::from(": hi\n\n");
+                for (id, data) in frames {
+                    body.push_str(&format!("event: message\nid: {id}\ndata: {data}\n\n"));
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    #[test]
+    fn reconnects_with_last_event_id_after_a_drop() {
+        let (base, heads) = flaky_server(vec![
+            vec![("t1".into(), message_json("m1", "一"))],
+            vec![("t2".into(), message_json("m2", "二"))],
+        ]);
+        let conn = Conn::new(base).with_token(Some("tok-0123456789".into()));
+        let mut got = Vec::new();
+        let mut events = 0;
+        run(
+            &conn,
+            "g1",
+            Backoff::new(Duration::from_millis(10), Duration::from_millis(20)),
+            |item| {
+                if item == StreamItem::Ping {
+                    return true;
+                }
+                if matches!(item, StreamItem::Event(_)) {
+                    events += 1;
+                }
+                got.push(item);
+                events < 2
+            },
+        );
+        let kinds: Vec<&str> = got
+            .iter()
+            .map(|i| match i {
+                StreamItem::Connected => "up",
+                StreamItem::Event(_) => "event",
+                StreamItem::Down(_) => "down",
+                StreamItem::Ping => "ping",
+            })
+            .collect();
+        assert_eq!(kinds, ["up", "event", "down", "up", "event"]);
+        let first = heads.recv().unwrap();
+        assert!(first.starts_with("get /api/groups/g1/stream "), "{first}");
+        assert!(
+            first.contains("authorization: bearer tok-0123456789"),
+            "token sent"
+        );
+        assert!(!first.contains("last-event-id"), "fresh start: {first}");
+        let second = heads.recv().unwrap();
+        assert!(second.contains("last-event-id: t1"), "resume: {second}");
+    }
+
+    #[test]
+    fn host_down_reports_down_and_retries() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let conn = Conn::new(format!("http://127.0.0.1:{port}"));
+        let mut downs = 0;
+        run(
+            &conn,
+            "g",
+            Backoff::new(Duration::from_millis(1), Duration::from_millis(2)),
+            |item| {
+                assert!(matches!(item, StreamItem::Down(_)), "{item:?}");
+                downs += 1;
+                downs < 3
+            },
+        );
+        assert_eq!(downs, 3, "kept retrying");
+    }
+
+    /// The real host (robroz#25): new and changed cards arrive live.
+    #[test]
+    fn live_events_from_real_host() {
+        use robroz_contract::{CreateGroup, Group, MessageKind, PostMessage};
+        let base = crate::source::http_test_host();
+        let post = |path: &str, body: String| -> serde_json::Value {
+            let mut r = ureq::post(&format!("{base}{path}"))
+                .header("content-type", "application/json")
+                .send(body)
+                .unwrap();
+            serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
+        };
+        let group: Group = serde_json::from_value(post(
+            "/api/groups",
+            serde_json::to_string(&CreateGroup {
+                name: "直播".into(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+        let conn = Conn::new(&base).streaming();
+        let (tx, rx) = mpsc::channel();
+        let gid = group.id.clone();
+        std::thread::spawn(move || {
+            run(&conn, &gid, Backoff::default(), |item| {
+                tx.send(item).is_ok()
+            });
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            StreamItem::Connected
+        );
+        post(
+            &format!("/api/groups/{}/messages", group.id),
+            serde_json::to_string(&PostMessage {
+                kind: MessageKind::Text,
+                body: "实时".into(),
+            })
+            .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left).expect("event within 5s") {
+                StreamItem::Event(Event::Message { body, .. }) => {
+                    assert_eq!(body, "实时");
+                    break;
+                }
+                StreamItem::Ping => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+}
