@@ -4,7 +4,7 @@
 //! This module only decides where a card sits in the stream.
 
 use robroz_card::{Palette, Tone};
-use robroz_contract::{Event, MessageKind, TaskState};
+use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,61 @@ pub struct DeliveryCard {
     pub badge: Option<&'static str>,
     /// Why the task did not get done. Drawn grey like 「没写出结果」, no buttons.
     pub failure: Option<String>,
+}
+
+/// Status line while the task waits on an approval card (`waitingFor:
+/// "approval"`). Grey, no button: the approval card is the only way to act.
+pub const AWAITING_APPROVAL: &str = "等你批准";
+
+/// Blocked on an unanswered approval card (`waitingFor: "approval"`, #57).
+/// `takeover` or an absent field (older host) keeps amber 卡住 + 去私聊接管.
+fn awaits_approval(state: TaskState, waiting_for: Option<WaitingFor>) -> bool {
+    state == TaskState::Blocked && waiting_for == Some(WaitingFor::Approval)
+}
+
+/// How much a preview candidate counts when two events share a change time.
+/// An outcome (`failure`) beats the answer that caused it, and 「等你批准」
+/// beats the approval card it points at; an answered card is the weakest
+/// because its result follows it.
+pub fn preview_rank(event: &Event) -> u8 {
+    match event {
+        Event::Status {
+            failure: Some(_), ..
+        }
+        | Event::Delivery {
+            failure: Some(_), ..
+        } => 2,
+        // The status summarises the wait; its approval card is created at
+        // the same instant and must not take over the preview.
+        Event::Status {
+            state, waiting_for, ..
+        } if awaits_approval(*state, *waiting_for) => 2,
+        Event::Choice {
+            answered_at: Some(_),
+            ..
+        }
+        | Event::Approval {
+            answered_at: Some(_),
+            ..
+        } => 0,
+        _ => 1,
+    }
+}
+
+/// Whether a new preview `(change time, rank)` replaces the current one.
+/// Event order across types is not guaranteed (README, #54), so the newest
+/// change time wins and a tie goes to the higher rank, not to arrival order.
+pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
+    let Some((cur_at, cur_rank)) = cur else {
+        return true;
+    };
+    let parse = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    match (parse(new.0), parse(cur_at)) {
+        (Some(a), Some(b)) if a != b => a > b,
+        (Some(_), Some(_)) => new.1 >= cur_rank,
+        // Unparseable time: keep the old "last one wins".
+        _ => true,
+    }
 }
 
 /// The grey line for a task the host says did not get done.
@@ -138,6 +193,12 @@ pub fn preview(event: &Event) -> String {
         Event::Status {
             bot_name,
             state,
+            waiting_for,
+            ..
+        } if awaits_approval(*state, *waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
+        Event::Status {
+            bot_name,
+            state,
             container_up,
             ..
         } => format!(
@@ -176,6 +237,7 @@ fn to_row(event: &Event) -> (Key, Row) {
             state,
             container_up,
             failure,
+            waiting_for,
             ..
         } => {
             // A failed task is grey with no action, like a dead run, never
@@ -184,6 +246,12 @@ fn to_row(event: &Event) -> (Key, Row) {
                 Some(f) => (
                     robroz_card::appearance(TaskState::Running, false),
                     failure_line(f),
+                ),
+                // Waiting on an approval card: grey, no takeover button.
+                // Amber 卡住 + 去私聊接管 stays for real takeovers.
+                None if awaits_approval(*state, *waiting_for) => (
+                    robroz_card::appearance(TaskState::Running, false),
+                    AWAITING_APPROVAL.to_string(),
                 ),
                 None => (
                     robroz_card::appearance(*state, *container_up),
@@ -411,6 +479,156 @@ mod tests {
         assert_eq!(
             actual(status_cards(&feed)[0]),
             expected(TaskState::Done, false)
+        );
+    }
+
+    fn blocked_waiting(waiting: Option<WaitingFor>) -> Event {
+        let mut ev = status("t5", "Ada", TaskState::Blocked, false);
+        if let Event::Status { waiting_for, .. } = &mut ev {
+            *waiting_for = waiting;
+        }
+        ev
+    }
+
+    #[test]
+    fn waiting_for_approval_is_grey_without_take_over() {
+        let ev = blocked_waiting(Some(WaitingFor::Approval));
+        let mut feed = Feed::default();
+        feed.apply(&ev);
+        let card = status_cards(&feed)[0];
+        assert_eq!(card.status_line, "等你批准");
+        assert_eq!(card.tone, Tone::Gray);
+        assert_eq!(card.palette, expected(TaskState::Running, false).2);
+        assert_eq!(
+            card.action, None,
+            "the approval card is the only way to act"
+        );
+        assert_eq!(preview(&ev), "Ada：等你批准");
+
+        // Real takeovers (captcha) and older hosts without the field keep amber.
+        for waiting in [Some(WaitingFor::Takeover), None] {
+            let mut feed = Feed::default();
+            feed.apply(&blocked_waiting(waiting));
+            assert_eq!(
+                actual(status_cards(&feed)[0]),
+                expected(TaskState::Blocked, false),
+                "{waiting:?}"
+            );
+            assert_eq!(status_cards(&feed)[0].action, Some("去私聊接管"));
+        }
+        // Once answered the next status has no waitingFor and updates in place.
+        feed.apply(&status("t5", "Ada", TaskState::Queued, false));
+        assert_eq!(feed.len(), 1);
+        assert_eq!(
+            actual(status_cards(&feed)[0]),
+            expected(TaskState::Queued, false)
+        );
+    }
+
+    #[test]
+    fn takeover_to_approval_replaces_the_same_card_in_place() {
+        // First poll (list) says takeover, then SSE says approval for the
+        // same task: one card, updated where it was.
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "帮我发周报"));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Takeover)));
+        feed.apply(&text("m2", "之后"));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Approval)));
+        feed.apply(&blocked_waiting(Some(WaitingFor::Approval)));
+        assert_eq!(feed.len(), 3, "one status card, not two");
+        let cards = status_cards(&feed);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status_line, "等你批准");
+        assert_eq!(cards[0].action, None);
+        assert!(
+            matches!(feed.rows().nth(1), Some(Row::Status(_))),
+            "kept its slot"
+        );
+        // And back: approval -> takeover (card answered elsewhere, captcha next).
+        feed.apply(&blocked_waiting(Some(WaitingFor::Takeover)));
+        assert_eq!(status_cards(&feed).len(), 1);
+        assert_eq!(status_cards(&feed)[0].action, Some("去私聊接管"));
+    }
+
+    #[test]
+    fn awaiting_status_beats_its_approval_card_in_the_preview() {
+        let at = "2026-11-20T10:29:00.000Z";
+        let status = blocked_waiting(Some(WaitingFor::Approval));
+        assert_eq!(preview_rank(&status), 2);
+        let card = (at, 1); // unanswered approval created at the same instant
+        assert!(!preview_wins(card, Some((at, preview_rank(&status)))));
+        assert!(preview_wins((at, preview_rank(&status)), Some(card)));
+        assert_eq!(
+            preview_rank(&blocked_waiting(Some(WaitingFor::Takeover))),
+            1
+        );
+    }
+
+    #[test]
+    fn waiting_for_from_host_json() {
+        let json = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
+                "state": "blocked", "label": "卡住", "createdAt": "2026-11-20T02:00:01.000Z",
+                "updatedAt": "2026-11-20T02:00:02.000Z", "containerUp": false
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<Event>(v).unwrap()
+        };
+        let line = |ev: Event| {
+            let mut feed = Feed::default();
+            feed.apply(&ev);
+            status_cards(&feed)[0].status_line.clone()
+        };
+        assert_eq!(
+            line(json(serde_json::json!({"waitingFor": "approval"}))),
+            "等你批准"
+        );
+        assert_eq!(
+            line(json(serde_json::json!({"waitingFor": "takeover"}))),
+            "卡住"
+        );
+        assert_eq!(
+            line(json(serde_json::json!({}))),
+            "卡住",
+            "older host: unchanged"
+        );
+    }
+
+    #[test]
+    fn list_preview_prefers_newest_then_outcome_over_answer() {
+        let deny_at = "2026-11-20T10:10:07.502Z";
+        let failed = ("2026-11-20T10:10:07.503Z", 2);
+        let answered = (deny_at, 0);
+        // Host writes the answer first, then the task outcome: outcome wins
+        // whichever order the two events arrive in.
+        assert!(preview_wins(failed, Some(answered)));
+        assert!(!preview_wins(answered, Some(failed)));
+        // Same millisecond: the outcome still wins the tie.
+        assert!(!preview_wins((deny_at, 0), Some((deny_at, 2))));
+        assert!(preview_wins((deny_at, 2), Some((deny_at, 0))));
+        // A newer message always takes over; equal rank and time: last wins.
+        assert!(preview_wins(
+            ("2026-11-20T10:11:00Z", 1),
+            Some((deny_at, 2))
+        ));
+        assert!(preview_wins((deny_at, 1), Some((deny_at, 1))));
+        assert!(preview_wins((deny_at, 1), None));
+    }
+
+    #[test]
+    fn preview_rank_orders_outcome_message_answer() {
+        let mut failed = status("t6", "Ada", TaskState::Done, false);
+        if let Event::Status { failure, .. } = &mut failed {
+            *failure = Some("你拒绝了：发送周报".into());
+        }
+        assert_eq!(preview_rank(&failed), 2);
+        assert_eq!(preview_rank(&text("m1", "hi")), 1);
+        assert_eq!(
+            preview_rank(&status("t6", "Ada", TaskState::Done, false)),
+            1
         );
     }
 

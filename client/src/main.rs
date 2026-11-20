@@ -215,6 +215,8 @@ struct App {
     interval: Duration,
     groups: Vec<GroupTab>,
     feeds: HashMap<String, Feed>,
+    /// Change time and rank of the event behind each chat's list preview.
+    preview_key: HashMap<String, (String, u8)>,
     selected: Option<String>,
     page: Page,
     ui: HashMap<String, CardUi>,
@@ -306,6 +308,7 @@ impl App {
             interval,
             groups: Vec::new(),
             feeds: HashMap::new(),
+            preview_key: HashMap::new(),
             selected: None,
             page: Page::Group,
             ui: HashMap::new(),
@@ -466,8 +469,18 @@ impl App {
     }
 
     fn apply_event(&mut self, group: String, event: &Event) {
-        self.convs
-            .touch(&group, Some(preview(event)), Some(change_time(event)));
+        // Newest change time wins the list preview; a tie goes to the
+        // outcome (see `model::preview_wins`), not to arrival order.
+        let at = change_time(event);
+        let rank = model::preview_rank(event);
+        let cur = self.preview_key.get(&group);
+        let wins = model::preview_wins((at, rank), cur.map(|(t, r)| (t.as_str(), *r)));
+        let shown = wins.then(|| preview(event));
+        if wins {
+            self.preview_key
+                .insert(group.clone(), (at.to_string(), rank));
+        }
+        self.convs.touch(&group, shown, Some(at));
         self.feeds.entry(group).or_default().apply(event);
         // A 409 note ("refreshing") goes once the answered card arrives.
         let answered = match event {
