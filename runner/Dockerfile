@@ -1,5 +1,5 @@
-# Produces openbots-runner:local. Build from the repo root:
-#   docker build -f runner/Dockerfile -t openbots-runner:local .
+# Produces robroz-runner:local. Build from the repo root:
+#   docker build -f runner/Dockerfile -t robroz-runner:local .
 # CI compiles hive-runner with cargo and does not build this image.
 FROM rust:1-bookworm AS build
 WORKDIR /src
