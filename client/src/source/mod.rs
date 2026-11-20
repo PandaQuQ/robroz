@@ -74,29 +74,43 @@ pub trait EventSource: Send {
     }
 }
 
+/// A fresh path per call. Tests run in parallel and macOS clocks tick in
+/// microseconds, so a timestamp alone let two tests share one database
+/// ("database is locked"); the counter makes every name unique in the process.
 #[cfg(test)]
-fn temp_db() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "robroz-client-test-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ))
+fn temp_path(kind: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("robroz-client-{kind}-{}-{n}", std::process::id()))
 }
 
-/// Test helper: the real host router in-process on a free port, fresh DB.
+#[cfg(test)]
+fn temp_db() -> std::path::PathBuf {
+    temp_path("test").with_extension("db")
+}
+
+#[cfg(test)]
+fn temp_volumes() -> std::path::PathBuf {
+    let path = temp_path("vol");
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+/// A real host on a random port with its own database and volumes.
 #[cfg(test)]
 pub fn http_test_host() -> String {
-    serve(robroz_host::router(&temp_db()).unwrap())
+    serve(
+        robroz_host::Host::open(&temp_db(), temp_volumes(), "robroz-runner:local")
+            .unwrap()
+            .router(),
+    )
 }
 
 /// Same, with the host requiring `Authorization: Bearer <token>` (robroz#22).
 #[cfg(test)]
 pub fn http_test_host_with_token(token: &str) -> String {
-    let volumes = std::env::temp_dir().join(format!("robroz-client-vol-{}", std::process::id()));
-    std::fs::create_dir_all(&volumes).unwrap();
+    let volumes = temp_volumes();
     let token = robroz_host::auth::ApiToken::parse(token).unwrap();
     serve(
         robroz_host::Host::open(&temp_db(), volumes, "robroz-runner:local")
