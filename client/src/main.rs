@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hive_card::Palette;
+use robroz_card::Palette;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use hive_policy::{outbound, side_effect, Outbound, SideEffect, SideEffectDecision};
+use robroz_policy::{outbound, side_effect, Outbound, SideEffect, SideEffectDecision};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -46,7 +46,7 @@ struct TaskRow {
 /// What pump decided for an exited container, written back under the lock.
 enum Outcome {
     /// With the host-computed blocking line, when there is one.
-    Blocked(Option<hive_policy::BlockingLine>),
+    Blocked(Option<robroz_policy::BlockingLine>),
     Dead,
     Done,
 }
@@ -173,10 +173,10 @@ fn collect_task(
     // `intent` only signals "blocked"; its content is never read. Where the task
     // stopped is recomputed here from the stored prompt and the host's takeover
     // hashes, with the same function the runner uses.
-    let claims_blocked = std::fs::symlink_metadata(hive_runner::intent_path(&group_dir, &task.id)).is_ok();
+    let claims_blocked = std::fs::symlink_metadata(robroz_runner::intent_path(&group_dir, &task.id)).is_ok();
     let stop = if claims_blocked {
-        let approved = hive_runner::read_takeover(&cfg.control_root.join(&task.id));
-        hive_policy::blocking_line(&task.prompt, &approved)
+        let approved = robroz_runner::read_takeover(&cfg.control_root.join(&task.id));
+        robroz_policy::blocking_line(&task.prompt, &approved)
     } else {
         None
     };
@@ -294,12 +294,12 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
 /// The runner reads `/control/prompt.txt`: the task's control dir, outside the
 /// group volume and mounted read-only, so no container can change it.
 fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
-    std::fs::write(hive_runner::prompt_path(control_dir), prompt)
+    std::fs::write(robroz_runner::prompt_path(control_dir), prompt)
 }
 
 /// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
 fn remove_intent(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(hive_runner::intent_path(group_dir, task_id)) {
+    match std::fs::remove_file(robroz_runner::intent_path(group_dir, task_id)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }
@@ -324,7 +324,7 @@ pub(crate) fn group_volume(volumes_root: &Path, group_id: &str) -> PathBuf {
     std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
-/// Count `GET` lines and ask hive-policy. A non-GET line is Fail and is not blocked.
+/// Count `GET` lines and ask robroz-policy. A non-GET line is Fail and is not blocked.
 fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, bool) {
     let path = group_dir.join("tasks").join(task_id).join("outbound.txt");
     let text = match std::fs::read_to_string(path) {

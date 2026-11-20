@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use hive_contract::{Event, MessageKind, TaskState};
+use robroz_contract::{Event, MessageKind, TaskState};
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
 
@@ -242,26 +242,26 @@ mod tests {
         assert_eq!(count_status(&site, "Ada"), 1);
         assert_eq!(
             status_of(&site, "Ada").status_line,
-            hive_card::status_line(TaskState::Done, false)
+            robroz_card::status_line(TaskState::Done, false)
         );
         assert_eq!(
             status_of(&site, "Bea").action,
-            hive_card::appearance(TaskState::Blocked, false).action
+            robroz_card::appearance(TaskState::Blocked, false).action
         );
         assert_eq!(
             status_of(&ops, "Cy").status_line,
-            hive_card::status_line(TaskState::Running, false)
+            robroz_card::status_line(TaskState::Running, false)
         );
         assert!(site
             .iter()
             .any(|r| matches!(r, Row::Delivery(d) if d.badge.is_none())));
         assert!(ops.iter().any(
-            |r| matches!(r, Row::Delivery(d) if d.badge == Some(hive_card::briefing_badge()))
+            |r| matches!(r, Row::Delivery(d) if d.badge == Some(robroz_card::briefing_badge()))
         ));
         assert_eq!(count_status(&ops, "Dee"), 1);
         assert_eq!(
             status_of(&ops, "Dee").status_line,
-            hive_card::status_line(TaskState::Done, false)
+            robroz_card::status_line(TaskState::Done, false)
         );
         assert!(site.iter().any(|r| matches!(
             r,

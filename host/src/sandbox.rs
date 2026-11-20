@@ -260,7 +260,7 @@ impl FakeSandbox {
     fn finish_inner(&mut self, code: i32, apply: bool) {
         for container in &mut self.containers {
             if apply && container.phase == ContainerPhase::Running {
-                hive_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
+                robroz_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
                     .expect("runner");
             }
             container.phase = ContainerPhase::Exited { code };
@@ -275,10 +275,10 @@ impl Sandbox for FakeSandbox {
             return Err(SandboxError::new("fake start failed"));
         }
         assert!(req.control_dir.is_dir(), "control dir exists before start");
-        let prompt = std::fs::read_to_string(hive_runner::prompt_path(req.control_dir))
+        let prompt = std::fs::read_to_string(robroz_runner::prompt_path(req.control_dir))
             .map_err(|err| SandboxError::new(format!("control prompt.txt missing: {err}")))?;
         assert!(
-            !hive_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
+            !robroz_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
             "prompt must not be written into the group volume"
         );
         self.containers.push(FakeContainer {

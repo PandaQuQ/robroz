@@ -1,7 +1,7 @@
 [package]
-name = "hive-runner"
+name = "robroz-runner"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hive-policy = { path = "../crates/hive-policy" }
+robroz-policy = { path = "../crates/robroz-policy" }
