@@ -92,7 +92,7 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 群里的 Bot 可以出一张选项卡，问人在固定选项里选。这是事件流里单独的 `choice` 事件，不是状态卡。`POST /api/groups/:id/choices`，请求体 `{"botId","prompt","options","multi"}`，`multi` 默认为 false，返回 201 就是这张卡。`options` 是 `[{id,label,primary}]`，每张 2 到 4 个；`id` 和 `label` 去掉首尾空白后不能为空，`id` 不能重复；`primary` 最多一个，表示 Bot 的推荐。多选卡会去掉 `primary`（一律为 false）。群不存在返回 404「群不存在」，Bot 不在群里返回 400「这个 Bot 不在群里」，prompt 为空返回 400「请填写内容」。选项不合法返回 400，说明为「选项需要 2 到 4 个」「选项不能为空」「选项重复」或「推荐项最多一个」。不合法的卡不会入库。未回答时 `choice` 和 `answeredAt` 都是 `null`。
 
-回传是 `POST /api/choices/:id/answer`，请求体 `{"choice":[ids]}`，单选也传数组，且必须恰好一个；多选传一个或多个，不能重复。成功返回 200，仍是同一张卡：`choice` 为所选 `id`（多选保留请求顺序），`answeredAt` 为回答时间。每张只能答一次，再答返回 409「已经选过了」。选项卡不存在返回 404「选项卡不存在」。未知的选项 `id`、单选选了多个、多选一个都没选、或 `id` 重复，返回 400，说明为「没有这个选项」「只能选一个」「至少选一个」或「选项重复」。`GET /api/groups/:id/events` 按 `createdAt` 升序一并返回选项卡，已回答的仍是同一张卡。
+回传是 `POST /api/choices/:id/answer`，请求体 `{"choice":[ids],"answeredBy"?}`（`answeredBy` 见「审批卡」一节里的「处理人 `answeredBy`」），单选也传数组，且必须恰好一个；多选传一个或多个，不能重复。成功返回 200，仍是同一张卡：`choice` 为所选 `id`（多选保留请求顺序），`answeredAt` 为回答时间。每张只能答一次，再答返回 409「已经选过了」。选项卡不存在返回 404「选项卡不存在」。未知的选项 `id`、单选选了多个、多选一个都没选、或 `id` 重复，返回 400，说明为「没有这个选项」「只能选一个」「至少选一个」或「选项重复」。`GET /api/groups/:id/events` 按 `createdAt` 升序一并返回选项卡，已回答的仍是同一张卡。
 
 ## 审批卡
 
@@ -103,10 +103,18 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
   - `summary` 去掉首尾空白后不能为空，只能一行，最多 200 字。
   - `path` 选填，只用来展示；去掉空白后为空就当没填。
   - 群不存在返回 404「群不存在」，bro 不在群里返回 400「这个 Bot 不在群里」，`summary` 为空返回 400「请填写要做什么」，太长或有换行返回 400「说明只能一行，最多 200 字」。
-- 回答：`POST /api/approvals/{id}/approve` 表示同意，`POST /api/approvals/{id}/deny` 表示拒绝，都不带请求体。成功返回 200，还是同一张卡，`decision` 变成 `approved` 或 `denied`，`answeredAt` 是回答时间。每张只能答一次，再答返回 409「已经答过了」；卡不存在返回 404「审批卡不存在」。
-- 卡的字段：`id`、`botId`、`botName`、`action`、`summary`、`path`、`decision`、`createdAt`、`answeredAt`。`path`、`decision` 和 `answeredAt` 一定会出现，后两个在回答前是 `null`。
+- 回答：`POST /api/approvals/{id}/approve` 表示同意，`POST /api/approvals/{id}/deny` 表示拒绝。请求体可以不带，也可以带 `{"answeredBy"?: 名字}`，见下面的「处理人 `answeredBy`」。成功返回 200，还是同一张卡，`decision` 变成 `approved` 或 `denied`，`answeredAt` 是回答时间。每张只能答一次，再答返回 409「已经答过了」；卡不存在返回 404「审批卡不存在」。
+- 卡的字段：`id`、`botId`、`botName`、`action`、`summary`、`path`、`decision`、`createdAt`、`answeredAt`、`answeredBy`。`path`、`decision`、`answeredAt` 和 `answeredBy` 一定会出现，后三个在回答前是 `null`。
 - 审批卡会出现在 `GET /api/groups/{id}/events` 和实时推送里，新卡算一条未读。
 - 客户端碰到不认识的事件类型应当跳过，以后新增事件时旧客户端才不会出错。
+
+### 处理人 `answeredBy`
+
+审批卡和选项卡都有一个后来新增的 `answeredBy` 字段，事件里一定会出现，没填时是 `null`。旧库启动时会自动加上这一列。
+
+- 主机只有一个共享令牌，分不清是谁在操作，所以这里存的是客户端回答时自己报的设备名或人名，主机不做核实。
+- 回答时可以不带。带的话会去掉首尾空白，空的就当没填；只能一行，最多 40 个字，不符合时返回 400「answeredBy 只能一行，最多 40 个字」。审批卡的请求体不是合法 JSON 时返回 422「请求格式不正确」。
+- 客户端怎么显示：返回的 `answeredBy` 和自己报的名字一样就写「我」，不一样就写返回的名字，是 `null` 就不写是谁，只写「已批准 · HH:MM」或「已拒绝 · HH:MM」。时间一律用主机返回的 `answeredAt`。
 
 ## 节点 6：客户端
 
