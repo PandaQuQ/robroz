@@ -443,6 +443,89 @@ mod tests {
 
     /// The real host (robroz#25): new and changed cards arrive live.
     #[test]
+    fn approval_cards_arrive_and_update_in_place_live() {
+        use crate::api::{ApiError, CardApi, HttpApi};
+        use crate::model::{Feed, Row};
+        use robroz_contract::{ApprovalDecision, Group};
+        use robroz_ui::cards::{ApprovalState, Card};
+        let base = crate::source::http_test_host();
+        let post = |path: &str, body: serde_json::Value| -> serde_json::Value {
+            let mut r = ureq::post(&format!("{base}{path}"))
+                .header("content-type", "application/json")
+                .send(body.to_string())
+                .unwrap();
+            serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
+        };
+        let group: Group =
+            serde_json::from_value(post("/api/groups", serde_json::json!({"name": "审批"})))
+                .unwrap();
+        post(
+            &format!("/api/groups/{}/members", group.id),
+            serde_json::json!({"botId": "bot-ops", "name": "运维"}),
+        );
+        let conn = Conn::new(&base).streaming();
+        let (tx, rx) = mpsc::channel();
+        let gid = group.id.clone();
+        std::thread::spawn(move || {
+            run(&conn, &gid, Backoff::default(), |item| {
+                tx.send(item).is_ok()
+            });
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            StreamItem::Connected
+        );
+        let next_approval = || loop {
+            match rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("event within 5s")
+            {
+                StreamItem::Event(e @ Event::Approval { .. }) => return e,
+                StreamItem::Ping | StreamItem::Event(_) => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        post(
+            &format!("/api/groups/{}/approvals", group.id),
+            serde_json::json!({
+                "botId": "bot-ops", "action": "delete",
+                "summary": "删掉旧的构建缓存", "path": "target/"
+            }),
+        );
+        let pending = next_approval();
+        let Event::Approval { id, decision, .. } = &pending else {
+            unreachable!()
+        };
+        assert_eq!(*decision, None);
+        let mut feed = Feed::default();
+        feed.apply(&pending);
+
+        let api = HttpApi::new(Conn::new(&base));
+        let answered = api.decide(id, true).unwrap().expect("host echoes the card");
+        assert!(matches!(
+            answered,
+            Event::Approval {
+                decision: Some(ApprovalDecision::Approved),
+                ..
+            }
+        ));
+        assert!(matches!(api.decide(id, false), Err(ApiError::Conflict(_))));
+        // The stream brings the answered card; it replaces the pending one.
+        let live = next_approval();
+        assert_eq!(live, answered);
+        feed.apply(&live);
+        let rows: Vec<_> = feed.rows().collect();
+        assert_eq!(rows.len(), 1, "updated in place");
+        match rows[0] {
+            Row::Card(Card::Approval(c)) => {
+                assert_eq!(c.summary, "删掉旧的构建缓存");
+                assert!(matches!(c.state, ApprovalState::Approved { .. }));
+            }
+            other => panic!("expected approval card, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn live_events_from_real_host() {
         use robroz_contract::{CreateGroup, Group, MessageKind, PostMessage};
         let base = crate::source::http_test_host();

@@ -38,6 +38,8 @@ pub enum Note {
     Retry,
     /// 409: someone answered first; the stream will bring the answer.
     AlreadyAnswered,
+    /// 409 on an approval card: it was approved or denied already.
+    AlreadyDecided,
     /// 400: the host refused the pick (e.g. the option is gone).
     Rejected(String),
     /// Any other failure with the host's message.
@@ -49,6 +51,7 @@ impl Note {
         match self {
             Note::Retry => status::RETRY_NOTE.into(),
             Note::AlreadyAnswered => "已经有人选过了，正在刷新".into(),
+            Note::AlreadyDecided => "这张卡已经处理过了，正在刷新".into(),
             Note::Rejected(msg) => format!("没选上：{msg}"),
             Note::Failed(msg) => format!("没成功：{msg}"),
         }
