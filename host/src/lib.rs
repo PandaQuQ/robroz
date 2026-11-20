@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
     AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups, Member,
-    Message, MessageKind, PostMessage, Schedule, Task, TaskState,
+    Message, MessageKind, PostMessage, Schedule, Task, TaskState, WaitingFor,
 };
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -743,7 +743,11 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut task_stmt = conn.prepare(
-            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure
+            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure,
+                    EXISTS(
+                        SELECT 1 FROM approvals a
+                        WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
+                    )
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1",
@@ -757,6 +761,17 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             let updated_at: String = row.get(5)?;
             // Only a finished task reports why it was not done.
             let failure: Option<String> = if state == TaskState::Done { row.get(7)? } else { None };
+            // Only a blocked task says whether it is waiting for approval or a takeover.
+            let waiting_for = if state == TaskState::Blocked {
+                let open_approval: i64 = row.get(8)?;
+                Some(if open_approval != 0 {
+                    WaitingFor::Approval
+                } else {
+                    WaitingFor::Takeover
+                })
+            } else {
+                None
+            };
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -772,6 +787,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     updated_at,
                     container_up,
                     failure,
+                    waiting_for,
                 },
             })
         })?;
@@ -3014,8 +3030,7 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "没记录", "robroz-action:external\n正文").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
-        let blocked = statuses(&events_of(&app, &group_id).await)[0].clone();
-        assert_eq!(blocked["state"], "blocked");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
         Connection::open(&path)
             .unwrap()
             .execute(
@@ -3029,6 +3044,9 @@ mod tests {
             robroz_runner::format_intent("external", "robroz-action:external"),
         )
         .unwrap();
+        // Snapshot after the setup wipe: resume must not change the card.
+        let blocked = statuses(&events_of(&app, &group_id).await)[0].clone();
+        assert_eq!(blocked["state"], "blocked");
 
         let (status, body) = resume(&app, &task_id).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -3530,6 +3548,43 @@ mod tests {
         assert!(deliveries(&events_of(&app, &group_id).await).is_empty());
         let (status, _) = resume(&app, &task_id).await;
         assert_eq!(status, StatusCode::CONFLICT, "nothing left to resume");
+    }
+
+    #[tokio::test]
+    async fn blocked_status_says_whether_it_is_waiting_for_approval_or_takeover() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, external) = seed_task(&app, "等什么", "发周报\nrobroz-action:external").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+
+        let events = events_of(&app, &group_id).await;
+        assert!(statuses(&events)[0].get("waitingFor").is_none(), "queued has no waitingFor");
+
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &external), "blocked");
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["waitingFor"], "approval");
+
+        let (_, captcha) = seed_task_in(&app, &group_id, "登录\nrobroz-action:captcha").await;
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &captcha), "blocked");
+        let events = events_of(&app, &group_id).await;
+        let st = statuses(&events);
+        let of = |id: &str| st.iter().find(|s| s["taskId"] == id).copied().unwrap();
+        assert_eq!(of(&external)["waitingFor"], "approval");
+        assert_eq!(of(&captcha)["waitingFor"], "takeover");
+
+        let cards = approvals_in(&events);
+        let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &external), "done");
+        let events = events_of(&app, &group_id).await;
+        let st = statuses(&events);
+        let of = |id: &str| st.iter().find(|s| s["taskId"] == id).copied().unwrap();
+        assert!(of(&external).get("waitingFor").is_none(), "done has no waitingFor");
+        assert_eq!(of(&captcha)["waitingFor"], "takeover");
     }
 
     #[tokio::test]
