@@ -17,6 +17,7 @@ uuid = { version = "=1.11.0", features = ["v4"] }
 croner = "4.0.1"
 futures-util = { version = "0.3", default-features = false }
 robroz-runner = { path = "../runner" }
+robroz-model = { path = "../crates/robroz-model" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
