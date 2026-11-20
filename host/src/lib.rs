@@ -14,6 +14,7 @@ use robroz_contract::{
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+mod bros;
 pub mod auth;
 mod choices;
 mod pump;
@@ -132,6 +133,9 @@ fn router_from(state: AppState) -> Router {
     Router::new()
         .route("/api/groups", post(create_group).get(list_groups))
         .route("/api/groups/{id}/members", post(add_member))
+        .route("/api/bros", post(bros::create_bro).get(bros::list_bros))
+        .route("/api/bros/{id}", axum::routing::patch(bros::rename_bro))
+        .route("/api/bros/{id}/dm", post(bros::open_dm))
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
         .route("/api/groups/{id}/events", get(list_events))
@@ -235,6 +239,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Routines: a paused schedule is skipped by tick.
     let _ = conn.execute("ALTER TABLE schedules ADD COLUMN paused_at TEXT", []);
     conn.execute_batch(choices::SCHEMA)?;
+    bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
 }
@@ -349,6 +354,10 @@ async fn add_member(
         if !group_exists(&tx, &group_id)? {
             return Ok(None);
         }
+        // A private chat keeps exactly its one bro.
+        if bros::dm_owner(&tx, &group_id)?.is_some_and(|owner| owner != bot_id) {
+            return Ok(Some(Err(())));
+        }
         tx.execute(
             "INSERT OR IGNORE INTO bots (id, tenant_id, name) VALUES (?1, ?2, ?3)",
             params![bot_id, TENANT_ID, name],
@@ -360,13 +369,14 @@ async fn add_member(
         let stored_name: String =
             tx.query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |row| row.get(0))?;
         tx.commit()?;
-        Ok(Some((inserted > 0, stored_name)))
+        Ok(Some(Ok((inserted > 0, stored_name))))
     })();
     drop(conn);
 
     match result {
         Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
-        Ok(Some((created, stored_name))) => {
+        Ok(Some(Err(()))) => error_response(StatusCode::CONFLICT, "私聊里只能有一个 bro"),
+        Ok(Some(Ok((created, stored_name)))) => {
             let status = if created {
                 StatusCode::CREATED
             } else {
@@ -1550,6 +1560,106 @@ mod tests {
         assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
 
+
+    // ---- bros and private chats ----
+
+    async fn new_bro(app: &Router, body: Option<Value>) -> (StatusCode, Value) {
+        read_json(call(app, match body { Some(b) => post("/api/bros", b), None => post_empty("/api/bros") }).await).await
+    }
+
+    #[tokio::test]
+    async fn new_bros_get_default_names_and_a_private_chat() {
+        let app = test_app(&temp_db());
+        let mut names = Vec::new();
+        for _ in 0..3 {
+            let (status, bro) = new_bro(&app, None).await;
+            assert_eq!(status, StatusCode::CREATED, "{bro}");
+            names.push(bro["name"].as_str().unwrap().to_string());
+        }
+        assert_eq!(names, ["bro", "bro 2", "bro 3"]);
+        let (status, named) = new_bro(&app, Some(json!({ "name": "  小明 " }))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(named["name"], "小明");
+        let (_, next) = new_bro(&app, Some(json!({}))).await;
+        assert_eq!(next["name"], "bro 4");
+
+        // The DM is an ordinary group with that one bro, usable for tasks right away.
+        let dm = named["dmGroupId"].as_str().unwrap().to_string();
+        let (_, groups) = read_json(call(&app, get("/api/groups")).await).await;
+        assert!(groups["groups"].as_array().unwrap().iter().any(|g| g["id"] == dm && g["name"] == "小明"));
+        let bro_id = named["id"].as_str().unwrap();
+        let (status, task) = read_json(
+            call(&app, post(&format!("/api/groups/{dm}/tasks"), json!({ "assigneeBotId": bro_id, "prompt": "你好" }))).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{task}");
+        assert_eq!(statuses(&events_of(&app, &dm).await)[0]["botName"], "小明");
+
+        let (status, list) = read_json(call(&app, get("/api/bros")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let listed: Vec<&str> = list["bros"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap()).collect();
+        assert_eq!(listed, ["bro", "bro 2", "bro 3", "小明", "bro 4"]);
+
+        let (status, _) = new_bro(&app, Some(json!({ "name": "   " }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = new_bro(&app, Some(json!({ "name": "x".repeat(65) }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rename_bro_and_its_chat_follows() {
+        let app = test_app(&temp_db());
+        let (_, bro) = new_bro(&app, None).await;
+        let id = bro["id"].as_str().unwrap();
+        let patch = |name: &str| {
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/bros/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "name": name }).to_string()))
+                .unwrap()
+        };
+        let (status, renamed) = read_json(call(&app, patch("阿强")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(renamed["name"], "阿强");
+        assert_eq!(renamed["dmGroupId"], bro["dmGroupId"]);
+        let (_, groups) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(groups["groups"][0]["name"], "阿强");
+        let (_, next) = new_bro(&app, None).await;
+        assert_eq!(next["name"], "bro", "the default name is free again");
+        let (status, _) = read_json(call(&app, patch("")).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let missing = Request::builder().method("PATCH").uri("/api/bros/nope")
+            .header("content-type", "application/json").body(Body::from(r#"{"name":"x"}"#)).unwrap();
+        let (status, _) = read_json(call(&app, missing).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn private_chat_keeps_one_bro_and_existing_bots_can_open_one() {
+        let app = test_app(&temp_db());
+        let (_, bro) = new_bro(&app, None).await;
+        let dm = bro["dmGroupId"].as_str().unwrap();
+        let (status, body) = add_member(&app, dm, "bot-other", "Other").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let (status, _) = add_member(&app, dm, bro["id"].as_str().unwrap(), "bro").await;
+        assert_eq!(status, StatusCode::OK, "re-adding its own bro is a no-op");
+
+        // A bot that came in through a group gets its DM on demand, once.
+        let group = create_group(&app, "大群").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group, "bot-ada", "Ada").await;
+        let (status, first) = read_json(call(&app, post_empty("/api/bros/bot-ada/dm")).await).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, again) = read_json(call(&app, post_empty("/api/bros/bot-ada/dm")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["dmGroupId"], again["dmGroupId"]);
+        assert_ne!(first["dmGroupId"], json!(group));
+        let (status, _) = read_json(call(&app, post_empty("/api/bros/nope/dm")).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // Ordinary groups still take many bots.
+        let (status, _) = add_member(&app, &group, "bot-bob", "Bob").await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
 
     // ---- unread ----
 

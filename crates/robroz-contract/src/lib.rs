@@ -213,6 +213,52 @@ pub struct AnswerChoice {
 pub const CHOICE_OPTIONS_MIN: usize = 2;
 pub const CHOICE_OPTIONS_MAX: usize = 4;
 
+/// A bro is an agent (`bots` row). In the UI every agent is called a bro;
+/// field names elsewhere (`botId`, `botName`) stay as they are.
+/// `dmGroupId` is its private chat: a group whose only member is this bro.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bro {
+    pub id: String,
+    pub name: String,
+    pub dm_group_id: Option<String>,
+}
+
+/// `GET /api/bros`, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bros {
+    pub bros: Vec<Bro>,
+}
+
+/// `POST /api/bros` body. No name means the next default: `bro`, `bro 2`, `bro 3`…
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateBro {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// `PATCH /api/bros/{id}` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameBro {
+    pub name: String,
+}
+
+pub const BRO_DEFAULT_NAME: &str = "bro";
+pub const BRO_NAME_MAX: usize = 64;
+
+/// The default name for a new bro given the names already taken: `bro` if
+/// free, else the smallest free `bro N` with N ≥ 2.
+pub fn next_bro_name<'a>(taken: impl IntoIterator<Item = &'a str>) -> String {
+    let taken: std::collections::HashSet<&str> = taken.into_iter().collect();
+    if !taken.contains(BRO_DEFAULT_NAME) {
+        return BRO_DEFAULT_NAME.to_string();
+    }
+    (2..)
+        .map(|n| format!("{BRO_DEFAULT_NAME} {n}"))
+        .find(|name| !taken.contains(name.as_str()))
+        .expect("unbounded range")
+}
+
 /// Unread state of one group for the conversation list.
 /// `unread` counts what a bro sent since `readAt`: deliveries, choice cards,
 /// and tasks that got stuck and need you. Your own messages and routine status
@@ -302,6 +348,18 @@ pub struct Events {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bro_default_names() {
+        use super::next_bro_name;
+        assert_eq!(next_bro_name([]), "bro");
+        assert_eq!(next_bro_name(["bro"]), "bro 2");
+        assert_eq!(next_bro_name(["bro", "bro 2"]), "bro 3");
+        assert_eq!(next_bro_name(["bro", "bro 3"]), "bro 2", "fills the first gap");
+        assert_eq!(next_bro_name(["bro 2", "小明"]), "bro", "bro itself was renamed away");
+        let json = serde_json::to_value(super::Bro { id: "b".into(), name: "bro".into(), dm_group_id: Some("g".into()) }).unwrap();
+        assert_eq!(json, serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": "g" }));
+    }
+
     use super::*;
 
     fn assert_round_trip(event: &Event, expected: serde_json::Value) {
