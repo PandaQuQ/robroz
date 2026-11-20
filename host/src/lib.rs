@@ -19,6 +19,7 @@ mod pump;
 mod routines;
 mod sandbox;
 mod schedule;
+mod stream;
 
 pub use pump::{pump, pump_with, Db, PumpConfig};
 pub use schedule::{tick, TickReport};
@@ -123,6 +124,7 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
         .route("/api/groups/{id}/events", get(list_events))
+        .route("/api/groups/{id}/stream", get(stream::stream_events))
         .route("/api/tasks/{id}/resume", post(resume_task))
         .route("/api/schedules", post(create_schedule))
         .route("/api/groups/{id}/schedules", get(routines::list_schedules))
@@ -634,111 +636,8 @@ async fn list_events(
         return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
     };
     let conn = lock_db(&state);
-    let result = (|| {
-        if !group_exists(&conn, &group_id)? {
-            return Ok(None);
-        }
-        let mut timed = Vec::new();
-
-        {
-            let mut message_stmt = conn.prepare(
-                "SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1",
-            )?;
-            let messages = message_stmt.query_map([group_id.as_str()], |row| {
-                let id: String = row.get(0)?;
-                let created_at: String = row.get(3)?;
-                Ok(TimedEvent {
-                    changed_at: created_at.clone(),
-                    created_at: created_at.clone(),
-                    id: id.clone(),
-                    event: Event::Message {
-                        id,
-                        kind: parse_kind(row.get(1)?)?,
-                        body: row.get(2)?,
-                        created_at,
-                    },
-                })
-            })?;
-            for item in messages {
-                timed.push(item?);
-            }
-        }
-
-        {
-            let mut task_stmt = conn.prepare(
-                "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up
-                 FROM tasks t
-                 JOIN bots b ON b.id = t.assignee_bot_id
-                 WHERE t.group_id = ?1",
-            )?;
-            let tasks = task_stmt.query_map([group_id.as_str()], |row| {
-                let id: String = row.get(0)?;
-                let created_at: String = row.get(4)?;
-                let state = parse_state(row.get(3)?)?;
-                let container_up: i64 = row.get(6)?;
-                let container_up = container_up != 0;
-                let updated_at: String = row.get(5)?;
-                Ok(TimedEvent {
-                    changed_at: updated_at.clone(),
-                    created_at: created_at.clone(),
-                    id: id.clone(),
-                    event: Event::Status {
-                        id: id.clone(),
-                        task_id: id,
-                        bot_id: row.get(1)?,
-                        bot_name: row.get(2)?,
-                        label: robroz_card::status_line(state, container_up).to_string(),
-                        state,
-                        created_at,
-                        updated_at,
-                        container_up,
-                    },
-                })
-            })?;
-            for item in tasks {
-                timed.push(item?);
-            }
-        }
-
-        {
-            let mut delivery_stmt = conn.prepare(
-                "SELECT id, summary, path, briefing, created_at FROM deliveries WHERE group_id = ?1",
-            )?;
-            let deliveries = delivery_stmt.query_map([group_id.as_str()], |row| {
-                let id: String = row.get(0)?;
-                let created_at: String = row.get(4)?;
-                let briefing: i64 = row.get(3)?;
-                Ok(TimedEvent {
-                    changed_at: created_at.clone(),
-                    created_at: created_at.clone(),
-                    id: id.clone(),
-                    event: Event::Delivery {
-                        id,
-                        summary: row.get(1)?,
-                        path: row.get(2)?,
-                        briefing: briefing != 0,
-                        created_at,
-                    },
-                })
-            })?;
-            for item in deliveries {
-                timed.push(item?);
-            }
-        }
-
-        timed.extend(choices::timed_events(&conn, &group_id)?);
-        if let Some(since) = &since {
-            timed.retain(|item| item.changed_at.as_str() > since.as_str());
-        }
-
-        timed.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        let events = timed.into_iter().map(|item| item.event).collect();
-        Ok(Some(Events { events }))
-    })();
+    let result = group_events(&conn, &group_id, since.as_deref())
+        .map(|found| found.map(|timed| Events { events: timed.into_iter().map(|item| item.event).collect() }));
     drop(conn);
 
     match result {
@@ -746,6 +645,114 @@ async fn list_events(
         Ok(Some(events)) => (StatusCode::OK, Json(events)).into_response(),
         Err(err) => db_error(err),
     }
+}
+
+/// Every card in a group, oldest first, optionally only those that changed after
+/// `since` (normalised RFC3339 millis). `None` when the group does not exist.
+/// Shared by `GET …/events` and the live stream.
+fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusqlite::Result<Option<Vec<TimedEvent>>> {
+    if !group_exists(conn, group_id)? {
+        return Ok(None);
+    }
+    let mut timed = Vec::new();
+
+    {
+        let mut message_stmt = conn.prepare(
+            "SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1",
+        )?;
+        let messages = message_stmt.query_map([group_id], |row| {
+            let id: String = row.get(0)?;
+            let created_at: String = row.get(3)?;
+            Ok(TimedEvent {
+                changed_at: created_at.clone(),
+                created_at: created_at.clone(),
+                id: id.clone(),
+                event: Event::Message {
+                    id,
+                    kind: parse_kind(row.get(1)?)?,
+                    body: row.get(2)?,
+                    created_at,
+                },
+            })
+        })?;
+        for item in messages {
+            timed.push(item?);
+        }
+    }
+
+    {
+        let mut task_stmt = conn.prepare(
+            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up
+             FROM tasks t
+             JOIN bots b ON b.id = t.assignee_bot_id
+             WHERE t.group_id = ?1",
+        )?;
+        let tasks = task_stmt.query_map([group_id], |row| {
+            let id: String = row.get(0)?;
+            let created_at: String = row.get(4)?;
+            let state = parse_state(row.get(3)?)?;
+            let container_up: i64 = row.get(6)?;
+            let container_up = container_up != 0;
+            let updated_at: String = row.get(5)?;
+            Ok(TimedEvent {
+                changed_at: updated_at.clone(),
+                created_at: created_at.clone(),
+                id: id.clone(),
+                event: Event::Status {
+                    id: id.clone(),
+                    task_id: id,
+                    bot_id: row.get(1)?,
+                    bot_name: row.get(2)?,
+                    label: robroz_card::status_line(state, container_up).to_string(),
+                    state,
+                    created_at,
+                    updated_at,
+                    container_up,
+                },
+            })
+        })?;
+        for item in tasks {
+            timed.push(item?);
+        }
+    }
+
+    {
+        let mut delivery_stmt = conn.prepare(
+            "SELECT id, summary, path, briefing, created_at FROM deliveries WHERE group_id = ?1",
+        )?;
+        let deliveries = delivery_stmt.query_map([group_id], |row| {
+            let id: String = row.get(0)?;
+            let created_at: String = row.get(4)?;
+            let briefing: i64 = row.get(3)?;
+            Ok(TimedEvent {
+                changed_at: created_at.clone(),
+                created_at: created_at.clone(),
+                id: id.clone(),
+                event: Event::Delivery {
+                    id,
+                    summary: row.get(1)?,
+                    path: row.get(2)?,
+                    briefing: briefing != 0,
+                    created_at,
+                },
+            })
+        })?;
+        for item in deliveries {
+            timed.push(item?);
+        }
+    }
+
+    timed.extend(choices::timed_events(conn, group_id)?);
+    if let Some(since) = since {
+        timed.retain(|item| item.changed_at.as_str() > since);
+    }
+
+    timed.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(Some(timed))
 }
 
 #[cfg(test)]
@@ -1528,6 +1535,101 @@ mod tests {
         assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
 
+
+    // ---- live stream ----
+
+    /// Reads SSE frames until `n` `data:` events arrived or `wait` passed.
+    async fn sse_take(body: &mut Body, n: usize, wait: std::time::Duration) -> Vec<(String, String, Value)> {
+        let mut out = Vec::new();
+        let mut buf = String::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        while out.len() < n {
+            let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await else { break };
+            let Ok(bytes) = frame.into_data() else { continue };
+            buf.push_str(std::str::from_utf8(&bytes).unwrap());
+            while let Some(end) = buf.find("\n\n") {
+                let block: String = buf.drain(..end + 2).collect();
+                let (mut name, mut id, mut data) = (String::new(), String::new(), None);
+                for line in block.lines() {
+                    if let Some(v) = line.strip_prefix("event: ") { name = v.into(); }
+                    if let Some(v) = line.strip_prefix("id: ") { id = v.into(); }
+                    if let Some(v) = line.strip_prefix("data: ") { data = Some(serde_json::from_str(v).unwrap()); }
+                }
+                if let Some(data) = data { out.push((name, id, data)); }
+            }
+        }
+        out
+    }
+
+    async fn open_stream(app: &Router, group_id: &str, last_id: Option<&str>) -> Response<Body> {
+        let mut b = Request::builder().method("GET").uri(format!("/api/groups/{group_id}/stream"));
+        if let Some(id) = last_id {
+            b = b.header("last-event-id", id);
+        }
+        call(app, b.body(Body::empty()).unwrap()).await
+    }
+
+    async fn say(app: &Router, group_id: &str, text: &str) {
+        let (status, _) = read_json(call(app, post(&format!("/api/groups/{group_id}/messages"), json!({ "kind": "text", "body": text }))).await).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn stream_pushes_new_and_changed_cards_once() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "推送", "画一张草图").await;
+        say(&app, &group_id, "第一条").await;
+
+        let resp = open_stream(&app, &group_id, None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["content-type"], "text/event-stream");
+        let mut body = resp.into_body();
+        let wait = std::time::Duration::from_secs(3);
+        let backlog = sse_take(&mut body, 2, wait).await;
+        let names: Vec<&str> = backlog.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["status", "message"]);
+        assert_eq!(backlog[0].2["state"], "queued");
+
+        // Nothing changed: nothing arrives.
+        assert!(sse_take(&mut body, 1, super::stream::POLL * 4).await.is_empty());
+
+        // New message and a milestone on the same card are pushed.
+        say(&app, &group_id, "第二条").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let live = sse_take(&mut body, 2, wait).await;
+        assert_eq!(live.len(), 2, "{live:?}");
+        assert!(live.iter().any(|(n, _, d)| n == "message" && d["body"] == "第二条"));
+        let status = live.iter().find(|(n, _, _)| n == "status").expect("status pushed");
+        assert_eq!(status.2["id"], task_id, "same card id, replaced in place");
+        assert_eq!(status.2["state"], "running");
+        assert!(sse_take(&mut body, 1, super::stream::POLL * 4).await.is_empty(), "no repeats");
+
+        // Reconnect from the last id: only what changed afterwards.
+        let last = live.iter().map(|(_, id, _)| id.clone()).max().unwrap();
+        drop(body);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let mut body = open_stream(&app, &group_id, Some(&last)).await.into_body();
+        let resumed = sse_take(&mut body, 3, wait).await;
+        let names: Vec<&str> = resumed.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["status", "delivery"], "{resumed:?}");
+        assert_eq!(resumed[0].2["state"], "done");
+    }
+
+    #[tokio::test]
+    async fn stream_rejects_missing_group_and_bad_cursor() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (status, body) = read_json(open_stream(&app, "missing", None).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, json!({ "error": "群不存在" }));
+        let group_id = create_group(&app, "x").await["id"].as_str().unwrap().to_string();
+        let (status, _) = read_json(open_stream(&app, &group_id, Some("not-a-time")).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 
     // ---- bot manners: ack, milestones, quiet, data-only, no rerun ----
 
