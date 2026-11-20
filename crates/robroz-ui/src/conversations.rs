@@ -9,12 +9,16 @@ use chrono::{DateTime, TimeZone};
 
 /// Empty-state line when there is nothing to talk to yet.
 pub const EMPTY_HINT: &str = "还没有 bro，引入第一个";
-/// Button that creates a bro and opens its DM.
-pub const NEW_BRO: &str = "＋ 新 bro";
+/// Button that creates a bro and opens its DM (PM wording).
+pub const NEW_BRO: &str = "引入一个 bro";
+/// Composer placeholder.
+pub const COMPOSER_HINT: &str = "发消息… 私聊里直接交给 bro；群里用 @名字 派活";
+/// Composer button.
+pub const SEND: &str = "发送";
 /// List heading.
 pub const TITLE: &str = "聊天";
-/// Preview cut, in characters.
-pub const PREVIEW_CHARS: usize = 28;
+/// Stored preview cut, in characters; the view fits it to the row width.
+pub const PREVIEW_CHARS: usize = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Conversation {
@@ -130,6 +134,36 @@ pub fn clip(s: &str, max: usize) -> String {
     out
 }
 
+fn units(c: char) -> usize {
+    if c.is_ascii() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Fit one line into `max` width units (ASCII 1, CJK 2), ending in `…`
+/// when cut. iced has no text ellipsis, so the view estimates `max` from
+/// the space left beside the time or the unread badge.
+pub fn fit(s: &str, max: usize) -> String {
+    let total: usize = s.chars().map(units).sum();
+    if total <= max {
+        return s.to_string();
+    }
+    let budget = max.saturating_sub(units('…'));
+    let mut used = 0;
+    let mut out = String::new();
+    for c in s.chars() {
+        if used + units(c) > budget {
+            break;
+        }
+        used += units(c);
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
 /// Badge text: `1`…`99`, then `99+`; `None` for zero.
 pub fn badge(unread: u64) -> Option<String> {
     match unread {
@@ -230,6 +264,15 @@ mod tests {
         assert_eq!(initial("bro 2"), "B");
         assert_eq!(initial("小明"), "小");
         assert_eq!(initial("  "), "?");
+        assert_eq!(fit("abc", 3), "abc");
+        assert_eq!(fit("abcdef", 5), "abc…");
+        assert_eq!(
+            fit("你好，我是 Ada。有事直接在这里找我。", 16),
+            "你好，我是 Ada…"
+        );
+        let cut = fit("一二三四五六七八", 9);
+        assert_eq!(cut, "一二三…");
+        assert!(cut.chars().map(units).sum::<usize>() <= 9);
     }
 
     #[test]

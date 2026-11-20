@@ -15,6 +15,7 @@
 //! the footer button toggles).
 
 mod api;
+mod compose;
 mod conn;
 mod gallery;
 mod model;
@@ -26,7 +27,9 @@ use std::time::Duration;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
-use robroz_contract::{Bro, Event, ScheduleEntry, Unread};
+use robroz_contract::{
+    Bro, Event, Message as HostMessage, ScheduleEntry, Task as HostTask, Unread,
+};
 use robroz_ui::cards::interact::CardUi;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
@@ -128,6 +131,12 @@ enum Message {
     BroCreated(Result<Bro, ApiError>),
     GroupsReloaded(Result<Vec<GroupTab>, SourceError>),
     Live(stream::Live),
+    /// Composer result: the stored message, then the queued task if any.
+    Sent {
+        group: String,
+        message: Result<HostMessage, ApiError>,
+        task: Option<Result<HostTask, ApiError>>,
+    },
     /// Narrow screens: back from a chat to the list.
     Back,
     ToggleTheme,
@@ -149,6 +158,15 @@ struct App {
     stream_up: bool,
     /// Narrow screens: a chat (or routines) is open over the list.
     narrow_open: bool,
+    /// Known bros (DM owners, @mention targets).
+    bros: Vec<Bro>,
+    /// Composer text per chat.
+    drafts: HashMap<String, String>,
+    sending: bool,
+    /// Last composer problem, per chat.
+    send_note: HashMap<String, String>,
+    /// `--fake` / gallery: canned data, test-only env knobs allowed.
+    fake: bool,
     origin: String,
     interval: Duration,
     groups: Vec<GroupTab>,
@@ -232,6 +250,11 @@ impl App {
             convs: Conversations::default(),
             stream_up: false,
             narrow_open: false,
+            bros: Vec::new(),
+            drafts: HashMap::new(),
+            sending: false,
+            send_note: HashMap::new(),
+            fake,
             origin,
             interval,
             groups: Vec::new(),
@@ -326,6 +349,35 @@ impl App {
                 })
             }
         }
+    }
+
+    /// Composer: store the text, then queue it for a bro when one is meant.
+    fn send(&mut self) -> Task<Message> {
+        if self.sending {
+            return Task::none();
+        }
+        let Some(group) = self.selected.clone() else {
+            return Task::none();
+        };
+        let draft = self.drafts.get(&group).cloned().unwrap_or_default();
+        let Some(out) = compose::plan(&draft, &group, &self.bros) else {
+            return Task::none();
+        };
+        self.sending = true;
+        let g = group.clone();
+        let job = call(&self.api, move |api| {
+            let message = api.send_message(&g, &out.body);
+            let task = match (&message, out.task) {
+                (Ok(_), Some((bot, prompt))) => Some(api.create_task(&g, &bot, &prompt)),
+                _ => None,
+            };
+            (message, task)
+        });
+        Task::perform(job, move |(message, task)| Message::Sent {
+            group: group.clone(),
+            message,
+            task,
+        })
     }
 
     fn apply_event(&mut self, group: String, event: &Event) {
@@ -450,6 +502,18 @@ impl App {
                 Task::none()
             }
             Action::OpenChat { group } => self.open_chat(group),
+            Action::BackToList => {
+                self.narrow_open = false;
+                Task::none()
+            }
+            Action::ComposerEdit { text } => {
+                if let Some(g) = self.selected.clone() {
+                    self.send_note.remove(&g);
+                    self.drafts.insert(g, text);
+                }
+                Task::none()
+            }
+            Action::ComposerSend => self.send(),
             Action::NewBro => {
                 Task::perform(call(&self.api, |api| api.create_bro()), Message::BroCreated)
             }
@@ -531,6 +595,7 @@ impl App {
             }
             Message::BrosLoaded(result) => {
                 if let Ok(bros) = result {
+                    self.bros = bros.clone();
                     let tasks: Vec<_> = bros
                         .into_iter()
                         .filter_map(|b| b.dm_group_id.map(|id| GroupTab { id, name: b.name }))
@@ -541,6 +606,9 @@ impl App {
             }
             Message::BroCreated(result) => match result {
                 Ok(bro) => {
+                    if !self.bros.iter().any(|b| b.id == bro.id) {
+                        self.bros.push(bro.clone());
+                    }
                     let Some(dm) = bro.dm_group_id else {
                         return Task::none();
                     };
@@ -567,6 +635,38 @@ impl App {
                     return Task::batch(tasks);
                 }
             }
+            Message::Sent {
+                group,
+                message,
+                task,
+            } => {
+                self.sending = false;
+                match message {
+                    Ok(m) => {
+                        self.drafts.remove(&group);
+                        self.send_note.remove(&group);
+                        let event = Event::Message {
+                            id: m.id,
+                            kind: m.kind,
+                            body: m.body,
+                            created_at: m.created_at,
+                        };
+                        self.apply_event(group.clone(), &event);
+                        if let Some(Err(err)) = task {
+                            self.send_note.insert(
+                                group,
+                                format!("消息已发出，但没能交给 bro：{}", err.note().text()),
+                            );
+                        }
+                        // Pick up the new status card without waiting a tick.
+                        return self.poll();
+                    }
+                    Err(err) => {
+                        self.send_note
+                            .insert(group, format!("没发出去：{}", err.note().text()));
+                    }
+                }
+            }
             Message::Live((group, item)) => match item {
                 StreamItem::Connected => {
                     if self.selected.as_deref() == Some(group.as_str()) {
@@ -590,8 +690,15 @@ impl App {
                         self.loaded = true;
                         self.error = None;
                         let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
-                        // Desktop opens the first chat; narrow starts on the list.
-                        if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
+                        // `--fake` + `ROBROZ_OPEN=<group>`: open that chat
+                        // (screenshots of the chat screen on a phone).
+                        let wanted = std::env::var("ROBROZ_OPEN")
+                            .ok()
+                            .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
+                        if let Some(g) = wanted {
+                            tasks.push(self.open_chat(g));
+                        } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
+                            // Desktop opens the first chat; narrow starts on the list.
                             if !self.narrow() {
                                 tasks.push(self.open_chat(first));
                             }
@@ -764,7 +871,9 @@ impl App {
         }
         let main: Element<'_, Message> = if t.narrow {
             // Phone: one screen at a time.
-            if self.narrow_open {
+            if self.narrow_open && self.page == Page::Group {
+                self.page_view(&t)
+            } else if self.narrow_open {
                 let back = button(text("‹ 聊天").size(t.type_.row_name))
                     .height(Length::Fixed(
                         t.controls.touch_target.max(t.controls.button_h),
@@ -825,7 +934,12 @@ impl App {
         let selected = (self.page == Page::Group)
             .then_some(self.selected.as_deref())
             .flatten();
-        let list = view::conversation_list(t, &self.convs, selected, now_unix()).map(Message::Ui);
+        let list_w = match width {
+            Length::Fixed(w) => w,
+            _ => self.width,
+        } - 16.0;
+        let list =
+            view::conversation_list(t, &self.convs, selected, now_unix(), list_w).map(Message::Ui);
         let routines = button(text(robroz_ui::cards::routines::TITLE).size(t.type_.row_name))
             .width(Fill)
             .height(Length::Fixed(
@@ -875,13 +989,28 @@ impl App {
             .into_iter()
             .flat_map(Feed::rows)
             .map(|r| row_view(t, r, &self.ui, &empty, self.caps, width));
-        scrollable(
+        let feed = scrollable(
             column(rows)
                 .spacing(t.metrics.stream_spacing)
                 .padding(t.metrics.stream_padding)
                 .width(Fill),
         )
         .anchor_bottom()
+        .height(Fill)
+        .width(Fill);
+        let (name, dm) = self
+            .convs
+            .get(id)
+            .map_or((id.as_str(), false), |c| (c.name.as_str(), c.dm));
+        let draft = self.drafts.get(id).map_or("", String::as_str);
+        let note = self.send_note.get(id).map(String::as_str);
+        column![
+            view::chat_header(t, name, dm, t.narrow).map(Message::Ui),
+            view::rule(t),
+            feed,
+            view::rule(t),
+            view::composer(t, draft, self.sending, note).map(Message::Ui),
+        ]
         .height(Fill)
         .width(Fill)
         .into()

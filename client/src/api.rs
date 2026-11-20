@@ -7,6 +7,8 @@
 //!   `GET /api/groups/:id/schedules`, `PATCH /api/schedules/:id`.
 //! - Unread uses robroz#26: `GET /api/unread`, `POST /api/groups/:id/read`.
 //! - Bros and DMs use robroz#28: `GET /api/bros`, `POST /api/bros`.
+//! - The composer uses the existing `POST /api/groups/:id/messages` (store
+//!   the text) and `POST /api/groups/:id/tasks` (queue it for a bro).
 //! - `approval` and `draft` have no backend endpoints yet. They use the UI
 //!   SPEC §9 suggestions (`POST /api/cards/:id/decision`,
 //!   `POST /api/cards/:id/send`) until the backend defines them.
@@ -14,8 +16,9 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, AnswerChoice, Bro, Bros, CreateBro, ErrorBody, Event, ScheduleEntry, Schedules,
-    Unread, Unreads, UpdateSchedule,
+    next_bro_name, AnswerChoice, Bro, Bros, CreateBro, CreateTask, ErrorBody, Event, Message,
+    MessageKind, PostMessage, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
+    UpdateSchedule,
 };
 use robroz_ui::cards::interact::Note;
 
@@ -42,6 +45,14 @@ pub mod paths {
     }
     /// robroz#28.
     pub const BROS: &str = "/api/bros";
+    /// Existing host route: store a user message in a group.
+    pub fn messages(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/messages")
+    }
+    /// Existing host route: queue a task for a bro in a group.
+    pub fn tasks(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/tasks")
+    }
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn approval_decision(id: &str) -> String {
         format!("/api/cards/{id}/decision")
@@ -66,6 +77,24 @@ pub mod bodies {
 
     pub fn decision(approve: bool) -> String {
         serde_json::json!({ "approve": approve }).to_string()
+    }
+
+    /// `{"kind":"text","body":…}`.
+    pub fn text(body: &str) -> String {
+        serde_json::to_string(&PostMessage {
+            kind: MessageKind::Text,
+            body: body.to_string(),
+        })
+        .expect("serialize message")
+    }
+
+    /// `{"assigneeBotId":…,"prompt":…}`.
+    pub fn task(bot_id: &str, prompt: &str) -> String {
+        serde_json::to_string(&CreateTask {
+            assignee_bot_id: bot_id.to_string(),
+            prompt: prompt.to_string(),
+        })
+        .expect("serialize task")
     }
 
     pub fn paused(paused: bool) -> String {
@@ -109,6 +138,10 @@ pub trait CardApi: Send + Sync {
     fn bros(&self) -> Result<Vec<Bro>, ApiError>;
     /// New bro with the next default name and its DM.
     fn create_bro(&self) -> Result<Bro, ApiError>;
+    /// Composer: store a text message in a group.
+    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError>;
+    /// Composer: queue `prompt` for a bro who is in the group.
+    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError>;
     /// Returns the updated `choice` event when the host sends it back.
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError>;
     fn decide(&self, id: &str, approve: bool) -> Result<(), ApiError>;
@@ -200,6 +233,14 @@ impl CardApi for HttpApi {
     fn create_bro(&self) -> Result<Bro, ApiError> {
         let body = serde_json::to_string(&CreateBro::default()).expect("serialize bro");
         decode(&self.post(paths::BROS, Some(body))?)
+    }
+
+    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError> {
+        decode(&self.post(&paths::messages(group_id), Some(bodies::text(body)))?)
+    }
+
+    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
+        decode(&self.post(&paths::tasks(group_id), Some(bodies::task(bot_id, prompt)))?)
     }
 
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError> {
@@ -294,6 +335,27 @@ impl CardApi for FakeApi {
         Ok(bro)
     }
 
+    fn send_message(&self, _: &str, body: &str) -> Result<Message, ApiError> {
+        if body.trim().is_empty() {
+            return Err(ApiError::BadRequest("请填写内容".into()));
+        }
+        Ok(Message {
+            id: format!("fake-msg-{}", uuid_ish()),
+            kind: MessageKind::Text,
+            body: body.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn create_task(&self, _: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
+        Ok(Task {
+            id: format!("fake-task-{}", uuid_ish()),
+            assignee_bot_id: bot_id.to_string(),
+            prompt: prompt.to_string(),
+            state: TaskState::Queued,
+        })
+    }
+
     fn answer_choice(&self, _: &str, _: &[String]) -> Result<Option<Event>, ApiError> {
         Ok(None)
     }
@@ -326,6 +388,16 @@ impl CardApi for FakeApi {
     }
 }
 
+/// Unique-enough id for fake echoes.
+fn uuid_ish() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    nanos ^ u128::from(N.fetch_add(1, Ordering::Relaxed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +412,8 @@ mod tests {
         assert_eq!(paths::UNREAD, "/api/unread");
         assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
         assert_eq!(paths::BROS, "/api/bros");
+        assert_eq!(paths::messages("g1"), "/api/groups/g1/messages");
+        assert_eq!(paths::tasks("g1"), "/api/groups/g1/tasks");
     }
 
     #[test]
@@ -552,6 +626,57 @@ mod tests {
             let bros = api.bros().unwrap();
             assert_eq!(bros.len(), 2);
             assert_eq!(bros[0].dm_group_id.as_deref(), Some(dm.as_str()));
+        }
+
+        /// Events of a group as raw JSON (kind + fields).
+        fn events(base: &str, group: &str) -> Vec<serde_json::Value> {
+            let mut source = crate::source::HttpSource::new(Conn::new(base), Vec::new());
+            source
+                .events(group, None)
+                .unwrap()
+                .events
+                .into_iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .collect()
+        }
+
+        #[test]
+        fn composer_posts_message_and_queues_task() {
+            let base = spawn_host();
+            let group = group_with_bot(&base);
+            let api = HttpApi::new(Conn::new(&base));
+            // Group: the text is stored as a message.
+            let sent = api.send_message(&group.id, "@文档哥 写 README").unwrap();
+            assert_eq!(sent.body, "@文档哥 写 README");
+            assert!(matches!(
+                api.send_message(&group.id, "  "),
+                Err(ApiError::BadRequest(_))
+            ));
+            // An @mention queues the rest for that bro.
+            let task = api.create_task(&group.id, "bot-doc", "写 README").unwrap();
+            assert_eq!(task.state, TaskState::Queued);
+            assert!(api.create_task(&group.id, "bot-nobody", "x").is_err());
+            let seen = events(&base, &group.id);
+            assert!(seen
+                .iter()
+                .any(|e| e["kind"] == "message" && e["body"] == "@文档哥 写 README"));
+            assert!(seen
+                .iter()
+                .any(|e| e["kind"] == "status" && e["botId"] == "bot-doc"));
+
+            // DM: the bro behind it gets the task.
+            let bro = api.create_bro().unwrap();
+            let dm = bro.dm_group_id.clone().unwrap();
+            api.send_message(&dm, "整理一下周报").unwrap();
+            let task = api.create_task(&dm, &bro.id, "整理一下周报").unwrap();
+            assert_eq!(task.assignee_bot_id, bro.id);
+            let seen = events(&base, &dm);
+            assert!(seen
+                .iter()
+                .any(|e| e["kind"] == "message" && e["body"] == "整理一下周报"));
+            assert!(seen
+                .iter()
+                .any(|e| e["kind"] == "status" && e["botId"] == bro.id.as_str()));
         }
 
         #[test]
