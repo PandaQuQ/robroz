@@ -124,6 +124,8 @@ struct RawEvents {
 #[derive(Debug, Default)]
 struct Decoded {
     events: Vec<Event>,
+    /// `waitingFor` per entry of `events`, same order.
+    waiting: Vec<Option<String>>,
     skipped_at: Option<String>,
 }
 
@@ -136,7 +138,10 @@ fn decode_events(raw: Vec<serde_json::Value>) -> Decoded {
     let mut out = Decoded::default();
     for value in raw {
         match serde_json::from_value::<Event>(value.clone()) {
-            Ok(event) => out.events.push(event),
+            Ok(event) => {
+                out.waiting.push(crate::model::waiting_for(&value));
+                out.events.push(event);
+            }
             Err(err) => {
                 if cfg!(debug_assertions) {
                     eprintln!(
@@ -222,10 +227,11 @@ impl EventSource for HttpSource {
             let since = self.since(&group.id);
             let decoded = self.fetch(&group.id, since.as_deref())?;
             self.advance(&group.id, &decoded);
-            for event in decoded.events {
+            for (event, waiting_for) in decoded.events.into_iter().zip(decoded.waiting) {
                 out.push(GroupEvent {
                     group_id: group.id.clone(),
                     event,
+                    waiting_for,
                 });
             }
         }
@@ -281,6 +287,28 @@ mod tests {
         assert_eq!(
             HttpSource::new(Conn::new("http://h:1/"), Vec::new()).base(),
             "http://h:1"
+        );
+    }
+
+    #[test]
+    fn waiting_for_rides_along_with_its_status() {
+        let raw: RawEvents = serde_json::from_str(
+            r#"{"events":[
+                {"type":"message","id":"m1","kind":"text","body":"一","createdAt":"2026-11-20T02:00:00.000Z"},
+                {"type":"status","id":"t1","taskId":"t1","botId":"b","botName":"Ada","state":"blocked","label":"卡住",
+                 "createdAt":"2026-11-20T02:00:01.000Z","updatedAt":"2026-11-20T02:00:02.000Z","containerUp":false,
+                 "waitingFor":"approval"},
+                {"type":"status","id":"t2","taskId":"t2","botId":"b","botName":"Bea","state":"blocked","label":"卡住",
+                 "createdAt":"2026-11-20T02:00:01.000Z","updatedAt":"2026-11-20T02:00:02.000Z","containerUp":false}
+            ]}"#,
+        )
+        .unwrap();
+        let decoded = decode_events(raw.events);
+        assert_eq!(decoded.events.len(), 3);
+        assert_eq!(
+            decoded.waiting,
+            [None, Some("approval".to_string()), None],
+            "same order as events; absent stays None"
         );
     }
 

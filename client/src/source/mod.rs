@@ -31,6 +31,9 @@ pub struct GroupTab {
 pub struct GroupEvent {
     pub group_id: String,
     pub event: Event,
+    /// `waitingFor` on a blocked status, read from the raw JSON (not in the
+    /// contract yet). `None` when absent.
+    pub waiting_for: Option<String>,
 }
 
 /// A new-kind card the contract has no event for yet (approval, draft),

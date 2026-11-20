@@ -28,6 +28,65 @@ pub struct DeliveryCard {
     pub failure: Option<String>,
 }
 
+/// Status line while the task waits on an approval card (`waitingFor:
+/// "approval"`). Grey, no button: the approval card is the only way to act.
+pub const AWAITING_APPROVAL: &str = "等你批准";
+
+/// `waitingFor` on a blocked status (`"approval"` or `"takeover"`), read
+/// from the raw JSON. Added after the freeze and not in `robroz-contract`
+/// yet, so the client reads it here; absent means the old behaviour.
+pub fn waiting_for(raw: &serde_json::Value) -> Option<String> {
+    if raw.get("type").and_then(|t| t.as_str()) != Some("status") {
+        return None;
+    }
+    raw.get("waitingFor")
+        .and_then(|w| w.as_str())
+        .map(str::to_string)
+}
+
+fn awaits_approval(state: TaskState, waiting_for: Option<&str>) -> bool {
+    state == TaskState::Blocked && waiting_for == Some("approval")
+}
+
+/// How much a preview candidate counts when two events share a change time.
+/// An outcome (`failure`) beats the answer that caused it; an answered card
+/// is the weakest because its result follows it.
+pub fn preview_rank(event: &Event) -> u8 {
+    match event {
+        Event::Status {
+            failure: Some(_), ..
+        }
+        | Event::Delivery {
+            failure: Some(_), ..
+        } => 2,
+        Event::Choice {
+            answered_at: Some(_),
+            ..
+        }
+        | Event::Approval {
+            answered_at: Some(_),
+            ..
+        } => 0,
+        _ => 1,
+    }
+}
+
+/// Whether a new preview `(change time, rank)` replaces the current one.
+/// Event order across types is not guaranteed (README, #54), so the newest
+/// change time wins and a tie goes to the higher rank, not to arrival order.
+pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
+    let Some((cur_at, cur_rank)) = cur else {
+        return true;
+    };
+    let parse = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    match (parse(new.0), parse(cur_at)) {
+        (Some(a), Some(b)) if a != b => a > b,
+        (Some(_), Some(_)) => new.1 >= cur_rank,
+        // Unparseable time: keep the old "last one wins".
+        _ => true,
+    }
+}
+
 /// The grey line for a task the host says did not get done.
 pub fn failure_line(failure: &str) -> String {
     format!("没做成：{failure}")
@@ -73,7 +132,12 @@ impl Feed {
     }
 
     pub fn apply(&mut self, event: &Event) {
-        let (key, row) = to_row(event);
+        self.apply_with(event, None);
+    }
+
+    /// `apply` plus the status's `waitingFor`, when the source read one.
+    pub fn apply_with(&mut self, event: &Event, waiting_for: Option<&str>) {
+        let (key, row) = to_row(event, waiting_for);
         self.upsert(key, row);
     }
 
@@ -122,7 +186,13 @@ pub fn change_time(event: &Event) -> &str {
 }
 
 /// One-line preview of an event for the conversation list.
+#[cfg(test)]
 pub fn preview(event: &Event) -> String {
+    preview_with(event, None)
+}
+
+/// `preview` with the status's `waitingFor`.
+pub fn preview_with(event: &Event, waiting_for: Option<&str>) -> String {
     match event {
         Event::Message { kind, body, .. } => match kind {
             MessageKind::Text => body.clone(),
@@ -135,6 +205,9 @@ pub fn preview(event: &Event) -> String {
             failure: Some(failure),
             ..
         } => format!("{bot_name}：{}", failure_line(failure)),
+        Event::Status {
+            bot_name, state, ..
+        } if awaits_approval(*state, waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
         Event::Status {
             bot_name,
             state,
@@ -158,7 +231,7 @@ pub fn preview(event: &Event) -> String {
     }
 }
 
-fn to_row(event: &Event) -> (Key, Row) {
+fn to_row(event: &Event, waiting_for: Option<&str>) -> (Key, Row) {
     match event {
         Event::Message { id, kind, body, .. } => {
             let row = match kind {
@@ -184,6 +257,12 @@ fn to_row(event: &Event) -> (Key, Row) {
                 Some(f) => (
                     robroz_card::appearance(TaskState::Running, false),
                     failure_line(f),
+                ),
+                // Waiting on an approval card: grey, no takeover button.
+                // Amber 卡住 + 去私聊接管 stays for real takeovers.
+                None if awaits_approval(*state, waiting_for) => (
+                    robroz_card::appearance(TaskState::Running, false),
+                    AWAITING_APPROVAL.to_string(),
                 ),
                 None => (
                     robroz_card::appearance(*state, *container_up),
@@ -409,6 +488,86 @@ mod tests {
         assert_eq!(
             actual(status_cards(&feed)[0]),
             expected(TaskState::Done, false)
+        );
+    }
+
+    #[test]
+    fn waiting_for_approval_is_grey_without_take_over() {
+        let ev = status("t5", "Ada", TaskState::Blocked, false);
+        let mut feed = Feed::default();
+        feed.apply_with(&ev, Some("approval"));
+        let card = status_cards(&feed)[0];
+        assert_eq!(card.status_line, "等你批准");
+        assert_eq!(card.tone, Tone::Gray);
+        assert_eq!(card.palette, expected(TaskState::Running, false).2);
+        assert_eq!(
+            card.action, None,
+            "the approval card is the only way to act"
+        );
+        assert_eq!(preview_with(&ev, Some("approval")), "Ada：等你批准");
+
+        // Real takeovers (captcha) and hosts without the field keep amber.
+        for waiting in [Some("takeover"), None, Some("something-new")] {
+            let mut feed = Feed::default();
+            feed.apply_with(&ev, waiting);
+            assert_eq!(
+                actual(status_cards(&feed)[0]),
+                expected(TaskState::Blocked, false),
+                "{waiting:?}"
+            );
+        }
+        // Once answered the next status has no waitingFor and updates in place.
+        feed.apply(&status("t5", "Ada", TaskState::Queued, false));
+        assert_eq!(feed.len(), 1);
+        assert_eq!(
+            actual(status_cards(&feed)[0]),
+            expected(TaskState::Queued, false)
+        );
+    }
+
+    #[test]
+    fn waiting_for_is_read_only_from_status_json() {
+        let blocked =
+            serde_json::json!({"type": "status", "state": "blocked", "waitingFor": "approval"});
+        assert_eq!(waiting_for(&blocked).as_deref(), Some("approval"));
+        let old = serde_json::json!({"type": "status", "state": "blocked"});
+        assert_eq!(waiting_for(&old), None, "old host: no field, old behaviour");
+        let other = serde_json::json!({"type": "approval", "waitingFor": "approval"});
+        assert_eq!(waiting_for(&other), None);
+    }
+
+    #[test]
+    fn list_preview_prefers_newest_then_outcome_over_answer() {
+        let deny_at = "2026-11-20T10:10:07.502Z";
+        let failed = ("2026-11-20T10:10:07.503Z", 2);
+        let answered = (deny_at, 0);
+        // Host writes the answer first, then the task outcome: outcome wins
+        // whichever order the two events arrive in.
+        assert!(preview_wins(failed, Some(answered)));
+        assert!(!preview_wins(answered, Some(failed)));
+        // Same millisecond: the outcome still wins the tie.
+        assert!(!preview_wins((deny_at, 0), Some((deny_at, 2))));
+        assert!(preview_wins((deny_at, 2), Some((deny_at, 0))));
+        // A newer message always takes over; equal rank and time: last wins.
+        assert!(preview_wins(
+            ("2026-11-20T10:11:00Z", 1),
+            Some((deny_at, 2))
+        ));
+        assert!(preview_wins((deny_at, 1), Some((deny_at, 1))));
+        assert!(preview_wins((deny_at, 1), None));
+    }
+
+    #[test]
+    fn preview_rank_orders_outcome_message_answer() {
+        let mut failed = status("t6", "Ada", TaskState::Done, false);
+        if let Event::Status { failure, .. } = &mut failed {
+            *failure = Some("你拒绝了：发送周报".into());
+        }
+        assert_eq!(preview_rank(&failed), 2);
+        assert_eq!(preview_rank(&text("m1", "hi")), 1);
+        assert_eq!(
+            preview_rank(&status("t6", "Ada", TaskState::Done, false)),
+            1
         );
     }
 

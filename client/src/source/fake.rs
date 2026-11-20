@@ -261,6 +261,7 @@ fn choice(group: &str, id: &str, multi: bool) -> GroupEvent {
     };
     GroupEvent {
         group_id: group.into(),
+        waiting_for: None,
         event: Event::Choice {
             id: id.into(),
             bot_id: bot_id.into(),
@@ -325,6 +326,7 @@ pub fn fake_schedules() -> Vec<ScheduleEntry> {
 fn msg(group: &str, id: &str, kind: MessageKind, body: &str) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
+        waiting_for: None,
         event: Event::Message {
             id: id.into(),
             kind,
@@ -344,6 +346,7 @@ fn status(
 ) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
+        waiting_for: None,
         event: Event::Status {
             id: task.into(),
             task_id: task.into(),
@@ -362,6 +365,7 @@ fn status(
 fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
+        waiting_for: None,
         event: Event::Delivery {
             id: id.into(),
             summary: summary.into(),

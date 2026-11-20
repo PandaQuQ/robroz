@@ -19,10 +19,13 @@ use crate::conn::Conn;
 
 /// What the reader reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// One item at a time through a channel; boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum StreamItem {
     /// 200 and `text/event-stream`: events flow.
     Connected,
-    Event(Event),
+    /// An event, plus `waitingFor` when a blocked status carries it.
+    Event(Event, Option<String>),
     /// Keep-alive comment; lets the reader notice nobody is listening.
     Ping,
     /// The connection ended or could not be made; it will retry.
@@ -169,8 +172,12 @@ pub fn read_once(
                 if let Some(id) = frame.id {
                     *last_id = Some(id);
                 }
-                match serde_json::from_str::<Event>(&frame.data) {
-                    Ok(event) => StreamItem::Event(event),
+                let raw = serde_json::from_str::<serde_json::Value>(&frame.data);
+                match raw.and_then(|v| {
+                    let waiting = crate::model::waiting_for(&v);
+                    serde_json::from_value::<Event>(v).map(|e| (e, waiting))
+                }) {
+                    Ok((event, waiting)) => StreamItem::Event(event, waiting),
                     // A newer host may send a kind this client does not
                     // know yet: skip it rather than drop the stream. The
                     // frame's `id` above still moves `Last-Event-ID`.
@@ -397,7 +404,7 @@ mod tests {
                 if item == StreamItem::Ping {
                     return true;
                 }
-                if matches!(item, StreamItem::Event(_)) {
+                if matches!(item, StreamItem::Event(..)) {
                     events += 1;
                 }
                 got.push(item);
@@ -408,7 +415,7 @@ mod tests {
             .iter()
             .map(|i| match i {
                 StreamItem::Connected => "up",
-                StreamItem::Event(_) => "event",
+                StreamItem::Event(..) => "event",
                 StreamItem::Down(_) => "down",
                 StreamItem::Ping => "ping",
             })
@@ -448,8 +455,8 @@ mod tests {
             Backoff::new(Duration::from_millis(10), Duration::from_millis(20)),
             |item| {
                 match item {
-                    StreamItem::Event(Event::Message { body, .. }) => bodies.push(body),
-                    StreamItem::Event(other) => panic!("unexpected {other:?}"),
+                    StreamItem::Event(Event::Message { body, .. }, _) => bodies.push(body),
+                    StreamItem::Event(other, _) => panic!("unexpected {other:?}"),
                     StreamItem::Down(_) => downs += 1,
                     _ => {}
                 }
@@ -526,8 +533,8 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("event within 5s")
             {
-                StreamItem::Event(e @ Event::Approval { .. }) => return e,
-                StreamItem::Ping | StreamItem::Event(_) => continue,
+                StreamItem::Event(e @ Event::Approval { .. }, _) => return e,
+                StreamItem::Ping | StreamItem::Event(..) => continue,
                 other => panic!("unexpected {other:?}"),
             }
         };
@@ -614,7 +621,7 @@ mod tests {
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match rx.recv_timeout(left).expect("event within 5s") {
-                StreamItem::Event(Event::Message { body, .. }) => {
+                StreamItem::Event(Event::Message { body, .. }, _) => {
                     assert_eq!(body, "实时");
                     break;
                 }
