@@ -26,8 +26,9 @@ use std::time::Duration;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
-use robroz_contract::{Bro, Event, Said, ScheduleEntry, Unread};
+use robroz_contract::{Bro, Event, Memory, Said, ScheduleEntry, Unread};
 use robroz_ui::cards::interact::{CardUi, Note};
+use robroz_ui::cards::memories::Book;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
@@ -127,11 +128,23 @@ struct Polled {
 enum Page {
     Group,
     Routines,
+    Memories,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     OpenRoutines,
+    OpenMemories,
+    MemoriesLoaded(Result<Vec<Memory>, ApiError>),
+    /// PATCH (edit) or POST (new) answered.
+    MemorySaved {
+        created: bool,
+        result: Result<Memory, ApiError>,
+    },
+    MemoryForgot {
+        id: String,
+        result: Result<(), ApiError>,
+    },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
     Polled(Result<Polled, SourceError>),
@@ -221,6 +234,8 @@ struct App {
     page: Page,
     ui: HashMap<String, CardUi>,
     routines: Routines,
+    /// 记忆 page (robroz#62).
+    memories: Book,
     mode: Mode,
     width: f32,
     loaded: bool,
@@ -313,6 +328,7 @@ impl App {
             page: Page::Group,
             ui: HashMap::new(),
             routines: Routines::default(),
+            memories: Book::default(),
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
@@ -544,8 +560,116 @@ impl App {
         Task::perform(job, Message::RoutinesLoaded)
     }
 
+    fn load_memories(&mut self) -> Task<Message> {
+        self.sync_memory_bros();
+        Task::batch([
+            Task::perform(
+                call(&self.api, |api| api.memories()),
+                Message::MemoriesLoaded,
+            ),
+            self.load_bros(),
+        ])
+    }
+
+    /// Bro names for 「只给 …」 and the new-memory scope choices.
+    fn sync_memory_bros(&mut self) {
+        self.memories.bros = self
+            .bros
+            .iter()
+            .map(|b| (b.id.clone(), b.name.clone()))
+            .collect();
+    }
+
+    fn on_memory_action(&mut self, action: Action) -> Task<Message> {
+        let book = &mut self.memories;
+        match action {
+            Action::MemoryAddOpen => book.open_add(),
+            Action::MemoryAddClose => book.close_add(),
+            Action::MemoryAddText { text } => {
+                if let Some(new) = &mut book.adding {
+                    new.text = text;
+                }
+            }
+            Action::MemoryAddScope { scope } => {
+                if let Some(new) = &mut book.adding {
+                    new.scope = scope;
+                }
+            }
+            Action::MemoryAddKind { kind } => {
+                if let Some(new) = &mut book.adding {
+                    new.kind = kind;
+                }
+            }
+            Action::MemoryAddSave => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some(new) = book.add_to_send() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let job = call(&self.api, move |api| {
+                    api.create_memory(&new.scope, new.kind, &new.text)
+                });
+                return Task::perform(job, |result| Message::MemorySaved {
+                    created: true,
+                    result,
+                });
+            }
+            Action::MemoryEdit { id } => book.start_edit(&id),
+            Action::MemoryEditText { text } => book.edit_text(text),
+            Action::MemoryEditCancel => book.cancel_edit(),
+            Action::MemoryEditSave => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some((id, text)) = book.edit_to_save() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let job = call(&self.api, move |api| api.update_memory(&id, &text));
+                return Task::perform(job, |result| Message::MemorySaved {
+                    created: false,
+                    result,
+                });
+            }
+            Action::MemoryForgetAsk { id } => book.ask_forget(&id),
+            Action::MemoryForgetCancel => book.cancel_forget(),
+            Action::MemoryForgetConfirm => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some(id) = book.forget_to_send() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let rid = id.clone();
+                let job = call(&self.api, move |api| api.forget_memory(&rid));
+                return Task::perform(job, move |result| Message::MemoryForgot {
+                    id: id.clone(),
+                    result,
+                });
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_action(&mut self, action: Action) -> Task<Message> {
         match action {
+            Action::MemoryAddOpen
+            | Action::MemoryAddClose
+            | Action::MemoryAddText { .. }
+            | Action::MemoryAddScope { .. }
+            | Action::MemoryAddKind { .. }
+            | Action::MemoryAddSave
+            | Action::MemoryEdit { .. }
+            | Action::MemoryEditText { .. }
+            | Action::MemoryEditSave
+            | Action::MemoryEditCancel
+            | Action::MemoryForgetAsk { .. }
+            | Action::MemoryForgetConfirm
+            | Action::MemoryForgetCancel => self.on_memory_action(action),
             Action::Choose { card, option } => {
                 let Some((_, Card::Choice(c))) = self.find_card(&card) else {
                     return Task::none();
@@ -681,6 +805,33 @@ impl App {
                 self.narrow_open = true;
                 return self.load_routines();
             }
+            Message::OpenMemories => {
+                self.page = Page::Memories;
+                self.narrow_open = true;
+                return self.load_memories();
+            }
+            Message::MemoriesLoaded(result) => match result {
+                Ok(list) => {
+                    self.memories.load(list);
+                    self.memories.note = None;
+                }
+                Err(err) => self.memories.note = Some(err.reason()),
+            },
+            Message::MemorySaved { created, result } => {
+                self.memories.busy = false;
+                match result {
+                    Ok(m) if created => self.memories.added(m),
+                    Ok(m) => self.memories.saved(m),
+                    Err(err) => self.memories.note = Some(err.reason()),
+                }
+            }
+            Message::MemoryForgot { id, result } => {
+                self.memories.busy = false;
+                match result {
+                    Ok(()) | Err(ApiError::NotFound(_)) => self.memories.forgotten(&id),
+                    Err(err) => self.memories.note = Some(err.reason()),
+                }
+            }
             Message::Back => self.narrow_open = false,
             Message::UnreadTick => return self.load_unread(),
             Message::UnreadLoaded(result) => match result {
@@ -728,6 +879,7 @@ impl App {
             Message::BrosLoaded(result) => {
                 if let Ok(bros) = result {
                     self.bros = bros.clone();
+                    self.sync_memory_bros();
                     // `--fake` + `ROBROZ_RENAME=<draft>`: open the rename box
                     // on the selected DM (screenshots).
                     let mut tasks: Vec<_> = bros
@@ -1148,7 +1300,15 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Routines))
             .on_press(Message::OpenRoutines);
-        container(column![scrollable(list).height(Fill), routines].spacing(4))
+        let memories = button(text(robroz_ui::cards::memories::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::Memories))
+            .on_press(Message::OpenMemories);
+        container(column![scrollable(list).height(Fill), routines, memories].spacing(4))
             .width(width)
             .height(Fill)
             .padding(8)
@@ -1166,6 +1326,16 @@ impl App {
     }
 
     fn page_view(&self, t: &Skin) -> Element<'_, Message> {
+        if self.page == Page::Memories {
+            return scrollable(
+                container(view::memories_panel(t, &self.memories, now_unix()).map(Message::Ui))
+                    .padding(t.metrics.stream_padding)
+                    .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
         if self.page == Page::Routines {
             return scrollable(
                 container(view::routines_panel(t, &self.routines, now_unix()).map(Message::Ui))

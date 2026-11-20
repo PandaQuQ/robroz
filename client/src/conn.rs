@@ -91,6 +91,10 @@ impl Conn {
     pub fn patch(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         self.auth(self.agent.patch(&self.url(path)))
     }
+
+    pub fn delete(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        self.auth(self.agent.delete(&self.url(path)))
+    }
 }
 
 #[cfg(test)]

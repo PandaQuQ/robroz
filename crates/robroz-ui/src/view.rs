@@ -13,6 +13,7 @@ use iced::{
 };
 
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
+use crate::cards::memories::{self, Book};
 use crate::cards::routines::{self, Routines};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
@@ -82,6 +83,34 @@ pub enum Action {
     RenameSave,
     /// Esc or 取消.
     RenameCancel,
+    /// 记忆 page: open or close the 记一条 form.
+    MemoryAddOpen,
+    MemoryAddClose,
+    MemoryAddText {
+        text: String,
+    },
+    MemoryAddScope {
+        scope: String,
+    },
+    MemoryAddKind {
+        kind: robroz_contract::MemoryKind,
+    },
+    MemoryAddSave,
+    /// 改: edit this memory's text in place.
+    MemoryEdit {
+        id: String,
+    },
+    MemoryEditText {
+        text: String,
+    },
+    MemoryEditSave,
+    MemoryEditCancel,
+    /// 忘掉 once asks; the second 忘掉 deletes.
+    MemoryForgetAsk {
+        id: String,
+    },
+    MemoryForgetConfirm,
+    MemoryForgetCancel,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -924,6 +953,322 @@ pub fn routines_panel<'a>(t: &Skin, routines: &'a Routines, now: i64) -> Element
                 .padding(Padding::from([0.0, m.row_pad_h]))
                 .align_y(Alignment::Center),
             );
+        }
+    }
+
+    let tt = *t;
+    container(col)
+        .width(Fill)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(color(tt.palette.surface).into()),
+            text_color: Some(color(tt.palette.text)),
+            border: Border::default()
+                .width(tt.stroke.card)
+                .color(color(tt.palette.border))
+                .rounded(tt.radii.panel),
+            shadow: shadow(&tt),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+// ---------- 记忆 page ----------
+
+/// The 记忆 page: one panel like the routines list. Groups by who may use a
+/// memory (「所有 bro」 first, then each bro); pending apart from kept.
+pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Action> {
+    use robroz_contract::MemoryKind;
+    let m = t.metrics;
+    let busy = book.busy;
+    let mut head = row![text(memories::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if !book.memories.is_empty() {
+        head = head.push(
+            text(book.memories.len().to_string())
+                .size(t.type_.list_count)
+                .color(color(t.palette.text3)),
+        );
+    }
+    head = head.push(space::horizontal());
+    if book.adding.is_none() {
+        head = head.push(btn(
+            t,
+            memories::ADD.into(),
+            Look::Secondary,
+            Leading::None,
+            (!busy).then_some(Action::MemoryAddOpen),
+        ));
+    }
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+
+    if let Some(note) = &book.note {
+        col = col.push(
+            container(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            )
+            .padding(Padding::from([8.0, m.row_pad_h])),
+        );
+    }
+
+    if let Some(new) = &book.adding {
+        let mut input = text_input(memories::NEW_PLACEHOLDER, &new.text)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        if !busy {
+            input = input
+                .on_input(|text| Action::MemoryAddText { text })
+                .on_submit(Action::MemoryAddSave);
+        }
+        let mut scopes = row![].spacing(t.controls.button_gap);
+        for (scope, label) in book.scope_choices() {
+            let look = if scope == new.scope {
+                Look::Selected
+            } else {
+                Look::Secondary
+            };
+            scopes = scopes.push(btn(
+                t,
+                label,
+                look,
+                Leading::None,
+                Some(Action::MemoryAddScope { scope }),
+            ));
+        }
+        let mut kinds = row![].spacing(t.controls.button_gap);
+        for kind in MemoryKind::ALL {
+            let look = if kind == new.kind {
+                Look::Selected
+            } else {
+                Look::Secondary
+            };
+            kinds = kinds.push(btn(
+                t,
+                memories::kind_label(kind).into(),
+                look,
+                Leading::None,
+                Some(Action::MemoryAddKind { kind }),
+            ));
+        }
+        let can_save = !busy && !new.text.trim().is_empty();
+        col = col.push(
+            container(
+                column![
+                    input,
+                    scopes.wrap(),
+                    kinds,
+                    row![
+                        btn(
+                            t,
+                            memories::SAVE.into(),
+                            Look::Primary,
+                            Leading::None,
+                            can_save.then_some(Action::MemoryAddSave)
+                        ),
+                        btn(
+                            t,
+                            memories::CANCEL.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::MemoryAddClose)
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap),
+                ]
+                .spacing(m.head_gap),
+            )
+            .padding(pad),
+        );
+        col = col.push(divider(t, 0.0));
+    }
+
+    if book.loaded && book.is_empty() {
+        let rings = Rings {
+            color: color(t.palette.text3),
+            radius: m.empty_ring_r,
+            stroke: m.empty_ring_stroke,
+        };
+        let size = rings.size();
+        col = col.push(
+            container(
+                column![
+                    canvas(rings).width(size.width).height(size.height),
+                    gap(m.head_gap),
+                    text(memories::EMPTY_TITLE)
+                        .size(t.type_.empty_title)
+                        .font(bold())
+                        .color(color(t.palette.text2)),
+                    gap(m.dot_gap),
+                    text(memories::EMPTY_HINT)
+                        .size(t.type_.empty_hint)
+                        .color(color(t.palette.text3)),
+                ]
+                .align_x(Alignment::Center),
+            )
+            .width(Fill)
+            .height(Length::Fixed(m.empty_height))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        );
+    }
+
+    let entry = |mem: &'a robroz_contract::Memory, pending: bool| -> Element<'a, Action> {
+        let mut top = row![tag(t, memories::kind_label(mem.kind), t.palette.text2)]
+            .spacing(m.row_time_gap)
+            .align_y(Alignment::Center);
+        if pending {
+            top = top.push(tag(t, memories::PENDING_TAG, t.palette.accent));
+        }
+        top = top.push(space::horizontal()).push(
+            text(memories::updated_text(&mem.updated_at, now))
+                .size(t.type_.row_time)
+                .color(color(t.palette.text3)),
+        );
+        let editing = book.editing.as_ref().filter(|(id, _)| *id == mem.id);
+        let asking = book.confirm_forget.as_deref() == Some(mem.id.as_str());
+        let body: Element<'a, Action> = match editing {
+            Some((_, draft)) => {
+                let mut input = text_input("", draft)
+                    .size(t.type_.body)
+                    .padding(Padding::from([6.0, 8.0]));
+                if !busy {
+                    input = input
+                        .on_input(|text| Action::MemoryEditText { text })
+                        .on_submit(Action::MemoryEditSave);
+                }
+                input.into()
+            }
+            None => text(mem.text.as_str())
+                .size(t.type_.body)
+                .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+                .color(color(t.palette.text))
+                .width(Fill)
+                .into(),
+        };
+        let actions: Element<'a, Action> = if editing.is_some() {
+            row![
+                btn(
+                    t,
+                    memories::SAVE.into(),
+                    Look::Primary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryEditSave)
+                ),
+                btn(
+                    t,
+                    memories::CANCEL.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryEditCancel)
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .into()
+        } else if asking {
+            row![
+                text(memories::FORGET_ASK)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+                space::horizontal(),
+                btn(
+                    t,
+                    memories::FORGET.into(),
+                    Look::Primary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryForgetConfirm)
+                ),
+                btn(
+                    t,
+                    memories::CANCEL.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryForgetCancel)
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                btn(
+                    t,
+                    memories::EDIT.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryEdit { id: mem.id.clone() })
+                ),
+                btn(
+                    t,
+                    memories::FORGET.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::MemoryForgetAsk { id: mem.id.clone() })
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .into()
+        };
+        container(column![top, body, actions].spacing(m.dot_gap + 2.0))
+            .padding(pad)
+            .width(Fill)
+            .into()
+    };
+
+    for (gi, group) in book.groups().into_iter().enumerate() {
+        if gi > 0 {
+            col = col.push(divider(t, 0.0));
+        }
+        col = col.push(
+            container(
+                text(group.title.clone())
+                    .size(t.type_.row_name)
+                    .font(bold())
+                    .color(color(t.palette.text)),
+            )
+            .padding(Padding::from([m.row_pad_h * 0.75, m.row_pad_h])),
+        );
+        let sub = |label: &'static str, n: usize| -> Element<'a, Action> {
+            container(
+                text(format!("{label} {n}"))
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+            )
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .into()
+        };
+        let split = !group.pending.is_empty();
+        if split {
+            col = col.push(sub(memories::PENDING_HEAD, group.pending.len()));
+            for (i, mem) in group.pending.iter().enumerate() {
+                if i > 0 {
+                    col = col.push(divider(t, m.row_pad_h));
+                }
+                col = col.push(entry(mem, true));
+            }
+            if !group.kept.is_empty() {
+                col = col.push(divider(t, m.row_pad_h));
+                col = col.push(gap(m.dot_gap));
+                col = col.push(sub(memories::KEPT_HEAD, group.kept.len()));
+            }
+        }
+        for (i, mem) in group.kept.iter().enumerate() {
+            if i > 0 {
+                col = col.push(divider(t, m.row_pad_h));
+            }
+            col = col.push(entry(mem, false));
         }
     }
 

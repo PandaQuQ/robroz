@@ -18,15 +18,22 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro, ErrorBody, Event,
-    Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread,
-    Unreads, UpdateSchedule,
+    next_bro_name, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro, CreateMemory,
+    ErrorBody, Event, Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message,
+    MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
+    UpdateMemory, UpdateSchedule,
 };
 use robroz_ui::cards::interact::Note;
 
 use crate::conn::Conn;
 
 pub mod paths {
+    /// robroz#62: list and write memories.
+    pub const MEMORIES: &str = "/api/memories";
+    /// robroz#62: edit (PATCH) or forget (DELETE) one memory.
+    pub fn memory(id: &str) -> String {
+        format!("/api/memories/{id}")
+    }
     /// robroz#15.
     pub fn answer_choice(id: &str) -> String {
         format!("/api/choices/{id}/answer")
@@ -172,6 +179,14 @@ pub trait CardApi: Send + Sync {
     fn send_draft(&self, id: &str) -> Result<(), ApiError>;
     fn schedules(&self, group_id: &str) -> Result<Vec<ScheduleEntry>, ApiError>;
     fn set_paused(&self, id: &str, paused: bool) -> Result<ScheduleEntry, ApiError>;
+    /// 记忆 page: kept and pending memories, newest first (robroz#62).
+    fn memories(&self) -> Result<Vec<Memory>, ApiError>;
+    /// The person writes one down; the host keeps it at once.
+    fn create_memory(&self, scope: &str, kind: MemoryKind, text: &str) -> Result<Memory, ApiError>;
+    /// Change a memory's text.
+    fn update_memory(&self, id: &str, text: &str) -> Result<Memory, ApiError>;
+    /// 忘掉: soft delete; already gone is fine (204).
+    fn forget_memory(&self, id: &str) -> Result<(), ApiError>;
 }
 
 pub struct HttpApi {
@@ -243,6 +258,12 @@ impl HttpApi {
         let result = self.conn.get(path).call();
         self.finish("GET", &url, result)
     }
+
+    fn delete(&self, path: &str) -> Result<String, ApiError> {
+        let url = self.conn.url(path);
+        let result = self.conn.delete(path).call();
+        self.finish("DELETE", &url, result)
+    }
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, ApiError> {
@@ -303,11 +324,39 @@ impl CardApi for HttpApi {
     fn set_paused(&self, id: &str, paused: bool) -> Result<ScheduleEntry, ApiError> {
         decode(&self.patch(&paths::schedule(id), bodies::paused(paused))?)
     }
+
+    fn memories(&self) -> Result<Vec<Memory>, ApiError> {
+        Ok(decode::<Memories>(&self.get(paths::MEMORIES)?)?.memories)
+    }
+
+    fn create_memory(&self, scope: &str, kind: MemoryKind, text: &str) -> Result<Memory, ApiError> {
+        let body = serde_json::to_string(&CreateMemory {
+            scope: scope.to_string(),
+            kind,
+            text: text.to_string(),
+        })
+        .expect("serialize memory");
+        decode(&self.post(paths::MEMORIES, Some(body))?)
+    }
+
+    fn update_memory(&self, id: &str, text: &str) -> Result<Memory, ApiError> {
+        let body = serde_json::to_string(&UpdateMemory {
+            text: Some(text.to_string()),
+            ..UpdateMemory::default()
+        })
+        .expect("serialize memory edit");
+        decode(&self.patch(&paths::memory(id), body)?)
+    }
+
+    fn forget_memory(&self, id: &str) -> Result<(), ApiError> {
+        self.delete(&paths::memory(id)).map(|_| ())
+    }
 }
 
 /// Offline API for `--fake` and the gallery: accepts everything and keeps
 /// schedules, unread counts and bros in memory.
 pub struct FakeApi {
+    memories: Mutex<Vec<Memory>>,
     schedules: Mutex<Vec<ScheduleEntry>>,
     unread: Mutex<Vec<Unread>>,
     bros: Mutex<Vec<Bro>>,
@@ -316,6 +365,7 @@ pub struct FakeApi {
 impl FakeApi {
     pub fn new(schedules: Vec<ScheduleEntry>) -> Self {
         Self {
+            memories: Mutex::new(Vec::new()),
             schedules: Mutex::new(schedules),
             unread: Mutex::new(Vec::new()),
             bros: Mutex::new(Vec::new()),
@@ -447,6 +497,50 @@ impl CardApi for FakeApi {
             .ok_or_else(|| ApiError::NotFound("例行任务不存在".into()))?;
         entry.paused = paused;
         Ok(entry.clone())
+    }
+
+    fn memories(&self) -> Result<Vec<Memory>, ApiError> {
+        let mut all = self.memories.lock().expect("fake memories lock").clone();
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(all)
+    }
+
+    fn create_memory(&self, scope: &str, kind: MemoryKind, text: &str) -> Result<Memory, ApiError> {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let memory = Memory {
+            id: format!("m-{}", uuid_ish()),
+            scope: scope.to_string(),
+            kind,
+            text: text.to_string(),
+            source: MemorySource::User,
+            status: MemoryStatus::Kept,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.memories
+            .lock()
+            .expect("fake memories lock")
+            .push(memory.clone());
+        Ok(memory)
+    }
+
+    fn update_memory(&self, id: &str, text: &str) -> Result<Memory, ApiError> {
+        let mut all = self.memories.lock().expect("fake memories lock");
+        let m = all
+            .iter_mut()
+            .find(|m| m.id == id)
+            .ok_or_else(|| ApiError::NotFound("没有这条记忆".into()))?;
+        m.text = text.to_string();
+        m.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        Ok(m.clone())
+    }
+
+    fn forget_memory(&self, id: &str) -> Result<(), ApiError> {
+        self.memories
+            .lock()
+            .expect("fake memories lock")
+            .retain(|m| m.id != id);
+        Ok(())
     }
 }
 
@@ -603,6 +697,45 @@ mod tests {
                 },
             );
             group
+        }
+
+        #[test]
+        fn memories_list_write_edit_forget() {
+            let base = spawn_host();
+            let _ = group_with_bot(&base);
+            let api = HttpApi::new(Conn::new(&base));
+            assert!(api.memories().unwrap().is_empty());
+
+            let mine = api
+                .create_memory("user", MemoryKind::Profile, "我在伦敦，用英国时间")
+                .unwrap();
+            assert_eq!(mine.status, MemoryStatus::Kept);
+            let doc = api
+                .create_memory("bot:bot-doc", MemoryKind::Habit, "周报写短一点")
+                .unwrap();
+            assert!(matches!(
+                api.create_memory("bot:nobody", MemoryKind::Habit, "x"),
+                Err(ApiError::BadRequest(_))
+            ));
+            assert!(matches!(
+                api.create_memory("user", MemoryKind::Habit, &"字".repeat(2001)),
+                Err(ApiError::BadRequest(_))
+            ));
+            assert_eq!(api.memories().unwrap().len(), 2);
+
+            let edited = api.update_memory(&mine.id, "我在伦敦").unwrap();
+            assert_eq!(edited.text, "我在伦敦");
+            assert_eq!(edited.scope, "user");
+
+            api.forget_memory(&doc.id).unwrap();
+            api.forget_memory(&doc.id).unwrap();
+            assert!(matches!(
+                api.forget_memory("nope"),
+                Err(ApiError::NotFound(_))
+            ));
+            let left = api.memories().unwrap();
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].id, mine.id);
         }
 
         #[test]
