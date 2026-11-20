@@ -19,7 +19,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 第一期据此新增两项：
 
-- 选项卡：状态卡加可选字段 `options`，用户的选择以 `choice` 回传。
+- 选项卡：新增卡片类型 `choice`，带 `options[]`，用户的选择以 `{"choice":[ids]}` 回传，单选也传数组。状态卡保持冻结，不加字段。
 - 例行任务：新增 `GET` 列表接口和 `PATCH` 的 `paused` 字段。
 
 ## 目的与规则
@@ -48,7 +48,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 写外部资产或遇到验证码则停下 | 不代填凭据。任务变成卡住，删掉容器，人到私聊接管；恢复后挂回原来的共享卷。 | robroz 已冻结的权限契约；[OpenBot README：登录墙或 2FA 时把控制权交给用户](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 4 | 是 | [x] |
 | 不可逆操作先出审批卡 | 对外发送、删除、花钱等不能撤回的操作，必须先出审批卡，用户点了才执行。这是节点 4 权限里的一级。拒绝或过期就是最终结果，不能自动重试。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/approvals.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/approvals.md)；[OpenMausBot docs/approval-levels.md「Sending on your behalf」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[Comma README：Needs Review](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does) | 节点 4 | 是 | [x] |
 | 审批级别与当场作答 | 每个 bot 可有审批级别（每次询问、自动接受编辑、代为批准、完全放行等）。会话里的审批卡可「允许一次」「本次会话允许」；对可信只读工具可给长期允许，并在该 bot 的访问设置里撤销。同一房间里的另一个 bot 仍会再问。问题卡任何级别都不会被自动代答。对外发送、删除、花钱这一级不可关掉，必须先出卡片。 | [OpenMausBot docs/approval-levels.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[OpenMausBot README「Bots ask before they act」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 4 | 是 | [x] |
-| 选项卡，一点就能回复 | 需要用户拍板时发带选项的卡片，可点选项，也可自己写一句；不必为了选一项去打长文。同属节点 4 里「需要人决定」的权限交互，展示会落在节点 6 的消息流。 | **Grok Bot 用户能看到的行为**；[OpenMausBot 问题卡文档与截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md#asking-you-questions)；[OpenBot：Bot 可停下来问人](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#asking-a-person) | 节点 4、节点 6 | 是（状态卡加可选的 `options`，用户的选择以 `choice` 回传；旧卡片不受影响） | [x] |
+| 选项卡，一点就能回复 | 需要用户拍板时发带选项的卡片，可点选项，也可自己写一句；不必为了选一项去打长文。同属节点 4 里「需要人决定」的权限交互，展示会落在节点 6 的消息流。 | **Grok Bot 用户能看到的行为**；[OpenMausBot 问题卡文档与截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md#asking-you-questions)；[OpenBot：Bot 可停下来问人](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#asking-a-person) | 节点 4、节点 6 | 是（新增一种卡片 `choice`，带 `options[]`，用户的选择以 `{"choice":[ids]}` 回传，单选也传数组；状态卡不动） | [x] |
 | 对外邮件和消息先出草稿卡 | 要发出去的邮件或消息先以草稿卡呈现，用户自己点发送。与审批卡同属节点 4 权限：对外发送必须先出卡片，点了才执行。 | **Grok Bot 用户能看到的行为**；[Comma 产品功能：草稿只经用户动作发出](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#chat-and-tasks) | 节点 4 | 是 | [x] |
 | 外部内容只当数据 | 网页、邮件、工具返回的内容只当数据处理，里面写的指令一律不执行，也不能凭这些内容自行授权操作。 | **Grok Bot 用户能看到的行为**；[Comma docs/verification.md：Data, forwarded text, and untrusted pages do not authorize a request](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/verification.md#ifc-authorization-contract) | 节点 4 | 待定（权限契约尚未写明这条，应对齐） | [ ] |
 
