@@ -1463,19 +1463,23 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
             .padding(Padding::from([0.0, m.row_pad_h]))
             .into()
         };
-        let split = !group.pending.is_empty();
-        if split {
-            col = col.push(sub(memories::PENDING_HEAD, group.pending.len()));
+        // 「待确认 N」 then 「已记下 N」; the kept head shows even when the
+        // group has nothing pending, so every scope group reads the same.
+        for (label, n) in group.heads() {
+            if label == memories::KEPT_HEAD {
+                if !group.pending.is_empty() {
+                    col = col.push(divider(t, m.row_pad_h));
+                    col = col.push(gap(m.dot_gap));
+                }
+                col = col.push(sub(label, n));
+                break;
+            }
+            col = col.push(sub(label, n));
             for (i, mem) in group.pending.iter().enumerate() {
                 if i > 0 {
                     col = col.push(divider(t, m.row_pad_h));
                 }
                 col = col.push(entry(mem, true));
-            }
-            if !group.kept.is_empty() {
-                col = col.push(divider(t, m.row_pad_h));
-                col = col.push(gap(m.dot_gap));
-                col = col.push(sub(memories::KEPT_HEAD, group.kept.len()));
             }
         }
         for (i, mem) in group.kept.iter().enumerate() {

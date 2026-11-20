@@ -97,6 +97,22 @@ pub struct Group<'a> {
     pub kept: Vec<&'a Memory>,
 }
 
+impl Group<'_> {
+    /// Sub-heads with counts, in page order: 「待确认 N」 when there are
+    /// pending entries, and 「已记下 N」 whenever there are kept ones, even if
+    /// nothing is pending, so every scope group reads the same.
+    pub fn heads(&self) -> Vec<(&'static str, usize)> {
+        let mut out = Vec::new();
+        if !self.pending.is_empty() {
+            out.push((PENDING_HEAD, self.pending.len()));
+        }
+        if !self.kept.is_empty() {
+            out.push((KEPT_HEAD, self.kept.len()));
+        }
+        out
+    }
+}
+
 /// The new-memory form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMemory {
@@ -533,6 +549,44 @@ mod tests {
             .memories
             .iter()
             .all(|m| m.status != MemoryStatus::Rejected));
+    }
+
+    #[test]
+    fn kept_head_shows_even_without_pending() {
+        let mut b = book();
+        let mut p = mem(
+            "p",
+            "bot:bot-ada",
+            MemoryKind::Habit,
+            MemoryStatus::Pending,
+            "2026-11-20T10:00:00Z",
+        );
+        p.confirm_id = Some("c-p".into());
+        b.memories.push(p);
+        let groups = b.groups();
+        for g in &groups {
+            let heads = g.heads();
+            if g.kept.is_empty() {
+                assert!(heads.iter().all(|(h, _)| *h != KEPT_HEAD), "{}", g.title);
+            } else {
+                assert!(
+                    heads.contains(&(KEPT_HEAD, g.kept.len())),
+                    "{}: {heads:?}",
+                    g.title
+                );
+            }
+        }
+        let only_kept = groups
+            .iter()
+            .find(|g| g.pending.is_empty() && !g.kept.is_empty())
+            .unwrap();
+        assert_eq!(only_kept.heads(), [(KEPT_HEAD, only_kept.kept.len())]);
+        let ada = groups.iter().find(|g| g.scope == "bot:bot-ada").unwrap();
+        assert_eq!(
+            ada.heads()[0],
+            (PENDING_HEAD, ada.pending.len()),
+            "pending first"
+        );
     }
 
     #[test]
