@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use robroz_host::{DockerSandbox, Host, DEFAULT_CONTROL_ROOT};
+use robroz_host::{auth, DockerSandbox, Host, DEFAULT_CONTROL_ROOT};
 
 /// Containers can write anywhere in the group volumes, so takeover markers must
 /// live outside them.
@@ -17,12 +17,20 @@ fn ensure_control_outside_volumes(control: &std::path::Path, volumes: &std::path
     }
 }
 
+fn fail(msg: &str) -> ! {
+    eprintln!("robroz-host: {msg}");
+    std::process::exit(2);
+}
+
 #[tokio::main]
 async fn main() {
     let addr: SocketAddr = std::env::var("ROBROZ_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8790".to_string())
         .parse()
         .expect("ROBROZ_ADDR 不是合法的监听地址");
+    // Errors here never contain the token itself.
+    let token = auth::token_from_env().unwrap_or_else(|err| fail(&err));
+    auth::check_listener(addr, token.as_ref()).unwrap_or_else(|err| fail(&err));
     let db_path = std::env::var("ROBROZ_DB")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./robroz.db"));
@@ -39,7 +47,8 @@ async fn main() {
         .unwrap_or_else(|err| {
             panic!("无法打开数据库 {}: {err}", db_path.display());
         })
-        .with_control_root(control);
+        .with_control_root(control)
+        .with_token(token.clone());
     let app = host.router();
     let pumping = host.clone();
 
@@ -65,7 +74,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|err| panic!("无法监听 {addr}: {err}"));
-    eprintln!("robroz-host listening on {addr}");
+    let guard = if token.is_some() { "需要令牌" } else { "仅本机，无令牌" };
+    eprintln!("robroz-host listening on {addr}（{guard}）");
     axum::serve(listener, app)
         .await
         .unwrap_or_else(|err| panic!("服务器退出: {err}"));

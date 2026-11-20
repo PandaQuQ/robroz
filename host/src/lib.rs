@@ -14,6 +14,7 @@ use robroz_contract::{
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+pub mod auth;
 mod choices;
 mod pump;
 mod routines;
@@ -39,6 +40,7 @@ pub struct Host {
     control_root: std::path::PathBuf,
     image: String,
     get_limit: u64,
+    token: Option<auth::ApiToken>,
 }
 
 impl Host {
@@ -56,6 +58,7 @@ impl Host {
             control_root: std::path::PathBuf::from(DEFAULT_CONTROL_ROOT),
             image: image.into(),
             get_limit: get_limit_from_env(),
+            token: None,
         })
     }
 
@@ -66,11 +69,18 @@ impl Host {
         self
     }
 
+    /// Require `Authorization: Bearer <token>` on every request. `None` keeps it open.
+    pub fn with_token(mut self, token: Option<auth::ApiToken>) -> Self {
+        self.token = token;
+        self
+    }
+
     pub fn router(&self) -> Router {
-        router_from(AppState {
+        let router = router_from(AppState {
             db: self.db.clone(),
             control_root: self.control_root.clone(),
-        })
+        });
+        auth::require_token(router, self.token.clone())
     }
 
     /// One pass over queued and running tasks. The binary calls this in a loop on
@@ -1629,6 +1639,38 @@ mod tests {
         let group_id = create_group(&app, "x").await["id"].as_str().unwrap().to_string();
         let (status, _) = read_json(open_stream(&app, &group_id, Some("not-a-time")).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ---- listener token ----
+
+    #[tokio::test]
+    async fn token_guards_every_route_when_set() {
+        let path = temp_db();
+        let token = super::auth::ApiToken::parse("0123456789abcdef-good").unwrap();
+        let app = super::Host::open(&path, temp_volumes(), "robroz-runner:local").unwrap().with_token(token).router();
+        let req = |auth: Option<&str>| {
+            let mut b = Request::builder().method("GET").uri("/api/groups");
+            if let Some(a) = auth {
+                b = b.header("authorization", a);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        for bad in [None, Some("Bearer wrong-token-0000000"), Some("0123456789abcdef-good"), Some("Basic 0123456789abcdef-good")] {
+            let (status, body) = read_json(call(&app, req(bad)).await).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{bad:?}");
+            assert!(!body.to_string().contains("0123456789abcdef-good"));
+        }
+        let (status, body) = read_json(call(&app, post("/api/groups", json!({ "name": "x" }))).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "writes too: {body}");
+        let (status, _) = read_json(call(&app, req(Some("Bearer 0123456789abcdef-good"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn no_token_keeps_local_use_open() {
+        let app = test_app(&temp_db());
+        let (status, _) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     // ---- bot manners: ack, milestones, quiet, data-only, no rerun ----
