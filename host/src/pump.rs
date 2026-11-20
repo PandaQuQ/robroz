@@ -6,6 +6,7 @@ use robroz_policy::{blocking_effect, meter, tier, OverQuota, SideEffect, Tier};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use crate::progress;
 use crate::sandbox::{container_name, result_rel, ContainerPhase, RunRequest, Sandbox};
 
 /// Short, scoped access to the database. `pump` only holds it for SQL and never
@@ -113,21 +114,30 @@ fn start_task(
         eprintln!("pump: clear old intent for {}: {err}; task stays queued", task.id);
         return Ok(());
     }
+    // A leftover progress file would put the last run's text on the new card.
+    if let Err(err) = remove_progress(&group_dir, &task.id) {
+        eprintln!("pump: clear old progress for {}: {err}", task.id);
+    }
 
     // Claim before docker run so a second pass can't pick the task again.
+    // The first progress rides on the claim itself: one status event, not two.
     let claimed_at = newer_than(&task.updated_at);
+    let first = if cfg.model.is_some() { progress::THINKING } else { progress::STARTED };
     let claimed = db.with(|conn| {
         conn.execute(
-            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL
+            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3
              WHERE id = ?2 AND state = 'queued'",
-            params![claimed_at, task.id],
+            params![claimed_at, task.id, first],
         )
     })?;
     if claimed == 0 {
         return Ok(());
     }
+    let mut reply_progress = None;
     if let Some(model) = cfg.model {
-        if let Some(failure) = write_reply(&control_dir, &task.id, &task.prompt, model) {
+        let reply = write_reply(&control_dir, &task.id, &task.prompt, model);
+        reply_progress = reply.progress;
+        if let Some(failure) = reply.failure {
             db.with(|conn| {
                 conn.execute("UPDATE tasks SET failure = ?1 WHERE id = ?2", params![failure, task.id])
             })?;
@@ -147,12 +157,16 @@ fn start_task(
         let reverted_at = newer_than(&claimed_at);
         db.with(|conn| {
             conn.execute(
-                "UPDATE tasks SET state = 'queued', container_up = 0, updated_at = ?1
+                "UPDATE tasks SET state = 'queued', container_up = 0, updated_at = ?1, progress = NULL
                  WHERE id = ?2 AND state = 'running'",
                 params![reverted_at, task.id],
             )
         })?;
+        return Ok(());
     }
+    // Key moment: the sandbox is up. The model's own progress line wins.
+    let text = reply_progress.as_deref().unwrap_or(progress::IN_SANDBOX);
+    db.with(|conn| progress::set_progress(conn, &task.id, text))?;
     Ok(())
 }
 
@@ -171,7 +185,14 @@ fn collect_task(
         }
     };
     let code = match phase {
-        ContainerPhase::Running => return Ok(()),
+        // Still going: pass on what the runner last wrote, if it changed.
+        ContainerPhase::Running => {
+            let group_dir = group_volume(cfg.volumes_root, &task.group_id);
+            if let Some(text) = read_progress(&group_dir, &task.id) {
+                db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
+            }
+            return Ok(());
+        }
         ContainerPhase::Exited { code } => code,
         // The container vanished mid-run (host or docker restart, manual rm).
         // Never re-queue: the run may have half-changed the volume, and a rerun
@@ -255,7 +276,7 @@ fn write_outcome(
         Outcome::Blocked(stop) => {
             let tx = conn.unchecked_transaction()?;
             let changed = tx.execute(
-                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2,
+                "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2, progress = NULL,
                                   intent_kind = ?4, intent_line = ?5, intent_hash = ?6
                  WHERE id = ?3 AND state = 'running'",
                 params![
@@ -275,14 +296,14 @@ fn write_outcome(
         }
         Outcome::Failed(failure) => {
             conn.execute(
-                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
                 params![get_count, updated_at, task.id, failure],
             )?;
         }
         Outcome::Dead => {
             conn.execute(
-                "UPDATE tasks SET container_up = 0, get_count = ?1, updated_at = ?2
+                "UPDATE tasks SET container_up = 0, get_count = ?1, updated_at = ?2, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
                 params![get_count, updated_at, task.id],
             )?;
@@ -291,7 +312,7 @@ fn write_outcome(
             let delivery_id = Uuid::new_v4().to_string();
             let tx = conn.unchecked_transaction()?;
             let changed = tx.execute(
-                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
                 params![get_count, updated_at, task.id],
             )?;
@@ -339,7 +360,8 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 /// A failed call becomes the result text, so the task still finishes and the
 /// person sees why; the reason is also returned so the delivery can say the
 /// task was not done. Old replies are removed first so a retry never reuses one.
-fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) -> Option<String> {
+/// The reply's last `robroz-progress:` line is returned for the status card.
+fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
     let (text, failure) = match model.reply(prompt) {
@@ -349,10 +371,30 @@ fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robr
             (format!("模型没回：{err}"), Some(format!("模型没回：{err}")))
         }
     };
+    let progress = robroz_runner::last_progress(&text).map(str::to_string);
     if let Err(err) = std::fs::write(&path, text) {
         eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
     }
-    failure
+    Reply { failure, progress }
+}
+
+/// What [`write_reply`] hands back to pump.
+struct Reply {
+    failure: Option<String>,
+    progress: Option<String>,
+}
+
+/// The runner's latest progress text, if it wrote one.
+fn read_progress(group_dir: &Path, task_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(robroz_runner::progress_path(group_dir, task_id)).ok()?;
+    progress::normalize(&text)
+}
+
+fn remove_progress(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(robroz_runner::progress_path(group_dir, task_id)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
 }
 
 fn remove_intent(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
@@ -393,12 +435,14 @@ fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, Option<
     }
 }
 
-fn newer_than(previous: &str) -> String {
+pub(crate) fn newer_than(previous: &str) -> String {
     let now = Utc::now();
     let prev = DateTime::parse_from_rfc3339(previous)
         .map(|stamp| stamp.with_timezone(&Utc))
         .unwrap_or(now);
-    let stamped = if now <= prev {
+    // Compare at millisecond precision, the precision we store: `now` a
+    // fraction of a millisecond after `prev` would print the same stamp.
+    let stamped = if now.timestamp_millis() <= prev.timestamp_millis() {
         prev + Duration::milliseconds(1)
     } else {
         now

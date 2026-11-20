@@ -410,6 +410,11 @@ pub enum Event {
         /// failed, approval denied). Absent otherwise, so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<String>,
+        /// Added after the freeze: what the bro is doing right now, updated in
+        /// place on this card. Only while `running` with a live container;
+        /// absent otherwise, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<String>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -569,7 +574,8 @@ mod tests {
                 created_at: "2026-10-03T19:00:01.000Z".into(),
                 updated_at: "2026-10-03T19:00:01.000Z".into(),
                 container_up: false,
-            failure: None,
+                failure: None,
+                progress: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -584,6 +590,43 @@ mod tests {
                 "containerUp": false
             }),
         );
+    }
+
+    #[test]
+    fn status_progress_is_optional() {
+        let running = Event::Status {
+            id: "t1".into(),
+            task_id: "t1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            state: TaskState::Running,
+            label: TaskState::Running.label().into(),
+            created_at: "2026-10-03T19:00:01.000Z".into(),
+            updated_at: "2026-10-03T19:00:02.000Z".into(),
+            container_up: true,
+            failure: None,
+            progress: Some("在沙箱里跑".into()),
+        };
+        let json = serde_json::to_value(&running).unwrap();
+        assert_eq!(json["progress"], "在沙箱里跑");
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), running);
+
+        let old = serde_json::json!({
+            "type": "status",
+            "id": "t1",
+            "taskId": "t1",
+            "botId": "bot-ada",
+            "botName": "Ada",
+            "state": "running",
+            "label": "进行",
+            "createdAt": "2026-10-03T19:00:01.000Z",
+            "updatedAt": "2026-10-03T19:00:01.000Z",
+            "containerUp": true
+        });
+        let parsed: Event = serde_json::from_value(old).unwrap();
+        let Event::Status { progress, .. } = &parsed else { panic!("status") };
+        assert_eq!(progress, &None, "old JSON without the field still parses");
+        assert!(serde_json::to_value(&parsed).unwrap().get("progress").is_none(), "absent stays absent");
     }
 
     #[test]

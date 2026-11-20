@@ -170,9 +170,7 @@ fn gate_line(prompt: &str) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty() && robroz_policy::blocking_kind(l).is_none())
         .unwrap_or("这个任务");
-    let short: String = line.chars().take(60).collect();
-    let more = if line.chars().count() > 60 { "…" } else { "" };
-    format!("{short}{more}")
+    crate::text::clip(line, 60)
 }
 
 /// A blocked task asks before writing outside. The card names the task and

@@ -2,6 +2,9 @@
 //!
 //! Files in the group volume (mounted at `/workspace`, writable by the container):
 //! - `tasks/{taskId}/result.txt`, `outbound.txt`, `intent`: written by the runner.
+//! - `tasks/{taskId}/progress`: the latest `robroz-progress:` text (see
+//!   [`progress_text`]), written by the runner. The host only shows it on the
+//!   status card while the task is running; it never changes what the task does.
 //!   `intent` only signals "blocked". The host never reads its content: when the
 //!   container exits it recomputes the blocking line itself with
 //!   [`robroz_policy::blocking_line`] from the stored prompt and the takeover hashes,
@@ -36,6 +39,45 @@ pub fn outbound_path(root: &Path, task_id: &str) -> PathBuf {
 
 pub fn intent_path(root: &Path, task_id: &str) -> PathBuf {
     task_dir(root, task_id).join("intent")
+}
+
+pub fn progress_path(root: &Path, task_id: &str) -> PathBuf {
+    task_dir(root, task_id).join("progress")
+}
+
+/// Prefix of a progress line, in the same style as `robroz-action:`.
+pub const PROGRESS_PREFIX: &str = "robroz-progress:";
+
+/// The text of one `robroz-progress:<文字>` line, trimmed. `None` for any
+/// other line or an empty text. Cutting it to fit the card is the host's job.
+pub fn progress_text(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix(PROGRESS_PREFIX)?.trim();
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// The last progress line in `text`, if any.
+pub fn last_progress(text: &str) -> Option<&str> {
+    text.lines().rev().find_map(progress_text)
+}
+
+/// `text` without its progress lines; byte for byte when it has none.
+pub fn strip_progress(text: &str) -> String {
+    if !text.lines().any(|line| progress_text(line).is_some()) {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|line| progress_text(line).is_none())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Write the last progress line of `text` to `tasks/{taskId}/progress`.
+/// Nothing is written when there is none.
+fn record_progress(root: &Path, task_id: &str, text: &str) -> io::Result<()> {
+    match last_progress(text) {
+        Some(progress) => fs::write(progress_path(root, task_id), progress),
+        None => Ok(()),
+    }
 }
 
 /// `prompt.txt` inside one task's control dir (`/control/prompt.txt` in the container).
@@ -122,8 +164,12 @@ pub fn run(workspace: &Path, control: &Path, task_id: &str) -> io::Result<()> {
     apply_prompt_with(workspace, task_id, &prompt, &approved)?;
     // Blocking and outbound still come from the prompt; the model only
     // replaces the echoed text once the task is allowed to finish.
+    // Progress lines in the reply are for the status card, not the result.
     match fs::read_to_string(reply_path(control)) {
-        Ok(reply) if result_path(workspace, task_id).exists() => fs::write(result_path(workspace, task_id), reply),
+        Ok(reply) if result_path(workspace, task_id).exists() => {
+            record_progress(workspace, task_id, &reply)?;
+            fs::write(result_path(workspace, task_id), strip_progress(&reply))
+        }
         Ok(_) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
@@ -138,6 +184,8 @@ pub fn apply_prompt(root: &Path, task_id: &str, prompt: &str) -> io::Result<()> 
 /// Apply a prompt to the group volume.
 ///
 /// `robroz-action:get` lines are recorded as `GET` in `outbound.txt`.
+/// The last `robroz-progress:` line goes to `progress`; progress lines are
+/// left out of `result.txt`.
 /// Where to stop comes from [`blocking_line`] (shared with the host): if it finds
 /// an unapproved blocking line, write `intent` and skip `result.txt`. Otherwise
 /// write the prompt to `result.txt`, leaving out approved blocking lines (byte for
@@ -155,12 +203,16 @@ pub fn apply_prompt_with(
     if gets > 0 {
         fs::write(outbound_path(root, task_id), "GET\n".repeat(gets))?;
     }
+    record_progress(root, task_id, prompt)?;
     if let Some(stop) = blocking_line(prompt, approved) {
         fs::write(intent_path(root, task_id), format_intent(stop.kind, &stop.line))?;
         return Ok(());
     }
     // No unapproved blocking line left: every blocking line here was taken over.
-    let kept: Vec<&str> = prompt.lines().filter(|line| blocking_kind(line).is_none()).collect();
+    let kept: Vec<&str> = prompt
+        .lines()
+        .filter(|line| blocking_kind(line).is_none() && progress_text(line).is_none())
+        .collect();
     if kept.len() == prompt.lines().count() {
         fs::write(result_path(root, task_id), prompt.as_bytes())?;
     } else {
@@ -392,6 +444,32 @@ mod tests {
         run(&workspace, &control, "t2").unwrap();
         assert!(!result_path(&workspace, "t2").exists(), "still blocked, reply unused");
         assert!(intent_path(&workspace, "t2").exists());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn progress_lines_are_parsed_and_kept_out_of_the_result() {
+        assert_eq!(progress_text("  robroz-progress: 在查资料 "), Some("在查资料"));
+        assert_eq!(progress_text("robroz-progress:   "), None);
+        assert_eq!(progress_text("robroz-action:get"), None);
+        assert_eq!(strip_progress("没有进度行\n"), "没有进度行\n", "byte for byte");
+
+        let root = scratch();
+        apply_prompt(&root, "p", "robroz-progress:第一步\n正文\nrobroz-progress:第二步").unwrap();
+        assert_eq!(fs::read_to_string(progress_path(&root, "p")).unwrap(), "第二步");
+        assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
+        apply_prompt(&root, "q", "画一张草图").unwrap();
+        assert!(!progress_path(&root, "q").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_reply_progress_goes_to_progress_not_result() {
+        let (base, workspace, control) = mounts("t1", "写周报");
+        fs::write(reply_path(&control), "robroz-progress:在排版\n周报：本周完成三项").unwrap();
+        run(&workspace, &control, "t1").unwrap();
+        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
+        assert_eq!(fs::read_to_string(progress_path(&workspace, "t1")).unwrap(), "在排版");
         let _ = fs::remove_dir_all(&base);
     }
 }

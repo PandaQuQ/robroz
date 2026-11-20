@@ -18,6 +18,7 @@ mod bros;
 pub mod auth;
 mod approvals;
 mod choices;
+mod progress;
 mod pump;
 mod routines;
 mod sandbox;
@@ -25,6 +26,7 @@ mod say;
 mod schedule;
 mod unread;
 mod stream;
+mod text;
 
 pub use pump::{pump, pump_with, Db, PumpConfig};
 pub use schedule::{tick, TickReport};
@@ -267,6 +269,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for table in ["tasks", "deliveries"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN failure TEXT"), []);
     }
+    // What a running task is doing now, shown on its status card.
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
@@ -743,7 +747,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut task_stmt = conn.prepare(
-            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure
+            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure, t.progress
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1",
@@ -757,6 +761,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             let updated_at: String = row.get(5)?;
             // Only a finished task reports why it was not done.
             let failure: Option<String> = if state == TaskState::Done { row.get(7)? } else { None };
+            let progress = progress::shown(state, container_up, row.get(8)?);
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -772,6 +777,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     updated_at,
                     container_up,
                     failure,
+                    progress,
                 },
             })
         })?;
@@ -3382,6 +3388,114 @@ mod tests {
         let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
         assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
         assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+    }
+
+    fn status_of<'a>(events: &'a Value, task_id: &str) -> &'a Value {
+        statuses(events).into_iter().find(|s| s["taskId"] == task_id).expect("status card")
+    }
+
+    #[tokio::test]
+    async fn running_status_carries_progress_and_only_changes_send_a_new_one() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "进度", "写周报").await;
+        let model = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+        let mut fake = super::sandbox::FakeSandbox::new();
+
+        let events = events_of(&app, &group_id).await;
+        assert!(status_of(&events, &task_id).get("progress").is_none(), "queued has no progress");
+
+        // Started: claimed, model answered, sandbox up.
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let events = events_of(&app, &group_id).await;
+        let card = status_of(&events, &task_id).clone();
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["progress"], "在沙箱里跑");
+        let at = card["updatedAt"].as_str().unwrap().to_string();
+
+        // The runner reports a step: same card, new text, newer updatedAt.
+        let progress_file = volumes.join(&group_id).join(format!("tasks/{task_id}/progress"));
+        std::fs::create_dir_all(progress_file.parent().unwrap()).unwrap();
+        std::fs::write(&progress_file, "在查资料").unwrap();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let since = format!("/api/groups/{group_id}/events?since={at}");
+        let (_, fresh) = read_json(call(&app, get(&since)).await).await;
+        let changed = statuses(&fresh);
+        assert_eq!(changed.len(), 1, "one new status for the new text: {fresh}");
+        assert_eq!(changed[0]["taskId"], task_id.as_str());
+        assert_eq!(changed[0]["progress"], "在查资料");
+        let at = changed[0]["updatedAt"].as_str().unwrap().to_string();
+
+        // Same text again: nothing new to send.
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let since = format!("/api/groups/{group_id}/events?since={at}");
+        let (_, fresh) = read_json(call(&app, get(&since)).await).await;
+        assert!(statuses(&fresh).is_empty(), "same progress, no new status: {fresh}");
+
+        // Another step: a new status again.
+        std::fs::write(&progress_file, "在排版").unwrap();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let (_, fresh) = read_json(call(&app, get(&since)).await).await;
+        assert_eq!(statuses(&fresh).len(), 1);
+        assert_eq!(statuses(&fresh)[0]["progress"], "在排版");
+
+        // Done: the card no longer carries progress, and the row is cleared.
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let events = events_of(&app, &group_id).await;
+        let card = status_of(&events, &task_id);
+        assert_eq!(card["state"], "done");
+        assert!(card.get("progress").is_none(), "{card}");
+        let stored: Option<String> = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT progress FROM tasks WHERE id = ?1", [&task_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None);
+    }
+
+    #[tokio::test]
+    async fn model_progress_line_goes_on_the_card_not_into_the_result() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "进度", "写周报").await;
+        let model = FakeModel { answer: Ok("robroz-progress:在整理要点\n周报写好了".into()), calls: Default::default() };
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["progress"], "在整理要点");
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
+        let events = events_of(&app, &group_id).await;
+        assert!(status_of(&events, &task_id).get("progress").is_none());
+        assert_eq!(deliveries(&events).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_and_dead_runs_carry_no_progress() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, blocked) = seed_task(&app, "进度", "登录\nrobroz-action:captcha").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(status_of(&events, &blocked)["state"], "blocked");
+        assert!(status_of(&events, &blocked).get("progress").is_none());
+
+        let (_, dead) = seed_task_in(&app, &group_id, "写周报").await;
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &dead)["progress"], "在沙箱里跑");
+        fake.finish_without_output(1);
+        pump_db(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        let card = status_of(&events, &dead);
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], false);
+        assert!(card.get("progress").is_none(), "dead run: {card}");
     }
 
     async fn seed_task_in(app: &Router, group_id: &str, prompt: &str) -> (StatusCode, String) {
