@@ -171,9 +171,14 @@ pub fn change_time(event: &Event) -> &str {
         | Event::Approval {
             answered_at: Some(at),
             ..
+        }
+        | Event::Confirm {
+            answered_at: Some(at),
+            ..
         } => at,
         Event::Choice { created_at, .. }
         | Event::Approval { created_at, .. }
+        | Event::Confirm { created_at, .. }
         | Event::Message { created_at, .. }
         | Event::Delivery { created_at, .. } => created_at,
     }
@@ -219,6 +224,15 @@ pub fn preview(event: &Event) -> String {
         Event::Approval {
             bot_name, summary, ..
         } => format!("{bot_name}：{summary}"),
+        Event::Confirm {
+            bot_name,
+            text,
+            title,
+            ..
+        } => format!(
+            "{bot_name}：{}",
+            text.as_deref().or(title.as_deref()).unwrap_or_default()
+        ),
     }
 }
 
@@ -305,6 +319,14 @@ fn to_row(event: &Event) -> (Key, Row) {
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
         }
+        // The confirm card UI comes in its own client PR; until then the
+        // app skips these events (`apply_event`). A plain line is the fallback.
+        Event::Confirm { id, .. } => (
+            Key::Event(id.clone()),
+            Row::Text {
+                body: preview(event),
+            },
+        ),
     }
 }
 

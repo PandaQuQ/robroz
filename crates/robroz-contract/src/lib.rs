@@ -517,6 +517,12 @@ pub struct Memory {
     pub status: MemoryStatus,
     pub created_at: String,
     pub updated_at: String,
+    /// Added with confirm cards: the id of the unanswered `confirm` card for a
+    /// `pending` memory. Answer it with `POST /api/approvals/{confirmId}/approve`
+    /// (keep) or `/deny` (reject); that is the only way a status changes.
+    /// Absent otherwise, so old JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_id: Option<String>,
 }
 
 /// `GET /api/memories`, newest `updatedAt` first.
@@ -548,6 +554,71 @@ pub struct UpdateMemory {
 
 /// Longest memory text, in characters, after trimming.
 pub const MEMORY_TEXT_MAX: usize = 2000;
+
+/// What a `confirm` card asks the person to keep: a memory now, a skill later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfirmSubject {
+    Memory,
+    Skill,
+}
+
+impl ConfirmSubject {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfirmSubject::Memory => "memory",
+            ConfirmSubject::Skill => "skill",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [ConfirmSubject::Memory, ConfirmSubject::Skill].into_iter().find(|s| s.as_str() == value)
+    }
+}
+
+/// A bro proposes a memory: one `robroz-memory:{json}` line. `scope` defaults
+/// to the bro that ran the task. Text limits are checked by the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryProposal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub kind: MemoryKind,
+    pub text: String,
+}
+
+/// One line of `tasks/{taskId}/proposals.jsonl`, tagged on `type`.
+/// Only `memory` for now; skills are added here later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Proposal {
+    Memory(MemoryProposal),
+}
+
+/// At most this many proposals are taken from one task.
+pub const PROPOSALS_PER_TASK_MAX: usize = 20;
+
+impl Proposal {
+    /// One `proposals.jsonl` line. `None` for bad JSON, an unknown `type`, an
+    /// unknown `kind` or a missing field: such lines are skipped, never an error.
+    pub fn parse_line(line: &str) -> Option<Self> {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        serde_json::from_str(line).ok()
+    }
+
+    /// The `proposals.jsonl` line for a `robroz-memory:` payload: the JSON
+    /// object with `"type":"memory"` set. `None` when the payload is not a JSON
+    /// object. Fields are not checked here; the host checks when it reads.
+    pub fn memory_line(payload: &str) -> Option<String> {
+        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()? else {
+            return None;
+        };
+        fields.insert("type".into(), serde_json::Value::String("memory".into()));
+        Some(serde_json::Value::Object(fields).to_string())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
@@ -637,6 +708,45 @@ pub enum Event {
         /// Added later: the `answeredBy` sent with the answer, else `null`.
         #[serde(default)]
         answered_by: Option<String>,
+        /// Added with confirm cards: the task that raised this card (a blocked
+        /// task asking to write outside). Absent for cards a bot posted itself,
+        /// so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+    /// Added with memories: a bro proposed something to remember; the person
+    /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
+    /// Everything the card shows is here, so no second request is needed.
+    /// `decision`, `answeredAt` and `answeredBy` behave as on `approval`.
+    /// Memory cards carry `memoryId`, `kind`, `text`, `scope`; skill cards
+    /// (later) carry `slug`, `title`, `instruction`. Absent fields are omitted.
+    #[serde(rename = "confirm")]
+    Confirm {
+        id: String,
+        bot_id: String,
+        bot_name: String,
+        subject: ConfirmSubject,
+        /// The task whose run proposed it.
+        task_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<MemoryKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slug: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instruction: Option<String>,
+        decision: Option<ApprovalDecision>,
+        created_at: String,
+        answered_at: Option<String>,
+        #[serde(default)]
+        answered_by: Option<String>,
     },
 }
 
@@ -705,6 +815,91 @@ mod tests {
     }
 
     #[test]
+    fn approval_task_id_is_optional() {
+        let mut json = serde_json::json!({
+            "type": "approval", "id": "a1", "botId": "b", "botName": "B", "action": "send",
+            "summary": "发邮件", "path": null, "decision": null,
+            "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": null, "answeredBy": null
+        });
+        let old: Event = serde_json::from_value(json.clone()).unwrap();
+        assert!(matches!(old, Event::Approval { task_id: None, .. }), "old JSON parses");
+        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
+        json["taskId"] = "t1".into();
+        assert_round_trip(&serde_json::from_value(json.clone()).unwrap(), json);
+    }
+
+    #[test]
+    fn confirm_event_json() {
+        let card = Event::Confirm {
+            id: "c1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            subject: ConfirmSubject::Memory,
+            task_id: Some("t1".into()),
+            memory_id: Some("m1".into()),
+            kind: Some(MemoryKind::Habit),
+            text: Some("周报用中文".into()),
+            scope: Some("bot:bot-ada".into()),
+            slug: None,
+            title: None,
+            instruction: None,
+            decision: None,
+            created_at: "2026-11-20T08:30:00.000Z".into(),
+            answered_at: None,
+            answered_by: None,
+        };
+        assert_round_trip(
+            &card,
+            serde_json::json!({
+                "type": "confirm", "id": "c1", "botId": "bot-ada", "botName": "Ada",
+                "subject": "memory", "taskId": "t1", "memoryId": "m1", "kind": "habit",
+                "text": "周报用中文", "scope": "bot:bot-ada", "decision": null,
+                "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": null, "answeredBy": null
+            }),
+        );
+        let skill: Event = serde_json::from_value(serde_json::json!({
+            "type": "confirm", "id": "c2", "botId": "b", "botName": "B", "subject": "skill",
+            "taskId": null, "slug": "weekly", "title": "写周报", "instruction": "先列三点",
+            "decision": "approved", "createdAt": "2026-11-20T08:30:00.000Z",
+            "answeredAt": "2026-11-20T08:31:00.000Z"
+        }))
+        .unwrap();
+        assert!(matches!(skill, Event::Confirm { subject: ConfirmSubject::Skill, answered_by: None, .. }));
+    }
+
+    #[test]
+    fn proposal_lines_parse_or_are_skipped() {
+        let line = Proposal::memory_line(r#"{"kind":"habit","text":"周报用中文","type":"skill"}"#).unwrap();
+        let Some(Proposal::Memory(m)) = Proposal::parse_line(&line) else { panic!("{line}") };
+        assert_eq!((m.kind, m.text.as_str(), m.scope), (MemoryKind::Habit, "周报用中文", None));
+        assert_eq!(Proposal::memory_line("不是 json"), None);
+        assert_eq!(Proposal::memory_line("[1]"), None);
+        for bad in [
+            "",
+            "{",
+            r#"{"type":"skill","slug":"x"}"#,
+            r#"{"type":"memory","kind":"mood","text":"x"}"#,
+            r#"{"type":"memory","text":"x"}"#,
+            r#"{"kind":"habit","text":"x"}"#,
+        ] {
+            assert_eq!(Proposal::parse_line(bad), None, "{bad}");
+        }
+        let scoped = Proposal::parse_line(r#"{"type":"memory","scope":"user","kind":"profile","text":"叫 Panda"}"#);
+        assert!(matches!(scoped, Some(Proposal::Memory(MemoryProposal { scope: Some(_), .. }))));
+    }
+
+    #[test]
+    fn memory_confirm_id_is_optional() {
+        let json = serde_json::json!({
+            "id": "m1", "scope": "user", "kind": "habit", "text": "x", "source": "bot",
+            "status": "pending", "createdAt": "2026-11-20T08:30:00.000Z", "updatedAt": "2026-11-20T08:30:00.000Z"
+        });
+        let old: Memory = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old.confirm_id, None);
+        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
+    }
+
+    #[test]
     fn approval_event_json() {
         assert_round_trip(
             &Event::Approval {
@@ -718,6 +913,7 @@ mod tests {
                 created_at: "2026-11-20T08:30:00.000Z".into(),
                 answered_at: None,
                 answered_by: None,
+                task_id: None,
             },
             serde_json::json!({
                 "type": "approval",

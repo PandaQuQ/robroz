@@ -2915,6 +2915,7 @@ dependencies = [
 name = "robroz-runner"
 version = "0.1.0"
 dependencies = [
+ "robroz-contract",
  "robroz-policy",
 ]
 
