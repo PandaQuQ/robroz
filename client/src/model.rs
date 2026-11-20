@@ -204,6 +204,18 @@ pub fn preview(event: &Event) -> String {
             waiting_for,
             ..
         } if awaits_approval(*state, *waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
+        // A live run with a progress line: say what the bro is doing, not 进行.
+        Event::Status {
+            bot_name,
+            state,
+            container_up,
+            failure,
+            progress,
+            ..
+        } if progress_line(*state, *container_up, failure.as_deref(), progress).is_some() => {
+            let line = progress_line(*state, *container_up, failure.as_deref(), progress);
+            format!("{bot_name}：{}", line.unwrap_or_default())
+        }
         Event::Status {
             bot_name,
             state,
@@ -522,6 +534,44 @@ mod tests {
             *failure = Some("模型没回：超时".into());
         }
         assert_eq!(line(failed), None, "没做成 never carries a progress line");
+    }
+
+    #[test]
+    fn list_preview_shows_progress_while_running() {
+        let run = status("t1", "Ada", TaskState::Running, true);
+        assert_eq!(
+            preview(&with_progress(run.clone(), Some("在查上周的\n工单"))),
+            "Ada：在查上周的 工单"
+        );
+        // No progress: the plain state word, as before.
+        assert_eq!(
+            preview(&run),
+            format!(
+                "Ada：{}",
+                robroz_card::status_line(TaskState::Running, true)
+            )
+        );
+        // Never on a finished, stuck or failed card.
+        let done = with_progress(status("t1", "Ada", TaskState::Done, false), Some("在查"));
+        assert_eq!(
+            preview(&done),
+            format!("Ada：{}", robroz_card::status_line(TaskState::Done, false))
+        );
+        let mut failed = with_progress(run, Some("在查"));
+        if let Event::Status { failure, .. } = &mut failed {
+            *failure = Some("模型没回：超时".into());
+        }
+        assert_eq!(preview(&failed), "Ada：没做成：模型没回：超时");
+    }
+
+    #[test]
+    fn long_progress_preview_is_cut_with_an_ellipsis() {
+        let long = "在查上周的工单，按客户和优先级整理成一份周报草稿，再把超时没回的单子单独列出来，最后发给你确认";
+        let run = with_progress(status("t1", "Ada", TaskState::Running, true), Some(long));
+        // The list row fits the stored preview to its width with `…`.
+        let shown = robroz_ui::conversations::fit(&preview(&run), 30);
+        assert!(shown.starts_with("Ada：在查上周的"));
+        assert!(shown.ends_with('…'), "{shown}");
     }
 
     #[test]
