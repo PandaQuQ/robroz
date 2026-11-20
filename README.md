@@ -54,7 +54,7 @@ CI 只编译 `robroz-runner`，不构建镜像，测试也不需要 Docker daemo
 
 ## 节点 4
 
-状态事件增加字段 `containerUp`。排队、完成、卡住，以及容器已经删掉的失败运行，都是 false。只有容器还在跑的 `running` 才是 true。失败运行仍然是 `TaskState::Running`，没有第五种状态：色调和排队一样是灰，标签是「没写出结果」，动作是空。容器还在时标签仍是「进行」。卡住才是琥珀色，动作「去私聊接管」。
+状态事件增加字段 `containerUp`。排队、完成、卡住，以及容器已经删掉的失败运行，都是 false。只有容器还在跑的 `running` 才是 true。失败运行仍然是 `TaskState::Running`，没有第五种状态：色调和排队一样是灰，标签是「没写出结果」，动作是空。容器还在时标签仍是「进行」。卡住才是琥珀色，动作「去私聊接管」。容器中途消失（宿主机或 Docker 重启、容器被删）也走这条失败运行：保持 `running`，`containerUp` 为 false，标签「没写出结果」，不重新排队，也不再启动容器。对它调用 `POST /api/tasks/:id/resume` 返回 409「这次不能恢复」。
 
 GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz-policy::outbound` 判断，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`robroz-action:external` 和 `robroz-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
 
@@ -73,13 +73,27 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 定时任务的状态卡和普通任务一样。成功完成时 delivery 的 `briefing` 为 true，路径仍是该群目录里的 `tasks/{taskId}/result.txt`；普通任务的 `briefing` 仍为 false。卡住、失败和 resume 的行为与节点 4 相同。
 
+`GET /api/groups/:id/schedules` 列出该群的例行任务，按创建先后排序，返回 `{"schedules":[ScheduleEntry]}`。每条是 `Schedule` 的字段平铺，再加上 `paused`：`id`、`groupId`、`assigneeBotId`、`cron`、`prompt`、`nextRunAt`、`lastTaskId`、`paused`。没有定时时为 `{"schedules":[]}`，群不存在返回 404「群不存在」。`POST /api/schedules` 的返回形状不变，不含 `paused`。
+
+`PATCH /api/schedules/:id`，请求体 `{"paused":bool}`，成功返回 200 和这条 `ScheduleEntry`。暂停只阻止 `tick` 再新建任务，已经排队或正在跑的那一次不受影响。重复暂停仍返回 `paused` 为 true，没有其它变化。恢复时把 `nextRunAt` 推到当前时间之后的下一次，错过的不补跑。例行任务不存在返回 404「例行任务不存在」。
+
+## 选项卡
+
+群里的 Bot 可以出一张选项卡，问人在固定选项里选。这是事件流里单独的 `choice` 事件，不是状态卡。`POST /api/groups/:id/choices`，请求体 `{"botId","prompt","options","multi"}`，`multi` 默认为 false，返回 201 就是这张卡。`options` 是 `[{id,label,primary}]`，每张 2 到 4 个；`id` 和 `label` 去掉首尾空白后不能为空，`id` 不能重复；`primary` 最多一个，表示 Bot 的推荐。多选卡会去掉 `primary`（一律为 false）。群不存在返回 404「群不存在」，Bot 不在群里返回 400「这个 Bot 不在群里」，prompt 为空返回 400「请填写内容」。选项不合法返回 400，说明为「选项需要 2 到 4 个」「选项不能为空」「选项重复」或「推荐项最多一个」。不合法的卡不会入库。未回答时 `choice` 和 `answeredAt` 都是 `null`。
+
+回传是 `POST /api/choices/:id/answer`，请求体 `{"choice":[ids]}`，单选也传数组，且必须恰好一个；多选传一个或多个，不能重复。成功返回 200，仍是同一张卡：`choice` 为所选 `id`（多选保留请求顺序），`answeredAt` 为回答时间。每张只能答一次，再答返回 409「已经选过了」。选项卡不存在返回 404「选项卡不存在」。未知的选项 `id`、单选选了多个、多选一个都没选、或 `id` 重复，返回 400，说明为「没有这个选项」「只能选一个」「至少选一个」或「选项重复」。`GET /api/groups/:id/events` 按 `createdAt` 升序一并返回选项卡，已回答的仍是同一张卡。
+
 ## 节点 6：客户端
 
-`client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡和交付卡。
+`client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡、交付卡和选项卡。
 
-状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `robroz-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `robroz-card::briefing_badge`）。
+状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `robroz-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `robroz-card::briefing_badge`）。选项卡按 `id` 原地更新；这一期只显示，回传接口见上一节。
 
-事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `robroz-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。宿主机地址用 `ROBROZ_HOST`，默认 `http://127.0.0.1:8790`。宿主机还没有列群接口，群用 `ROBROZ_GROUPS` 指定，逗号分隔，每项是 `id` 或 `id=名字`。`--fake` 或 `ROBROZ_FAKE=1` 改用离线的 `FakeSource`（单测也用它）。连不上时保留已显示的内容，下一秒再试。
+事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `robroz-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。事件流里出现 `type` 为 `choice` 的卡时，契约里还没有该类型的旧客户端会整段解码失败，而不是跳过这张卡。
+
+`GET /api/groups/:id/events` 可带可选参数 `?since=`（RFC 3339）。只返回这个时间之后变过的事件：状态卡按 `updatedAt`，选项卡按 `answeredAt`（未回答则按 `createdAt`），消息和交付卡按 `createdAt`。没有变化时返回 `{"events":[]}`。时间不合法返回 400「since 不是合法时间」。参数省略或为空时仍返回全部事件。排序不变，仍按 `createdAt` 升序，相同时间再按 `id`。
+
+宿主机地址用 `ROBROZ_HOST`，默认 `http://127.0.0.1:8790`。宿主机还没有列群接口，群用 `ROBROZ_GROUPS` 指定，逗号分隔，每项是 `id` 或 `id=名字`。`--fake` 或 `ROBROZ_FAKE=1` 改用离线的 `FakeSource`（单测也用它）。连不上时保留已显示的内容，下一秒再试。
 
 ```
 ROBROZ_GROUPS=<groupId>=官网 cargo run -p robroz-client
