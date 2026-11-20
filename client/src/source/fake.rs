@@ -2,14 +2,19 @@
 
 use std::time::Duration;
 
-use robroz_contract::{Event, MessageKind, TaskState};
+use robroz_contract::{ChoiceOption, Event, MessageKind, Schedule, ScheduleEntry, TaskState};
+use robroz_ui::cards::{
+    ActionKind, ApprovalCard, ApprovalState, Card, DraftCard, DraftChannel, DraftState,
+};
 
-use super::{EventSource, GroupEvent, GroupTab, SourceError};
+use super::{EventSource, GroupCard, GroupEvent, GroupTab, SourceError};
 
 /// Scripted events, released one step per `poll`. No network.
 pub struct FakeSource {
     groups: Vec<GroupTab>,
     steps: Vec<Vec<GroupEvent>>,
+    /// Approval/draft cards released with step `.0`.
+    cards: Vec<(usize, GroupCard)>,
     next: usize,
 }
 
@@ -100,10 +105,50 @@ impl FakeSource {
                 status(OPS, "t-brief", "bot-dee", "Dee", TaskState::Done, false),
                 delivery(OPS, "d2", "已写入结果", "tasks/t-brief/result.txt", true),
             ],
+            // Phase-1 cards: a choice (contract event from robroz#15) plus
+            // an approval and a draft (client-side until the backend adds
+            // them). Clicking them in `--fake` answers locally.
+            vec![
+                choice(SITE, "c-install", false),
+                choice(SITE, "c-pages", true),
+            ],
+        ];
+        let last = steps.len() - 1;
+        let cards = vec![
+            (
+                last,
+                GroupCard {
+                    group_id: SITE.into(),
+                    card: Card::Approval(ApprovalCard {
+                        id: "a-logs".into(),
+                        bot: "后端".into(),
+                        kind: ActionKind::Delete,
+                        summary: "清理 12 个旧日志文件".into(),
+                        path: Some("logs/2026-10/".into()),
+                        state: ApprovalState::Pending,
+                    }),
+                },
+            ),
+            (
+                last,
+                GroupCard {
+                    group_id: SITE.into(),
+                    card: Card::Draft(DraftCard {
+                        id: "d-progress".into(),
+                        bot: "文档哥".into(),
+                        channel: DraftChannel::Email,
+                        to: "team@example.com".into(),
+                        subject: Some("robroz 第一期进度".into()),
+                        body: DRAFT_BODY.into(),
+                        state: DraftState::Pending,
+                    }),
+                },
+            ),
         ];
         Self {
             groups,
             steps,
+            cards,
             next: 0,
         }
     }
@@ -134,6 +179,21 @@ impl EventSource for FakeSource {
         self.next < self.steps.len()
     }
 
+    fn poll_cards(&mut self) -> Vec<GroupCard> {
+        let Some(released) = self.next.checked_sub(1) else {
+            return Vec::new();
+        };
+        let out = self
+            .cards
+            .iter()
+            .filter(|(step, _)| *step == released)
+            .map(|(_, c)| c.clone())
+            .collect();
+        // Release each card once.
+        self.cards.retain(|(step, _)| *step != released);
+        out
+    }
+
     fn interval(&self) -> Duration {
         Duration::from_millis(900)
     }
@@ -148,6 +208,81 @@ fn group(id: &str, name: &str) -> GroupTab {
 
 fn at(seq: &str) -> String {
     format!("2026-10-07T19:00:{seq}.000Z")
+}
+
+pub const DRAFT_BODY: &str = "大家好，第一期的 7 个节点里已经合并了 5 个：任务队列、Docker 沙箱、三级权限、定时任务和客户端外壳。剩下的是联调和真机测试，预计下周开始。";
+
+fn option(id: &str, label: &str, primary: bool) -> ChoiceOption {
+    ChoiceOption {
+        id: id.into(),
+        label: label.into(),
+        primary,
+    }
+}
+
+fn choice(group: &str, id: &str, multi: bool) -> GroupEvent {
+    let (bot_id, bot_name, prompt, options) = if multi {
+        (
+            "bot-fe",
+            "前端",
+            "第一期客户端先做哪几页？",
+            vec![
+                option("chat", "群聊", false),
+                option("routines", "例行任务", false),
+                option("settings", "设置", false),
+                option("files", "文件", false),
+            ],
+        )
+    } else {
+        (
+            "bot-doc",
+            "文档哥",
+            "安装说明先写哪一种？",
+            vec![
+                option("docker", "Docker 一键", true),
+                option("cargo", "cargo install", false),
+                option("both", "两种都写", false),
+            ],
+        )
+    };
+    GroupEvent {
+        group_id: group.into(),
+        event: Event::Choice {
+            id: id.into(),
+            bot_id: bot_id.into(),
+            bot_name: bot_name.into(),
+            prompt: prompt.into(),
+            options,
+            multi,
+            choice: None,
+            created_at: at("04"),
+            answered_at: None,
+        },
+    }
+}
+
+/// Schedules for the offline API, one per fake group plus a paused one.
+pub fn fake_schedules() -> Vec<ScheduleEntry> {
+    let now = chrono::Utc::now();
+    let entry = |id: &str, group: &str, prompt: &str, hours: i64, paused: bool| ScheduleEntry {
+        schedule: Schedule {
+            id: id.into(),
+            group_id: group.into(),
+            assignee_bot_id: "bot-dee".into(),
+            cron: "0 8 * * *".into(),
+            prompt: prompt.into(),
+            next_run_at: (now + chrono::Duration::hours(hours))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            last_task_id: None,
+        },
+        paused,
+    };
+    vec![
+        entry("s-brief", OPS, "每日简报", 30, false),
+        entry("s-deps", SITE, "依赖安全检查", 80, false),
+        entry("s-weekly", OPS, "周报草稿", 50, true),
+        entry("s-clean", SITE, "清理沙箱缓存", 3, false),
+    ]
 }
 
 fn msg(group: &str, id: &str, kind: MessageKind, body: &str) -> GroupEvent {
@@ -211,6 +346,9 @@ mod tests {
         while source.has_more() {
             for ge in source.poll().unwrap() {
                 feeds.entry(ge.group_id).or_default().apply(&ge.event);
+            }
+            for gc in source.poll_cards() {
+                feeds.entry(gc.group_id).or_default().apply_card(gc.card);
             }
         }
         assert!(source.poll().unwrap().is_empty());
@@ -277,5 +415,16 @@ mod tests {
                 ..
             }
         )));
+        let site_feed = &feeds[SITE];
+        for id in ["c-install", "c-pages", "a-logs", "d-progress"] {
+            assert!(site_feed.card(id).is_some(), "fake script has card {id}");
+        }
+    }
+
+    #[test]
+    fn fake_schedules_cover_running_and_paused() {
+        let all = fake_schedules();
+        assert!(all.iter().any(|s| s.paused));
+        assert!(all.iter().any(|s| !s.paused));
     }
 }

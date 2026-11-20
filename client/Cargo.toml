@@ -6,7 +6,10 @@ edition = "2021"
 [dependencies]
 robroz-contract = { path = "../crates/robroz-contract" }
 robroz-card = { path = "../crates/robroz-card" }
-iced = { version = "0.14.0", features = ["tokio"] }
+robroz-ui = { path = "../crates/robroz-ui" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+iced = { version = "0.14.0", features = ["tokio", "canvas"] }
+serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt"] }
 # Plain HTTP to the local host only; no TLS stack, so no extra system deps.

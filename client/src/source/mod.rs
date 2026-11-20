@@ -7,13 +7,14 @@
 mod fake;
 mod http;
 
-pub use fake::FakeSource;
+pub use fake::{fake_schedules, FakeSource, DRAFT_BODY};
 pub use http::HttpSource;
 
 use std::fmt;
 use std::time::Duration;
 
 use robroz_contract::Event;
+use robroz_ui::cards::Card;
 
 /// One entry in the left column. Client-side view data, not a contract
 /// type: the host has no group-listing endpoint yet, so a live source may
@@ -29,6 +30,14 @@ pub struct GroupTab {
 pub struct GroupEvent {
     pub group_id: String,
     pub event: Event,
+}
+
+/// A new-kind card the contract has no event for yet (approval, draft),
+/// tagged with its group. Only the fake source produces these today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupCard {
+    pub group_id: String,
+    pub card: Card,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +60,10 @@ pub trait EventSource: Send {
     /// False once nothing more will arrive. The fake source stops after its
     /// script; a live source always says true.
     fn has_more(&self) -> bool;
+    /// Cards released with the last `poll` that have no contract event yet.
+    fn poll_cards(&mut self) -> Vec<GroupCard> {
+        Vec::new()
+    }
     /// How often the app should call `poll`.
     fn interval(&self) -> Duration {
         Duration::from_secs(1)

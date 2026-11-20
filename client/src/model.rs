@@ -5,6 +5,7 @@
 
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind};
+use robroz_ui::cards::{Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -24,27 +25,19 @@ pub struct DeliveryCard {
     pub badge: Option<&'static str>,
 }
 
-/// A bot's question with fixed options. Display only here; sending the pick
-/// (`POST /api/choices/:id/answer`) is wired by the source layer later.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChoiceCard {
-    pub choice_id: String,
-    pub bot_name: String,
-    pub prompt: String,
-    /// `(id, label)` in the order the bot gave them.
-    pub options: Vec<(String, String)>,
-    pub multi: bool,
-    /// The picked `value`s, once answered. Single choice holds one.
-    pub choice: Option<Vec<String>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Text { body: String },
-    Attachment { kind: MessageKind, name: String },
+    Text {
+        body: String,
+    },
+    Attachment {
+        kind: MessageKind,
+        name: String,
+    },
     Status(StatusCard),
     Delivery(DeliveryCard),
-    Choice(ChoiceCard),
+    /// New card kinds (`choice`, `approval`, `draft`), drawn by `robroz-ui`.
+    Card(Card),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +65,25 @@ impl Feed {
 
     pub fn apply(&mut self, event: &Event) {
         let (key, row) = to_row(event);
+        self.upsert(key, row);
+    }
+
+    /// Insert or replace a new-kind card by its id. Used for card kinds the
+    /// contract has no event for yet (approval, draft) and for applying the
+    /// host's reply to an answer before the next poll.
+    pub fn apply_card(&mut self, card: Card) {
+        let key = Key::Event(card.id().to_string());
+        self.upsert(key, Row::Card(card));
+    }
+
+    pub fn card(&self, id: &str) -> Option<&Card> {
+        self.rows.iter().find_map(|(k, row)| match (k, row) {
+            (Key::Event(k), Row::Card(c)) if k == id => Some(c),
+            _ => None,
+        })
+    }
+
+    fn upsert(&mut self, key: Key, row: Row) {
         match self.rows.iter_mut().find(|(k, _)| *k == key) {
             Some(slot) => slot.1 = row,
             None => self.rows.push((key, row)),
@@ -126,27 +138,9 @@ fn to_row(event: &Event) -> (Key, Row) {
             (Key::Event(id.clone()), Row::Delivery(card))
         }
         // Keyed by id, so the answered snapshot replaces the open card in place.
-        Event::Choice {
-            id,
-            bot_name,
-            prompt,
-            options,
-            multi,
-            choice,
-            ..
-        } => {
-            let card = ChoiceCard {
-                choice_id: id.clone(),
-                bot_name: bot_name.clone(),
-                prompt: prompt.clone(),
-                options: options
-                    .iter()
-                    .map(|o| (o.id.clone(), o.label.clone()))
-                    .collect(),
-                multi: *multi,
-                choice: choice.clone(),
-            };
-            (Key::Event(id.clone()), Row::Choice(card))
+        Event::Choice { id, .. } => {
+            let card = ChoiceCard::from_event(event).expect("choice event");
+            (Key::Event(id.clone()), Row::Card(Card::Choice(card)))
         }
     }
 }
@@ -338,8 +332,16 @@ mod tests {
             bot_name: "Ada".into(),
             prompt: "用哪个？".into(),
             options: vec![
-                robroz_contract::ChoiceOption { id: "a".into(), label: "A".into(), primary: true },
-                robroz_contract::ChoiceOption { id: "b".into(), label: "B".into(), primary: false },
+                robroz_contract::ChoiceOption {
+                    id: "a".into(),
+                    label: "A".into(),
+                    primary: true,
+                },
+                robroz_contract::ChoiceOption {
+                    id: "b".into(),
+                    label: "B".into(),
+                    primary: false,
+                },
             ],
             multi: false,
             choice: choice.map(|v| vec![v.to_string()]),
@@ -352,11 +354,49 @@ mod tests {
         assert_eq!(feed.len(), 1);
         let row = feed.rows().next().unwrap().clone();
         match row {
-            Row::Choice(c) => {
-                assert_eq!(c.choice, Some(vec!["b".to_string()]));
+            Row::Card(Card::Choice(c)) => {
+                assert!(matches!(
+                    c.state,
+                    robroz_ui::cards::ChoiceState::Answered { ref selected, .. } if selected == &["b"]
+                ));
                 assert_eq!(c.options.len(), 2);
             }
             other => panic!("expected choice row, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn approval_and_draft_cards_update_in_place_by_id() {
+        use robroz_ui::cards::{ActionKind, ApprovalCard, ApprovalState};
+        let card = |state| {
+            Card::Approval(ApprovalCard {
+                id: "a1".into(),
+                bot: "后端".into(),
+                kind: ActionKind::Delete,
+                summary: "清理 12 个旧日志文件".into(),
+                path: Some("logs/2026-10/".into()),
+                state,
+            })
+        };
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "先问一下"));
+        feed.apply_card(card(ApprovalState::Pending));
+        feed.apply(&text("m2", "后面的话"));
+        feed.apply_card(card(ApprovalState::Approved {
+            by: "Panda".into(),
+            at: 0,
+        }));
+        assert_eq!(feed.len(), 3, "one approval card, not two");
+        assert!(matches!(
+            feed.card("a1"),
+            Some(Card::Approval(ApprovalCard {
+                state: ApprovalState::Approved { .. },
+                ..
+            }))
+        ));
+        assert!(
+            matches!(feed.rows().nth(1), Some(Row::Card(_))),
+            "kept its slot"
+        );
     }
 }
