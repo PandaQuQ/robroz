@@ -9,7 +9,7 @@ pub mod interact;
 pub mod routines;
 pub mod status;
 
-use robroz_contract::{ChoiceOption, Event};
+use robroz_contract::{ApprovalAction, ApprovalDecision, ChoiceOption, Event};
 
 /// New card kinds, side by side with the frozen status and delivery cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +135,32 @@ pub enum ApprovalState {
     Approved { by: String, at: i64 },
     Denied { by: String, at: i64 },
     NeedsOwner,
+}
+
+impl ApprovalCard {
+    /// Build from the `approval` event. Returns `None` for any other event.
+    /// The host has no "answered by" field yet, so an answer reads as 「我」.
+    pub fn from_event(event: &Event) -> Option<Self> {
+        let Event::Approval { id, bot_name, action, summary, path, decision, answered_at, .. } = event else {
+            return None;
+        };
+        let at = answered_at
+            .as_deref()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map_or(0, |t| t.timestamp());
+        let by = String::from("我");
+        let state = match decision {
+            None => ApprovalState::Pending,
+            Some(ApprovalDecision::Approved) => ApprovalState::Approved { by, at },
+            Some(ApprovalDecision::Denied) => ApprovalState::Denied { by, at },
+        };
+        let kind = match action {
+            ApprovalAction::Delete => ActionKind::Delete,
+            ApprovalAction::Send => ActionKind::Send,
+            ApprovalAction::Spend => ActionKind::Spend,
+        };
+        Some(Self { id: id.clone(), bot: bot_name.clone(), kind, summary: summary.clone(), path: path.clone(), state })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

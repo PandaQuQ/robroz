@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 mod bros;
 pub mod auth;
+mod approvals;
 mod choices;
 mod pump;
 mod routines;
@@ -149,6 +150,9 @@ fn router_from(state: AppState) -> Router {
         .route("/api/schedules/{id}", patch(routines::update_schedule))
         .route("/api/groups/{id}/choices", post(choices::create_choice))
         .route("/api/choices/{id}/answer", post(choices::answer_choice))
+        .route("/api/groups/{id}/approvals", post(approvals::create_approval))
+        .route("/api/approvals/{id}/approve", post(approvals::approve))
+        .route("/api/approvals/{id}/deny", post(approvals::deny))
         .with_state(state)
 }
 
@@ -239,6 +243,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Routines: a paused schedule is skipped by tick.
     let _ = conn.execute("ALTER TABLE schedules ADD COLUMN paused_at TEXT", []);
     conn.execute_batch(choices::SCHEMA)?;
+    conn.execute_batch(approvals::SCHEMA)?;
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
@@ -768,6 +773,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
     }
 
     timed.extend(choices::timed_events(conn, group_id)?);
+    timed.extend(approvals::timed_events(conn, group_id)?);
     if let Some(since) = since {
         timed.retain(|item| item.changed_at.as_str() > since);
     }
@@ -2215,6 +2221,94 @@ mod tests {
             .query_row("SELECT paused_at FROM schedules WHERE id = 's1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(paused, None);
+    }
+
+    // ---- approval cards ----
+
+    async fn post_approval(app: &Router, group_id: &str, body: Value) -> (StatusCode, Value) {
+        read_json(call(app, post(&format!("/api/groups/{group_id}/approvals"), body)).await).await
+    }
+
+    async fn decide(app: &Router, id: &str, verb: &str) -> (StatusCode, Value) {
+        read_json(call(app, post_empty(&format!("/api/approvals/{id}/{verb}"))).await).await
+    }
+
+    #[tokio::test]
+    async fn approval_card_is_answered_once_by_approve_or_deny() {
+        let app = test_app(&temp_db());
+        let group_id = create_group(&app, "审批").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+
+        let (status, card) = post_approval(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "action": "delete", "summary": " 删掉旧的构建缓存 ", "path": "target/" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        assert_eq!(card["type"], "approval");
+        assert_eq!(card["botName"], "Ada");
+        assert_eq!(card["action"], "delete");
+        assert_eq!(card["summary"], "删掉旧的构建缓存");
+        assert_eq!(card["path"], "target/");
+        assert_eq!(card["decision"], Value::Null);
+        assert_eq!(card["answeredAt"], Value::Null);
+        let id = card["id"].as_str().unwrap().to_string();
+
+        let since = card["createdAt"].as_str().unwrap().to_string();
+        let events = events_of(&app, &group_id).await;
+        let open: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").collect();
+        assert_eq!(open, vec![&card]);
+
+        let (status, answered) = decide(&app, &id, "approve").await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(answered["decision"], "approved");
+        assert!(answered["answeredAt"].is_string());
+        let (status, changed) = events_since(&app, &group_id, &since).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(changed["events"].as_array().unwrap().contains(&answered), "answer shows up as a change: {changed}");
+
+        for verb in ["approve", "deny"] {
+            let (status, body) = decide(&app, &id, verb).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{verb}");
+            assert_eq!(body, json!({ "error": "已经答过了" }));
+        }
+        let events = events_of(&app, &group_id).await;
+        let cards: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").collect();
+        assert_eq!(cards, vec![&answered], "first answer stands, card replaced in place");
+
+        let (status, other) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "spend", "summary": "买域名" })).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(other["path"], Value::Null);
+        let (status, denied) = decide(&app, other["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(denied["decision"], "denied");
+    }
+
+    #[tokio::test]
+    async fn approval_card_validates_and_counts_as_unread() {
+        let app = test_app(&temp_db());
+        let group_id = create_group(&app, "审批").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+
+        let (status, _) = post_approval(&app, "nope", json!({ "botId": "bot-ada", "action": "send", "summary": "x" })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = post_approval(&app, &group_id, json!({ "botId": "bot-bob", "action": "send", "summary": "x" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
+        for summary in ["  ", "两行\n不行"] {
+            let (status, _) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": summary })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{summary:?}");
+        }
+        let resp = call(&app, post(&format!("/api/groups/{group_id}/approvals"), json!({ "botId": "bot-ada", "action": "nuke", "summary": "x" }))).await;
+        assert!(resp.status().is_client_error(), "unknown action is rejected");
+        let (status, _) = decide(&app, "nope", "approve").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": "发周报" })).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (_, unread) = read_json(call(&app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        assert_eq!(unread["unread"], 1, "{unread}");
     }
 
     // ---- choice cards ----
