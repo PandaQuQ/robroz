@@ -1296,7 +1296,7 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard) -> Element<'a, Message> {
     let mut line = row![
         text(&card.bot_name),
         space::horizontal(),
-        text(card.status_line)
+        text(&card.status_line)
     ]
     .spacing(12)
     .align_y(Alignment::Center);
@@ -1322,6 +1322,15 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard) -> Element<'a, Message> {
 }
 
 fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a, Message> {
+    // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
+    if let Some(failure) = &card.failure {
+        let gray = robroz_card::palette(robroz_card::Tone::Gray);
+        return container(text(model::failure_line(failure)))
+            .padding(view::status_card_padding(t))
+            .width(Fill)
+            .style(view::status_card_style(*t, gray.fill, gray.text))
+            .into();
+    }
     let path = view::display_path(
         t,
         &card.path,
