@@ -16,6 +16,7 @@ use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::routines::{self, Routines};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
+use crate::conversations::{self, Conversation, Conversations};
 use crate::theme::{Rgb, Skin};
 use crate::widgets::{Check, CheckBox, Rings, Toggle};
 
@@ -58,6 +59,12 @@ pub enum Action {
     ToggleBotName {
         card: String,
     },
+    /// Conversation list: open this group or DM.
+    OpenChat {
+        group: String,
+    },
+    /// 「＋ 新 bro」: create a bro and open its DM.
+    NewBro,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -913,4 +920,146 @@ pub fn routines_panel<'a>(t: &Skin, routines: &'a Routines, now: i64) -> Element
             ..container::Style::default()
         })
         .into()
+}
+
+// ---------- Conversation list ----------
+
+/// Avatar: accent ring with the name's first letter (UI: logo ring + initial).
+fn avatar<'a, M: 'a>(t: &Skin, name: &str) -> Element<'a, M> {
+    let size = t.controls.touch_target.max(t.controls.button_h) + 4.0;
+    let ring = t.palette.accent;
+    container(
+        text(conversations::initial(name))
+            .size(t.type_.row_name)
+            .font(bold())
+            .color(color(ring)),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(move |_| container::Style {
+        border: Border::default()
+            .width(2.0)
+            .color(color(ring))
+            .rounded(size / 2.0),
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// Unread badge: accent pill with the count (no separate red token yet).
+fn unread_badge<'a, M: 'a>(t: &Skin, label: String) -> Element<'a, M> {
+    let (bg, fg) = (t.palette.accent, t.palette.on_accent);
+    container(text(label).size(t.type_.tag).font(bold()).color(color(fg)))
+        .padding(Padding::from([1.0, 6.0]))
+        .style(move |_| container::Style {
+            background: Some(color(bg).into()),
+            border: Border::default().rounded(9.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn conversation_row<'a>(
+    t: &Skin,
+    c: &'a Conversation,
+    selected: bool,
+    now: i64,
+) -> Element<'a, Action> {
+    let time = c
+        .last_at
+        .as_deref()
+        .map(|at| conversations::list_time(at, now, &Local))
+        .unwrap_or_default();
+    // Name and preview clip; time and badge keep their size.
+    let top = row![
+        container(
+            text(c.name.as_str())
+                .size(t.type_.row_name)
+                .font(bold())
+                .wrapping(Wrapping::None)
+                .color(color(t.palette.text)),
+        )
+        .width(Fill)
+        .clip(true),
+        text(time)
+            .size(t.type_.row_time)
+            .wrapping(Wrapping::None)
+            .color(color(t.palette.text3)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let preview = c.preview.clone().unwrap_or_default();
+    let mut bottom = row![container(
+        text(preview)
+            .size(t.type_.foot)
+            .wrapping(Wrapping::None)
+            .color(color(t.palette.text2))
+    )
+    .width(Fill)
+    .clip(true)]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    if let Some(b) = conversations::badge(c.unread) {
+        bottom = bottom.push(unread_badge(t, b));
+    }
+    let body = column![top, bottom].spacing(2).width(Fill).clip(true);
+    button(
+        row![avatar(t, &c.name), body]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding(Padding::from([6.0, 8.0]))
+    .style(nav_button_style(*t, selected))
+    .on_press(Action::OpenChat {
+        group: c.group_id.clone(),
+    })
+    .into()
+}
+
+/// The IM list: heading with 「＋ 新 bro」, then every group and DM, newest
+/// first. Empty: 「还没有 bro，引入第一个」 and the same button.
+pub fn conversation_list<'a>(
+    t: &Skin,
+    list: &'a Conversations,
+    selected: Option<&str>,
+    now: i64,
+) -> Element<'a, Action> {
+    let h = t.controls.touch_target.max(t.controls.button_h);
+    let new_bro = || {
+        button(text(conversations::NEW_BRO).size(t.type_.foot))
+            .height(Length::Fixed(h))
+            .padding(Padding::from([0.0, 10.0]))
+            .style(nav_button_style(*t, false))
+            .on_press(Action::NewBro)
+    };
+    let head = row![
+        text(conversations::TITLE)
+            .size(t.type_.list_title)
+            .font(bold())
+            .color(color(t.palette.text)),
+        space::horizontal(),
+        new_bro(),
+    ]
+    .align_y(Alignment::Center);
+    let mut col = column![head].spacing(2);
+    if list.is_empty() {
+        col = col.push(gap(12.0)).push(
+            text(conversations::EMPTY_HINT)
+                .size(t.type_.empty_hint)
+                .color(color(t.palette.text2)),
+        );
+        return col.into();
+    }
+    for c in list.rows() {
+        col = col.push(conversation_row(
+            t,
+            c,
+            selected == Some(c.group_id.as_str()),
+            now,
+        ));
+    }
+    col.into()
 }
