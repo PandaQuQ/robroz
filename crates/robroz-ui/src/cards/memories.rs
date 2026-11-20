@@ -405,6 +405,7 @@ mod tests {
             status,
             created_at: at.into(),
             updated_at: at.into(),
+            confirm_id: None,
         }
     }
 

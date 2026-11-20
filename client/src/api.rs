@@ -516,6 +516,7 @@ impl CardApi for FakeApi {
             status: MemoryStatus::Kept,
             created_at: now.clone(),
             updated_at: now,
+            confirm_id: None,
         };
         self.memories
             .lock()
