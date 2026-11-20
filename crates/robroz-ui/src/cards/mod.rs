@@ -48,10 +48,10 @@ pub enum ChoiceState {
         selected: Vec<String>,
         /// ISO 8601 from the contract (`answeredAt`); shown as local HH:MM.
         at: Option<String>,
-        /// True when the answer is known to have come from somewhere else
-        /// (DM, another member). The contract has no such field yet, so
-        /// cards built from events always say false.
-        elsewhere: bool,
+        /// Who answered, for the footnote: the host's `answeredBy`, with this
+        /// client's own name shown as 「我」 (see [`ChoiceCard::seen_by`]).
+        /// `None` when the host does not know.
+        by: Option<String>,
     },
     /// No contract state for this yet; kept so the view is ready for it.
     Expired,
@@ -68,6 +68,7 @@ impl ChoiceCard {
             multi,
             choice,
             answered_at,
+            answered_by,
             ..
         } = event
         else {
@@ -77,7 +78,7 @@ impl ChoiceCard {
             Some(selected) => ChoiceState::Answered {
                 selected: selected.clone(),
                 at: answered_at.clone(),
-                elsewhere: false,
+                by: answered_by.clone(),
             },
             None => ChoiceState::Open,
         };
@@ -89,6 +90,14 @@ impl ChoiceCard {
             multi: *multi,
             state,
         })
+    }
+
+    /// Show this client's own name (`me`) as 「我」.
+    pub fn seen_by(mut self, me: &str) -> Self {
+        if let ChoiceState::Answered { by, .. } = &mut self.state {
+            *by = as_me(by.take(), me);
+        }
+        self
     }
 
     pub fn label_of(&self, option_id: &str) -> Option<&str> {
@@ -132,20 +141,32 @@ pub struct ApprovalCard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalState {
     Pending,
-    /// `at`: the host's `answeredAt` (unix seconds). No "by" until the
-    /// contract has an answeredBy field.
+    /// `by`: who answered (the host's `answeredBy`, own name as 「我」),
+    /// `None` when unknown. `at`: the host's `answeredAt` (unix seconds).
     Approved {
+        by: Option<String>,
         at: i64,
     },
     Denied {
+        by: Option<String>,
         at: i64,
     },
     NeedsOwner,
 }
 
 impl ApprovalCard {
+    /// Show this client's own name (`me`) as 「我」.
+    pub fn seen_by(mut self, me: &str) -> Self {
+        if let ApprovalState::Approved { by, .. } | ApprovalState::Denied { by, .. } =
+            &mut self.state
+        {
+            *by = as_me(by.take(), me);
+        }
+        self
+    }
+
     /// Build from the `approval` event. Returns `None` for any other event.
-    /// The host has no "answered by" field yet, so no person is shown.
+    /// `by` is the host's raw `answeredBy`; see [`ApprovalCard::seen_by`].
     pub fn from_event(event: &Event) -> Option<Self> {
         let Event::Approval {
             id,
@@ -155,6 +176,7 @@ impl ApprovalCard {
             path,
             decision,
             answered_at,
+            answered_by,
             ..
         } = event
         else {
@@ -166,8 +188,14 @@ impl ApprovalCard {
             .map_or(0, |t| t.timestamp());
         let state = match decision {
             None => ApprovalState::Pending,
-            Some(ApprovalDecision::Approved) => ApprovalState::Approved { at },
-            Some(ApprovalDecision::Denied) => ApprovalState::Denied { at },
+            Some(ApprovalDecision::Approved) => ApprovalState::Approved {
+                by: answered_by.clone(),
+                at,
+            },
+            Some(ApprovalDecision::Denied) => ApprovalState::Denied {
+                by: answered_by.clone(),
+                at,
+            },
         };
         let kind = match action {
             ApprovalAction::Delete => ActionKind::Delete,
@@ -184,6 +212,15 @@ impl ApprovalCard {
         })
     }
 }
+
+/// The footnote name for `answeredBy`: 「我」 when it is this client's own
+/// name, else the name as sent; `None` stays `None` (no person shown).
+pub fn as_me(by: Option<String>, me: &str) -> Option<String> {
+    by.map(|b| if b == me { ME.to_string() } else { b })
+}
+
+/// How a card names the person using this client.
+pub const ME: &str = "我";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftChannel {
@@ -215,8 +252,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn answered_approval_shows_no_person_and_host_time() {
-        let event = |decision| Event::Approval {
+    fn answered_by_shows_me_other_or_nobody() {
+        let event = |decision, by: Option<&str>| Event::Approval {
             id: "a1".into(),
             bot_id: "bot-doc".into(),
             bot_name: "文档哥".into(),
@@ -226,18 +263,27 @@ mod tests {
             decision: Some(decision),
             created_at: "2026-11-20T08:40:00Z".into(),
             answered_at: Some("2026-11-20T08:48:00Z".into()),
-            answered_by: None,
+            answered_by: by.map(Into::into),
         };
         let utc = chrono::Utc;
-        for (d, want) in [
-            (ApprovalDecision::Approved, "已批准 · 08:48"),
-            (ApprovalDecision::Denied, "已拒绝 · 08:48"),
+        let me = "Panda 的 Mac";
+        for (d, by, want) in [
+            (ApprovalDecision::Approved, None, "已批准 · 08:48"),
+            (ApprovalDecision::Denied, None, "已拒绝 · 08:48"),
+            (ApprovalDecision::Approved, Some(me), "我 批准 · 08:48"),
+            (ApprovalDecision::Denied, Some(me), "我 拒绝 · 08:48"),
+            (
+                ApprovalDecision::Approved,
+                Some("Panda 的手机"),
+                "Panda 的手机 批准 · 08:48",
+            ),
         ] {
-            let card = ApprovalCard::from_event(&event(d)).unwrap();
+            let card = ApprovalCard::from_event(&event(d, by)).unwrap().seen_by(me);
             let foot = status::approval_footnote(&card.state, &utc).unwrap();
             assert_eq!(foot, want);
-            assert!(!foot.contains('我'));
         }
+        assert_eq!(as_me(Some(me.into()), me).as_deref(), Some(ME));
+        assert_eq!(as_me(None, me), None);
     }
 
     pub(crate) fn opt(id: &str, label: &str, primary: bool) -> ChoiceOption {
@@ -272,9 +318,10 @@ mod tests {
         assert_eq!(open.state, ChoiceState::Open);
         assert_eq!(open.bot, "文档哥");
         let done = ChoiceCard::from_event(&event(Some(vec!["cargo"]), false)).unwrap();
+        assert_eq!(done.clone().seen_by("me"), done, "null stays null");
         assert!(matches!(
             done.state,
-            ChoiceState::Answered { ref selected, elsewhere: false, .. } if selected == &["cargo"]
+            ChoiceState::Answered { ref selected, by: None, .. } if selected == &["cargo"]
         ));
         assert_eq!(done.label_of("cargo"), Some("cargo install"));
     }

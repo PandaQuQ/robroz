@@ -18,9 +18,9 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, route_mention, AnswerChoice, Bro, Bros, CreateBro, ErrorBody, Event, Message,
-    MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
-    UpdateSchedule,
+    next_bro_name, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro, ErrorBody, Event,
+    Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread,
+    Unreads, UpdateSchedule,
 };
 use robroz_ui::cards::interact::Note;
 
@@ -70,13 +70,25 @@ pub mod paths {
 pub mod bodies {
     use super::*;
 
-    /// `{"choice":[ids]}`; an array even for single choice.
-    pub fn answer(choice: &[String]) -> String {
+    /// `{"choice":[ids],"answeredBy":…}`; an array even for single choice,
+    /// `answeredBy` left out when unknown (robroz#43).
+    pub fn answer(choice: &[String], by: Option<&str>) -> String {
         serde_json::to_string(&AnswerChoice {
             choice: choice.to_vec(),
-            answered_by: None,
+            answered_by: by.map(str::to_string),
         })
         .expect("serialize answer")
+    }
+
+    /// `/approve` and `/deny`: `{"answeredBy":…}`, or no body when unknown
+    /// (the old request, robroz#43).
+    pub fn decision(by: Option<&str>) -> Option<String> {
+        by.map(|b| {
+            serde_json::to_string(&Answer {
+                answered_by: Some(b.to_string()),
+            })
+            .expect("serialize decision")
+        })
     }
 
     /// `{"body":…}`.
@@ -164,11 +176,19 @@ pub trait CardApi: Send + Sync {
 
 pub struct HttpApi {
     conn: Conn,
+    /// Sent as `answeredBy` when answering cards.
+    name: Option<String>,
 }
 
 impl HttpApi {
     pub fn new(conn: Conn) -> Self {
-        Self { conn }
+        Self { conn, name: None }
+    }
+
+    /// Name this client answers cards as (`answeredBy`).
+    pub fn answering_as(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
     }
 
     fn finish(
@@ -256,12 +276,18 @@ impl CardApi for HttpApi {
     }
 
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError> {
-        let body = self.post(&paths::answer_choice(id), Some(bodies::answer(choice)))?;
+        let body = self.post(
+            &paths::answer_choice(id),
+            Some(bodies::answer(choice, self.name.as_deref())),
+        )?;
         Ok(decode::<Event>(&body).ok())
     }
 
     fn decide(&self, id: &str, approve: bool) -> Result<Option<Event>, ApiError> {
-        let body = self.post(&paths::approval_decision(id, approve), None)?;
+        let body = self.post(
+            &paths::approval_decision(id, approve),
+            bodies::decision(self.name.as_deref()),
+        )?;
         decode(&body).map(Some)
     }
 
@@ -462,9 +488,21 @@ mod tests {
 
     #[test]
     fn bodies() {
-        assert_eq!(bodies::answer(&["cargo".into()]), r#"{"choice":["cargo"]}"#);
         assert_eq!(
-            bodies::answer(&["a".into(), "b".into()]),
+            bodies::answer(&["cargo".into()], None),
+            r#"{"choice":["cargo"]}"#
+        );
+        assert_eq!(
+            bodies::answer(&["cargo".into()], Some("Mac")),
+            r#"{"choice":["cargo"],"answeredBy":"Mac"}"#
+        );
+        assert_eq!(bodies::decision(None), None);
+        assert_eq!(
+            bodies::decision(Some("Mac")).as_deref(),
+            Some(r#"{"answeredBy":"Mac"}"#)
+        );
+        assert_eq!(
+            bodies::answer(&["a".into(), "b".into()], None),
             r#"{"choice":["a","b"]}"#
         );
         assert_eq!(bodies::paused(false), r#"{"paused":false}"#);
@@ -605,6 +643,64 @@ mod tests {
                 api.answer_choice(&id, &["docker".into()]),
                 Err(ApiError::Conflict(_))
             ));
+        }
+
+        #[test]
+        fn answers_carry_answered_by() {
+            let base = spawn_host();
+            let group = group_with_bot(&base);
+            let approval = |summary: &str| -> String {
+                let created: Event = post(
+                    &base,
+                    &format!("/api/groups/{}/approvals", group.id),
+                    &serde_json::json!({
+                        "botId": "bot-doc", "action": "send", "summary": summary
+                    }),
+                );
+                let Event::Approval { id, .. } = created else {
+                    panic!("expected approval event");
+                };
+                id
+            };
+            let named = HttpApi::new(Conn::new(&base)).answering_as("Panda 的 Mac");
+            let a1 = approval("一");
+            match named.decide(&a1, true).unwrap() {
+                Some(Event::Approval { answered_by, .. }) => {
+                    assert_eq!(answered_by.as_deref(), Some("Panda 的 Mac"))
+                }
+                other => panic!("expected answered approval, got {other:?}"),
+            }
+            // No name: the old empty request, `answeredBy` stays null.
+            let a2 = approval("二");
+            match HttpApi::new(Conn::new(&base)).decide(&a2, false).unwrap() {
+                Some(Event::Approval { answered_by, .. }) => assert_eq!(answered_by, None),
+                other => panic!("expected answered approval, got {other:?}"),
+            }
+            let created: Event = post(
+                &base,
+                &format!("/api/groups/{}/choices", group.id),
+                &CreateChoice {
+                    bot_id: "bot-doc".into(),
+                    prompt: "先写哪一种？".into(),
+                    options: ["docker", "cargo"]
+                        .map(|o| ChoiceOption {
+                            id: o.into(),
+                            label: o.into(),
+                            primary: false,
+                        })
+                        .to_vec(),
+                    multi: false,
+                },
+            );
+            let Event::Choice { id, .. } = created else {
+                panic!("expected choice event");
+            };
+            match named.answer_choice(&id, &["cargo".into()]).unwrap() {
+                Some(Event::Choice { answered_by, .. }) => {
+                    assert_eq!(answered_by.as_deref(), Some("Panda 的 Mac"))
+                }
+                other => panic!("expected answered choice, got {other:?}"),
+            }
         }
 
         #[test]
