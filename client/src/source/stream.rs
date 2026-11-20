@@ -18,6 +18,9 @@ use robroz_contract::Event;
 use crate::conn::Conn;
 
 /// What the reader reports.
+// `Event` grew with `confirm` cards; items are short-lived on a channel, so
+// boxing them buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamItem {
     /// 200 and `text/event-stream`: events flow.

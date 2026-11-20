@@ -27,8 +27,11 @@ pub(crate) const SCHEMA: &str = "
     );
 ";
 
-const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by
+/// Approval cards only: confirm cards (`subject_kind` set) live in [`crate::proposals`].
+const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
+            a.task_id
      FROM approvals a JOIN bots b ON b.id = a.bot_id";
+const APPROVALS_ONLY: &str = "a.subject_kind IS NULL";
 
 fn action_text(action: ApprovalAction) -> &'static str {
     match action {
@@ -38,7 +41,7 @@ fn action_text(action: ApprovalAction) -> &'static str {
     }
 }
 
-fn decision_text(decision: ApprovalDecision) -> &'static str {
+pub(crate) fn decision_text(decision: ApprovalDecision) -> &'static str {
     match decision {
         ApprovalDecision::Approved => "approved",
         ApprovalDecision::Denied => "denied",
@@ -56,7 +59,7 @@ fn parse_action(text: String) -> rusqlite::Result<ApprovalAction> {
         .ok_or_else(|| bad_column(3, &text))
 }
 
-fn parse_decision(text: String) -> rusqlite::Result<ApprovalDecision> {
+pub(crate) fn parse_decision(text: String) -> rusqlite::Result<ApprovalDecision> {
     [ApprovalDecision::Approved, ApprovalDecision::Denied]
         .into_iter()
         .find(|d| decision_text(*d) == text)
@@ -78,16 +81,17 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         created_at: row.get(7)?,
         answered_at: row.get(8)?,
         answered_by: row.get(9)?,
+        task_id: row.get(10)?,
     })
 }
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
-    conn.query_row(&format!("{SELECT} WHERE a.id = ?1"), [id], event_from_row).optional()
+    conn.query_row(&format!("{SELECT} WHERE a.id = ?1 AND {APPROVALS_ONLY}"), [id], event_from_row).optional()
 }
 
 /// Approval events for one group, for the events stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
-    let mut stmt = conn.prepare(&format!("{SELECT} WHERE a.group_id = ?1"))?;
+    let mut stmt = conn.prepare(&format!("{SELECT} WHERE a.group_id = ?1 AND {APPROVALS_ONLY}"))?;
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;
         let created_at: String = row.get(7)?;
@@ -226,6 +230,11 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
     };
     let mut conn = lock_db(state);
     let result = (|| {
+        // A confirm card answers the same way but settles what a bro proposed.
+        if crate::proposals::is_confirm(&conn, id)? {
+            return Ok(crate::proposals::answer(&mut conn, id, decision, by.as_deref())?
+                .map_err(|(status, message)| error_response(status, message)));
+        }
         let Some(card) = load(&conn, id)? else {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
         };

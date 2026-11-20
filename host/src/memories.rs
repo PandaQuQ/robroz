@@ -8,7 +8,12 @@
 //!   an id that never existed is 404.
 //!
 //! `scope` is `user` (every bro) or `bot:<botId>` (one existing bro); parsing lives in
-//! [`MemoryScope::parse`]. Bro proposals, confirm cards, prompts and skills come later.
+//! [`MemoryScope::parse`].
+//!
+//! A bro's proposals arrive as `pending` (`source=bot`) with a `confirm` card
+//! (see [`crate::proposals`]); `confirmId` names that card while it is open.
+//! Only answering the card moves a memory out of `pending`: `PATCH` never
+//! changes `status`. Forgetting a pending memory closes its card as denied.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -37,7 +42,12 @@ pub(crate) const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope);
 ";
 
-const SELECT: &str = "SELECT id, scope, kind, text, source, status, created_at, updated_at FROM memories";
+/// The last column is the open confirm card of a pending memory, if any.
+const SELECT: &str = "SELECT id, scope, kind, text, source, status, created_at, updated_at,
+            (SELECT a.id FROM approvals a
+             WHERE a.subject_kind = 'memory' AND a.subject_id = memories.id AND a.decision IS NULL
+             ORDER BY a.created_at LIMIT 1)
+     FROM memories";
 /// Newest change first; rowid breaks ties within the same millisecond.
 const ORDER: &str = "ORDER BY updated_at DESC, rowid DESC";
 
@@ -64,6 +74,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         status: MemoryStatus::parse(&status).ok_or_else(|| bad_column(5, &status))?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        confirm_id: if status == MemoryStatus::Pending.as_str() { row.get(8)? } else { None },
     })
 }
 
@@ -84,7 +95,7 @@ pub(crate) fn kept_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Vec<
     rows.collect()
 }
 
-fn clean_text(raw: &str) -> Result<String, &'static str> {
+pub(crate) fn clean_text(raw: &str) -> Result<String, &'static str> {
     let text = raw.trim();
     if text.is_empty() {
         return Err("请填写内容");
@@ -95,9 +106,29 @@ fn clean_text(raw: &str) -> Result<String, &'static str> {
     Ok(text.to_string())
 }
 
+/// Whitespace runs as one space, for telling two texts apart.
+fn normalized(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether a memory with this scope, kind and (normalized) text exists and is
+/// not forgotten, whatever its status. Proposals that match are not stored again.
+pub(crate) fn has_live_duplicate(conn: &Connection, scope: &str, kind: MemoryKind, text: &str) -> rusqlite::Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT text FROM memories WHERE scope = ?1 AND kind = ?2 AND forgotten_at IS NULL")?;
+    let wanted = normalized(text);
+    let mut rows = stmt.query(params![scope, kind.as_str()])?;
+    while let Some(row) = rows.next()? {
+        if normalized(&row.get::<_, String>(0)?) == wanted {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Parse a scope and make sure a `bot:` scope names a bro that exists.
 /// `Ok(Err(msg))` is a 400.
-fn checked_scope(conn: &Connection, raw: &str) -> rusqlite::Result<Result<String, &'static str>> {
+pub(crate) fn checked_scope(conn: &Connection, raw: &str) -> rusqlite::Result<Result<String, &'static str>> {
     let Some(scope) = MemoryScope::parse(raw) else { return Ok(Err(BAD_SCOPE)) };
     if let MemoryScope::Bot(id) = &scope {
         let exists = conn
@@ -238,8 +269,9 @@ pub(crate) async fn update_memory(
 }
 
 pub(crate) async fn forget_memory(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
-    let conn = lock_db(&state);
+    let mut conn = lock_db(&state);
     let result = (|| {
+        let conn = conn.transaction()?;
         // The first forget time stands; forgetting again changes nothing.
         let forgotten_at: Option<Option<String>> = conn
             .query_row("SELECT forgotten_at FROM memories WHERE id = ?1", [&id], |r| r.get(0))
@@ -248,7 +280,11 @@ pub(crate) async fn forget_memory(State(state): State<AppState>, AxumPath(id): A
             None => Ok(false),
             Some(Some(_)) => Ok(true),
             Some(None) => {
-                conn.execute("UPDATE memories SET forgotten_at = ?2 WHERE id = ?1", params![id, now_rfc3339()])?;
+                let now = now_rfc3339();
+                conn.execute("UPDATE memories SET forgotten_at = ?2 WHERE id = ?1", params![id, now])?;
+                // A pending one may still have a card asking about it: close it.
+                crate::proposals::close_for_forgotten(&conn, &id, &now)?;
+                conn.commit()?;
                 Ok::<_, rusqlite::Error>(true)
             }
         }
@@ -460,6 +496,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(SCHEMA).expect("migration is idempotent");
+        conn.execute_batch(crate::approvals::SCHEMA).unwrap();
+        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []).unwrap();
+        crate::proposals::migrate(&conn).unwrap();
         let rows = [
             ("shared", "user", "kept", None, "2026-01-01T00:00:01.000Z"),
             ("ada-old", "bot:ada", "kept", None, "2026-01-01T00:00:00.000Z"),
