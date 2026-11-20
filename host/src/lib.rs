@@ -21,6 +21,7 @@ mod choices;
 mod pump;
 mod routines;
 mod sandbox;
+mod say;
 mod schedule;
 mod unread;
 mod stream;
@@ -139,6 +140,7 @@ fn router_from(state: AppState) -> Router {
         .route("/api/bros/{id}/dm", post(bros::open_dm))
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
+        .route("/api/groups/{id}/say", post(say::say))
         .route("/api/groups/{id}/events", get(list_events))
         .route("/api/groups/{id}/unread", get(unread::group_unread))
         .route("/api/groups/{id}/read", post(unread::mark_read))
@@ -3199,5 +3201,61 @@ mod tests {
         assert!(probe.calls >= 3, "start, inspect, remove");
         assert_eq!(probe.locked, 0, "DB lock held during a docker call");
         assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+    }
+
+    async fn say_in(app: &Router, group_id: &str, body: &str) -> (StatusCode, Value) {
+        read_json(call(app, post(&format!("/api/groups/{group_id}/say"), json!({ "body": body }))).await).await
+    }
+
+    #[tokio::test]
+    async fn say_routes_mentions_and_dms_to_one_task() {
+        let app = test_app(&temp_db());
+        let group = create_group(&app, "研发").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group, "b1", "bro").await;
+        add_member(&app, &group, "b2", "bro 2").await;
+
+        let (status, plain) = say_in(&app, &group, "  大家好 ").await;
+        assert_eq!(status, StatusCode::CREATED, "{plain}");
+        assert_eq!(plain["message"]["body"], "大家好");
+        assert_eq!(plain["message"]["kind"], "text");
+        assert!(plain["task"].is_null());
+
+        let (status, to_two) = say_in(&app, &group, "@bro 2 写 README").await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(to_two["message"]["body"], "@bro 2 写 README");
+        assert_eq!(to_two["task"]["assigneeBotId"], "b2");
+        assert_eq!(to_two["task"]["prompt"], "写 README");
+        assert_eq!(to_two["task"]["state"], "queued");
+
+        // Not a member, or no prompt: stored only.
+        assert!(say_in(&app, &group, "@小明 你好").await.1["task"].is_null());
+        assert!(say_in(&app, &group, "@bro").await.1["task"].is_null());
+
+        let events = events_of(&app, &group).await;
+        assert_eq!(events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "message").count(), 4);
+        let queued = statuses(&events);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["botId"], "b2");
+
+        // In a DM everything goes to its bro, no @ needed.
+        let (_, bro) = new_bro(&app, Some(json!({ "name": "小明" }))).await;
+        let dm = bro["dmGroupId"].as_str().unwrap();
+        let (status, said) = say_in(&app, dm, "整理周报").await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(said["task"]["assigneeBotId"], bro["id"]);
+        assert_eq!(said["task"]["prompt"], "整理周报");
+    }
+
+    #[tokio::test]
+    async fn say_rejects_empty_and_unknown_group() {
+        let app = test_app(&temp_db());
+        let group = create_group(&app, "研发").await["id"].as_str().unwrap().to_string();
+        let (status, body) = say_in(&app, &group, "   ").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "请填写内容");
+        let (status, body) = say_in(&app, "nope", "你好").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "群不存在");
+        assert_eq!(events_of(&app, &group).await["events"].as_array().unwrap().len(), 0);
     }
 }

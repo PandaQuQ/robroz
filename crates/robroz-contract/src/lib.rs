@@ -96,6 +96,39 @@ pub struct CreateTask {
     pub prompt: String,
 }
 
+/// `POST /api/groups/{id}/say` body: what the person typed. The host stores
+/// it as a text message and, in a DM or after `@名字`, queues a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Say {
+    pub body: String,
+}
+
+/// `POST /api/groups/{id}/say` reply. `task` is `null` when nobody was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Said {
+    pub message: Message,
+    pub task: Option<Task>,
+}
+
+/// `@名字 rest` → `(member id, rest)`. `members` is `(id, name)`. The longest
+/// matching name wins (`@bro 2` beats `@bro`), the name must end at a space or
+/// the end, full-width `＠` works, and an empty `rest` means no task.
+pub fn route_mention<'a>(body: &str, members: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<(String, String)> {
+    let body = body.trim();
+    let after = body.strip_prefix('@').or_else(|| body.strip_prefix('＠'))?;
+    let mut best: Option<(&str, &str, &str)> = None;
+    for (id, name) in members {
+        let Some(rest) = after.strip_prefix(name) else { continue };
+        let boundary = rest.is_empty() || rest.starts_with(char::is_whitespace);
+        if !name.is_empty() && boundary && best.is_none_or(|(_, prev, _)| name.len() > prev.len()) {
+            best = Some((id, name, rest));
+        }
+    }
+    let (id, _, rest) = best?;
+    let prompt = rest.trim();
+    (!prompt.is_empty()).then(|| (id.to_string(), prompt.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
@@ -395,6 +428,19 @@ pub struct Events {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mention_routing() {
+        use super::route_mention;
+        let m = [("b1", "bro"), ("b2", "bro 2"), ("b3", "Ada")];
+        assert_eq!(route_mention("@bro 2 写 README", m), Some(("b2".into(), "写 README".into())));
+        assert_eq!(route_mention("  ＠bro 看看日志 ", m), Some(("b1".into(), "看看日志".into())));
+        assert_eq!(route_mention("@Ada\t整理", m), Some(("b3".into(), "整理".into())));
+        for none in ["大家好", "@bro", "@bro   ", "@Bob 你好", "@brother 你好", "问 @Ada 一下", "@"] {
+            assert_eq!(route_mention(none, m), None, "{none:?}");
+        }
+        assert_eq!(route_mention("@ 你好", [("x", "")]), None, "empty name never matches");
+    }
+
     #[test]
     fn bro_default_names() {
         use super::next_bro_name;
