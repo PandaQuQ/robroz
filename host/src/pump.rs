@@ -118,6 +118,10 @@ fn start_task(
     if let Err(err) = remove_progress(&group_dir, &task.id) {
         eprintln!("pump: clear old progress for {}: {err}", task.id);
     }
+    // Same for proposals: only this run's lines may raise confirm cards.
+    if let Err(err) = crate::proposals::remove(&group_dir, &task.id) {
+        eprintln!("pump: clear old proposals for {}: {err}", task.id);
+    }
 
     // Claim before docker run so a second pass can't pick the task again.
     // The first progress rides on the claim itself: one status event, not two.
@@ -201,7 +205,7 @@ fn collect_task(
             eprintln!("pump: container for {} is gone; marking interrupted, not rerunning", task.id);
             let updated_at = newer_than(&task.updated_at);
             let rel = result_rel(&task.id);
-            return db.with(|conn| write_outcome(conn, task, &Outcome::Dead, 0, &updated_at, &rel));
+            return db.with(|conn| write_outcome(conn, task, &Outcome::Dead, 0, &updated_at, &rel, &[]));
         }
     };
 
@@ -255,8 +259,19 @@ fn collect_task(
         Outcome::Done
     };
 
+    // What the bro proposed to remember; only a finished run counts. Read
+    // here, outside the lock; stored with the outcome.
+    let proposals = if matches!(outcome, Outcome::Done) {
+        crate::proposals::read(&group_dir, &task.id)
+    } else {
+        Vec::new()
+    };
     let updated_at = newer_than(&task.updated_at);
-    db.with(|conn| write_outcome(conn, task, &outcome, get_count, &updated_at, &rel))?;
+    db.with(|conn| write_outcome(conn, task, &outcome, get_count, &updated_at, &rel, &proposals))?;
+    if let Err(err) = crate::proposals::remove(&group_dir, &task.id) {
+        // The next start clears it again before docker run.
+        eprintln!("pump: remove proposals for {}: {err}", task.id);
+    }
     if let Err(err) = remove_intent(&group_dir, &task.id) {
         // The next start clears it again before docker run.
         eprintln!("pump: remove intent for {}: {err}", task.id);
@@ -271,6 +286,7 @@ fn write_outcome(
     get_count: i64,
     updated_at: &str,
     rel: &str,
+    proposals: &[robroz_contract::Proposal],
 ) -> rusqlite::Result<()> {
     match outcome {
         Outcome::Blocked(stop) => {
@@ -322,6 +338,8 @@ fn write_outcome(
                      VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6, (SELECT failure FROM tasks WHERE id = ?3))",
                     params![delivery_id, task.group_id, task.id, rel, task.briefing as i64, updated_at],
                 )?;
+                // One pending memory and one confirm card per good proposal.
+                crate::proposals::ingest(&tx, &task.id, proposals, updated_at)?;
             }
             tx.commit()?;
         }

@@ -2,6 +2,10 @@
 //!
 //! Files in the group volume (mounted at `/workspace`, writable by the container):
 //! - `tasks/{taskId}/result.txt`, `outbound.txt`, `intent`: written by the runner.
+//! - `tasks/{taskId}/proposals.jsonl`: what the bro proposes to remember, one
+//!   [`robroz_contract::Proposal`] per line, from `robroz-memory:{json}` lines in
+//!   the prompt and the model's reply (see [`memory_payload`]). The host reads it
+//!   once the task is done; a person confirms each one on a `confirm` card.
 //! - `tasks/{taskId}/progress`: the latest `robroz-progress:` text (see
 //!   [`progress_text`]), written by the runner. The host only shows it on the
 //!   status card while the task is running; it never changes what the task does.
@@ -78,6 +82,60 @@ fn record_progress(root: &Path, task_id: &str, text: &str) -> io::Result<()> {
         Some(progress) => fs::write(progress_path(root, task_id), progress),
         None => Ok(()),
     }
+}
+
+pub fn proposals_path(root: &Path, task_id: &str) -> PathBuf {
+    task_dir(root, task_id).join("proposals.jsonl")
+}
+
+/// Prefix of a memory proposal line: `robroz-memory:{"kind":"habit","text":"…"}`.
+pub const MEMORY_PREFIX: &str = "robroz-memory:";
+
+/// The JSON after `robroz-memory:`, trimmed. `None` for any other line.
+/// Whether the JSON is any good is decided later; the line never reaches the result.
+pub fn memory_payload(line: &str) -> Option<&str> {
+    line.trim().strip_prefix(MEMORY_PREFIX).map(str::trim)
+}
+
+/// A line that is for the host, not for the result: progress or a proposal.
+fn side_line(line: &str) -> bool {
+    progress_text(line).is_some() || memory_payload(line).is_some()
+}
+
+/// `text` without its progress and proposal lines; byte for byte when it has none.
+pub fn strip_side_lines(text: &str) -> String {
+    if !text.lines().any(side_line) {
+        return text.to_string();
+    }
+    text.lines().filter(|line| !side_line(line)).collect::<Vec<_>>().join("\n")
+}
+
+/// The `proposals.jsonl` lines for the `robroz-memory:` lines in `text`.
+/// A payload that is not a JSON object is dropped.
+pub fn proposal_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(memory_payload)
+        .filter_map(robroz_contract::Proposal::memory_line)
+        .collect()
+}
+
+/// Write `lines` to `proposals.jsonl`: replace the file (`append == false`,
+/// so a rerun never keeps the last run's lines) or add to it. Nothing is
+/// written when there are no lines and nothing to replace.
+fn record_proposals(root: &Path, task_id: &str, lines: &[String], append: bool) -> io::Result<()> {
+    let path = proposals_path(root, task_id);
+    if lines.is_empty() {
+        return match (append, fs::remove_file(&path)) {
+            (false, Err(err)) if err.kind() != io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        };
+    }
+    let mut body = if append { fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
+    for line in lines {
+        body.push_str(line);
+        body.push('\n');
+    }
+    fs::write(path, body)
 }
 
 /// `prompt.txt` inside one task's control dir (`/control/prompt.txt` in the container).
@@ -168,7 +226,8 @@ pub fn run(workspace: &Path, control: &Path, task_id: &str) -> io::Result<()> {
     match fs::read_to_string(reply_path(control)) {
         Ok(reply) if result_path(workspace, task_id).exists() => {
             record_progress(workspace, task_id, &reply)?;
-            fs::write(result_path(workspace, task_id), strip_progress(&reply))
+            record_proposals(workspace, task_id, &proposal_lines(&reply), true)?;
+            fs::write(result_path(workspace, task_id), strip_side_lines(&reply))
         }
         Ok(_) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -184,8 +243,8 @@ pub fn apply_prompt(root: &Path, task_id: &str, prompt: &str) -> io::Result<()> 
 /// Apply a prompt to the group volume.
 ///
 /// `robroz-action:get` lines are recorded as `GET` in `outbound.txt`.
-/// The last `robroz-progress:` line goes to `progress`; progress lines are
-/// left out of `result.txt`.
+/// The last `robroz-progress:` line goes to `progress`, `robroz-memory:` lines
+/// go to `proposals.jsonl`; both are left out of `result.txt`.
 /// Where to stop comes from [`blocking_line`] (shared with the host): if it finds
 /// an unapproved blocking line, write `intent` and skip `result.txt`. Otherwise
 /// write the prompt to `result.txt`, leaving out approved blocking lines (byte for
@@ -204,6 +263,7 @@ pub fn apply_prompt_with(
         fs::write(outbound_path(root, task_id), "GET\n".repeat(gets))?;
     }
     record_progress(root, task_id, prompt)?;
+    record_proposals(root, task_id, &proposal_lines(prompt), false)?;
     if let Some(stop) = blocking_line(prompt, approved) {
         fs::write(intent_path(root, task_id), format_intent(stop.kind, &stop.line))?;
         return Ok(());
@@ -211,7 +271,7 @@ pub fn apply_prompt_with(
     // No unapproved blocking line left: every blocking line here was taken over.
     let kept: Vec<&str> = prompt
         .lines()
-        .filter(|line| blocking_kind(line).is_none() && progress_text(line).is_none())
+        .filter(|line| blocking_kind(line).is_none() && !side_line(line))
         .collect();
     if kept.len() == prompt.lines().count() {
         fs::write(result_path(root, task_id), prompt.as_bytes())?;
@@ -461,6 +521,41 @@ mod tests {
         apply_prompt(&root, "q", "画一张草图").unwrap();
         assert!(!progress_path(&root, "q").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn memory_lines_go_to_proposals_not_result() {
+        assert_eq!(memory_payload(r#"  robroz-memory: {"kind":"habit"} "#), Some(r#"{"kind":"habit"}"#));
+        assert_eq!(memory_payload("robroz-progress:x"), None);
+        assert_eq!(strip_side_lines("没有记忆行\n"), "没有记忆行\n", "byte for byte");
+
+        let root = scratch();
+        let prompt = "robroz-memory:{\"kind\":\"habit\",\"text\":\"周报用中文\"}\n正文\nrobroz-memory:不是 json";
+        apply_prompt(&root, "p", prompt).unwrap();
+        assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
+        let lines = fs::read_to_string(proposals_path(&root, "p")).unwrap();
+        let parsed: Vec<_> = lines.lines().map(robroz_contract::Proposal::parse_line).collect();
+        assert_eq!(parsed.len(), 1, "{lines}");
+        let Some(robroz_contract::Proposal::Memory(m)) = &parsed[0] else { panic!("{lines}") };
+        assert_eq!((m.text.as_str(), m.scope.as_deref()), ("周报用中文", None));
+
+        // A rerun replaces the file; a run with none removes it.
+        apply_prompt(&root, "p", "只有正文").unwrap();
+        assert!(!proposals_path(&root, "p").exists());
+        assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "只有正文");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_reply_memory_goes_to_proposals_not_result() {
+        let (base, workspace, control) = mounts("t1", "robroz-memory:{\"kind\":\"profile\",\"text\":\"叫 Panda\",\"scope\":\"user\"}\n写周报");
+        fs::write(reply_path(&control), "周报：本周完成三项\nrobroz-memory:{\"kind\":\"habit\",\"text\":\"周五交\"}").unwrap();
+        run(&workspace, &control, "t1").unwrap();
+        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
+        let lines = fs::read_to_string(proposals_path(&workspace, "t1")).unwrap();
+        assert_eq!(lines.lines().count(), 2, "prompt and reply both count: {lines}");
+        assert!(lines.lines().all(|l| robroz_contract::Proposal::parse_line(l).is_some()));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

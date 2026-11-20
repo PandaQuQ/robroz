@@ -115,7 +115,8 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 除了 bro 通过接口自己发卡，任务跑到要对外写入的地方（prompt 里有 `robroz-action:external` 这一行）时，宿主机会替它发一张审批卡，不再等人去私聊接管。
 
-- 这张卡的 `action` 是 `send`，`summary` 是「要对外写入：要做的事」，`botId` 是这个任务的执行者。卡和任务之间的关联只存在库里，接口字段没有变。
+- 这张卡的 `action` 是 `send`，`summary` 是「要对外写入：要做的事」，`botId` 是这个任务的执行者。
+- 后来新增的可选字段 `taskId`：任务发的卡带上这个任务的 id，bro 通过接口自己发的卡不带这个字段，旧 JSON 不变。
 - 发卡时任务处于 `blocked`，和以前一样算一条未读。
 - 同意：宿主机替你记下接管，任务重新排队，接着跑完。
 - 拒绝：任务直接变成 `done`，不执行那一步，也没有交付卡。状态卡带 `failure`「你拒绝了：要做的事」，客户端显示成灰色的「没做成」，见「没做成（`failure`）」一节。
@@ -212,8 +213,8 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - `GET /api/groups/{id}/unread`：返回一个群的 `Unread`。群不存在返回 404。
 - `POST /api/groups/{id}/read`：标记已读，请求体是 `{"readAt"?: 时间}`，不填就用当前时间。已读位置只会往后走，传一个更早的时间不会回退。时间不合法返回 400，群不存在返回 404，成功时返回更新后的 `Unread`。
 - `Unread` 的字段：`groupId`、`readAt`（从没读过时为 `null`）、`unread`、`lastActivityAt`（群里没有任何活动时为 `null`）。
-- 计入未读的只有 bro 发来、需要你看的东西：`readAt` 之后的交付卡、选项卡、审批卡，以及变成卡住的任务。你自己发的消息，以及任务排队、进行中、完成这类状态变化，都不计入；但完成时的交付卡要计入。
-- `lastActivityAt` 取消息、任务、交付卡、选项卡和审批卡（已回答的按回答时间）里最新的一次变化，会话列表用它排序。
+- 计入未读的只有 bro 发来、需要你看的东西：`readAt` 之后的交付卡、选项卡、审批卡、确认卡，以及变成卡住的任务。你自己发的消息，以及任务排队、进行中、完成这类状态变化，都不计入；但完成时的交付卡要计入。
+- `lastActivityAt` 取消息、任务、交付卡、选项卡、审批卡和确认卡（已回答的按回答时间）里最新的一次变化，会话列表用它排序。
 
 ## bro 和私聊
 
@@ -229,17 +230,32 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 
 ## 记忆（memories）
 
-bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。这一版只有存储和接口；bro 提议、确认卡、拼进模型提示和技能在后面的 PR 里做。
+bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。bro 提议的记忆先是 `pending`，要在确认卡上点了才算数，见下面的「确认卡（confirm）」。拼进模型提示和技能在后面的 PR 里做。
 
 - `GET /api/memories?kind=&scope=&status=`：返回 `{memories:[Memory]}`，按 `updatedAt` 从新到旧。三个参数都可选，留空等于不筛。不传 `status` 时只返回 `kept` 和 `pending`，`rejected` 要写 `status=rejected` 才返回。忘掉的永远不返回。参数不合法返回 400。
 - `POST /api/memories`：你自己记一条，请求体 `{"scope", "kind", "text"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Memory`。
-- `PATCH /api/memories/{id}`：请求体 `{"text"?, "kind"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。
-- `DELETE /api/memories/{id}`：忘掉。只是软删，记下忘掉的时间，以后不会再出现。返回 204；重复忘掉也返回 204，不改第一次的时间；从没有过的 id 返回 404。
+- `PATCH /api/memories/{id}`：请求体 `{"text"?, "kind"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。`status` 不能用 `PATCH` 改，请求体里带了也不理会。
+- `DELETE /api/memories/{id}`：忘掉。只是软删，记下忘掉的时间，以后不会再出现。返回 204；重复忘掉也返回 204，不改第一次的时间；从没有过的 id 返回 404。忘掉一条还在 `pending` 的记忆时，它那张没回答的确认卡会一起关掉，记成 `denied`，`answeredBy` 是 `null`。
 - `scope`：`user` 是所有 bro 都能用，`bot:<botId>` 只给这个 bro，bro 必须存在，否则 400「这个 bro 不存在」。其他写法返回 400。
 - `kind`：`profile`、`habit`、`project`。`source`：`user`（你写的）或 `bot`（bro 提的）。`status`：`pending`（等你确认）、`kept`（在用）、`rejected`（你拒绝过，留着记录但不用）。
 - `text` 会去掉首尾空白，不能为空，最长 2000 个字，不符合时返回 400。
-- `Memory` 的字段：`id`、`scope`、`kind`、`text`、`source`、`status`、`createdAt`、`updatedAt`。
+- `Memory` 的字段：`id`、`scope`、`kind`、`text`、`source`、`status`、`createdAt`、`updatedAt`，以及后来新增的可选字段 `confirmId`：`pending` 且确认卡还没回答时带这张卡的 id，其他时候不带。
 - 和其他 `/api` 一样，设了令牌就要带 `Authorization: Bearer <令牌>`。
+
+## 确认卡（confirm）
+
+bro 想记下点什么时不会直接记，而是提一条，等你在确认卡上点「记下」或「不用」。这是事件流里新增的 `confirm` 事件，原有事件和任务状态都没变。现在只有记忆，以后技能也用这种卡。
+
+- bro 怎么提：在 prompt 或模型回复里写一行 `robroz-memory:{"kind":"habit","text":"周报用中文","scope":"user"}`。`kind` 和 `text` 必填，`scope` 选填，不填就是 `bot:<执行这个任务的 bro>`。runner 把这些行写进群目录的 `tasks/{taskId}/proposals.jsonl`，每行是 `{"type":"memory",...}`。这些行不会出现在 `result.txt` 里；没有这种行时结果一个字节都不变。
+- 什么时候收：任务成功跑完（`done` 且没有 `failure`）后，宿主机读这个文件，读完就删。没跑完、卡住、带 `failure` 的任务提的都不收。
+- 哪些不收：JSON 不对、`type` 不认识、`kind` 不对、`text` 为空或超过 2000 字、`scope` 写法不对或 bro 不存在，这些行直接跳过，不报错，也不影响任务。已经有同一 `scope`、同一 `kind`、同样文字（连续空白算一个）的记忆，而且没忘掉的，不论是 `pending`、`kept` 还是 `rejected`，都不再提。一个任务最多收前 20 条。
+- 每收一条，就存一条 `source=bot`、`status=pending` 的记忆，再发一张确认卡。
+- 回答：和审批卡用同一组接口。`POST /api/approvals/{id}/approve` 是「记下」，记忆变成 `kept`；`POST /api/approvals/{id}/deny` 是「不用」，记忆变成 `rejected`，记录留着，但不会拼进提示，bro 也不会再提同一条。请求体、`answeredBy`、返回 200 和这张卡、只能答一次（再答 409「已经答过了」）都和审批卡一样；卡不存在返回 404。记忆的 `status` 只能这样改，记忆页对 `pending` 条目点「记下」「不用」时，用 `Memory.confirmId` 调这两个接口。
+- 卡的字段：`id`、`botId`、`botName`、`subject`、`taskId`、`decision`、`createdAt`、`answeredAt`、`answeredBy`，这几个一定会出现（`taskId`、`decision`、`answeredAt`、`answeredBy` 可能是 `null`）。
+  - `subject` 是 `memory` 时还有 `memoryId`、`kind`、`text`、`scope`，卡上要显示的内容都在这里，客户端不用再另外请求。`text` 和 `scope` 是记忆现在的样子，`pending` 时用 `PATCH` 改了，这张卡也会再推一次。
+  - `subject` 是 `skill` 的卡留给后面的技能 PR，会带 `slug`、`title`、`instruction`。没有的字段不出现。
+  - 同一个任务提了很多条时，客户端可以按 `taskId` 把超过 3 条的折叠起来。
+- 确认卡会出现在 `GET /api/groups/{id}/events` 和实时推送里，新卡算一条未读。它和审批卡存在同一张表里，但不会以 `approval` 事件出现，也不影响状态卡的 `waitingFor`。
 
 ## 发一句话（`/say`）
 
