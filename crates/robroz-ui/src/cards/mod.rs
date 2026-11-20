@@ -6,6 +6,7 @@
 //! until the backend adds them. None of this touches the frozen status card.
 
 pub mod interact;
+pub mod memories;
 pub mod routines;
 pub mod status;
 
