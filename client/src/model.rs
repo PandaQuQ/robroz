@@ -4,7 +4,7 @@
 //! This module only decides where a card sits in the stream.
 
 use robroz_card::{Palette, Tone};
-use robroz_contract::{Event, MessageKind, TaskState};
+use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,20 +32,10 @@ pub struct DeliveryCard {
 /// "approval"`). Grey, no button: the approval card is the only way to act.
 pub const AWAITING_APPROVAL: &str = "等你批准";
 
-/// `waitingFor` on a blocked status (`"approval"` or `"takeover"`), read
-/// from the raw JSON. Added after the freeze and not in `robroz-contract`
-/// yet, so the client reads it here; absent means the old behaviour.
-pub fn waiting_for(raw: &serde_json::Value) -> Option<String> {
-    if raw.get("type").and_then(|t| t.as_str()) != Some("status") {
-        return None;
-    }
-    raw.get("waitingFor")
-        .and_then(|w| w.as_str())
-        .map(str::to_string)
-}
-
-fn awaits_approval(state: TaskState, waiting_for: Option<&str>) -> bool {
-    state == TaskState::Blocked && waiting_for == Some("approval")
+/// Blocked on an unanswered approval card (`waitingFor: "approval"`, #57).
+/// `takeover` or an absent field (older host) keeps amber 卡住 + 去私聊接管.
+fn awaits_approval(state: TaskState, waiting_for: Option<WaitingFor>) -> bool {
+    state == TaskState::Blocked && waiting_for == Some(WaitingFor::Approval)
 }
 
 /// How much a preview candidate counts when two events share a change time.
@@ -132,12 +122,7 @@ impl Feed {
     }
 
     pub fn apply(&mut self, event: &Event) {
-        self.apply_with(event, None);
-    }
-
-    /// `apply` plus the status's `waitingFor`, when the source read one.
-    pub fn apply_with(&mut self, event: &Event, waiting_for: Option<&str>) {
-        let (key, row) = to_row(event, waiting_for);
+        let (key, row) = to_row(event);
         self.upsert(key, row);
     }
 
@@ -186,13 +171,7 @@ pub fn change_time(event: &Event) -> &str {
 }
 
 /// One-line preview of an event for the conversation list.
-#[cfg(test)]
 pub fn preview(event: &Event) -> String {
-    preview_with(event, None)
-}
-
-/// `preview` with the status's `waitingFor`.
-pub fn preview_with(event: &Event, waiting_for: Option<&str>) -> String {
     match event {
         Event::Message { kind, body, .. } => match kind {
             MessageKind::Text => body.clone(),
@@ -206,8 +185,11 @@ pub fn preview_with(event: &Event, waiting_for: Option<&str>) -> String {
             ..
         } => format!("{bot_name}：{}", failure_line(failure)),
         Event::Status {
-            bot_name, state, ..
-        } if awaits_approval(*state, waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
+            bot_name,
+            state,
+            waiting_for,
+            ..
+        } if awaits_approval(*state, *waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
         Event::Status {
             bot_name,
             state,
@@ -231,7 +213,7 @@ pub fn preview_with(event: &Event, waiting_for: Option<&str>) -> String {
     }
 }
 
-fn to_row(event: &Event, waiting_for: Option<&str>) -> (Key, Row) {
+fn to_row(event: &Event) -> (Key, Row) {
     match event {
         Event::Message { id, kind, body, .. } => {
             let row = match kind {
@@ -249,6 +231,7 @@ fn to_row(event: &Event, waiting_for: Option<&str>) -> (Key, Row) {
             state,
             container_up,
             failure,
+            waiting_for,
             ..
         } => {
             // A failed task is grey with no action, like a dead run, never
@@ -260,7 +243,7 @@ fn to_row(event: &Event, waiting_for: Option<&str>) -> (Key, Row) {
                 ),
                 // Waiting on an approval card: grey, no takeover button.
                 // Amber 卡住 + 去私聊接管 stays for real takeovers.
-                None if awaits_approval(*state, waiting_for) => (
+                None if awaits_approval(*state, *waiting_for) => (
                     robroz_card::appearance(TaskState::Running, false),
                     AWAITING_APPROVAL.to_string(),
                 ),
@@ -492,11 +475,19 @@ mod tests {
         );
     }
 
+    fn blocked_waiting(waiting: Option<WaitingFor>) -> Event {
+        let mut ev = status("t5", "Ada", TaskState::Blocked, false);
+        if let Event::Status { waiting_for, .. } = &mut ev {
+            *waiting_for = waiting;
+        }
+        ev
+    }
+
     #[test]
     fn waiting_for_approval_is_grey_without_take_over() {
-        let ev = status("t5", "Ada", TaskState::Blocked, false);
+        let ev = blocked_waiting(Some(WaitingFor::Approval));
         let mut feed = Feed::default();
-        feed.apply_with(&ev, Some("approval"));
+        feed.apply(&ev);
         let card = status_cards(&feed)[0];
         assert_eq!(card.status_line, "等你批准");
         assert_eq!(card.tone, Tone::Gray);
@@ -505,17 +496,18 @@ mod tests {
             card.action, None,
             "the approval card is the only way to act"
         );
-        assert_eq!(preview_with(&ev, Some("approval")), "Ada：等你批准");
+        assert_eq!(preview(&ev), "Ada：等你批准");
 
-        // Real takeovers (captcha) and hosts without the field keep amber.
-        for waiting in [Some("takeover"), None, Some("something-new")] {
+        // Real takeovers (captcha) and older hosts without the field keep amber.
+        for waiting in [Some(WaitingFor::Takeover), None] {
             let mut feed = Feed::default();
-            feed.apply_with(&ev, waiting);
+            feed.apply(&blocked_waiting(waiting));
             assert_eq!(
                 actual(status_cards(&feed)[0]),
                 expected(TaskState::Blocked, false),
                 "{waiting:?}"
             );
+            assert_eq!(status_cards(&feed)[0].action, Some("去私聊接管"));
         }
         // Once answered the next status has no waitingFor and updates in place.
         feed.apply(&status("t5", "Ada", TaskState::Queued, false));
@@ -527,14 +519,36 @@ mod tests {
     }
 
     #[test]
-    fn waiting_for_is_read_only_from_status_json() {
-        let blocked =
-            serde_json::json!({"type": "status", "state": "blocked", "waitingFor": "approval"});
-        assert_eq!(waiting_for(&blocked).as_deref(), Some("approval"));
-        let old = serde_json::json!({"type": "status", "state": "blocked"});
-        assert_eq!(waiting_for(&old), None, "old host: no field, old behaviour");
-        let other = serde_json::json!({"type": "approval", "waitingFor": "approval"});
-        assert_eq!(waiting_for(&other), None);
+    fn waiting_for_from_host_json() {
+        let json = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
+                "state": "blocked", "label": "卡住", "createdAt": "2026-11-20T02:00:01.000Z",
+                "updatedAt": "2026-11-20T02:00:02.000Z", "containerUp": false
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<Event>(v).unwrap()
+        };
+        let line = |ev: Event| {
+            let mut feed = Feed::default();
+            feed.apply(&ev);
+            status_cards(&feed)[0].status_line.clone()
+        };
+        assert_eq!(
+            line(json(serde_json::json!({"waitingFor": "approval"}))),
+            "等你批准"
+        );
+        assert_eq!(
+            line(json(serde_json::json!({"waitingFor": "takeover"}))),
+            "卡住"
+        );
+        assert_eq!(
+            line(json(serde_json::json!({}))),
+            "卡住",
+            "older host: unchanged"
+        );
     }
 
     #[test]
