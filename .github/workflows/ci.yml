@@ -26,3 +26,12 @@ jobs:
         run: cargo build -p robroz-client
       - name: Test client
         run: cargo test -p robroz-client
+
+  e2e:
+    # Node 7: real host binary + real docker, runner image as the fake model.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: End-to-end (task, sandbox, approval, restart, resume, no replay)
+        run: scripts/e2e.sh

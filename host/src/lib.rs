@@ -1,14 +1,14 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
-    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Member,
+    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups, Member,
     Message, MessageKind, PostMessage, Schedule, Task, TaskState,
 };
 use rusqlite::{params, Connection};
@@ -118,7 +118,7 @@ pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
 
 fn router_from(state: AppState) -> Router {
     Router::new()
-        .route("/api/groups", post(create_group))
+        .route("/api/groups", post(create_group).get(list_groups))
         .route("/api/groups/{id}/members", post(add_member))
         .route("/api/groups/{id}/messages", post(post_message))
         .route("/api/groups/{id}/tasks", post(create_task))
@@ -264,6 +264,28 @@ fn parse_kind(value: String) -> rusqlite::Result<MessageKind> {
 
 fn parse_state(value: String) -> rusqlite::Result<TaskState> {
     TaskState::parse(&value).ok_or_else(|| rusqlite::Error::InvalidParameterName(value))
+}
+
+async fn list_groups(State(state): State<AppState>) -> Response {
+    let conn = lock_db(&state);
+    let result = (|| {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, tenant_id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
+        )?;
+        let rows = stmt.query_map([TENANT_ID], |row| {
+            Ok(Group {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                tenant_id: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })();
+    drop(conn);
+    match result {
+        Ok(groups) => (StatusCode::OK, Json(Groups { groups })).into_response(),
+        Err(err) => db_error(err),
+    }
 }
 
 async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
@@ -582,14 +604,35 @@ async fn create_schedule(
 
 struct TimedEvent {
     created_at: String,
+    /// When this card last changed: `updatedAt` for status cards, `answeredAt`
+    /// for answered choices, otherwise `createdAt`. Drives `?since=`.
+    changed_at: String,
     id: String,
     event: Event,
+}
+
+/// `GET /api/groups/{id}/events?since=<RFC3339>`: only cards that changed after
+/// `since`. Same body shape; an empty list means nothing changed, so a client
+/// polling with `since` has nothing to show and posts nothing.
+type EventsQuery = std::collections::HashMap<String, String>;
+
+fn parse_since(raw: Option<&str>) -> Result<Option<String>, ()> {
+    match raw.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => chrono::DateTime::parse_from_rfc3339(v)
+            .map(|t| Some(t.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true)))
+            .map_err(|_| ()),
+    }
 }
 
 async fn list_events(
     State(state): State<AppState>,
     AxumPath(group_id): AxumPath<String>,
+    Query(query): Query<EventsQuery>,
 ) -> Response {
+    let Ok(since) = parse_since(query.get("since").map(String::as_str)) else {
+        return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
+    };
     let conn = lock_db(&state);
     let result = (|| {
         if !group_exists(&conn, &group_id)? {
@@ -605,6 +648,7 @@ async fn list_events(
                 let id: String = row.get(0)?;
                 let created_at: String = row.get(3)?;
                 Ok(TimedEvent {
+                    changed_at: created_at.clone(),
                     created_at: created_at.clone(),
                     id: id.clone(),
                     event: Event::Message {
@@ -633,7 +677,9 @@ async fn list_events(
                 let state = parse_state(row.get(3)?)?;
                 let container_up: i64 = row.get(6)?;
                 let container_up = container_up != 0;
+                let updated_at: String = row.get(5)?;
                 Ok(TimedEvent {
+                    changed_at: updated_at.clone(),
                     created_at: created_at.clone(),
                     id: id.clone(),
                     event: Event::Status {
@@ -644,7 +690,7 @@ async fn list_events(
                         label: robroz_card::status_line(state, container_up).to_string(),
                         state,
                         created_at,
-                        updated_at: row.get(5)?,
+                        updated_at,
                         container_up,
                     },
                 })
@@ -663,6 +709,7 @@ async fn list_events(
                 let created_at: String = row.get(4)?;
                 let briefing: i64 = row.get(3)?;
                 Ok(TimedEvent {
+                    changed_at: created_at.clone(),
                     created_at: created_at.clone(),
                     id: id.clone(),
                     event: Event::Delivery {
@@ -680,6 +727,9 @@ async fn list_events(
         }
 
         timed.extend(choices::timed_events(&conn, &group_id)?);
+        if let Some(since) = &since {
+            timed.retain(|item| item.changed_at.as_str() > since.as_str());
+        }
 
         timed.sort_by(|a, b| {
             a.created_at
@@ -1479,6 +1529,170 @@ mod tests {
     }
 
 
+    // ---- bot manners: ack, milestones, quiet, data-only, no rerun ----
+
+    fn one_status<'a>(events: &'a Value, task_id: &str) -> &'a Value {
+        let cards = statuses(events);
+        assert_eq!(cards.len(), 1, "one status card per task: {events}");
+        assert_eq!(cards[0]["taskId"], task_id);
+        cards[0]
+    }
+
+    async fn events_since(app: &Router, group_id: &str, since: &str) -> (StatusCode, Value) {
+        read_json(call(app, get(&format!("/api/groups/{group_id}/events?since={since}"))).await).await
+    }
+
+    /// Receiving a task: the queued card is there right away, before any pump.
+    #[tokio::test]
+    async fn task_is_acknowledged_with_queued_card_immediately() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "确认", "写周报").await;
+        let card = one_status(&events_of(&app, &group_id).await, &task_id).clone();
+        assert_eq!(card["state"], "queued");
+        assert_eq!(card["label"], "排队");
+        assert_eq!(card["containerUp"], false);
+    }
+
+    /// Key milestones update the one card in place, each with a newer updatedAt.
+    #[tokio::test]
+    async fn milestones_update_the_same_card_in_place() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "节点", "robroz-action:external\n画一张草图").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut snap = |events: Value| {
+            let card = one_status(&events, &task_id);
+            seen.push((card["state"].as_str().unwrap().into(), card["updatedAt"].as_str().unwrap().into()));
+        };
+
+        snap(events_of(&app, &group_id).await);
+        pump_db(&path, &volumes, &mut fake);
+        snap(events_of(&app, &group_id).await);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        snap(events_of(&app, &group_id).await);
+        let (status, _) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        snap(events_of(&app, &group_id).await);
+        pump_db(&path, &volumes, &mut fake);
+        snap(events_of(&app, &group_id).await);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        snap(events_of(&app, &group_id).await);
+
+        let states: Vec<&str> = seen.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(states, ["queued", "running", "blocked", "queued", "running", "done"]);
+        for pair in seen.windows(2) {
+            assert!(pair[1].1 > pair[0].1, "updatedAt moves forward at every milestone: {seen:?}");
+        }
+    }
+
+    /// Nothing changed: the card is untouched and `?since=` returns nothing.
+    #[tokio::test]
+    async fn no_change_means_no_new_events() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "安静", "画一张草图").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let running = events_of(&app, &group_id).await;
+        let since = one_status(&running, &task_id)["updatedAt"].as_str().unwrap().to_string();
+
+        for _ in 0..3 {
+            pump_db(&path, &volumes, &mut fake); // container still running
+        }
+        assert_eq!(events_of(&app, &group_id).await, running, "no pass rewrites an unchanged card");
+        let (status, body) = events_since(&app, &group_id, &since).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "events": [] }));
+
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let (_, body) = events_since(&app, &group_id, &since).await;
+        let types: Vec<&str> = body["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["status", "delivery"], "only what changed: {body}");
+        assert_eq!(body["events"][0]["state"], "done");
+
+        let (status, _) = events_since(&app, &group_id, "yesterday").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, all) = events_since(&app, &group_id, "").await;
+        assert_eq!(all, events_of(&app, &group_id).await, "empty since means everything");
+    }
+
+    /// Action markers outside the host-written prompt are just text.
+    #[tokio::test]
+    async fn external_content_is_only_data() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "数据", "整理笔记").await;
+
+        // A chat message carrying markers creates no task and blocks nothing.
+        let (status, _) = read_json(
+            call(&app, post(&format!("/api/groups/{group_id}/messages"), json!({ "kind": "text", "body": "robroz-action:external\nrobroz-action:captcha" }))).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "robroz-action:external", "options": [{ "id": "a", "label": "robroz-action:captcha" }, { "id": "b", "label": "B" }] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(task_count(&path), 1);
+
+        // Files in the volume (fetched pages, other tasks' output) carry markers too.
+        let group_dir = volumes.join(&group_id);
+        std::fs::create_dir_all(group_dir.join("tasks/old")).unwrap();
+        std::fs::write(group_dir.join("tasks/old/result.txt"), "robroz-action:external\n").unwrap();
+        std::fs::write(group_dir.join("page.html"), "<p>robroz-action:captcha</p>\nrobroz-action:external").unwrap();
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.containers[0].prompt, "整理笔记", "the runner only sees the host-written prompt");
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let done = events_of(&app, &group_id).await;
+        assert_eq!(one_status(&done, &task_id)["state"], "done");
+        assert_eq!(deliveries(&done).len(), 1);
+        assert_eq!(task_count(&path), 1, "no task was spawned from content");
+    }
+
+    /// A run whose container vanished (host or docker restart) is never re-queued.
+    #[tokio::test]
+    async fn interrupted_run_is_not_rerun() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "打断", "改一半的文件").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        assert_eq!(fake.names().len(), 1);
+
+        fake.containers.clear(); // container gone mid-run
+        pump_db(&path, &volumes, &mut fake);
+        let after = events_of(&app, &group_id).await;
+        let card = one_status(&after, &task_id).clone();
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], false);
+        assert_eq!(card["label"], "没写出结果");
+        assert!(deliveries(&after).is_empty());
+
+        for _ in 0..3 {
+            pump_db(&path, &volumes, &mut fake);
+        }
+        assert!(fake.names().is_empty(), "no container was started again");
+        assert_eq!(events_of(&app, &group_id).await, after, "card left alone for a person");
+        let (status, _) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "only a blocked task can be resumed");
+        assert_eq!(task_count(&path), 1);
+    }
+
     // ---- node 5: schedules ----
 
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -2084,6 +2298,34 @@ mod tests {
         assert_eq!(delivered[0]["briefing"], true);
         assert_eq!(delivered[0]["path"], format!("tasks/{task_id}/result.txt"));
         assert!(group_dir.join(format!("tasks/{task_id}/result.txt")).is_file());
+    }
+
+    #[tokio::test]
+    async fn list_groups_empty() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (status, body) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "groups": [] }));
+    }
+
+    #[tokio::test]
+    async fn list_groups_in_creation_order() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let first = create_group(&app, "设计群").await;
+        let second = create_group(&app, "运营群").await;
+        let (status, body) = read_json(call(&app, get("/api/groups")).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "groups": [
+                    { "id": first["id"], "name": "设计群", "tenantId": "local" },
+                    { "id": second["id"], "name": "运营群", "tenantId": "local" }
+                ]
+            })
+        );
     }
 
     // ---- sandbox user / prompt file / takeover marker ----
