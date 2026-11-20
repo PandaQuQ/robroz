@@ -213,6 +213,35 @@ pub struct AnswerChoice {
 pub const CHOICE_OPTIONS_MIN: usize = 2;
 pub const CHOICE_OPTIONS_MAX: usize = 4;
 
+/// Unread state of one group for the conversation list.
+/// `unread` counts what a bro sent since `readAt`: deliveries, choice cards,
+/// and tasks that got stuck and need you. Your own messages and routine status
+/// moves (queued, running, done) do not count; the delivery does.
+/// `lastActivityAt` is the newest change of any card, for sorting; `null` when empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unread {
+    pub group_id: String,
+    pub read_at: Option<String>,
+    pub unread: u64,
+    pub last_activity_at: Option<String>,
+}
+
+/// `GET /api/unread`: every group, most recently active first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unreads {
+    pub groups: Vec<Unread>,
+}
+
+/// `POST /api/groups/{id}/read` body. `readAt` defaults to now; the read
+/// position only moves forward, an older value is ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkRead {
+    #[serde(default)]
+    pub read_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
