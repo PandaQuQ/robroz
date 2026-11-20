@@ -21,7 +21,8 @@ pub const SYSTEM_PROMPT: &str = "你是 robroz 里的一个 bro，替用户完�
 
 /// A model call. `Send + Sync` so the pump thread can own one.
 pub trait Model: Send + Sync {
-    fn reply(&self, prompt: &str) -> Result<String, ModelError>;
+    /// `memory_section` is appended to [`SYSTEM_PROMPT`] when present.
+    fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, ModelError>;
 }
 
 /// Why a call failed. Never carries the key or the request headers.
@@ -97,12 +98,20 @@ pub fn config_from_env() -> Result<Option<ModelConfig>, String> {
     config_from(|name| std::env::var(name).ok(), |path: &str| std::fs::read_to_string(path))
 }
 
+/// The system message: the fixed opening, plus the memory paragraph when there is one.
+pub fn system_content(memory_section: Option<&str>) -> String {
+    match memory_section {
+        Some(section) if !section.is_empty() => format!("{SYSTEM_PROMPT}\n\n{section}"),
+        _ => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// The `/chat/completions` body.
-pub fn request_body(model: &str, prompt: &str) -> serde_json::Value {
+pub fn request_body(model: &str, prompt: &str, memory_section: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "model": model,
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
+            { "role": "system", "content": system_content(memory_section) },
             { "role": "user", "content": prompt },
         ],
     })
@@ -145,9 +154,9 @@ impl OpenAiCompat {
 }
 
 impl Model for OpenAiCompat {
-    fn reply(&self, prompt: &str) -> Result<String, ModelError> {
+    fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, ModelError> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let body = request_body(&self.config.model, prompt).to_string();
+        let body = request_body(&self.config.model, prompt, memory_section).to_string();
         let mut response = self
             .agent
             .post(&url)
@@ -232,9 +241,16 @@ mod tests {
 
     #[test]
     fn body_and_reply_shapes() {
-        let body = request_body("m1", "写周报");
+        let body = request_body("m1", "写周报", None);
         assert_eq!(body["model"], "m1");
+        assert_eq!(body["messages"][0]["content"], SYSTEM_PROMPT);
         assert_eq!(body["messages"][1], serde_json::json!({ "role": "user", "content": "写周报" }));
+        let with = request_body("m1", "写周报", Some("你记得这些：\n[habit] 周五交周报"));
+        assert_eq!(
+            with["messages"][0]["content"],
+            format!("{SYSTEM_PROMPT}\n\n你记得这些：\n[habit] 周五交周报")
+        );
+        assert_eq!(request_body("m1", "写周报", Some(""))["messages"][0]["content"], SYSTEM_PROMPT);
         assert_eq!(parse_reply(r#"{"choices":[{"message":{"content":"  好的\n"}}]}"#), Ok("好的".into()));
         assert!(parse_reply("not json").is_err());
         assert!(parse_reply(r#"{"choices":[]}"#).is_err());
@@ -284,7 +300,7 @@ mod tests {
     #[test]
     fn calls_chat_completions_with_bearer_key() {
         let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"周报写好了"}}]}"#);
-        assert_eq!(model_at(&url).reply("写周报"), Ok("周报写好了".into()));
+        assert_eq!(model_at(&url).reply("写周报", None), Ok("周报写好了".into()));
         let request = rx.recv().unwrap();
         assert!(request.starts_with("POST /v1/chat/completions "), "{request}");
         assert!(request.contains(&format!("Bearer {SECRET}")));
@@ -294,9 +310,9 @@ mod tests {
     #[test]
     fn http_errors_do_not_leak_the_key() {
         let (url, _rx) = fake_server(401, r#"{"error":"bad key sk-test-SECRET123"}"#);
-        let err = model_at(&url).reply("hi").unwrap_err();
+        let err = model_at(&url).reply("hi", None).unwrap_err();
         assert_eq!(err.0, "模型服务返回 401");
-        let dead = model_at("http://127.0.0.1:9").reply("hi").unwrap_err();
+        let dead = model_at("http://127.0.0.1:9").reply("hi", None).unwrap_err();
         assert!(!dead.0.contains(SECRET), "{dead}");
     }
 }

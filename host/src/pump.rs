@@ -41,6 +41,7 @@ pub struct PumpConfig<'a> {
 struct TaskRow {
     id: String,
     group_id: String,
+    assignee_bot_id: String,
     prompt: String,
     updated_at: String,
     briefing: bool,
@@ -125,21 +126,29 @@ fn start_task(
 
     // Claim before docker run so a second pass can't pick the task again.
     // The first progress rides on the claim itself: one status event, not two.
+    // Memories are loaded in the same lock, before the claim, so a load error
+    // leaves the task queued.
     let claimed_at = newer_than(&task.updated_at);
     let first = if cfg.model.is_some() { progress::THINKING } else { progress::STARTED };
-    let claimed = db.with(|conn| {
-        conn.execute(
+    let (claimed, memory_section) = db.with(|conn| -> rusqlite::Result<_> {
+        let section = if cfg.model.is_some() {
+            crate::memories::prompt_section(&crate::memories::kept_for(conn, &task.assignee_bot_id)?)
+        } else {
+            None
+        };
+        let claimed = conn.execute(
             "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3
              WHERE id = ?2 AND state = 'queued'",
             params![claimed_at, task.id, first],
-        )
+        )?;
+        Ok((claimed, section))
     })?;
     if claimed == 0 {
         return Ok(());
     }
     let mut reply_progress = None;
     if let Some(model) = cfg.model {
-        let reply = write_reply(&control_dir, &task.id, &task.prompt, model);
+        let reply = write_reply(&control_dir, &task.id, &task.prompt, memory_section.as_deref(), model);
         reply_progress = reply.progress;
         if let Some(failure) = reply.failure {
             db.with(|conn| {
@@ -352,16 +361,17 @@ fn write_outcome(
 fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> {
     let live_only = if state == "running" { " AND container_up = 1" } else { "" };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, group_id, prompt, updated_at, briefing FROM tasks
+        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing FROM tasks
          WHERE state = ?1{live_only} ORDER BY created_at, id"
     ))?;
     let rows = stmt.query_map([state], |row| {
         Ok(TaskRow {
             id: row.get(0)?,
             group_id: row.get(1)?,
-            prompt: row.get(2)?,
-            updated_at: row.get(3)?,
-            briefing: row.get::<_, i64>(4)? != 0,
+            assignee_bot_id: row.get(2)?,
+            prompt: row.get(3)?,
+            updated_at: row.get(4)?,
+            briefing: row.get::<_, i64>(5)? != 0,
         })
     })?;
     rows.collect()
@@ -379,10 +389,16 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 /// person sees why; the reason is also returned so the delivery can say the
 /// task was not done. Old replies are removed first so a retry never reuses one.
 /// The reply's last `robroz-progress:` line is returned for the status card.
-fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) -> Reply {
+fn write_reply(
+    control_dir: &Path,
+    task_id: &str,
+    prompt: &str,
+    memory_section: Option<&str>,
+    model: &dyn robroz_model::Model,
+) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
-    let (text, failure) = match model.reply(prompt) {
+    let (text, failure) = match model.reply(prompt, memory_section) {
         Ok(text) => (text, None),
         Err(err) => {
             eprintln!("pump: model for {task_id}: {err}");
