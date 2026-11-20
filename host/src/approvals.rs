@@ -150,25 +150,99 @@ pub(crate) async fn create_approval(
     }
 }
 
+/// Blocking kinds that raise an approval card instead of waiting for a
+/// takeover. A captcha still needs the person to type, so it is not one.
+pub(crate) fn needs_approval(kind: &str) -> bool {
+    kind == "external"
+}
+
+/// Card text for a task: its first plain line, shortened.
+pub(crate) fn gate_summary(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && robroz_policy::blocking_kind(l).is_none())
+        .unwrap_or("这个任务");
+    let short: String = line.chars().take(60).collect();
+    let more = if line.chars().count() > 60 { "…" } else { "" };
+    format!("要对外写入：{short}{more}")
+}
+
+/// A blocked task asks before writing outside. The card names the task and
+/// the blocking line; answering it resumes or ends that task.
+pub(crate) fn gate_task(conn: &Connection, task_id: &str, prompt: &str, hash: &str, now: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash)
+         SELECT ?1, group_id, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4 FROM tasks WHERE id = ?5",
+        params![new_id(), gate_summary(prompt), now, hash, task_id],
+    )?;
+    Ok(())
+}
+
+/// What a gated card points at, if it was raised by a task.
+fn gate_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, String)>> {
+    Ok(conn
+        .query_row("SELECT task_id, intent_hash FROM approvals WHERE id = ?1", [id], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+        })
+        .optional()?
+        .and_then(|(task, hash)| task.zip(hash)))
+}
+
+/// Apply the answer to the task, only if it is still blocked on that line
+/// (a takeover through `/resume` may have moved it on already).
+fn settle_task(conn: &Connection, task_id: &str, hash: &str, decision: ApprovalDecision) -> rusqlite::Result<()> {
+    let next = match decision {
+        ApprovalDecision::Approved => "queued",
+        ApprovalDecision::Denied => "done",
+    };
+    conn.execute(
+        "UPDATE tasks SET state = ?1, container_up = 0, updated_at = ?2,
+                          intent_kind = NULL, intent_line = NULL, intent_hash = NULL
+         WHERE id = ?3 AND state = 'blocked' AND intent_hash = ?4",
+        params![next, now_rfc3339(), task_id, hash],
+    )?;
+    Ok(())
+}
+
 /// One answer per card: the update only matches an unanswered row, so a
 /// second click (or a race) gets 409 and the first answer stands.
+///
+/// A card raised by a blocked task also moves that task: approve writes the
+/// takeover marker and queues it again, deny ends it as done (no result).
 fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -> Response {
     let by = match answered_by(body) {
         Ok(by) => by,
         Err((status, message)) => return error_response(status, message),
     };
-    let conn = lock_db(state);
+    let mut conn = lock_db(state);
     let result = (|| {
-        if load(&conn, id)?.is_none() {
+        let Some(card) = load(&conn, id)? else {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
+        };
+        if matches!(card, Event::Approval { decision: Some(_), .. }) {
+            return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
         }
-        let changed = conn.execute(
+        let gate = gate_of(&conn, id)?;
+        // Marker first: if it can't be written nothing changes and the card stays open.
+        if let (Some((task_id, hash)), ApprovalDecision::Approved) = (&gate, decision) {
+            if let Err(err) = robroz_runner::append_takeover(&state.control_root.join(task_id), hash) {
+                eprintln!("approve {id}: takeover for {task_id}: {err}");
+                return Ok(Err(error_response(StatusCode::INTERNAL_SERVER_ERROR, "批准失败，无法写入接管标记")));
+            }
+        }
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
             "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4 WHERE id = ?3 AND decision IS NULL",
             params![decision_text(decision), now_rfc3339(), id, by],
         )?;
         if changed == 0 {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
         }
+        if let Some((task_id, hash)) = &gate {
+            settle_task(&tx, task_id, hash, decision)?;
+        }
+        tx.commit()?;
         Ok(Ok(load(&conn, id)?.expect("approval exists")))
     })();
     drop(conn);

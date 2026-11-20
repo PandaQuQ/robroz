@@ -250,6 +250,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for table in ["choices", "approvals"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN answered_by TEXT"), []);
     }
+    // Approval cards a blocked task raised: which task and which blocking line.
+    for column in ["task_id", "intent_hash"] {
+        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+    }
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
@@ -569,6 +573,14 @@ async fn resume_task(
                           intent_kind = NULL, intent_line = NULL, intent_hash = NULL
          WHERE id = ?2 AND state = 'blocked'",
         params![updated_at, task_id],
+    ) {
+        return db_error(err);
+    }
+    // Taking over answers the approval card for the same line, if one is open.
+    if let Err(err) = conn.execute(
+        "UPDATE approvals SET decision = 'approved', answered_at = ?1
+         WHERE task_id = ?2 AND intent_hash = ?3 AND decision IS NULL",
+        params![updated_at, task_id, hash],
     ) {
         return db_error(err);
     }
@@ -1692,7 +1704,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
-        let (group_id, _) = seed_task(&app, "未读", "robroz-action:external\n画一张草图").await;
+        let (group_id, _) = seed_task(&app, "未读", "robroz-action:captcha\n画一张草图").await;
         let fresh = unread_of(&app, &group_id).await;
         assert_eq!(fresh["readAt"], Value::Null);
         assert_eq!(fresh["unread"], 0, "a queued card and my own messages do not count");
@@ -3331,5 +3343,94 @@ mod tests {
                 e => Err(e),
             }).unwrap();
         }
+    }
+
+    async fn seed_task_in(app: &Router, group_id: &str, prompt: &str) -> (StatusCode, String) {
+        let url = format!("/api/groups/{group_id}/tasks");
+        let (status, task) = read_json(call(app, post(&url, json!({ "assigneeBotId": "bot-ada", "prompt": prompt }))).await).await;
+        (status, task["id"].as_str().unwrap().to_string())
+    }
+
+    fn approvals_in(events: &Value) -> Vec<Value> {
+        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").cloned().collect()
+    }
+
+    fn task_state(db: &Path, task_id: &str) -> String {
+        Connection::open(db).unwrap().query_row("SELECT state FROM tasks WHERE id = ?1", [task_id], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn external_write_raises_an_approval_card_and_approve_resumes() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &task_id), "blocked");
+
+        let cards = approvals_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1, "one card per blocking line");
+        assert_eq!(cards[0]["action"], "send");
+        assert_eq!(cards[0]["summary"], "要对外写入：给客户发周报");
+        assert_eq!(cards[0]["decision"], Value::Null);
+        let assignee = statuses(&events_of(&app, &group_id).await)[0]["botId"].clone();
+        assert_eq!(cards[0]["botId"], assignee);
+
+        let (status, answered) = decide(&app, cards[0]["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(task_state(&path, &task_id), "queued");
+        let hash = robroz_policy::action_hash("robroz-action:external");
+        assert!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap().contains(&hash));
+
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &task_id), "done");
+        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "给客户发周报");
+        assert_eq!(approvals_in(&events_of(&app, &group_id).await).len(), 1, "no second card after approval");
+        let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn deny_ends_the_task_without_a_result() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "审批闸", "删远端分支\nrobroz-action:external").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let card = approvals_in(&events_of(&app, &group_id).await)[0].clone();
+        let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(task_state(&path, &task_id), "done");
+        assert!(!takeover_file(&volumes, &task_id).exists(), "deny writes no marker");
+        pump_db(&path, &volumes, &mut fake);
+        assert!(fake.names().is_empty(), "denied task never starts again");
+        assert!(deliveries(&events_of(&app, &group_id).await).is_empty());
+        let (status, _) = resume(&app, &task_id).await;
+        assert_eq!(status, StatusCode::CONFLICT, "nothing left to resume");
+    }
+
+    #[tokio::test]
+    async fn captcha_keeps_takeover_and_resume_closes_an_open_card() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, captcha) = seed_task(&app, "审批闸", "登录\nrobroz-action:captcha").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(task_state(&path, &captcha), "blocked");
+        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "captcha needs a person, not a card");
+
+        let (_, external) = seed_task_in(&app, &group_id, "发帖\nrobroz-action:external").await;
+        run_once(&path, &volumes, &mut fake);
+        let (status, _) = resume(&app, &external).await;
+        assert_eq!(status, StatusCode::OK);
+        let cards = approvals_in(&events_of(&app, &group_id).await);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["decision"], "approved", "taking over answers the card");
+        let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(task_state(&path, &external), "queued");
     }
 }
