@@ -97,6 +97,22 @@ pub struct Group<'a> {
     pub kept: Vec<&'a Memory>,
 }
 
+impl Group<'_> {
+    /// Sub-heads with counts, in page order: 「待确认 N」 when there are
+    /// pending entries, and 「已记下 N」 whenever there are kept ones, even if
+    /// nothing is pending, so every scope group reads the same.
+    pub fn heads(&self) -> Vec<(&'static str, usize)> {
+        let mut out = Vec::new();
+        if !self.pending.is_empty() {
+            out.push((PENDING_HEAD, self.pending.len()));
+        }
+        if !self.kept.is_empty() {
+            out.push((KEPT_HEAD, self.kept.len()));
+        }
+        out
+    }
+}
+
 /// The new-memory form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMemory {
@@ -172,6 +188,12 @@ impl Book {
     pub fn entry_failed(&mut self, id: &str, reason: &str) {
         self.busy = false;
         self.entry_note = Some((id.to_string(), failed(reason)));
+    }
+
+    /// 记下 / 不用 did not go through: the note under the entry, as given.
+    pub fn decide_failed(&mut self, id: &str, note: &str) {
+        self.busy = false;
+        self.entry_note = Some((id.to_string(), note.to_string()));
     }
 
     /// 记一条 failed: say so in the form and keep what was typed.
@@ -325,6 +347,42 @@ impl Book {
     }
 
     /// DELETE succeeded (204, also when it was already gone): drop it.
+    /// 记下 / 不用 on a pending entry: the confirm card id to answer, or
+    /// `None` when there is nothing to send (no card, not pending, busy).
+    pub fn decide_to_send(&mut self, id: &str) -> Option<String> {
+        if self.busy {
+            return None;
+        }
+        let confirm = self
+            .memories
+            .iter()
+            .find(|m| m.id == id && m.status == MemoryStatus::Pending)?
+            .confirm_id
+            .clone()?;
+        self.clear_notes();
+        self.busy = true;
+        Some(confirm)
+    }
+
+    /// The host took the answer.
+    pub fn decided(&mut self, id: &str, keep: bool) {
+        self.busy = false;
+        self.answered(id, keep);
+    }
+
+    /// A pending entry was answered, here or on its chat card: 记下 moves it
+    /// to 已记下, 不用 takes it off the page (rejected is not listed).
+    pub fn answered(&mut self, id: &str, keep: bool) {
+        if !keep {
+            self.memories.retain(|m| m.id != id);
+            return;
+        }
+        if let Some(m) = self.memories.iter_mut().find(|m| m.id == id) {
+            m.status = MemoryStatus::Kept;
+            m.confirm_id = None;
+        }
+    }
+
     pub fn forgotten(&mut self, id: &str) {
         self.busy = false;
         self.memories.retain(|m| m.id != id);
@@ -494,6 +552,44 @@ mod tests {
     }
 
     #[test]
+    fn kept_head_shows_even_without_pending() {
+        let mut b = book();
+        let mut p = mem(
+            "p",
+            "bot:bot-ada",
+            MemoryKind::Habit,
+            MemoryStatus::Pending,
+            "2026-11-20T10:00:00Z",
+        );
+        p.confirm_id = Some("c-p".into());
+        b.memories.push(p);
+        let groups = b.groups();
+        for g in &groups {
+            let heads = g.heads();
+            if g.kept.is_empty() {
+                assert!(heads.iter().all(|(h, _)| *h != KEPT_HEAD), "{}", g.title);
+            } else {
+                assert!(
+                    heads.contains(&(KEPT_HEAD, g.kept.len())),
+                    "{}: {heads:?}",
+                    g.title
+                );
+            }
+        }
+        let only_kept = groups
+            .iter()
+            .find(|g| g.pending.is_empty() && !g.kept.is_empty())
+            .unwrap();
+        assert_eq!(only_kept.heads(), [(KEPT_HEAD, only_kept.kept.len())]);
+        let ada = groups.iter().find(|g| g.scope == "bot:bot-ada").unwrap();
+        assert_eq!(
+            ada.heads()[0],
+            (PENDING_HEAD, ada.pending.len()),
+            "pending first"
+        );
+    }
+
+    #[test]
     fn empty_book_has_no_groups() {
         let mut b = Book::default();
         b.load(vec![]);
@@ -579,6 +675,56 @@ mod tests {
             Some("没保存：scope 只能是 user 或 bot:<botId>")
         );
         assert_eq!(b.adding.as_ref().unwrap().text, "x", "typed text kept");
+    }
+
+    #[test]
+    fn pending_entry_is_kept_or_dropped_through_its_confirm_card() {
+        let mut b = book();
+        let mut p = mem(
+            "p",
+            "user",
+            MemoryKind::Habit,
+            MemoryStatus::Pending,
+            "2026-11-20T10:00:00Z",
+        );
+        p.confirm_id = Some("c-p".into());
+        let q = mem(
+            "q",
+            "user",
+            MemoryKind::Habit,
+            MemoryStatus::Pending,
+            "2026-11-20T10:00:00Z",
+        );
+        b.memories.extend([p.clone(), q]);
+        assert_eq!(b.decide_to_send("q"), None, "no confirm card: display only");
+        assert_eq!(
+            b.decide_to_send("1"),
+            None,
+            "kept entries have nothing to answer"
+        );
+        assert_eq!(b.decide_to_send("p").as_deref(), Some("c-p"));
+        assert!(b.busy);
+        assert_eq!(b.decide_to_send("p"), None, "one at a time");
+        b.decide_failed("p", &crate::cards::confirm::decide_failed("连不上主机"));
+        assert_eq!(b.note_for("p"), Some("没成功：连不上主机"));
+        assert_eq!(b.decide_to_send("p").as_deref(), Some("c-p"));
+        assert_eq!(b.note_for("p"), None, "a retry clears the note");
+        b.decided("p", true);
+        assert!(!b.busy);
+        let kept = b.memories.iter().find(|m| m.id == "p").unwrap();
+        assert_eq!(
+            (kept.status, kept.confirm_id.clone()),
+            (MemoryStatus::Kept, None),
+            "moves to 已记下"
+        );
+
+        b.memories.push(p);
+        b.answered("p", false);
+        assert!(
+            b.memories.iter().all(|m| m.id != "p"),
+            "不用: gone from the page"
+        );
+        b.answered("gone", true);
     }
 
     #[test]

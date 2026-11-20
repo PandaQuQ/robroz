@@ -70,6 +70,8 @@ pub struct CardUi {
     pub note: Option<Note>,
     /// Narrow screens: the user tapped the shortened bot name to see it all.
     pub name_expanded: bool,
+    /// Skill confirm card: the full instruction is open.
+    pub more_open: bool,
 }
 
 impl CardUi {

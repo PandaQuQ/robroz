@@ -12,6 +12,7 @@ use iced::{
     Shadow as IcedShadow, Theme as IcedTheme, Vector,
 };
 
+use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::memories::{self, Book};
 use crate::cards::routines::{self, Routines};
@@ -111,6 +112,19 @@ pub enum Action {
     },
     MemoryForgetConfirm,
     MemoryForgetCancel,
+    /// 记忆 page, pending entry: 记下 (`keep`) or 不用, through its confirm card.
+    MemoryDecide {
+        id: String,
+        keep: bool,
+    },
+    /// Skill confirm card: open or close the full instruction.
+    ToggleInstruction {
+        card: String,
+    },
+    /// 「还有 N 条待确认」: show every pending confirm card of this task.
+    UnfoldConfirms {
+        task: String,
+    },
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -575,7 +589,148 @@ pub fn card<'a>(
         Card::Choice(c) => choice(t, c, ui),
         Card::Approval(c) => approval(t, c, ui, width),
         Card::Draft(c) => draft(t, c, ui, caps, width),
+        Card::Confirm(c) => confirm_card(t, c, ui, width),
     }
+}
+
+/// A bro's proposal: tag 「记忆」/「技能」, the full text with who can use
+/// it, then 记下 (保存) / 不用 until answered; the answer goes to the footnote.
+pub fn confirm_card<'a>(
+    t: &Skin,
+    card: &'a ConfirmCard,
+    ui: &CardUi,
+    width: f32,
+) -> Element<'a, Action> {
+    let (label, d) = card.status();
+    let mut col = column![
+        header(t, &card.id, &card.bot, ui, label, d),
+        gap(t.metrics.head_gap)
+    ];
+    let tag_el = tag(t, card.tag(), t.palette.text2);
+    match &card.title {
+        // Skill: title + slug, instruction cut to three lines until opened.
+        Some(title) => {
+            let mut head = row![
+                tag_el,
+                text(title.as_str())
+                    .size(t.type_.body)
+                    .font(bold())
+                    .color(color(t.palette.text)),
+            ]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+            if let Some(slug) = &card.slug {
+                head = head.push(mono(t, slug));
+            }
+            col = col.push(head);
+            if let Some(instruction) = &card.instruction {
+                let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
+                let cols = (inner / (t.type_.body * t.type_.unit_width)).max(8.0) as usize;
+                let cut = status::clamp_lines(instruction, cols, confirm::INSTRUCTION_LINES);
+                let long = cut.ends_with('…');
+                let shown = if ui.more_open || !long {
+                    instruction.clone()
+                } else {
+                    cut
+                };
+                col = col.push(gap(t.metrics.head_gap)).push(
+                    text(shown)
+                        .size(t.type_.body)
+                        .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+                        .color(color(t.palette.text))
+                        .width(Fill),
+                );
+                if long {
+                    col = col.push(btn(
+                        t,
+                        if ui.more_open {
+                            confirm::SHOW_LESS
+                        } else {
+                            confirm::SHOW_ALL
+                        }
+                        .into(),
+                        Look::Secondary,
+                        Leading::None,
+                        Some(Action::ToggleInstruction {
+                            card: card.id.clone(),
+                        }),
+                    ));
+                }
+            }
+        }
+        // Memory: the whole proposed text, then who can use it.
+        None => {
+            col = col.push(
+                row![
+                    tag_el,
+                    container(body(t, card.text.as_deref().unwrap_or_default())).width(Fill),
+                ]
+                .spacing(t.controls.button_gap)
+                .align_y(Alignment::Center),
+            );
+            if let Some(scope) = &card.scope_line {
+                col = col.push(gap(t.metrics.head_gap)).push(
+                    text(scope.as_str())
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text2)),
+                );
+            }
+        }
+    }
+    if let Some(enabled) = confirm::confirm_actions(card, ui) {
+        let id = &card.id;
+        col = col.push(gap(t.metrics.body_gap)).push(buttons_row(
+            t,
+            vec![
+                btn(
+                    t,
+                    card.keep_label().into(),
+                    Look::Primary,
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.clone(),
+                        approve: true,
+                    }),
+                ),
+                btn(
+                    t,
+                    confirm::DROP.into(),
+                    if enabled {
+                        Look::Secondary
+                    } else {
+                        Look::Disabled
+                    },
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.clone(),
+                        approve: false,
+                    }),
+                ),
+            ],
+        ));
+    }
+    let foot = ui
+        .note
+        .as_ref()
+        .map(|n| n.text())
+        .or_else(|| card.footnote_in(&Local));
+    if let Some(foot) = foot {
+        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, foot));
+    }
+    frame(t, col.into())
+}
+
+/// 「还有 N 条待确认」 in place of a task's folded confirm cards.
+pub fn confirm_more<'a>(t: &Skin, task: &str, n: usize) -> Element<'a, Action> {
+    btn(
+        t,
+        confirm::more_label(n),
+        Look::Secondary,
+        Leading::None,
+        Some(Action::UnfoldConfirms {
+            task: task.to_string(),
+        }),
+    )
 }
 
 pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Action> {
@@ -1183,9 +1338,39 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
                 .into(),
         };
         let actions: Element<'a, Action> = if pending {
-            // 记下 / 不用 arrive with the confirm answer API (robroz ②);
-            // until then pending entries are display only.
-            Space::new().height(Length::Fixed(0.0)).into()
+            // 记下 / 不用 answer the entry's confirm card (robroz#66); an entry
+            // without one (older host) stays display only. No 改/忘掉 here.
+            match &mem.confirm_id {
+                Some(_) => row![
+                    btn(
+                        t,
+                        confirm::KEEP.into(),
+                        Look::Primary,
+                        Leading::None,
+                        (!busy).then(|| Action::MemoryDecide {
+                            id: mem.id.clone(),
+                            keep: true,
+                        })
+                    ),
+                    btn(
+                        t,
+                        confirm::DROP.into(),
+                        if busy {
+                            Look::Disabled
+                        } else {
+                            Look::Secondary
+                        },
+                        Leading::None,
+                        (!busy).then(|| Action::MemoryDecide {
+                            id: mem.id.clone(),
+                            keep: false,
+                        })
+                    ),
+                ]
+                .spacing(t.controls.button_gap)
+                .into(),
+                None => Space::new().height(Length::Fixed(0.0)).into(),
+            }
         } else if editing.is_some() {
             row![
                 btn(
@@ -1278,19 +1463,23 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
             .padding(Padding::from([0.0, m.row_pad_h]))
             .into()
         };
-        let split = !group.pending.is_empty();
-        if split {
-            col = col.push(sub(memories::PENDING_HEAD, group.pending.len()));
+        // 「待确认 N」 then 「已记下 N」; the kept head shows even when the
+        // group has nothing pending, so every scope group reads the same.
+        for (label, n) in group.heads() {
+            if label == memories::KEPT_HEAD {
+                if !group.pending.is_empty() {
+                    col = col.push(divider(t, m.row_pad_h));
+                    col = col.push(gap(m.dot_gap));
+                }
+                col = col.push(sub(label, n));
+                break;
+            }
+            col = col.push(sub(label, n));
             for (i, mem) in group.pending.iter().enumerate() {
                 if i > 0 {
                     col = col.push(divider(t, m.row_pad_h));
                 }
                 col = col.push(entry(mem, true));
-            }
-            if !group.kept.is_empty() {
-                col = col.push(divider(t, m.row_pad_h));
-                col = col.push(gap(m.dot_gap));
-                col = col.push(sub(memories::KEPT_HEAD, group.kept.len()));
             }
         }
         for (i, mem) in group.kept.iter().enumerate() {

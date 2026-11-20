@@ -5,6 +5,7 @@
 //! no contract event yet, so their shapes follow SPEC §8 and stay client-side
 //! until the backend adds them. None of this touches the frozen status card.
 
+pub mod confirm;
 pub mod interact;
 pub mod memories;
 pub mod routines;
@@ -18,6 +19,8 @@ pub enum Card {
     Choice(ChoiceCard),
     Approval(ApprovalCard),
     Draft(DraftCard),
+    /// A bro's proposal to keep (robroz#66).
+    Confirm(confirm::ConfirmCard),
 }
 
 impl Card {
@@ -27,6 +30,7 @@ impl Card {
             Card::Choice(c) => &c.id,
             Card::Approval(c) => &c.id,
             Card::Draft(c) => &c.id,
+            Card::Confirm(c) => &c.id,
         }
     }
 }
