@@ -140,6 +140,10 @@ pub fn choice_buttons(card: &ChoiceCard, ui: &CardUi) -> Vec<OptionButton> {
         .iter()
         .map(|o| {
             let (look, checkbox, clickable) = match &card.state {
+                // 409: someone already picked; lock until the answer lands.
+                ChoiceState::Open if ui.note == Some(Note::AlreadyAnswered) => {
+                    (Look::Disabled, None, false)
+                }
                 ChoiceState::Open => match (&ui.submitting, card.multi) {
                     (Some(sent), false) => {
                         if sent.contains(&o.id) {
@@ -193,7 +197,8 @@ pub fn confirm_button(card: &ChoiceCard, ui: &CardUi) -> Option<(String, bool)> 
         return None;
     }
     let n = ui.submitting.as_ref().map_or(ui.picks.len(), Vec::len);
-    Some((status::confirm_label(n), n > 0 && ui.submitting.is_none()))
+    let locked = ui.submitting.is_some() || ui.note == Some(Note::AlreadyAnswered);
+    Some((status::confirm_label(n), n > 0 && !locked))
 }
 
 /// What an approval card shows at the bottom.
@@ -209,6 +214,11 @@ pub enum ApprovalActions {
 }
 
 pub fn approval_actions(card: &ApprovalCard, ui: &CardUi) -> ApprovalActions {
+    // 409: answered elsewhere. Nothing left to press while the answered
+    // card is fetched; the note says why.
+    if ui.note == Some(Note::AlreadyDecided) {
+        return ApprovalActions::None;
+    }
     match card.state {
         ApprovalState::Pending => ApprovalActions::Decide { enabled: !ui.busy },
         ApprovalState::NeedsOwner => ApprovalActions::TakeOver,
@@ -401,6 +411,20 @@ mod tests {
     }
 
     #[test]
+    fn conflict_locks_open_choice() {
+        let mut ui = CardUi::default();
+        ui.choice_failed(Note::AlreadyAnswered);
+        let b = choice_buttons(&single(), &ui);
+        assert!(b.iter().all(|b| b.look == Look::Disabled && !b.clickable));
+        let card = multi();
+        let mut ui = CardUi::default();
+        ui.toggle_pick(&card, &card.options[0].id.clone());
+        ui.choice_failed(Note::AlreadyAnswered);
+        assert!(choice_buttons(&card, &ui).iter().all(|b| !b.clickable));
+        assert!(!confirm_button(&card, &ui).unwrap().1);
+    }
+
+    #[test]
     fn approval_and_draft_actions() {
         let mut a = ApprovalCard {
             id: "a1".into(),
@@ -423,6 +447,10 @@ mod tests {
         );
         a.state = ApprovalState::NeedsOwner;
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::TakeOver);
+        // 409 on a pending card: no buttons while the answer is fetched.
+        a.state = ApprovalState::Pending;
+        ui.action_done(Some(Note::AlreadyDecided));
+        assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
         a.state = ApprovalState::Approved {
             by: "Panda".into(),
             at: 0,
