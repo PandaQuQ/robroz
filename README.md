@@ -115,9 +115,30 @@ cargo test -p robroz-client
 
 Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行库；编译本身不需要额外的开发包。
 
+## 监听地址和令牌
+
+- 默认只监听本机 `127.0.0.1:8790`，本机使用不用令牌。
+- `ROBROZ_ADDR` 不是本机回环地址、又没设令牌时，宿主机拒绝启动，并提示先设 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`。
+- 令牌只从 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`（文件路径）读，两个只能设一个。读进来时去掉首尾空白，空值等于没设。至少 16 个字符，中间不能有空白。
+- 设了令牌以后，所有接口都要带 `Authorization: Bearer <令牌>`，监听本机时也一样。没带或带错返回 401，响应头带 `WWW-Authenticate: Bearer`。比对按常数时间做。
+- 令牌不进日志，也不进任何报错信息。
+- 客户端设了 `ROBROZ_TOKEN` 就会自动带上。
+
+## 实时推送
+
+`GET /api/groups/{id}/stream` 用 Server-Sent Events（`text/event-stream`）推送这个群的事件，和 `/events` 一样要带令牌。
+
+- 每条推送是一个契约里的 `Event`：`event:` 是它的 `type`，`data:` 是事件的 JSON，`id:` 是这张卡的变化时间。
+- 同一张卡再变化时会用同一个 `data.id` 再推一次，客户端按 id 原地替换，和轮询 `/events` 的处理方式相同。
+- 断线重连时带标准的 `Last-Event-ID` 请求头，或者 `?since=`，只补推这个时间之后的变化。两者都带时以 `Last-Event-ID` 为准。时间不合法返回 400，群不存在返回 404。
+- 没有变化就不推，只每 15 秒发一次保活注释。宿主机大约每 250 毫秒查一次库，不改任何写入路径。
+- 轮询 `GET /api/groups/{id}/events?since=` 留作兜底。
+
 ## 宿主机环境变量
 
-- `ROBROZ_ADDR`：监听地址，默认 `127.0.0.1:8790`
+- `ROBROZ_ADDR`：监听地址，默认 `127.0.0.1:8790`。不是本机回环地址时必须设令牌
+- `ROBROZ_TOKEN`：接口令牌，至少 16 个字符。不设就不鉴权
+- `ROBROZ_TOKEN_FILE`：从这个文件读令牌，和 `ROBROZ_TOKEN` 只能设一个
 - `ROBROZ_DB`：SQLite 路径，默认 `./robroz.db`
 - `ROBROZ_VOLUMES`：群目录根，默认 `./data/groups`，每个群一个子目录，挂到 `/workspace`
 - `ROBROZ_CONTROL`：任务控制目录根（每个任务的 `prompt.txt` 和接管标记 `takeover`），默认 `./data/control`。必须在 `ROBROZ_VOLUMES` 外面，否则宿主机拒绝启动
