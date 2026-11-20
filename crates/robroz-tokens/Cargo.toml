@@ -1,0 +1,8 @@
+[package]
+name = "robroz-tokens"
+version = "0.1.0"
+edition = "2021"
+description = "robroz design tokens: the single source for brand colours, radii, spacing, type and motion"
+
+[dependencies]
+serde_json = "1"
