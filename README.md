@@ -226,6 +226,20 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 - 名字会去掉首尾空白，不能为空，最长 64 个字符，不符合时返回 400。
 - 私聊里只能有这一个 bro。往私聊里加别的 bro，`POST /api/groups/{id}/members` 会返回 409。
 
+## 记忆（memories）
+
+bro 记住的关于你的事：你是谁（`profile`）、你的工作习惯（`habit`）、项目记录（`project`）。这一版只有存储和接口；bro 提议、确认卡、拼进模型提示和技能在后面的 PR 里做。
+
+- `GET /api/memories?kind=&scope=&status=`：返回 `{memories:[Memory]}`，按 `updatedAt` 从新到旧。三个参数都可选，留空等于不筛。不传 `status` 时只返回 `kept` 和 `pending`，`rejected` 要写 `status=rejected` 才返回。忘掉的永远不返回。参数不合法返回 400。
+- `POST /api/memories`：你自己记一条，请求体 `{"scope", "kind", "text"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Memory`。
+- `PATCH /api/memories/{id}`：请求体 `{"text"?, "kind"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。
+- `DELETE /api/memories/{id}`：忘掉。只是软删，记下忘掉的时间，以后不会再出现。返回 204；重复忘掉也返回 204，不改第一次的时间；从没有过的 id 返回 404。
+- `scope`：`user` 是所有 bro 都能用，`bot:<botId>` 只给这个 bro，bro 必须存在，否则 400「这个 bro 不存在」。其他写法返回 400。
+- `kind`：`profile`、`habit`、`project`。`source`：`user`（你写的）或 `bot`（bro 提的）。`status`：`pending`（等你确认）、`kept`（在用）、`rejected`（你拒绝过，留着记录但不用）。
+- `text` 会去掉首尾空白，不能为空，最长 2000 个字，不符合时返回 400。
+- `Memory` 的字段：`id`、`scope`、`kind`、`text`、`source`、`status`、`createdAt`、`updatedAt`。
+- 和其他 `/api` 一样，设了令牌就要带 `Authorization: Bearer <令牌>`。
+
 ## 发一句话（`/say`）
 
 客户端输入框发出的每一句话都走 `POST /api/groups/{id}/say`，请求体 `{"body": 内容}`。主机先把它存成一条文本消息，再决定要不要派任务；消息和任务在同一个事务里写入。原来的 `/messages` 和 `/tasks` 不变。

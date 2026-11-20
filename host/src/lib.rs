@@ -18,6 +18,7 @@ mod bros;
 pub mod auth;
 mod approvals;
 mod choices;
+mod memories;
 mod progress;
 mod pump;
 mod routines;
@@ -166,6 +167,11 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/approvals", post(approvals::create_approval))
         .route("/api/approvals/{id}/approve", post(approvals::approve))
         .route("/api/approvals/{id}/deny", post(approvals::deny))
+        .route("/api/memories", get(memories::list_memories).post(memories::create_memory))
+        .route(
+            "/api/memories/{id}",
+            patch(memories::update_memory).delete(memories::forget_memory),
+        )
         .with_state(state)
 }
 
@@ -273,6 +279,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
+    conn.execute_batch(memories::SCHEMA)?;
     Ok(())
 }
 
