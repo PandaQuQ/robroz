@@ -190,6 +190,18 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 - 返回 201 和 `{"message", "task"}`。没派任务时 `task` 为 `null`。
 - 存的是去掉首尾空白以后的内容。去掉空白后为空返回 400「请填写内容」，群不存在返回 404「群不存在」。
 
+## 接模型
+
+bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/completions`，变量见下面的「宿主机环境变量」。
+
+- 没设密钥就不接模型，bro 把 prompt 原样写进结果。CI 和端到端测试都走这条路。
+- 设了密钥，就必须同时设 `ROBROZ_MODEL_BASE_URL` 和 `ROBROZ_MODEL`。两个密钥变量都设了、密钥文件是空的、密钥里有空白，或者地址不以 `http://` / `https://` 开头，宿主机都拒绝启动，报错里只写变量名，不写值。
+- 模型由宿主机调用，单次调用最长等 120 秒。密钥不进容器，也不进群目录，日志和报错里都不会出现。沙箱照样不联网。
+- 宿主机在 `docker run` 之前把模型的回答写进这个任务的 `/control/reply.txt`（容器里只读），runner 用它代替回显，写进 `result.txt`。每次运行前都会先删掉旧的回答，重试时不会拿到上一次的。
+- 任务会不会卡住，仍然只看 prompt 里的 `robroz-action:` 行，跟模型回答了什么无关。
+- 模型调用失败时任务照样完成，结果写「模型没回：原因」。
+- 真跑模型时，密钥由 Panda 在私聊里交给后端，不要发到群里，也不要提交进仓库。
+
 ## 宿主机环境变量
 
 - `ROBROZ_ADDR`：监听地址，默认 `127.0.0.1:8790`。不是本机回环地址时必须设令牌
@@ -201,3 +213,7 @@ bro 在库里就是一个 bot。私聊是只有这一个 bro 的普通群，所�
 - `ROBROZ_IMAGE`：runner 镜像，默认 `robroz-runner:local`
 - `ROBROZ_CONTAINER_USER`：容器的 `--user`，默认宿主机进程的 `uid:gid`
 - `ROBROZ_GET_LIMIT`：每个任务的 GET 上限，默认 8
+- `ROBROZ_MODEL_BASE_URL`：OpenAI 兼容服务的地址，比如 `https://api.openai.com/v1`，要以 `http://` 或 `https://` 开头。设了密钥就必须设
+- `ROBROZ_MODEL`：模型名，比如 `gpt-4o-mini`。设了密钥就必须设
+- `ROBROZ_MODEL_KEY`：模型密钥。不设就不接模型，bro 原样回显
+- `ROBROZ_MODEL_KEY_FILE`：从这个文件读模型密钥，和 `ROBROZ_MODEL_KEY` 只能设一个

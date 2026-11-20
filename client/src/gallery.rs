@@ -139,7 +139,7 @@ impl Gallery {
             install(ChoiceState::Answered {
                 selected: vec!["both".into()],
                 at: Some(iso(at(2))),
-                elsewhere: false,
+                by: None,
             }),
         );
 
@@ -175,11 +175,23 @@ impl Gallery {
                 ),
                 sample(
                     "approval · approved",
-                    approval(ApprovalState::Approved { at: at(2) }, "后端"),
+                    approval(
+                        ApprovalState::Approved {
+                            by: None,
+                            at: at(2),
+                        },
+                        "后端",
+                    ),
                 ),
                 sample(
                     "approval · denied",
-                    approval(ApprovalState::Denied { at: at(3) }, "后端"),
+                    approval(
+                        ApprovalState::Denied {
+                            by: None,
+                            at: at(3),
+                        },
+                        "后端",
+                    ),
                 ),
                 sample(
                     "approval · needs owner sign-in（群里只给这一个按钮）",
