@@ -249,7 +249,8 @@ fn write_outcome(
 ) -> rusqlite::Result<()> {
     match outcome {
         Outcome::Blocked(stop) => {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            let changed = tx.execute(
                 "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2,
                                   intent_kind = ?4, intent_line = ?5, intent_hash = ?6
                  WHERE id = ?3 AND state = 'running'",
@@ -262,6 +263,11 @@ fn write_outcome(
                     stop.as_ref().map(|v| v.hash.as_str()),
                 ],
             )?;
+            // Writing outside asks first: an approval card the person answers.
+            if let Some(stop) = stop.as_ref().filter(|s| changed > 0 && crate::approvals::needs_approval(s.kind)) {
+                crate::approvals::gate_task(&tx, &task.id, &task.prompt, &stop.hash, updated_at)?;
+            }
+            tx.commit()?;
         }
         Outcome::Dead => {
             conn.execute(
