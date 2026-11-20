@@ -1501,45 +1501,66 @@ mod tests {
         assert_eq!(gets, 1);
     }
 
-    #[tokio::test]
-    async fn get_over_limit_is_dead_run_not_blocked() {
+    /// Tier Metered: the GETs of one run against `limit`, ending as done.
+    async fn run_with_gets(gets: usize, limit: u64, extra: Option<&str>) -> (Router, String, String) {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
-        let prompt = "robroz-action:get\nrobroz-action:get\nrobroz-action:get";
-        let (group_id, _) = seed_task(&app, "超限", prompt).await;
+        let prompt = vec!["robroz-action:get"; gets].join("\n") + "\n画一张草图";
+        let (group_id, task_id) = seed_task(&app, "出网", &prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
-        pump_db_limit(&path, &volumes, &mut fake, 2);
+        pump_db_limit(&path, &volumes, &mut fake, limit);
         fake.finish(0);
-        pump_db_limit(&path, &volumes, &mut fake, 2);
-        assert!(fake.names().is_empty());
+        if let Some(line) = extra {
+            let outbound = fake.containers[0].group_dir.join(format!("tasks/{task_id}/outbound.txt"));
+            std::fs::write(&outbound, line).unwrap();
+        }
+        pump_db_limit(&path, &volumes, &mut fake, limit);
+        assert!(fake.names().is_empty(), "container removed");
+        (app, group_id, task_id)
+    }
+
+    #[tokio::test]
+    async fn get_at_limit_finishes_done() {
+        let (app, group_id, _) = run_with_gets(2, 2, None).await;
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert!(statuses(&events)[0].get("failure").is_none());
+        assert_eq!(deliveries(&events).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_over_limit_fails_done_not_blocked() {
+        let (app, group_id, _) = run_with_gets(3, 2, None).await;
         let events = events_of(&app, &group_id).await;
         let card = statuses(&events)[0];
-        assert_eq!(card["state"], "running");
-        assert_eq!(card["label"], "没写出结果");
+        assert_eq!(card["state"], "done");
+        assert_eq!(card["failure"], "出网超额：已用 3 次，上限 2");
         assert_eq!(card["containerUp"], false);
-        assert_ne!(card["state"], "blocked");
-        assert!(deliveries(&events).is_empty());
+        assert!(deliveries(&events).is_empty(), "no successful delivery");
+        assert!(events["events"].as_array().unwrap().iter().all(|e| e["type"] != "approval"));
     }
 
     #[tokio::test]
     async fn non_get_outbound_fails_without_blocking() {
-        let path = temp_db();
-        let volumes = temp_volumes();
-        let app = test_app(&path);
-        let (group_id, task_id) = seed_task(&app, "非GET", "普通写入").await;
-        let mut fake = super::sandbox::FakeSandbox::new();
-        pump_db(&path, &volumes, &mut fake);
-        fake.finish(0);
-        let outbound = fake.containers[0].group_dir.join(format!("tasks/{task_id}/outbound.txt"));
-        std::fs::write(&outbound, "POST\n").unwrap();
-        pump_db(&path, &volumes, &mut fake);
-        assert!(fake.names().is_empty());
+        let (app, group_id, _) = run_with_gets(0, 8, Some("POST\n")).await;
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "running");
-        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert_eq!(statuses(&events)[0]["failure"], "出网只允许 GET：用了 POST");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
+    }
+
+    /// Tier Allow: a workspace write finishes without any card for a person.
+    #[tokio::test]
+    async fn workspace_write_needs_no_card() {
+        let (app, group_id, _) = run_with_gets(0, 8, None).await;
+        let events = events_of(&app, &group_id).await;
+        let kinds: Vec<&str> = events["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert!(kinds.iter().all(|k| matches!(*k, "message" | "status" | "delivery")), "{kinds:?}");
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert!(statuses(&events)[0].get("failure").is_none());
+        assert_eq!(deliveries(&events).len(), 1);
     }
 
     #[tokio::test]
