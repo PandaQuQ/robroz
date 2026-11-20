@@ -271,6 +271,7 @@ fn choice(group: &str, id: &str, multi: bool) -> GroupEvent {
             choice: None,
             created_at: at("04"),
             answered_at: None,
+            answered_by: None,
         },
     }
 }

@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    AnswerChoice, ChoiceOption, CreateChoice, Event, CHOICE_OPTIONS_MAX, CHOICE_OPTIONS_MIN,
+    clean_answered_by, AnswerChoice, ChoiceOption, CreateChoice, Event, CHOICE_OPTIONS_MAX, CHOICE_OPTIONS_MIN,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -26,7 +26,7 @@ pub(crate) const SCHEMA: &str = "
     );
 ";
 
-const SELECT: &str = "SELECT c.id, c.bot_id, b.name, c.prompt, c.options, c.choice, c.created_at, c.answered_at, c.multi
+const SELECT: &str = "SELECT c.id, c.bot_id, b.name, c.prompt, c.options, c.choice, c.created_at, c.answered_at, c.multi, c.answered_by
      FROM choices c JOIN bots b ON b.id = c.bot_id";
 
 /// Trims and checks options: 2 to 4, non-empty labels, distinct non-empty
@@ -89,6 +89,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         choice,
         created_at: row.get(6)?,
         answered_at: row.get(7)?,
+        answered_by: row.get(9)?,
     })
 }
 
@@ -180,10 +181,14 @@ pub(crate) async fn answer_choice(
             Ok(pick) => pick,
             Err(message) => return Ok(Err(error_response(StatusCode::BAD_REQUEST, message))),
         };
+        let by = match clean_answered_by(body.answered_by.as_deref()) {
+            Ok(by) => by,
+            Err(message) => return Ok(Err(error_response(StatusCode::BAD_REQUEST, message))),
+        };
         let pick_json = serde_json::to_string(&pick).expect("pick serializes");
         let changed = conn.execute(
-            "UPDATE choices SET choice = ?1, answered_at = ?2 WHERE id = ?3 AND choice IS NULL",
-            params![pick_json, now_rfc3339(), id],
+            "UPDATE choices SET choice = ?1, answered_at = ?2, answered_by = ?4 WHERE id = ?3 AND choice IS NULL",
+            params![pick_json, now_rfc3339(), id, by],
         )?;
         if changed == 0 {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经选过了")));
