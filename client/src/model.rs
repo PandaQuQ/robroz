@@ -4,14 +4,15 @@
 //! This module only decides where a card sits in the stream.
 
 use robroz_card::{Palette, Tone};
-use robroz_contract::{Event, MessageKind};
+use robroz_contract::{Event, MessageKind, TaskState};
 use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
     pub task_id: String,
     pub bot_name: String,
-    pub status_line: &'static str,
+    /// From `robroz-card`, or 「没做成：…」 when the host sent a `failure`.
+    pub status_line: String,
     pub tone: Tone,
     pub palette: Palette,
     pub action: Option<&'static str>,
@@ -23,6 +24,13 @@ pub struct DeliveryCard {
     /// Volume-relative path, shown as-is. Display only.
     pub path: String,
     pub badge: Option<&'static str>,
+    /// Why the task did not get done. Drawn grey like 「没写出结果」, no buttons.
+    pub failure: Option<String>,
+}
+
+/// The grey line for a task the host says did not get done.
+pub fn failure_line(failure: &str) -> String {
+    format!("没做成：{failure}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +132,11 @@ pub fn preview(event: &Event) -> String {
         },
         Event::Status {
             bot_name,
+            failure: Some(failure),
+            ..
+        } => format!("{bot_name}：{}", failure_line(failure)),
+        Event::Status {
+            bot_name,
             state,
             container_up,
             ..
@@ -131,6 +144,10 @@ pub fn preview(event: &Event) -> String {
             "{bot_name}：{}",
             robroz_card::status_line(*state, *container_up)
         ),
+        Event::Delivery {
+            failure: Some(failure),
+            ..
+        } => failure_line(failure),
         Event::Delivery { summary, .. } => summary.clone(),
         Event::Choice {
             bot_name, prompt, ..
@@ -158,13 +175,25 @@ fn to_row(event: &Event) -> (Key, Row) {
             bot_name,
             state,
             container_up,
+            failure,
             ..
         } => {
-            let look = robroz_card::appearance(*state, *container_up);
+            // A failed task is grey with no action, like a dead run, never
+            // the green 完成.
+            let (look, status_line) = match failure {
+                Some(f) => (
+                    robroz_card::appearance(TaskState::Running, false),
+                    failure_line(f),
+                ),
+                None => (
+                    robroz_card::appearance(*state, *container_up),
+                    robroz_card::status_line(*state, *container_up).to_string(),
+                ),
+            };
             let card = StatusCard {
                 task_id: task_id.clone(),
                 bot_name: bot_name.clone(),
-                status_line: robroz_card::status_line(*state, *container_up),
+                status_line,
                 tone: look.tone,
                 palette: robroz_card::palette(look.tone),
                 action: look.action,
@@ -178,12 +207,14 @@ fn to_row(event: &Event) -> (Key, Row) {
             summary,
             path,
             briefing,
+            failure,
             ..
         } => {
             let card = DeliveryCard {
                 summary: summary.clone(),
                 path: path.clone(),
                 badge: briefing.then(robroz_card::briefing_badge),
+                failure: failure.clone(),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
         }
@@ -216,7 +247,6 @@ pub fn attachment_label(kind: MessageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use robroz_contract::TaskState;
 
     fn status(task: &str, bot: &str, state: TaskState, container_up: bool) -> Event {
         Event::Status {
@@ -275,8 +305,8 @@ mod tests {
         )
     }
 
-    fn actual(card: &StatusCard) -> (&'static str, Tone, Palette, Option<&'static str>) {
-        (card.status_line, card.tone, card.palette, card.action)
+    fn actual(card: &StatusCard) -> (&str, Tone, Palette, Option<&'static str>) {
+        (&card.status_line, card.tone, card.palette, card.action)
     }
 
     #[test]
@@ -320,6 +350,66 @@ mod tests {
         assert_eq!(cards[0].status_line, "没写出结果");
         assert_eq!(cards[0].palette, expected(TaskState::Queued, false).2);
         assert_eq!(cards[0].action, None);
+    }
+
+    #[test]
+    fn failed_task_is_grey_without_action_or_done() {
+        let mut ev = status("t4", "Ada", TaskState::Done, false);
+        if let Event::Status { failure, .. } = &mut ev {
+            *failure = Some("模型没回：模型服务返回 500".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&status("t4", "Ada", TaskState::Running, true));
+        feed.apply(&ev);
+        let cards = status_cards(&feed);
+        assert_eq!(cards.len(), 1, "updates in place");
+        assert_eq!(cards[0].status_line, "没做成：模型没回：模型服务返回 500");
+        assert_eq!(cards[0].tone, Tone::Gray);
+        assert_eq!(cards[0].palette, expected(TaskState::Running, false).2);
+        assert_ne!(cards[0].palette, expected(TaskState::Done, false).2);
+        assert_eq!(cards[0].action, None);
+        assert_eq!(preview(&ev), "Ada：没做成：模型没回：模型服务返回 500");
+    }
+
+    #[test]
+    fn failed_delivery_carries_failure_and_old_json_is_unchanged() {
+        let mut ev = delivery("d9", "tasks/t9/result.txt", false);
+        if let Event::Delivery { failure, .. } = &mut ev {
+            *failure = Some("你拒绝了：发送周报".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&ev);
+        assert!(matches!(
+            feed.rows().next(),
+            Some(Row::Delivery(DeliveryCard { failure: Some(f), .. })) if f == "你拒绝了：发送周报"
+        ));
+        assert_eq!(preview(&ev), "没做成：你拒绝了：发送周报");
+
+        let old: Event = serde_json::from_value(serde_json::json!({
+            "type": "delivery", "id": "d1", "summary": "已写入结果",
+            "path": "tasks/t1/result.txt", "briefing": false,
+            "createdAt": "2026-10-07T19:00:00.000Z"
+        }))
+        .unwrap();
+        let mut feed = Feed::default();
+        feed.apply(&old);
+        assert!(matches!(
+            feed.rows().next(),
+            Some(Row::Delivery(DeliveryCard { failure: None, .. }))
+        ));
+        assert_eq!(preview(&old), "已写入结果");
+        let old_status: Event = serde_json::from_value(serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
+            "state": "done", "label": "完成", "createdAt": "2026-10-07T19:00:00.000Z",
+            "updatedAt": "2026-10-07T19:00:00.000Z", "containerUp": false
+        }))
+        .unwrap();
+        let mut feed = Feed::default();
+        feed.apply(&old_status);
+        assert_eq!(
+            actual(status_cards(&feed)[0]),
+            expected(TaskState::Done, false)
+        );
     }
 
     #[test]
