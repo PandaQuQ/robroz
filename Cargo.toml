@@ -5,6 +5,8 @@ members = [
     "crates/robroz-contract",
     "crates/robroz-policy",
     "crates/robroz-card",
+    "crates/robroz-tokens",
+    "crates/robroz-ui",
     "runner",
 ]
 resolver = "2"
