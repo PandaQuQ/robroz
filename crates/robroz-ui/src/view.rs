@@ -6,7 +6,7 @@
 
 use chrono::Local;
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{button, canvas, column, container, hover, row, space, text, Space};
+use iced::widget::{button, canvas, column, container, hover, row, space, text, text_input, Space};
 use iced::{
     font, Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Pixels,
     Shadow as IcedShadow, Theme as IcedTheme, Vector,
@@ -16,6 +16,7 @@ use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::routines::{self, Routines};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
+use crate::conversations::{self, Conversation, Conversations};
 use crate::theme::{Rgb, Skin};
 use crate::widgets::{Check, CheckBox, Rings, Toggle};
 
@@ -58,6 +59,20 @@ pub enum Action {
     ToggleBotName {
         card: String,
     },
+    /// Conversation list: open this group or DM.
+    OpenChat {
+        group: String,
+    },
+    /// 「引入一个 bro」: create a bro and open its DM.
+    NewBro,
+    /// Narrow screens: back from a chat to the list.
+    BackToList,
+    /// Composer text changed.
+    ComposerEdit {
+        text: String,
+    },
+    /// Enter or 发送 in the composer.
+    ComposerSend,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -772,6 +787,11 @@ pub fn draft<'a>(
 
 // ---------- Routines ----------
 
+/// Full-width hairline (chat header / composer edges).
+pub fn rule<'a, M: 'a>(t: &Skin) -> Element<'a, M> {
+    divider(t, 0.0)
+}
+
 fn divider<'a, M: 'a>(t: &Skin, inset: f32) -> Element<'a, M> {
     let c = t.palette.divider;
     container(
@@ -912,5 +932,329 @@ pub fn routines_panel<'a>(t: &Skin, routines: &'a Routines, now: i64) -> Element
             shadow: shadow(&tt),
             ..container::Style::default()
         })
+        .into()
+}
+
+// ---------- Conversation list ----------
+
+/// Avatar: accent ring with the name's first letter (UI: logo ring + initial).
+fn avatar<'a, M: 'a>(t: &Skin, name: &str) -> Element<'a, M> {
+    let size = avatar_size(t);
+    let ring = t.palette.accent;
+    container(
+        text(conversations::initial(name))
+            .size(t.type_.row_name)
+            .font(bold())
+            .color(color(ring)),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(move |_| container::Style {
+        border: Border::default()
+            .width(2.0)
+            .color(color(ring))
+            .rounded(size / 2.0),
+        ..container::Style::default()
+    })
+    .into()
+}
+
+fn avatar_size(t: &Skin) -> f32 {
+    t.controls.touch_target.max(t.controls.button_h) + 4.0
+}
+
+/// Unread badge width estimate, reserved beside the preview.
+const BADGE_W: f32 = 30.0;
+/// Time column width estimate (`10月7日`, `昨天`, `23:59`).
+const TIME_W: f32 = 52.0;
+/// Accent bar on the open chat's row (drawn in the row's left padding).
+const SELECTED_BAR: f32 = 3.0;
+const ROW_PAD_H: f32 = 8.0;
+const ROW_GAP: f32 = 10.0;
+
+/// Unread badge: accent pill with the count (no separate red token yet).
+fn unread_badge<'a, M: 'a>(t: &Skin, label: String) -> Element<'a, M> {
+    let (bg, fg) = (t.palette.accent, t.palette.on_accent);
+    container(text(label).size(t.type_.tag).font(bold()).color(color(fg)))
+        .padding(Padding::from([1.0, 6.0]))
+        .style(move |_| container::Style {
+            background: Some(color(bg).into()),
+            border: Border::default().rounded(9.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A conversation row: the open chat sits on `surface` with a border, so
+/// it stands out on the sidebar in both themes; hover uses `control_hover`.
+pub fn conversation_row_style(
+    t: Skin,
+    selected: bool,
+) -> impl Fn(&IcedTheme, button::Status) -> button::Style {
+    move |_, status| {
+        let (bg, border) = if selected {
+            (
+                Some(Background::Color(color(t.palette.surface))),
+                Border::default()
+                    .width(t.stroke.card)
+                    .color(color(t.palette.border2))
+                    .rounded(t.radii.row),
+            )
+        } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            (
+                Some(Background::Color(color(t.palette.control_hover))),
+                Border::default().rounded(t.radii.row),
+            )
+        } else {
+            (None, Border::default().rounded(t.radii.row))
+        };
+        button::Style {
+            background: bg,
+            text_color: color(t.palette.text),
+            border,
+            ..button::Style::default()
+        }
+    }
+}
+
+/// Width units that fit in `px` at font size `size`.
+fn units_in(t: &Skin, px: f32, size: f32) -> usize {
+    (px / (size * t.type_.unit_width)).max(4.0) as usize
+}
+
+fn conversation_row<'a>(
+    t: &Skin,
+    c: &'a Conversation,
+    selected: bool,
+    now: i64,
+    width: f32,
+) -> Element<'a, Action> {
+    let time = c
+        .last_at
+        .as_deref()
+        .map(|at| conversations::list_time(at, now, &Local))
+        .unwrap_or_default();
+    let badge = conversations::badge(c.unread);
+    // Text column: row minus padding, avatar and gap.
+    let body_w = width - 2.0 * ROW_PAD_H - ROW_GAP - avatar_size(t);
+    let name = conversations::fit(&c.name, units_in(t, body_w - TIME_W, t.type_.row_name));
+    let preview_w = body_w - if badge.is_some() { BADGE_W } else { 0.0 };
+    let preview = conversations::fit(
+        c.preview.as_deref().unwrap_or_default(),
+        units_in(t, preview_w, t.type_.foot),
+    );
+    let top = row![
+        container(
+            text(name)
+                .size(t.type_.row_name)
+                .font(bold())
+                .wrapping(Wrapping::None)
+                .color(color(t.palette.text)),
+        )
+        .width(Fill)
+        .clip(true),
+        text(time)
+            .size(t.type_.row_time)
+            .wrapping(Wrapping::None)
+            .color(color(t.palette.text3)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let mut bottom = row![container(
+        text(preview)
+            .size(t.type_.foot)
+            .wrapping(Wrapping::None)
+            .color(color(t.palette.text2))
+    )
+    .width(Fill)
+    .clip(true)]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    if let Some(b) = badge {
+        bottom = bottom.push(unread_badge(t, b));
+    }
+    let body = column![top, bottom].spacing(2).width(Fill).clip(true);
+    let content: Element<'a, Action> = container(
+        row![avatar(t, &c.name), body]
+            .spacing(ROW_GAP)
+            .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding(Padding::from([6.0, ROW_PAD_H]))
+    .into();
+    // The open chat gets an accent bar drawn inside the left padding, so
+    // it takes no layout space and every row's avatar lines up flush.
+    let inner: Element<'a, Action> = if selected {
+        let accent = t.palette.accent;
+        let bar = container(Space::new())
+            .width(Length::Fixed(SELECTED_BAR))
+            .height(Length::Fixed(avatar_size(t) - 8.0))
+            .style(move |_| container::Style {
+                background: Some(color(accent).into()),
+                border: Border::default().rounded(SELECTED_BAR / 2.0),
+                ..container::Style::default()
+            });
+        iced::widget::stack![
+            content,
+            container(bar)
+                .height(Fill)
+                .align_y(Alignment::Center)
+                .padding(Padding {
+                    left: 2.0,
+                    ..Padding::ZERO
+                }),
+        ]
+        .into()
+    } else {
+        content
+    };
+    button(inner)
+        .width(Fill)
+        .padding(0)
+        .style(conversation_row_style(*t, selected))
+        .on_press(Action::OpenChat {
+            group: c.group_id.clone(),
+        })
+        .into()
+}
+
+/// The IM list: heading with 「引入一个 bro」, then every group and DM,
+/// newest first. `width` is the list's own width (for fitting previews).
+/// Empty: 「还没有 bro，引入第一个」 and the same button.
+pub fn conversation_list<'a>(
+    t: &Skin,
+    list: &'a Conversations,
+    selected: Option<&str>,
+    now: i64,
+    width: f32,
+) -> Element<'a, Action> {
+    let h = t.controls.touch_target.max(t.controls.button_h);
+    let new_bro = || {
+        button(
+            text(conversations::NEW_BRO)
+                .size(t.type_.foot)
+                .height(Fill)
+                .align_y(Alignment::Center),
+        )
+        .height(Length::Fixed(h))
+        .padding(Padding::from([0.0, 10.0]))
+        .style(nav_button_style(*t, false))
+        .on_press(Action::NewBro)
+    };
+    let head = row![
+        text(conversations::TITLE)
+            .size(t.type_.list_title)
+            .font(bold())
+            .color(color(t.palette.text)),
+        space::horizontal(),
+        new_bro(),
+    ]
+    .align_y(Alignment::Center);
+    let mut col = column![head].spacing(2);
+    if list.is_empty() {
+        col = col.push(gap(12.0)).push(
+            text(conversations::EMPTY_HINT)
+                .size(t.type_.empty_hint)
+                .color(color(t.palette.text2)),
+        );
+        return col.into();
+    }
+    for c in list.rows() {
+        col = col.push(conversation_row(
+            t,
+            c,
+            selected == Some(c.group_id.as_str()),
+            now,
+            width,
+        ));
+    }
+    col.into()
+}
+
+// ---------- Chat page ----------
+
+/// Top of the chat page: the group or bro name (and `私聊` for a DM).
+/// `back` adds 「‹」 for narrow screens, where the chat covers the list.
+pub fn chat_header<'a>(t: &Skin, name: &str, dm: bool, back: bool) -> Element<'a, Action> {
+    let h = t.controls.touch_target.max(t.controls.button_h);
+    let mut bar = row![].spacing(8).align_y(Alignment::Center);
+    if back {
+        bar = bar.push(
+            button(
+                text("‹ 聊天")
+                    .size(t.type_.row_name)
+                    .height(Fill)
+                    .align_y(Alignment::Center),
+            )
+            .height(Length::Fixed(h))
+            .padding(Padding::from([0.0, 8.0]))
+            .style(nav_button_style(*t, false))
+            .on_press(Action::BackToList),
+        );
+    }
+    bar = bar.push(
+        text(name.to_string())
+            .size(t.type_.list_title)
+            .font(bold())
+            .wrapping(Wrapping::None)
+            .color(color(t.palette.text)),
+    );
+    if dm {
+        bar = bar.push(tag(t, "私聊", t.palette.text2));
+    }
+    container(bar)
+        .width(Fill)
+        .height(Length::Fixed(h + 12.0))
+        .align_y(Alignment::Center)
+        .padding(Padding::from([0.0, t.metrics.stream_padding]))
+        .into()
+}
+
+/// Bottom of the chat page: one-line input and 发送; Enter sends.
+/// `note` is the last send error, shown above the input.
+pub fn composer<'a>(
+    t: &Skin,
+    draft: &str,
+    hint: &str,
+    sending: bool,
+    note: Option<&str>,
+) -> Element<'a, Action> {
+    let h = t.controls.touch_target.max(t.controls.button_h);
+    let can_send = !sending && !draft.trim().is_empty();
+    let mut input = text_input(hint, draft)
+        .size(t.type_.body)
+        .padding(Padding::from([8.0, 10.0]));
+    if !sending {
+        input = input
+            .on_input(|text| Action::ComposerEdit { text })
+            .on_submit(Action::ComposerSend);
+    }
+    let send = btn(
+        t,
+        conversations::SEND.into(),
+        Look::Primary,
+        Leading::None,
+        can_send.then_some(Action::ComposerSend),
+    );
+    let mut col = column![].spacing(4);
+    if let Some(n) = note {
+        col = col.push(footnote(t, n.to_string()));
+    }
+    col = col.push(
+        row![
+            container(input)
+                .width(Fill)
+                .height(Length::Fixed(h))
+                .align_y(Alignment::Center),
+            send
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    );
+    container(col)
+        .width(Fill)
+        .padding(Padding::from([8.0, t.metrics.stream_padding]))
         .into()
 }

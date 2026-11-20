@@ -1,18 +1,28 @@
-//! Calls the client makes when someone clicks a card or a routine toggle.
+//! Calls the client makes when someone clicks a card, a routine toggle, a
+//! chat or 「＋ 新 bro」.
 //!
 //! All endpoint paths live in [`paths`], so switching to final backend names
 //! is a one-place change.
 //! - `choice` and routines use robroz#15: `POST /api/choices/:id/answer`,
 //!   `GET /api/groups/:id/schedules`, `PATCH /api/schedules/:id`.
+//! - Unread uses robroz#26: `GET /api/unread`, `POST /api/groups/:id/read`.
+//! - Bros and DMs use robroz#28: `GET /api/bros`, `POST /api/bros`.
+//! - The composer uses the existing `POST /api/groups/:id/messages` (store
+//!   the text) and `POST /api/groups/:id/tasks` (queue it for a bro).
 //! - `approval` and `draft` have no backend endpoints yet. They use the UI
 //!   SPEC §9 suggestions (`POST /api/cards/:id/decision`,
 //!   `POST /api/cards/:id/send`) until the backend defines them.
 
 use std::sync::Mutex;
-use std::time::Duration;
 
-use robroz_contract::{AnswerChoice, ErrorBody, Event, ScheduleEntry, Schedules, UpdateSchedule};
+use robroz_contract::{
+    next_bro_name, AnswerChoice, Bro, Bros, CreateBro, CreateTask, ErrorBody, Event, Message,
+    MessageKind, PostMessage, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
+    UpdateSchedule,
+};
 use robroz_ui::cards::interact::Note;
+
+use crate::conn::Conn;
 
 pub mod paths {
     /// robroz#15.
@@ -26,6 +36,22 @@ pub mod paths {
     /// robroz#15.
     pub fn schedule(id: &str) -> String {
         format!("/api/schedules/{id}")
+    }
+    /// robroz#26.
+    pub const UNREAD: &str = "/api/unread";
+    /// robroz#26.
+    pub fn mark_read(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/read")
+    }
+    /// robroz#28.
+    pub const BROS: &str = "/api/bros";
+    /// Existing host route: store a user message in a group.
+    pub fn messages(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/messages")
+    }
+    /// Existing host route: queue a task for a bro in a group.
+    pub fn tasks(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/tasks")
     }
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn approval_decision(id: &str) -> String {
@@ -51,6 +77,24 @@ pub mod bodies {
 
     pub fn decision(approve: bool) -> String {
         serde_json::json!({ "approve": approve }).to_string()
+    }
+
+    /// `{"kind":"text","body":…}`.
+    pub fn text(body: &str) -> String {
+        serde_json::to_string(&PostMessage {
+            kind: MessageKind::Text,
+            body: body.to_string(),
+        })
+        .expect("serialize message")
+    }
+
+    /// `{"assigneeBotId":…,"prompt":…}`.
+    pub fn task(bot_id: &str, prompt: &str) -> String {
+        serde_json::to_string(&CreateTask {
+            assignee_bot_id: bot_id.to_string(),
+            prompt: prompt.to_string(),
+        })
+        .expect("serialize task")
     }
 
     pub fn paused(paused: bool) -> String {
@@ -86,6 +130,18 @@ impl ApiError {
 
 /// Blocking calls; the app runs them off the UI thread.
 pub trait CardApi: Send + Sync {
+    /// Every group's unread count and last activity, newest first.
+    fn unread(&self) -> Result<Vec<Unread>, ApiError>;
+    /// Mark a chat read up to now; returns its new unread state.
+    fn mark_read(&self, group_id: &str) -> Result<Unread, ApiError>;
+    /// All bros with their DM group.
+    fn bros(&self) -> Result<Vec<Bro>, ApiError>;
+    /// New bro with the next default name and its DM.
+    fn create_bro(&self) -> Result<Bro, ApiError>;
+    /// Composer: store a text message in a group.
+    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError>;
+    /// Composer: queue `prompt` for a bro who is in the group.
+    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError>;
     /// Returns the updated `choice` event when the host sends it back.
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError>;
     fn decide(&self, id: &str, approve: bool) -> Result<(), ApiError>;
@@ -95,21 +151,12 @@ pub trait CardApi: Send + Sync {
 }
 
 pub struct HttpApi {
-    base: String,
-    agent: ureq::Agent,
+    conn: Conn,
 }
 
 impl HttpApi {
-    pub fn new(base: impl Into<String>) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(5)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-        Self {
-            base: base.into().trim_end_matches('/').to_string(),
-            agent,
-        }
+    pub fn new(conn: Conn) -> Self {
+        Self { conn }
     }
 
     fn finish(
@@ -118,8 +165,8 @@ impl HttpApi {
         url: &str,
         result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     ) -> Result<String, ApiError> {
-        let mut response =
-            result.map_err(|e| ApiError::Transport(format!("连不上宿主机 {}: {e}", self.base)))?;
+        let mut response = result
+            .map_err(|e| ApiError::Transport(format!("连不上宿主机 {}: {e}", self.conn.base())))?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
@@ -140,8 +187,8 @@ impl HttpApi {
     }
 
     fn post(&self, path: &str, body: Option<String>) -> Result<String, ApiError> {
-        let url = format!("{}{path}", self.base);
-        let req = self.agent.post(&url);
+        let url = self.conn.url(path);
+        let req = self.conn.post(path);
         let result = match body {
             Some(b) => req.header("content-type", "application/json").send(b),
             None => req.send_empty(),
@@ -150,18 +197,18 @@ impl HttpApi {
     }
 
     fn patch(&self, path: &str, body: String) -> Result<String, ApiError> {
-        let url = format!("{}{path}", self.base);
+        let url = self.conn.url(path);
         let result = self
-            .agent
-            .patch(&url)
+            .conn
+            .patch(path)
             .header("content-type", "application/json")
             .send(body);
         self.finish("PATCH", &url, result)
     }
 
     fn get(&self, path: &str) -> Result<String, ApiError> {
-        let url = format!("{}{path}", self.base);
-        let result = self.agent.get(&url).call();
+        let url = self.conn.url(path);
+        let result = self.conn.get(path).call();
         self.finish("GET", &url, result)
     }
 }
@@ -171,6 +218,31 @@ fn decode<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, ApiError> {
 }
 
 impl CardApi for HttpApi {
+    fn unread(&self) -> Result<Vec<Unread>, ApiError> {
+        Ok(decode::<Unreads>(&self.get(paths::UNREAD)?)?.groups)
+    }
+
+    fn mark_read(&self, group_id: &str) -> Result<Unread, ApiError> {
+        decode(&self.post(&paths::mark_read(group_id), None)?)
+    }
+
+    fn bros(&self) -> Result<Vec<Bro>, ApiError> {
+        Ok(decode::<Bros>(&self.get(paths::BROS)?)?.bros)
+    }
+
+    fn create_bro(&self) -> Result<Bro, ApiError> {
+        let body = serde_json::to_string(&CreateBro::default()).expect("serialize bro");
+        decode(&self.post(paths::BROS, Some(body))?)
+    }
+
+    fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError> {
+        decode(&self.post(&paths::messages(group_id), Some(bodies::text(body)))?)
+    }
+
+    fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
+        decode(&self.post(&paths::tasks(group_id), Some(bodies::task(bot_id, prompt)))?)
+    }
+
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError> {
         let body = self.post(&paths::answer_choice(id), Some(bodies::answer(choice)))?;
         Ok(decode::<Event>(&body).ok())
@@ -199,20 +271,91 @@ impl CardApi for HttpApi {
 }
 
 /// Offline API for `--fake` and the gallery: accepts everything and keeps
-/// schedules in memory.
+/// schedules, unread counts and bros in memory.
 pub struct FakeApi {
     schedules: Mutex<Vec<ScheduleEntry>>,
+    unread: Mutex<Vec<Unread>>,
+    bros: Mutex<Vec<Bro>>,
 }
 
 impl FakeApi {
     pub fn new(schedules: Vec<ScheduleEntry>) -> Self {
         Self {
             schedules: Mutex::new(schedules),
+            unread: Mutex::new(Vec::new()),
+            bros: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Seed unread counts and DMs for the fake chats.
+    pub fn with_chats(self, unread: Vec<Unread>, bros: Vec<Bro>) -> Self {
+        *self.unread.lock().expect("fake unread lock") = unread;
+        *self.bros.lock().expect("fake bros lock") = bros;
+        self
     }
 }
 
 impl CardApi for FakeApi {
+    fn unread(&self) -> Result<Vec<Unread>, ApiError> {
+        let mut all = self.unread.lock().expect("fake unread lock").clone();
+        all.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+        Ok(all)
+    }
+
+    fn mark_read(&self, group_id: &str) -> Result<Unread, ApiError> {
+        let mut all = self.unread.lock().expect("fake unread lock");
+        let u = all
+            .iter_mut()
+            .find(|u| u.group_id == group_id)
+            .ok_or_else(|| ApiError::NotFound("群不存在".into()))?;
+        u.unread = 0;
+        u.read_at = Some(chrono::Utc::now().to_rfc3339());
+        Ok(u.clone())
+    }
+
+    fn bros(&self) -> Result<Vec<Bro>, ApiError> {
+        Ok(self.bros.lock().expect("fake bros lock").clone())
+    }
+
+    fn create_bro(&self) -> Result<Bro, ApiError> {
+        let mut bros = self.bros.lock().expect("fake bros lock");
+        let n = bros.len() + 1;
+        let bro = Bro {
+            id: format!("fake-bro-{n}"),
+            name: next_bro_name(bros.iter().map(|b| b.name.as_str())),
+            dm_group_id: Some(format!("fake-dm-{n}")),
+        };
+        bros.push(bro.clone());
+        self.unread.lock().expect("fake unread lock").push(Unread {
+            group_id: format!("fake-dm-{n}"),
+            read_at: None,
+            unread: 0,
+            last_activity_at: Some(chrono::Utc::now().to_rfc3339()),
+        });
+        Ok(bro)
+    }
+
+    fn send_message(&self, _: &str, body: &str) -> Result<Message, ApiError> {
+        if body.trim().is_empty() {
+            return Err(ApiError::BadRequest("请填写内容".into()));
+        }
+        Ok(Message {
+            id: format!("fake-msg-{}", uuid_ish()),
+            kind: MessageKind::Text,
+            body: body.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn create_task(&self, _: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError> {
+        Ok(Task {
+            id: format!("fake-task-{}", uuid_ish()),
+            assignee_bot_id: bot_id.to_string(),
+            prompt: prompt.to_string(),
+            state: TaskState::Queued,
+        })
+    }
+
     fn answer_choice(&self, _: &str, _: &[String]) -> Result<Option<Event>, ApiError> {
         Ok(None)
     }
@@ -245,6 +388,16 @@ impl CardApi for FakeApi {
     }
 }
 
+/// Unique-enough id for fake echoes.
+fn uuid_ish() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    nanos ^ u128::from(N.fetch_add(1, Ordering::Relaxed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +409,11 @@ mod tests {
         assert_eq!(paths::schedule("s1"), "/api/schedules/s1");
         assert_eq!(paths::approval_decision("a1"), "/api/cards/a1/decision");
         assert_eq!(paths::send_draft("d1"), "/api/cards/d1/send");
+        assert_eq!(paths::UNREAD, "/api/unread");
+        assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
+        assert_eq!(paths::BROS, "/api/bros");
+        assert_eq!(paths::messages("g1"), "/api/groups/g1/messages");
+        assert_eq!(paths::tasks("g1"), "/api/groups/g1/tasks");
     }
 
     #[test]
@@ -286,7 +444,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let api = HttpApi::new(format!("http://127.0.0.1:{port}"));
+        let api = HttpApi::new(Conn::new(format!("http://127.0.0.1:{port}")));
         assert!(matches!(
             api.answer_choice("c", &["a".into()]),
             Err(ApiError::Transport(_))
@@ -301,30 +459,7 @@ mod tests {
         };
 
         fn spawn_host() -> String {
-            let db = std::env::temp_dir().join(format!(
-                "robroz-client-api-test-{}-{}.db",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            let router = robroz_host::router(&db).unwrap();
-            let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            std_listener.set_nonblocking(true).unwrap();
-            let addr = std_listener.local_addr().unwrap();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(async move {
-                    let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
-                    axum::serve(listener, router).await.unwrap();
-                });
-            });
-            format!("http://{addr}")
+            crate::source::http_test_host()
         }
 
         fn post<T: serde::Serialize, R: serde::de::DeserializeOwned>(
@@ -380,7 +515,7 @@ mod tests {
             let Event::Choice { id, .. } = created else {
                 panic!("expected choice event");
             };
-            let api = HttpApi::new(&base);
+            let api = HttpApi::new(Conn::new(&base));
             assert!(matches!(
                 api.answer_choice(&id, &["nope".into()]),
                 Err(ApiError::BadRequest(_))
@@ -412,7 +547,7 @@ mod tests {
                     prompt: "每日简报".into(),
                 },
             );
-            let api = HttpApi::new(&base);
+            let api = HttpApi::new(Conn::new(&base));
             let list = api.schedules(&group.id).unwrap();
             assert_eq!(list.len(), 1);
             assert_eq!(list[0].schedule.id, created.id);
@@ -424,6 +559,143 @@ mod tests {
                 api.set_paused("missing", true),
                 Err(ApiError::NotFound(_))
             ));
+        }
+
+        #[test]
+        fn unread_list_and_mark_read() {
+            let base = spawn_host();
+            let quiet = group_with_bot(&base);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let busy = group_with_bot(&base);
+            // A choice card from a bro counts as unread.
+            let _: Event = post(
+                &base,
+                &format!("/api/groups/{}/choices", busy.id),
+                &CreateChoice {
+                    bot_id: "bot-doc".into(),
+                    prompt: "装法？".into(),
+                    options: vec![
+                        ChoiceOption {
+                            id: "a".into(),
+                            label: "A".into(),
+                            primary: false,
+                        },
+                        ChoiceOption {
+                            id: "b".into(),
+                            label: "B".into(),
+                            primary: false,
+                        },
+                    ],
+                    multi: false,
+                },
+            );
+            let api = HttpApi::new(Conn::new(&base));
+            let list = api.unread().unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].group_id, busy.id, "most recently active first");
+            assert_eq!(list[0].unread, 1);
+            assert_eq!(list[1].group_id, quiet.id);
+            assert_eq!(list[1].unread, 0);
+
+            let read = api.mark_read(&busy.id).unwrap();
+            assert_eq!(read.unread, 0);
+            assert!(read.read_at.is_some());
+            assert_eq!(api.unread().unwrap()[0].unread, 0);
+            assert!(matches!(
+                api.mark_read("missing"),
+                Err(ApiError::NotFound(_))
+            ));
+        }
+
+        #[test]
+        fn new_bro_gets_default_name_and_a_dm_in_the_list() {
+            let base = spawn_host();
+            let api = HttpApi::new(Conn::new(&base));
+            let first = api.create_bro().unwrap();
+            let second = api.create_bro().unwrap();
+            assert_eq!(first.name, "bro");
+            assert_eq!(second.name, "bro 2");
+            let dm = first.dm_group_id.clone().expect("DM created");
+            // The DM is an ordinary group: listed, in unread, readable.
+            let mut source = crate::source::HttpSource::new(Conn::new(&base), Vec::new());
+            use crate::source::EventSource;
+            let groups = source.groups().unwrap();
+            assert!(groups.iter().any(|g| g.id == dm && g.name == "bro"));
+            assert!(api.unread().unwrap().iter().any(|u| u.group_id == dm));
+            assert_eq!(api.mark_read(&dm).unwrap().unread, 0);
+            let bros = api.bros().unwrap();
+            assert_eq!(bros.len(), 2);
+            assert_eq!(bros[0].dm_group_id.as_deref(), Some(dm.as_str()));
+        }
+
+        /// Events of a group as raw JSON (`type` + fields).
+        fn events(base: &str, group: &str) -> Vec<serde_json::Value> {
+            let source = crate::source::HttpSource::new(Conn::new(base), Vec::new());
+            source
+                .events(group, None)
+                .unwrap()
+                .events
+                .into_iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .collect()
+        }
+
+        #[test]
+        fn composer_posts_message_and_queues_task() {
+            let base = spawn_host();
+            let group = group_with_bot(&base);
+            let api = HttpApi::new(Conn::new(&base));
+            // Group: the text is stored as a message.
+            let sent = api.send_message(&group.id, "@文档哥 写 README").unwrap();
+            assert_eq!(sent.body, "@文档哥 写 README");
+            assert!(matches!(
+                api.send_message(&group.id, "  "),
+                Err(ApiError::BadRequest(_))
+            ));
+            // An @mention queues the rest for that bro.
+            let task = api.create_task(&group.id, "bot-doc", "写 README").unwrap();
+            assert_eq!(task.state, TaskState::Queued);
+            assert!(api.create_task(&group.id, "bot-nobody", "x").is_err());
+            let seen = events(&base, &group.id);
+            assert!(seen
+                .iter()
+                .any(|e| e["type"] == "message" && e["body"] == "@文档哥 写 README"));
+            assert!(seen
+                .iter()
+                .any(|e| e["type"] == "status" && e["botId"] == "bot-doc"));
+
+            // DM: the bro behind it gets the task.
+            let bro = api.create_bro().unwrap();
+            let dm = bro.dm_group_id.clone().unwrap();
+            api.send_message(&dm, "整理一下周报").unwrap();
+            let task = api.create_task(&dm, &bro.id, "整理一下周报").unwrap();
+            assert_eq!(task.assignee_bot_id, bro.id);
+            let seen = events(&base, &dm);
+            assert!(seen
+                .iter()
+                .any(|e| e["type"] == "message" && e["body"] == "整理一下周报"));
+            assert!(seen
+                .iter()
+                .any(|e| e["type"] == "status" && e["botId"] == bro.id.as_str()));
+        }
+
+        #[test]
+        fn token_is_sent_on_every_call() {
+            let token = "client-test-token-0123456789";
+            let base = crate::source::http_test_host_with_token(token);
+            let without = HttpApi::new(Conn::new(&base));
+            assert!(matches!(without.unread(), Err(ApiError::Status(401, _))));
+            let api = HttpApi::new(Conn::new(&base).with_token(Some(token.into())));
+            let bro = api.create_bro().unwrap();
+            let dm = bro.dm_group_id.unwrap();
+            assert_eq!(api.mark_read(&dm).unwrap().unread, 0);
+            let mut source = crate::source::HttpSource::new(
+                Conn::new(&base).with_token(Some(token.into())),
+                Vec::new(),
+            );
+            use crate::source::EventSource;
+            assert!(source.groups().unwrap().iter().any(|g| g.id == dm));
+            assert!(source.poll().is_ok());
         }
     }
 }

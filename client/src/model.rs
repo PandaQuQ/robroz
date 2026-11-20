@@ -59,6 +59,7 @@ impl Feed {
         self.rows.iter().map(|(_, row)| row)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -88,6 +89,47 @@ impl Feed {
             Some(slot) => slot.1 = row,
             None => self.rows.push((key, row)),
         }
+    }
+}
+
+/// When this card last changed, as the host defines it for `?since=`:
+/// `updatedAt` for status cards, `answeredAt` for answered choices,
+/// otherwise `createdAt`.
+pub fn change_time(event: &Event) -> &str {
+    match event {
+        Event::Status { updated_at, .. } => updated_at,
+        Event::Choice {
+            answered_at: Some(at),
+            ..
+        } => at,
+        Event::Choice { created_at, .. }
+        | Event::Message { created_at, .. }
+        | Event::Delivery { created_at, .. } => created_at,
+    }
+}
+
+/// One-line preview of an event for the conversation list.
+pub fn preview(event: &Event) -> String {
+    match event {
+        Event::Message { kind, body, .. } => match kind {
+            MessageKind::Text => body.clone(),
+            MessageKind::Image | MessageKind::File => {
+                format!("[{}] {body}", attachment_label(*kind))
+            }
+        },
+        Event::Status {
+            bot_name,
+            state,
+            container_up,
+            ..
+        } => format!(
+            "{bot_name}：{}",
+            robroz_card::status_line(*state, *container_up)
+        ),
+        Event::Delivery { summary, .. } => summary.clone(),
+        Event::Choice {
+            bot_name, prompt, ..
+        } => format!("{bot_name}：{prompt}"),
     }
 }
 
