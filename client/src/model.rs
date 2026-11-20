@@ -402,6 +402,7 @@ mod tests {
             choice: choice.map(|v| vec![v.to_string()]),
             created_at: "2026-10-03T19:00:00.000Z".into(),
             answered_at: choice.map(|_| "2026-10-03T19:01:00.000Z".into()),
+            answered_by: None,
         };
         let mut feed = Feed::default();
         feed.apply(&card(None));

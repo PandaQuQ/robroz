@@ -246,6 +246,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE schedules ADD COLUMN paused_at TEXT", []);
     conn.execute_batch(choices::SCHEMA)?;
     conn.execute_batch(approvals::SCHEMA)?;
+    // Added later; ignore "duplicate column" on databases that have it.
+    for table in ["choices", "approvals"] {
+        let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN answered_by TEXT"), []);
+    }
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
@@ -3257,5 +3261,75 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "群不存在");
         assert_eq!(events_of(&app, &group).await["events"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn answered_by_is_stored_when_sent_and_null_otherwise() {
+        let app = test_app(&temp_db());
+        let group_id = create_group(&app, "谁答的").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+        let card = |summary: &str| json!({ "botId": "bot-ada", "action": "send", "summary": summary });
+
+        // Old request (no body): answeredBy null.
+        let (_, a1) = post_approval(&app, &group_id, card("发周报")).await;
+        assert_eq!(a1["answeredBy"], Value::Null);
+        let (status, done) = decide(&app, a1["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK, "{done}");
+        assert_eq!(done["answeredBy"], Value::Null);
+
+        // With a body: trimmed and stored; the 409 for a second device keeps the first answer.
+        let (_, a2) = post_approval(&app, &group_id, card("发邮件")).await;
+        let id = a2["id"].as_str().unwrap();
+        let url = format!("/api/approvals/{id}/deny");
+        let (status, done) = read_json(call(&app, post(&url, json!({ "answeredBy": " Panda 的手机 " }))).await).await;
+        assert_eq!(status, StatusCode::OK, "{done}");
+        assert_eq!(done["answeredBy"], "Panda 的手机");
+        let approve = format!("/api/approvals/{id}/approve");
+        let (status, _) = read_json(call(&app, post(&approve, json!({ "answeredBy": "Mac" }))).await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // Bad answeredBy: 400, card stays open.
+        let (_, a3) = post_approval(&app, &group_id, card("付款")).await;
+        let url = format!("/api/approvals/{}/approve", a3["id"].as_str().unwrap());
+        let (status, body) = read_json(call(&app, post(&url, json!({ "answeredBy": "a\nb" }))).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let (status, _) = read_json(call(&app, post(&url, json!({ "answeredBy": 3 }))).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = decide(&app, a3["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK, "still open after bad requests");
+
+        // Choice cards take it next to `choice`.
+        let (_, c) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "哪个？", "options": two_options() })).await;
+        let url = format!("/api/choices/{}/answer", c["id"].as_str().unwrap());
+        let (status, picked) = read_json(call(&app, post(&url, json!({ "choice": ["a"], "answeredBy": "Mac" }))).await).await;
+        assert_eq!(status, StatusCode::OK, "{picked}");
+        assert_eq!(picked["answeredBy"], "Mac");
+
+        let events = events_of(&app, &group_id).await;
+        let by: Vec<_> = events["events"].as_array().unwrap().iter().map(|e| e["answeredBy"].clone()).collect();
+        assert!(by.contains(&json!("Panda 的手机")) && by.contains(&json!("Mac")));
+    }
+
+    #[test]
+    fn answered_by_column_is_added_to_old_databases() {
+        let path = temp_db();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE approvals (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, bot_id TEXT NOT NULL, action TEXT NOT NULL,
+               summary TEXT NOT NULL, path TEXT, decision TEXT, created_at TEXT NOT NULL, answered_at TEXT);
+             CREATE TABLE choices (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, bot_id TEXT NOT NULL, prompt TEXT NOT NULL,
+               options TEXT NOT NULL, multi INTEGER NOT NULL DEFAULT 0, choice TEXT, created_at TEXT NOT NULL, answered_at TEXT);",
+        )
+        .unwrap();
+        drop(conn);
+        let _app = test_app(&path);
+        let _again = test_app(&path);
+        let conn = Connection::open(&path).unwrap();
+        for table in ["approvals", "choices"] {
+            conn.query_row(&format!("SELECT answered_by FROM {table} LIMIT 1"), [], |_| Ok(())).or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(()),
+                e => Err(e),
+            }).unwrap();
+        }
     }
 }

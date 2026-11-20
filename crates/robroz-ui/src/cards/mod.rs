@@ -261,6 +261,7 @@ mod tests {
             choice: choice.map(|v| v.into_iter().map(String::from).collect()),
             created_at: "2026-11-20T01:50:00.000Z".into(),
             answered_at: None,
+            answered_by: None,
         }
     }
 

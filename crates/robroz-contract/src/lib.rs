@@ -240,6 +240,30 @@ pub struct CreateChoice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerChoice {
     pub choice: Vec<String>,
+    /// Who answered, as the client names itself (device or person). Optional.
+    #[serde(default, rename = "answeredBy", skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
+}
+
+/// Optional body of `POST /api/approvals/{id}/approve` and `/deny`. No body
+/// (or `{}`) is the old request and still works.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
+}
+
+pub const ANSWERED_BY_MAX: usize = 40;
+
+/// `answeredBy` as stored: trimmed, empty is `None`, one line, at most
+/// [`ANSWERED_BY_MAX`] characters.
+pub fn clean_answered_by(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(text) = raw.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
+    if text.contains(['\n', '\r']) || text.chars().count() > ANSWERED_BY_MAX {
+        return Err("answeredBy 只能一行，最多 40 个字");
+    }
+    Ok(Some(text.to_string()))
 }
 
 /// What an approval card asks to do. Shown as the card's verb.
@@ -404,6 +428,9 @@ pub enum Event {
         choice: Option<Vec<String>>,
         created_at: String,
         answered_at: Option<String>,
+        /// Added later: the `answeredBy` sent with the answer, else `null`.
+        #[serde(default)]
+        answered_by: Option<String>,
     },
     /// Added after `choice`. `path`, `decision` and `answeredAt` are always
     /// present; the last two are `null` until answered.
@@ -418,6 +445,9 @@ pub enum Event {
         decision: Option<ApprovalDecision>,
         created_at: String,
         answered_at: Option<String>,
+        /// Added later: the `answeredBy` sent with the answer, else `null`.
+        #[serde(default)]
+        answered_by: Option<String>,
     },
 }
 
@@ -475,6 +505,7 @@ mod tests {
                 decision: None,
                 created_at: "2026-11-20T08:30:00.000Z".into(),
                 answered_at: None,
+                answered_by: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -487,6 +518,7 @@ mod tests {
                 "decision": null,
                 "createdAt": "2026-11-20T08:30:00.000Z",
                 "answeredAt": null,
+                "answeredBy": null,
             }),
         );
         let request: CreateApproval = serde_json::from_value(serde_json::json!({
@@ -627,6 +659,7 @@ mod tests {
                 choice: None,
                 created_at: "2026-10-03T19:00:03.000Z".into(),
                 answered_at: None,
+                answered_by: None,
             },
             serde_json::json!({
                 "type": "choice",
@@ -641,7 +674,8 @@ mod tests {
                 "multi": false,
                 "choice": null,
                 "createdAt": "2026-10-03T19:00:03.000Z",
-                "answeredAt": null
+                "answeredAt": null,
+                "answeredBy": null
             }),
         );
         let request: CreateChoice = serde_json::from_value(serde_json::json!({
@@ -654,6 +688,27 @@ mod tests {
         assert!(!request.multi && !request.options[0].primary, "multi and primary default to false");
         let answer: AnswerChoice = serde_json::from_value(serde_json::json!({ "choice": ["b"] })).unwrap();
         assert_eq!(answer.choice, vec!["b".to_string()]);
+        assert_eq!(answer.answered_by, None, "answeredBy is optional");
+    }
+
+    #[test]
+    fn answered_by_is_optional_everywhere() {
+        // Old events without the field still parse.
+        let old: Event = serde_json::from_value(serde_json::json!({
+            "type": "approval", "id": "a1", "botId": "b", "botName": "B", "action": "send",
+            "summary": "发邮件", "path": null, "decision": "approved",
+            "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": "2026-11-20T08:31:00.000Z"
+        }))
+        .unwrap();
+        assert!(matches!(old, Event::Approval { answered_by: None, .. }));
+        let answer: Answer = serde_json::from_value(serde_json::json!({ "answeredBy": "Panda 的 Mac" })).unwrap();
+        assert_eq!(answer.answered_by.as_deref(), Some("Panda 的 Mac"));
+        assert_eq!(serde_json::to_value(Answer::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(clean_answered_by(None), Ok(None));
+        assert_eq!(clean_answered_by(Some("  ")), Ok(None));
+        assert_eq!(clean_answered_by(Some(" 手机 ")), Ok(Some("手机".into())));
+        assert!(clean_answered_by(Some("a\nb")).is_err());
+        assert!(clean_answered_by(Some(&"字".repeat(ANSWERED_BY_MAX + 1))).is_err());
     }
 
     #[test]
