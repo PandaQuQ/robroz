@@ -388,6 +388,167 @@ pub struct MarkRead {
     pub read_at: Option<String>,
 }
 
+/// What a memory is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryKind {
+    /// Who the person is.
+    Profile,
+    /// How the person likes work done.
+    Habit,
+    /// Notes on a project.
+    Project,
+}
+
+impl MemoryKind {
+    pub const ALL: [MemoryKind; 3] = [MemoryKind::Profile, MemoryKind::Habit, MemoryKind::Project];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryKind::Profile => "profile",
+            MemoryKind::Habit => "habit",
+            MemoryKind::Project => "project",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == value)
+    }
+}
+
+/// Who wrote a memory down: the person, or a bro (a proposal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemorySource {
+    User,
+    Bot,
+}
+
+impl MemorySource {
+    pub const ALL: [MemorySource; 2] = [MemorySource::User, MemorySource::Bot];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemorySource::User => "user",
+            MemorySource::Bot => "bot",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.as_str() == value)
+    }
+}
+
+/// `pending`: a bro proposed it, waiting for the person. `kept`: in use.
+/// `rejected`: the person said no; kept as a record, never used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryStatus {
+    Pending,
+    Kept,
+    Rejected,
+}
+
+impl MemoryStatus {
+    pub const ALL: [MemoryStatus; 3] = [MemoryStatus::Pending, MemoryStatus::Kept, MemoryStatus::Rejected];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryStatus::Pending => "pending",
+            MemoryStatus::Kept => "kept",
+            MemoryStatus::Rejected => "rejected",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.as_str() == value)
+    }
+}
+
+/// Who a memory is for. On the wire it is a string: `user` (every bro) or
+/// `bot:<botId>` (only that bro). Parse with [`MemoryScope::parse`]; later
+/// scopes (e.g. `group:<id>`) are added here only.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MemoryScope {
+    User,
+    Bot(String),
+}
+
+impl MemoryScope {
+    pub const BOT_PREFIX: &'static str = "bot:";
+
+    /// Trims surrounding whitespace. `bot:` needs a non-empty id without whitespace.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw == "user" {
+            return Some(MemoryScope::User);
+        }
+        let id = raw.strip_prefix(Self::BOT_PREFIX)?;
+        if id.is_empty() || id.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(MemoryScope::Bot(id.to_string()))
+    }
+
+    pub fn for_bot(bot_id: &str) -> Self {
+        MemoryScope::Bot(bot_id.to_string())
+    }
+}
+
+impl std::fmt::Display for MemoryScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryScope::User => f.write_str("user"),
+            MemoryScope::Bot(id) => write!(f, "{}{id}", Self::BOT_PREFIX),
+        }
+    }
+}
+
+/// One memory. `scope` is the wire string of [`MemoryScope`]. Forgotten
+/// memories are never returned, so there is no `forgottenAt` here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Memory {
+    pub id: String,
+    pub scope: String,
+    pub kind: MemoryKind,
+    pub text: String,
+    pub source: MemorySource,
+    pub status: MemoryStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// `GET /api/memories`, newest `updatedAt` first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Memories {
+    pub memories: Vec<Memory>,
+}
+
+/// `POST /api/memories` body: the person writes a memory down. It is `kept` at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMemory {
+    pub scope: String,
+    pub kind: MemoryKind,
+    pub text: String,
+}
+
+/// `PATCH /api/memories/{id}` body. Only the fields given change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemory {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub kind: Option<MemoryKind>,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// Longest memory text, in characters, after trimming.
+pub const MEMORY_TEXT_MAX: usize = 2000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
@@ -486,6 +647,29 @@ pub struct Events {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_scope_and_enums_round_trip() {
+        use super::{CreateMemory, MemoryKind, MemoryScope, MemoryStatus};
+        assert_eq!(MemoryScope::parse(" user "), Some(MemoryScope::User));
+        assert_eq!(MemoryScope::parse("bot:b1"), Some(MemoryScope::Bot("b1".into())));
+        for bad in ["", "users", "bot:", "bot: x", "group:g1", "User", "bot"] {
+            assert_eq!(MemoryScope::parse(bad), None, "{bad:?}");
+        }
+        assert_eq!(MemoryScope::Bot("b1".into()).to_string(), "bot:b1");
+        assert_eq!(MemoryScope::User.to_string(), "user");
+        for k in MemoryKind::ALL {
+            assert_eq!(MemoryKind::parse(k.as_str()), Some(k));
+            assert_eq!(serde_json::to_value(k).unwrap(), serde_json::json!(k.as_str()));
+        }
+        for s in MemoryStatus::ALL {
+            assert_eq!(MemoryStatus::parse(s.as_str()), Some(s));
+        }
+        let body: CreateMemory =
+            serde_json::from_value(serde_json::json!({ "scope": "user", "kind": "habit", "text": "x" })).unwrap();
+        assert_eq!(body.kind, MemoryKind::Habit);
+        assert!(serde_json::from_value::<CreateMemory>(serde_json::json!({ "scope": "user", "kind": "mood", "text": "x" })).is_err());
+    }
+
     #[test]
     fn mention_routing() {
         use super::route_mention;
