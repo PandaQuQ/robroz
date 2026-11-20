@@ -155,7 +155,7 @@ pub(crate) async fn create_approval(
 fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -> Response {
     let by = match answered_by(body) {
         Ok(by) => by,
-        Err(response) => return response,
+        Err((status, message)) => return error_response(status, message),
     };
     let conn = lock_db(state);
     let result = (|| {
@@ -180,13 +180,14 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
 }
 
 /// The optional `{"answeredBy"}` body. Empty body is the old request.
-fn answered_by(body: &[u8]) -> Result<Option<String>, Response> {
+/// Errors are `(status, message)`.
+fn answered_by(body: &[u8]) -> Result<Option<String>, (StatusCode, &'static str)> {
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
-    let answer: Answer = serde_json::from_slice(body)
-        .map_err(|_| error_response(StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
-    clean_answered_by(answer.answered_by.as_deref()).map_err(|m| error_response(StatusCode::BAD_REQUEST, m))
+    let answer: Answer =
+        serde_json::from_slice(body).map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
+    clean_answered_by(answer.answered_by.as_deref()).map_err(|m| (StatusCode::BAD_REQUEST, m))
 }
 
 pub(crate) async fn approve(State(state): State<AppState>, AxumPath(id): AxumPath<String>, body: Bytes) -> Response {
