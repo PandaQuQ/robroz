@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
-use hive_contract::{
+use robroz_contract::{
     AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups, Member,
     Message, MessageKind, PostMessage, Schedule, Task, TaskState,
 };
@@ -94,7 +94,7 @@ impl Host {
 }
 
 fn get_limit_from_env() -> u64 {
-    std::env::var("OPENBOTS_GET_LIMIT")
+    std::env::var("ROBROZ_GET_LIMIT")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(8)
@@ -108,9 +108,9 @@ struct AppState {
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
 /// and ensures the node-2 schema. Callers, including tests, pass an explicit
-/// path; this function does not read `OPENBOTS_DB`.
+/// path; this function does not read `ROBROZ_DB`.
 pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
-    let host = Host::open(db_path, "./data/groups", "openbots-runner:local")?;
+    let host = Host::open(db_path, "./data/groups", "robroz-runner:local")?;
     Ok(host.router())
 }
 
@@ -474,8 +474,8 @@ const RESUME_MARKER_FAILED: &str = "恢复失败，无法写入接管标记";
 
 /// Resume a blocked task. Never reads the group volume.
 ///
-/// 1. Take the intent the host stored when the container exited (validated
-///    against the prompt, hash computed by the host). None stored: 500, stays blocked.
+/// 1. Take the blocking line the host computed when the container exited (from
+///    the stored prompt and takeover hashes). None stored: 500, stays blocked.
 /// 2. Append its sha256 to `{control_root}/{id}/takeover`. Only the host writes
 ///    there. Failure: 500, stays blocked.
 /// 3. Clear the stored intent and set the task back to queued. The next pump
@@ -510,7 +510,7 @@ async fn resume_task(
     };
 
     let control_dir = state.control_root.join(&task_id);
-    if let Err(err) = hive_runner::append_takeover(&control_dir, &hash) {
+    if let Err(err) = robroz_runner::append_takeover(&control_dir, &hash) {
         eprintln!("resume {task_id}: write takeover in {}: {err}", control_dir.display());
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, RESUME_MARKER_FAILED);
     }
@@ -653,7 +653,7 @@ async fn list_events(
                         task_id: id,
                         bot_id: row.get(1)?,
                         bot_name: row.get(2)?,
-                        label: hive_card::status_line(state, container_up).to_string(),
+                        label: robroz_card::status_line(state, container_up).to_string(),
                         state,
                         created_at,
                         updated_at: row.get(5)?,
@@ -721,10 +721,10 @@ mod tests {
     use tower::ServiceExt;
 
     fn temp_db() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("openbots-test-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("robroz-test-{}.db", uuid::Uuid::new_v4()));
         assert_ne!(
             path,
-            PathBuf::from("./openbots.db"),
+            PathBuf::from("./robroz.db"),
             "tests must not use the default database path"
         );
         path
@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     fn temp_volumes() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("openbots-vol-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("robroz-vol-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
     }
@@ -1116,7 +1116,7 @@ mod tests {
     fn pump_db_limit(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, limit: u64) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        super::pump(&conn, sandbox, volumes, &control_of(volumes), "openbots-runner:local", limit).unwrap();
+        super::pump(&conn, sandbox, volumes, &control_of(volumes), "robroz-runner:local", limit).unwrap();
     }
 
     fn post_empty(uri: &str) -> Request<Body> {
@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     fn app_on(db: &Path, volumes: &Path) -> Router {
-        super::Host::open(db, volumes, "openbots-runner:local")
+        super::Host::open(db, volumes, "robroz-runner:local")
             .unwrap()
             .with_control_root(control_of(volumes))
             .router()
@@ -1197,7 +1197,7 @@ mod tests {
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(fake.names(), vec![format!("openbots-{task_id}")]);
+        assert_eq!(fake.names(), vec![format!("robroz-{task_id}")]);
 
         let running = events_of(&app, &group_id).await;
         let cards = statuses(&running);
@@ -1350,7 +1350,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
-        let prompt = "hive-action:get\n画一张草图";
+        let prompt = "robroz-action:get\n画一张草图";
         let (group_id, task_id) = seed_task(&app, "配额内", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db_limit(&path, &volumes, &mut fake, 8);
@@ -1376,7 +1376,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
-        let prompt = "hive-action:get\nhive-action:get\nhive-action:get";
+        let prompt = "robroz-action:get\nrobroz-action:get\nrobroz-action:get";
         let (group_id, _) = seed_task(&app, "超限", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db_limit(&path, &volumes, &mut fake, 2);
@@ -1417,7 +1417,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
-        let (group_id, task_id) = seed_task(&app, "验证码", "hive-action:captcha").await;
+        let (group_id, task_id) = seed_task(&app, "验证码", "robroz-action:captcha").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
         fake.finish(0);
@@ -1437,7 +1437,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = "hive-action:external\n画一张草图";
+        let prompt = "robroz-action:external\n画一张草图";
         let (group_id, task_id) = seed_task(&app, "外呼", prompt).await;
 
         let (status, body) = read_json(call(&app, post_empty("/api/tasks/missing/resume")).await).await;
@@ -1753,7 +1753,7 @@ mod tests {
         assert_eq!(by_path(&scheduled)["briefing"], true);
         assert_eq!(by_path(&scheduled)["summary"], "已写入结果");
         assert_eq!(by_path(&normal_id)["briefing"], false);
-        assert_eq!(hive_card::briefing_badge(), "简报");
+        assert_eq!(robroz_card::briefing_badge(), "简报");
     }
 
     #[tokio::test]
@@ -1814,7 +1814,7 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "running");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
-        assert_eq!(statuses(&events)[0]["label"], hive_card::status_line(hive_contract::TaskState::Running, false));
+        assert_eq!(statuses(&events)[0]["label"], robroz_card::status_line(robroz_contract::TaskState::Running, false));
         assert!(deliveries(&events).is_empty());
 
         let report = tick_db(&path, due + ChronoDuration::minutes(1));
@@ -1826,7 +1826,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, schedule) = seed_schedule(&app, "卡住简报", "hive-action:external\n简报正文").await;
+        let (group_id, schedule) = seed_schedule(&app, "卡住简报", "robroz-action:external\n简报正文").await;
         let due = at(schedule["nextRunAt"].as_str().unwrap());
         let task_id = tick_db(&path, due).created[0].clone();
 
@@ -1942,16 +1942,16 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "接管", "hive-action:external\n正文").await;
+        let (group_id, task_id) = seed_task(&app, "接管", "robroz-action:external\n正文").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
         assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
         assert!(!takeover_file(&volumes, &task_id).exists(), "no marker before resume");
         // Captured into the DB at container exit; the volume file is gone.
-        let hash = hive_runner::action_hash("hive-action:external");
+        let hash = robroz_runner::action_hash("robroz-action:external");
         assert_eq!(
             stored_intent(&path, &task_id),
-            (Some("external".into()), Some("hive-action:external".into()), Some(hash.clone()))
+            (Some("external".into()), Some("robroz-action:external".into()), Some(hash.clone()))
         );
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
 
@@ -1977,11 +1977,11 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "伪造", "hive-action:external\n正文").await;
+        let (group_id, task_id) = seed_task(&app, "伪造", "robroz-action:external\n正文").await;
         // What a bot in the group volume could write for itself.
         let task_dir = volumes.join(&group_id).join("tasks").join(&task_id);
         std::fs::create_dir_all(&task_dir).unwrap();
-        let hash = hive_runner::action_hash("hive-action:external");
+        let hash = robroz_runner::action_hash("robroz-action:external");
         std::fs::write(task_dir.join("takeover"), format!("{hash}\n")).unwrap();
         std::fs::write(volumes.join(&group_id).join("takeover"), format!("{hash}\n")).unwrap();
 
@@ -1999,7 +1999,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
         let (group_id, task_id) = seed_task(&app, "两步", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
 
@@ -2019,8 +2019,8 @@ mod tests {
             marker,
             format!(
                 "{}\n{}\n",
-                hive_runner::action_hash("hive-action:external"),
-                hive_runner::action_hash("hive-action:captcha")
+                robroz_runner::action_hash("robroz-action:external"),
+                robroz_runner::action_hash("robroz-action:captcha")
             )
         );
         run_once(&path, &volumes, &mut fake);
@@ -2035,7 +2035,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = "hive-action:external\n正文\nhive-action:captcha";
+        let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
         let (group_id, task_id) = seed_task(&app, "改意图", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
@@ -2044,12 +2044,12 @@ mod tests {
         // After exit, something in the group rewrites intent to the other real
         // blocking line, hoping resume approves that one instead.
         let intent = group_dir.join(format!("tasks/{task_id}/intent"));
-        std::fs::write(&intent, hive_runner::format_intent("captcha", "hive-action:captcha")).unwrap();
+        std::fs::write(&intent, robroz_runner::format_intent("captcha", "robroz-action:captcha")).unwrap();
 
         assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
         assert_eq!(
             std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(),
-            format!("{}\n", hive_runner::action_hash("hive-action:external")),
+            format!("{}\n", robroz_runner::action_hash("robroz-action:external")),
             "resume approves only the line captured at exit"
         );
 
@@ -2064,7 +2064,7 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "没记录", "hive-action:external\n正文").await;
+        let (group_id, task_id) = seed_task(&app, "没记录", "robroz-action:external\n正文").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
         let blocked = statuses(&events_of(&app, &group_id).await)[0].clone();
@@ -2079,7 +2079,7 @@ mod tests {
         // A valid-looking intent in the volume is not used as a fallback.
         std::fs::write(
             group_dir.join(format!("tasks/{task_id}/intent")),
-            hive_runner::format_intent("external", "hive-action:external"),
+            robroz_runner::format_intent("external", "robroz-action:external"),
         )
         .unwrap();
 
@@ -2094,7 +2094,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intent_not_in_prompt_blocks_without_approval() {
+    async fn intent_without_blocking_line_is_dead_run_not_blocked() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
@@ -2102,20 +2102,86 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
         let group_dir = fake.containers[0].group_dir.clone();
-        // The container writes an intent for a line its prompt never had.
+        // The container claims it is blocked on a line its prompt never had.
         fake.finish_without_output(0);
         std::fs::create_dir_all(group_dir.join(format!("tasks/{task_id}"))).unwrap();
         std::fs::write(
             group_dir.join(format!("tasks/{task_id}/intent")),
-            hive_runner::format_intent("captcha", "hive-action:captcha"),
+            robroz_runner::format_intent("captcha", "robroz-action:captcha"),
         )
         .unwrap();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert!(fake.names().is_empty());
+        let events = events_of(&app, &group_id).await;
+        let card = statuses(&events)[0];
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], false);
+        assert_eq!(card["label"], "没写出结果");
+        assert!(deliveries(&events).is_empty());
         assert_eq!(stored_intent(&path, &task_id), (None, None, None));
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
-        assert_eq!(resume(&app, &task_id).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::CONFLICT);
         assert!(!takeover_file(&volumes, &task_id).exists());
+    }
+
+    #[tokio::test]
+    async fn intent_after_every_line_taken_over_is_dead_run() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "全接管", "robroz-action:external\n正文").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+
+        // Next run: the only blocking line is approved, yet the container still
+        // drops an intent and writes no result.
+        pump_db(&path, &volumes, &mut fake);
+        let group_dir = fake.containers[0].group_dir.clone();
+        fake.finish_without_output(0);
+        std::fs::write(group_dir.join(format!("tasks/{task_id}/intent")), "external").unwrap();
+        pump_db(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["containerUp"], false);
+        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(stored_intent(&path, &task_id), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn forged_intent_content_at_exit_has_no_effect() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
+        let (group_id, task_id) = seed_task(&app, "伪造内容", prompt).await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let group_dir = fake.containers[0].group_dir.clone();
+        fake.finish(0);
+        // Before the host looks, the bot rewrites intent to the other real
+        // blocking line, so that line would be the one approved.
+        let intent = group_dir.join(format!("tasks/{task_id}/intent"));
+        std::fs::write(&intent, robroz_runner::format_intent("captcha", "robroz-action:captcha")).unwrap();
+        pump_db(&path, &volumes, &mut fake);
+
+        let external = robroz_runner::action_hash("robroz-action:external");
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            stored_intent(&path, &task_id),
+            (Some("external".into()), Some("robroz-action:external".into()), Some(external.clone())),
+            "host computes the first unapproved line; intent content is ignored"
+        );
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(), format!("{external}\n"));
+
+        // Still needs a second takeover for captcha.
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("captcha"));
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        run_once(&path, &volumes, &mut fake);
+        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 
     #[tokio::test]
@@ -2151,7 +2217,7 @@ mod tests {
                  INSERT INTO bots VALUES ('bot-ada', 'local', 'Ada');
                  INSERT INTO memberships VALUES ('g1', 'bot-ada');
                  INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at)
-                 VALUES ('t-old', 'g1', 'bot-ada', 'hive-action:external', 'blocked',
+                 VALUES ('t-old', 'g1', 'bot-ada', 'robroz-action:external', 'blocked',
                          '2026-10-01T00:00:01.000Z', '2026-10-01T00:00:02.000Z');",
             )
             .unwrap();
@@ -2219,7 +2285,7 @@ mod tests {
     async fn pump_once_does_not_hold_db_lock_during_docker_calls() {
         let path = temp_db();
         let volumes = temp_volumes();
-        let host = super::Host::open(&path, &volumes, "openbots-runner:local")
+        let host = super::Host::open(&path, &volumes, "robroz-runner:local")
             .unwrap()
             .with_control_root(control_of(&volumes));
         let app = host.router();

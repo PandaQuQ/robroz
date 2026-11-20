@@ -1408,32 +1408,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
-name = "hive-card"
-version = "0.1.0"
-dependencies = [
- "hive-contract",
-]
-
-[[package]]
-name = "hive-contract"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "hive-policy"
-version = "0.1.0"
-
-[[package]]
-name = "hive-runner"
-version = "0.1.0"
-dependencies = [
- "sha2",
-]
-
-[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2499,41 +2473,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openbots-client"
-version = "0.1.0"
-dependencies = [
- "axum",
- "hive-card",
- "hive-contract",
- "iced",
- "openbots-host",
- "serde",
- "serde_json",
- "tokio",
- "ureq",
-]
-
-[[package]]
-name = "openbots-host"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "croner",
- "hive-card",
- "hive-contract",
- "hive-policy",
- "hive-runner",
- "http-body-util",
- "libc",
- "rusqlite",
- "serde_json",
- "tokio",
- "tower",
- "uuid",
-]
-
-[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2828,6 +2767,70 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "robroz-card"
+version = "0.1.0"
+dependencies = [
+ "robroz-contract",
+]
+
+[[package]]
+name = "robroz-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "iced",
+ "robroz-card",
+ "robroz-contract",
+ "robroz-host",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
+name = "robroz-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "robroz-host"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "croner",
+ "http-body-util",
+ "libc",
+ "robroz-card",
+ "robroz-contract",
+ "robroz-policy",
+ "robroz-runner",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+ "tower",
+ "uuid",
+]
+
+[[package]]
+name = "robroz-policy"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "robroz-runner"
+version = "0.1.0"
+dependencies = [
+ "robroz-policy",
+]
 
 [[package]]
 name = "roxmltree"

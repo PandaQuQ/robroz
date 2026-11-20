@@ -13,7 +13,7 @@ pub use http::HttpSource;
 use std::fmt;
 use std::time::Duration;
 
-use hive_contract::Event;
+use robroz_contract::Event;
 
 /// One entry in the left column. Client-side view data, not a contract
 /// type: the host has no group-listing endpoint yet, so a live source may

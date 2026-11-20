@@ -1,4 +1,4 @@
-use hive_contract::TaskState;
+use robroz_contract::TaskState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {

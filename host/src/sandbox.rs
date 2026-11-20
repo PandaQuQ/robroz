@@ -88,12 +88,12 @@ pub struct DockerSandbox {
 }
 
 impl DockerSandbox {
-    /// Containers run as `OPENBOTS_CONTAINER_USER` if set, else the host
+    /// Containers run as `ROBROZ_CONTAINER_USER` if set, else the host
     /// process's uid:gid (unix only), so volume files stay owned by the host user.
     pub fn new() -> Self {
         Self {
             exec: Box::new(SystemExec),
-            user: container_user(std::env::var("OPENBOTS_CONTAINER_USER").ok()),
+            user: container_user(std::env::var("ROBROZ_CONTAINER_USER").ok()),
         }
     }
 
@@ -130,7 +130,7 @@ fn host_user() -> Option<String> {
 }
 
 pub fn container_name(task_id: &str) -> String {
-    format!("openbots-{task_id}")
+    format!("robroz-{task_id}")
 }
 
 pub fn result_rel(task_id: &str) -> String {
@@ -157,7 +157,7 @@ fn run_argv(req: &RunRequest<'_>, user: Option<&str>) -> Vec<String> {
         "-v".into(),
         format!("{}:/control:ro", req.control_dir.display()),
         "-e".into(),
-        format!("OPENBOTS_TASK_ID={}", req.task_id),
+        format!("ROBROZ_TASK_ID={}", req.task_id),
         req.image.to_string(),
     ]);
     argv
@@ -260,7 +260,7 @@ impl FakeSandbox {
     fn finish_inner(&mut self, code: i32, apply: bool) {
         for container in &mut self.containers {
             if apply && container.phase == ContainerPhase::Running {
-                hive_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
+                robroz_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
                     .expect("runner");
             }
             container.phase = ContainerPhase::Exited { code };
@@ -275,10 +275,10 @@ impl Sandbox for FakeSandbox {
             return Err(SandboxError::new("fake start failed"));
         }
         assert!(req.control_dir.is_dir(), "control dir exists before start");
-        let prompt = std::fs::read_to_string(hive_runner::prompt_path(req.control_dir))
+        let prompt = std::fs::read_to_string(robroz_runner::prompt_path(req.control_dir))
             .map_err(|err| SandboxError::new(format!("control prompt.txt missing: {err}")))?;
         assert!(
-            !hive_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
+            !robroz_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
             "prompt must not be written into the group volume"
         );
         self.containers.push(FakeContainer {
@@ -323,10 +323,10 @@ mod tests {
         );
         sandbox
             .start(&RunRequest {
-                name: "openbots-task-1",
-                image: "openbots-runner:local",
-                group_dir: Path::new("/var/openbots/groups/group-1"),
-                control_dir: Path::new("/var/openbots/control/task-1"),
+                name: "robroz-task-1",
+                image: "robroz-runner:local",
+                group_dir: Path::new("/var/robroz/groups/group-1"),
+                control_dir: Path::new("/var/robroz/control/task-1"),
                 task_id: "task-1",
             })
             .unwrap();
@@ -341,12 +341,12 @@ mod tests {
         assert!(argv.windows(2).any(|pair| pair == ["--network", "none"]));
         assert!(argv
             .windows(2)
-            .any(|pair| pair == ["-v", "/var/openbots/groups/group-1:/workspace"]));
+            .any(|pair| pair == ["-v", "/var/robroz/groups/group-1:/workspace"]));
         assert!(argv.iter().all(|arg| !arg.contains("docker.sock")));
         assert!(!argv.iter().any(|arg| arg == "host" || arg == "--network=host"));
-        assert!(argv.windows(2).any(|pair| pair == ["--name", "openbots-task-1"]));
-        assert!(argv.iter().any(|arg| arg == "OPENBOTS_TASK_ID=task-1"));
-        assert_eq!(argv.last().map(String::as_str), Some("openbots-runner:local"));
+        assert!(argv.windows(2).any(|pair| pair == ["--name", "robroz-task-1"]));
+        assert!(argv.iter().any(|arg| arg == "ROBROZ_TASK_ID=task-1"));
+        assert_eq!(argv.last().map(String::as_str), Some("robroz-runner:local"));
     }
 
     #[test]
@@ -355,17 +355,17 @@ mod tests {
         assert!(argv.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
         assert!(argv
             .windows(2)
-            .any(|pair| pair == ["-v", "/var/openbots/control/task-1:/control:ro"]));
+            .any(|pair| pair == ["-v", "/var/robroz/control/task-1:/control:ro"]));
         // Only the task's own control dir, and only read-only.
         let control_mounts: Vec<&String> = argv.iter().filter(|arg| arg.contains(":/control")).collect();
         assert_eq!(control_mounts.len(), 1);
-        assert!(!argv.iter().any(|arg| arg.contains("OPENBOTS_PROMPT")));
+        assert!(!argv.iter().any(|arg| arg.contains("ROBROZ_PROMPT")));
         let envs: Vec<&String> = argv
             .windows(2)
             .filter(|pair| pair[0] == "-e")
             .map(|pair| &pair[1])
             .collect();
-        assert_eq!(envs, [&"OPENBOTS_TASK_ID=task-1".to_string()]);
+        assert_eq!(envs, [&"ROBROZ_TASK_ID=task-1".to_string()]);
         // --user comes before the image, so docker treats it as an option.
         let user_at = argv.iter().position(|arg| arg == "--user").unwrap();
         assert!(user_at < argv.len() - 1);
