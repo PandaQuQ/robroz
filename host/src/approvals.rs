@@ -158,6 +158,13 @@ pub(crate) fn needs_approval(kind: &str) -> bool {
 
 /// Card text for a task: its first plain line, shortened.
 pub(crate) fn gate_summary(prompt: &str) -> String {
+    format!("{GATE_PREFIX}{}", gate_line(prompt))
+}
+
+const GATE_PREFIX: &str = "要对外写入：";
+
+/// The task's first plain line, at most 60 characters.
+fn gate_line(prompt: &str) -> String {
     let line = prompt
         .lines()
         .map(str::trim)
@@ -165,7 +172,7 @@ pub(crate) fn gate_summary(prompt: &str) -> String {
         .unwrap_or("这个任务");
     let short: String = line.chars().take(60).collect();
     let more = if line.chars().count() > 60 { "…" } else { "" };
-    format!("要对外写入：{short}{more}")
+    format!("{short}{more}")
 }
 
 /// A blocked task asks before writing outside. The card names the task and
@@ -192,15 +199,19 @@ fn gate_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, Stri
 /// Apply the answer to the task, only if it is still blocked on that line
 /// (a takeover through `/resume` may have moved it on already).
 fn settle_task(conn: &Connection, task_id: &str, hash: &str, decision: ApprovalDecision) -> rusqlite::Result<()> {
-    let next = match decision {
-        ApprovalDecision::Approved => "queued",
-        ApprovalDecision::Denied => "done",
+    // Denied is done without the work: say so, so the card is not a green "done".
+    let (next, failure) = match decision {
+        ApprovalDecision::Approved => ("queued", None),
+        ApprovalDecision::Denied => {
+            let prompt: String = conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))?;
+            ("done", Some(format!("你拒绝了：{}", gate_line(&prompt))))
+        }
     };
     conn.execute(
-        "UPDATE tasks SET state = ?1, container_up = 0, updated_at = ?2,
+        "UPDATE tasks SET state = ?1, container_up = 0, updated_at = ?2, failure = ?5,
                           intent_kind = NULL, intent_line = NULL, intent_hash = NULL
          WHERE id = ?3 AND state = 'blocked' AND intent_hash = ?4",
-        params![next, now_rfc3339(), task_id, hash],
+        params![next, now_rfc3339(), task_id, hash, failure],
     )?;
     Ok(())
 }
