@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use robroz_contract::{Events, Groups};
+use robroz_contract::{Event, Groups};
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
 use crate::conn::Conn;
@@ -77,25 +77,90 @@ impl HttpSource {
             .map_err(|err| SourceError(format!("GET {url} 与契约不符: {err}")))
     }
 
-    /// `GET /api/groups/{id}/events[?since=…]`, decoded straight into the
-    /// contract's [`Events`]. A shape mismatch is reported, not patched over.
-    pub fn events(&self, group_id: &str, since: Option<&str>) -> Result<Events, SourceError> {
+    /// `GET /api/groups/{id}/events[?since=…]` as the contract's [`Events`].
+    /// Events of a type this client does not know are skipped (see
+    /// [`decode_events`]); a broken response as a whole is still an error.
+    #[cfg(test)]
+    pub fn events(
+        &self,
+        group_id: &str,
+        since: Option<&str>,
+    ) -> Result<robroz_contract::Events, SourceError> {
+        self.fetch(group_id, since)
+            .map(|d| robroz_contract::Events { events: d.events })
+    }
+
+    fn fetch(&self, group_id: &str, since: Option<&str>) -> Result<Decoded, SourceError> {
         let path = match since {
             Some(s) => format!("/api/groups/{group_id}/events?since={}", query_escape(s)),
             None => format!("/api/groups/{group_id}/events"),
         };
-        self.get_json(&path)
+        let raw: RawEvents = self.get_json(&path)?;
+        Ok(decode_events(raw.events))
     }
 
-    fn advance(&mut self, group_id: &str, events: &Events) {
-        for e in &events.events {
-            let at = change_time(e);
+    fn advance(&mut self, group_id: &str, decoded: &Decoded) {
+        let times = decoded
+            .events
+            .iter()
+            .map(change_time)
+            .chain(decoded.skipped_at.as_deref());
+        for at in times {
             let cur = self.cursors.entry(group_id.to_string()).or_default();
             if later(at, cur) {
                 *cur = at.to_string();
             }
         }
     }
+}
+
+/// `{"events":[…]}` with each event left as raw JSON.
+#[derive(serde::Deserialize)]
+struct RawEvents {
+    events: Vec<serde_json::Value>,
+}
+
+/// Known events, plus the newest change time among skipped ones.
+#[derive(Debug, Default)]
+struct Decoded {
+    events: Vec<Event>,
+    skipped_at: Option<String>,
+}
+
+/// Decode one event at a time. A newer host may add event types (the
+/// contract only grows); this client skips what it cannot read instead of
+/// dropping the whole response. A skipped event still moves the `?since=`
+/// cursor (its newest `updatedAt` / `answeredAt` / `createdAt`), so it is
+/// not fetched again on every poll.
+fn decode_events(raw: Vec<serde_json::Value>) -> Decoded {
+    let mut out = Decoded::default();
+    for value in raw {
+        match serde_json::from_value::<Event>(value.clone()) {
+            Ok(event) => out.events.push(event),
+            Err(err) => {
+                if cfg!(debug_assertions) {
+                    eprintln!(
+                        "skip event type {:?}: {err}",
+                        value.get("type").and_then(|t| t.as_str()).unwrap_or("?")
+                    );
+                }
+                let at = ["updatedAt", "answeredAt", "createdAt"]
+                    .iter()
+                    .filter_map(|k| value.get(*k).and_then(|v| v.as_str()))
+                    .fold(None::<&str>, |best, t| match best {
+                        Some(b) if !later(t, b) => Some(b),
+                        _ => Some(t),
+                    });
+                if let Some(at) = at {
+                    let newer = out.skipped_at.as_deref().is_none_or(|cur| later(at, cur));
+                    if newer {
+                        out.skipped_at = Some(at.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `true` when `a` is after `b` (RFC 3339; empty `b` is "never").
@@ -155,9 +220,9 @@ impl EventSource for HttpSource {
         let mut out = Vec::new();
         for group in self.groups.clone() {
             let since = self.since(&group.id);
-            let events = self.events(&group.id, since.as_deref())?;
-            self.advance(&group.id, &events);
-            for event in events.events {
+            let decoded = self.fetch(&group.id, since.as_deref())?;
+            self.advance(&group.id, &decoded);
+            for event in decoded.events {
                 out.push(GroupEvent {
                     group_id: group.id.clone(),
                     event,
@@ -216,6 +281,40 @@ mod tests {
         assert_eq!(
             HttpSource::new(Conn::new("http://h:1/"), Vec::new()).base(),
             "http://h:1"
+        );
+    }
+
+    #[test]
+    fn unknown_event_types_are_skipped_and_still_move_the_cursor() {
+        let raw: RawEvents = serde_json::from_str(
+            r#"{"events":[
+                {"type":"message","id":"m1","kind":"text","body":"一","createdAt":"2026-11-20T02:00:00.000Z"},
+                {"type":"poll","id":"p1","question":"?","createdAt":"2026-11-20T02:00:01.000Z","updatedAt":"2026-11-20T02:00:09.000Z"},
+                {"type":"message","id":"m2","kind":"text","body":"二","createdAt":"2026-11-20T02:00:02.000Z"},
+                {"type":"message","id":"bad"}
+            ]}"#,
+        )
+        .unwrap();
+        let decoded = decode_events(raw.events);
+        let ids: Vec<&str> = decoded
+            .events
+            .iter()
+            .map(|e| match e {
+                Event::Message { id, .. } => id.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(ids, ["m1", "m2"], "known events kept, in order");
+        assert_eq!(
+            decoded.skipped_at.as_deref(),
+            Some("2026-11-20T02:00:09.000Z")
+        );
+        let mut source = HttpSource::new(Conn::new("http://unused"), Vec::new());
+        source.advance("g1", &decoded);
+        assert_eq!(
+            source.since("g1").as_deref(),
+            Some("2026-11-20T02:00:08.999Z"),
+            "cursor passes the skipped event"
         );
     }
 

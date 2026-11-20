@@ -172,8 +172,14 @@ pub fn read_once(
                 match serde_json::from_str::<Event>(&frame.data) {
                     Ok(event) => StreamItem::Event(event),
                     // A newer host may send a kind this client does not
-                    // know yet: skip it rather than drop the stream.
-                    Err(_) => continue,
+                    // know yet: skip it rather than drop the stream. The
+                    // frame's `id` above still moves `Last-Event-ID`.
+                    Err(err) => {
+                        if cfg!(debug_assertions) {
+                            eprintln!("skip stream event: {err}");
+                        }
+                        continue;
+                    }
                 }
             }
             Line::Comment => StreamItem::Ping,
@@ -417,6 +423,46 @@ mod tests {
         assert!(!first.contains("last-event-id"), "fresh start: {first}");
         let second = heads.recv().unwrap();
         assert!(second.contains("last-event-id: t1"), "resume: {second}");
+    }
+
+    #[test]
+    fn unknown_stream_events_are_skipped() {
+        let unknown = serde_json::json!({
+            "type": "poll", "id": "p1", "createdAt": "2026-11-20T02:00:01.000Z"
+        })
+        .to_string();
+        let (base, heads) = flaky_server(vec![
+            vec![
+                ("t1".into(), message_json("m1", "一")),
+                ("t2".into(), unknown),
+                ("t3".into(), message_json("m3", "三")),
+            ],
+            vec![],
+        ]);
+        let conn = Conn::new(base);
+        let mut bodies = Vec::new();
+        let mut downs = 0;
+        run(
+            &conn,
+            "g1",
+            Backoff::new(Duration::from_millis(10), Duration::from_millis(20)),
+            |item| {
+                match item {
+                    StreamItem::Event(Event::Message { body, .. }) => bodies.push(body),
+                    StreamItem::Event(other) => panic!("unexpected {other:?}"),
+                    StreamItem::Down(_) => downs += 1,
+                    _ => {}
+                }
+                downs < 2
+            },
+        );
+        assert_eq!(bodies, ["一", "三"], "known events on both sides arrive");
+        heads.recv().unwrap();
+        let second = heads.recv().unwrap();
+        assert!(
+            second.contains("last-event-id: t3"),
+            "resume past the skipped frame: {second}"
+        );
     }
 
     #[test]
