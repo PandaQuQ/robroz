@@ -24,6 +24,7 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_reads (
 const UNREAD_SQL: &str = "SELECT
     (SELECT COUNT(*) FROM deliveries WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM choices WHERE group_id = ?1 AND created_at > ?2)
+  + (SELECT COUNT(*) FROM approvals WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2)";
 
 const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
@@ -31,6 +32,7 @@ const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
     UNION ALL SELECT MAX(updated_at) FROM tasks WHERE group_id = ?1
     UNION ALL SELECT MAX(created_at) FROM deliveries WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM choices WHERE group_id = ?1
+    UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM approvals WHERE group_id = ?1
 )";
 
 fn read_at(conn: &Connection, group_id: &str) -> rusqlite::Result<Option<String>> {
