@@ -31,7 +31,7 @@ SQLite 路径来自环境变量 `ROBROZ_DB`，默认 `./robroz.db`。监听地�
 cargo test -p robroz-host
 ```
 
-`crates/hive-contract`、`crates/hive-policy`、`crates/hive-card` 是旁边的共享 crate。宿主机目前只依赖 `hive-contract`。`hive-policy` 没有接到宿主机上。
+`crates/robroz-contract`、`crates/robroz-policy`、`crates/robroz-card` 是旁边的共享 crate。宿主机目前只依赖 `robroz-contract`。`robroz-policy` 没有接到宿主机上。
 
 ## 节点 3
 
@@ -49,17 +49,17 @@ Docker 调用不在数据库锁里。pump 在宿主机自己的线程上跑：�
 docker build -f runner/Dockerfile -t robroz-runner:local .
 ```
 
-CI 只编译 `hive-runner`，不构建镜像，测试也不需要 Docker daemon。启动失败时任务保持 `queued`，没有 delivery。容器非 0 退出或结果文件不存在时，删掉容器，任务保持 `running`，不发 delivery，也不发明新状态。本 PR 不调用 `hive-policy`，没有配额、没有 blocked、没有 resume，也没有定时调度。
+CI 只编译 `robroz-runner`，不构建镜像，测试也不需要 Docker daemon。启动失败时任务保持 `queued`，没有 delivery。容器非 0 退出或结果文件不存在时，删掉容器，任务保持 `running`，不发 delivery，也不发明新状态。本 PR 不调用 `robroz-policy`，没有配额、没有 blocked、没有 resume，也没有定时调度。
 
 ## 节点 4
 
 状态事件增加字段 `containerUp`。排队、完成、卡住，以及容器已经删掉的失败运行，都是 false。只有容器还在跑的 `running` 才是 true。失败运行仍然是 `TaskState::Running`，没有第五种状态：色调和排队一样是灰，标签是「没写出结果」，动作是空。容器还在时标签仍是「进行」。卡住才是琥珀色，动作「去私聊接管」。
 
-GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outbound` 判断，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`hive-action:external` 和 `hive-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
+GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz-policy::outbound` 判断，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`robroz-action:external` 和 `robroz-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
 
 `POST /api/tasks/:id/resume` 只接受 blocked：任务不存在返回 404「任务不存在」，不是 blocked 返回 409「这次不能恢复」。成功返回 200 `{"id","state":"queued"}`：按库里存的卡住记录写接管标记，清掉这条记录，状态回到 `queued`，`containerUp` false。resume 不读群目录。库里没有这条卡住记录（比如宿主机存这条记录之前就卡住的旧任务）返回 500 `{"error":"恢复失败，找不到卡住记录"}`；写接管标记失败返回 500 `{"error":"恢复失败，无法写入接管标记"}`。这两种情况任务都留在 `blocked`，状态和 `updatedAt` 都不变，也不写标记。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
-接管标记：runner 停下时在群目录写 `tasks/{taskId}/intent`。这个文件只表示「卡住了」，宿主机从来不读它的内容。容器退出时宿主机自己算停在哪一行：用库里存的 prompt 和 `ROBROZ_CONTROL/{taskId}/takeover` 里的哈希，按顺序找第一行 sha256 不在 takeover 里的 `hive-action:external` / `hive-action:captcha`（`hive-policy::blocking_line`，runner 决定在哪停用的也是这个函数）。算出来的类型、原文和哈希存进库里这个任务的 `intent_kind` / `intent_line` / `intent_hash`，然后删掉群目录里的 intent（下次启动容器前也会再清一次）。如果有 intent 但算不出这样一行（容器说卡住了，其实没有没接管过的阻塞行），按节点 4 的失败运行处理：保持 `running`，`containerUp` false，「没写出结果」，不算卡住。resume 只用库里这份，把哈希追加到 `takeover`（每行一个哈希）。这个目录在群目录外面，只有宿主机写；容器只拿到自己任务的那一个，只读挂在 `/control`。runner 只读 `/control/takeover`，跳过哈希在里面的阻塞行，跳过的行不写进 `result.txt`；碰到别的阻塞行照样卡住，再接管一次就再追加一个哈希。`/workspace` 里任何地方的 takeover 文件（包括 Bot 自己伪造的）一律不认。同一行原文在 prompt 里出现多次时，接管一次就都放行。库里存的 prompt 不改写。旧数据库打开时自动加上这三列，原有数据不动。
+接管标记：runner 停下时在群目录写 `tasks/{taskId}/intent`。这个文件只表示「卡住了」，宿主机从来不读它的内容。容器退出时宿主机自己算停在哪一行：用库里存的 prompt 和 `ROBROZ_CONTROL/{taskId}/takeover` 里的哈希，按顺序找第一行 sha256 不在 takeover 里的 `robroz-action:external` / `robroz-action:captcha`（`robroz-policy::blocking_line`，runner 决定在哪停用的也是这个函数）。算出来的类型、原文和哈希存进库里这个任务的 `intent_kind` / `intent_line` / `intent_hash`，然后删掉群目录里的 intent（下次启动容器前也会再清一次）。如果有 intent 但算不出这样一行（容器说卡住了，其实没有没接管过的阻塞行），按节点 4 的失败运行处理：保持 `running`，`containerUp` false，「没写出结果」，不算卡住。resume 只用库里这份，把哈希追加到 `takeover`（每行一个哈希）。这个目录在群目录外面，只有宿主机写；容器只拿到自己任务的那一个，只读挂在 `/control`。runner 只读 `/control/takeover`，跳过哈希在里面的阻塞行，跳过的行不写进 `result.txt`；碰到别的阻塞行照样卡住，再接管一次就再追加一个哈希。`/workspace` 里任何地方的 takeover 文件（包括 Bot 自己伪造的）一律不认。同一行原文在 prompt 里出现多次时，接管一次就都放行。库里存的 prompt 不改写。旧数据库打开时自动加上这三列，原有数据不动。
 
 
 ## 节点 5：定时
@@ -68,7 +68,7 @@ GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `hive-policy::outb
 
 cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 日 月 周`）或 6 段（`秒 分 时 日 月 周`），不接受年份字段和 `@daily` 这类别名，也拒绝永远不会触发的表达式（比如 2 月 30 日）。容器里没有 cron。
 
-宿主机循环里 `tick(now)` 和 `pump` 一起跑。到点的定时会调用 `hive_policy::should_start_container`：上一次的任务还在排队，或者还在运行且 `containerUp` 为 true，就跳过这一次；否则新建一个普通的 `queued` 任务。两种情况都把 `nextRunAt` 推到严格晚于当前时间的下一次，错过的不补跑。`tick` 只建排队任务，不启动容器，容器只由 `pump` 启动。
+宿主机循环里 `tick(now)` 和 `pump` 一起跑。到点的定时会调用 `robroz_policy::should_start_container`：上一次的任务还在排队，或者还在运行且 `containerUp` 为 true，就跳过这一次；否则新建一个普通的 `queued` 任务。两种情况都把 `nextRunAt` 推到严格晚于当前时间的下一次，错过的不补跑。`tick` 只建排队任务，不启动容器，容器只由 `pump` 启动。
 
 定时任务的状态卡和普通任务一样。成功完成时 delivery 的 `briefing` 为 true，路径仍是该群目录里的 `tasks/{taskId}/result.txt`；普通任务的 `briefing` 仍为 false。卡住、失败和 resume 的行为与节点 4 相同。
 
@@ -76,9 +76,9 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 `client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡和交付卡。
 
-状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `hive-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `hive-card::briefing_badge`）。
+状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `robroz-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `robroz-card::briefing_badge`）。
 
-事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `hive-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。宿主机地址用 `ROBROZ_HOST`，默认 `http://127.0.0.1:8790`。宿主机还没有列群接口，群用 `ROBROZ_GROUPS` 指定，逗号分隔，每项是 `id` 或 `id=名字`。`--fake` 或 `ROBROZ_FAKE=1` 改用离线的 `FakeSource`（单测也用它）。连不上时保留已显示的内容，下一秒再试。
+事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `robroz-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。宿主机地址用 `ROBROZ_HOST`，默认 `http://127.0.0.1:8790`。宿主机还没有列群接口，群用 `ROBROZ_GROUPS` 指定，逗号分隔，每项是 `id` 或 `id=名字`。`--fake` 或 `ROBROZ_FAKE=1` 改用离线的 `FakeSource`（单测也用它）。连不上时保留已显示的内容，下一秒再试。
 
 ```
 ROBROZ_GROUPS=<groupId>=官网 cargo run -p robroz-client
