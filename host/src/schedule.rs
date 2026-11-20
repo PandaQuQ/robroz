@@ -56,7 +56,7 @@ pub fn tick(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<TickRepor
     let schedules = {
         let mut stmt = conn.prepare(
             "SELECT id, group_id, assignee_bot_id, cron, prompt, next_run_at, last_task_id
-             FROM schedules ORDER BY next_run_at, id",
+             FROM schedules WHERE paused_at IS NULL ORDER BY next_run_at, id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DueSchedule {

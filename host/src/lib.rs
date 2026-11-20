@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
@@ -14,7 +14,9 @@ use robroz_contract::{
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+mod choices;
 mod pump;
+mod routines;
 mod sandbox;
 mod schedule;
 
@@ -123,6 +125,10 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/events", get(list_events))
         .route("/api/tasks/{id}/resume", post(resume_task))
         .route("/api/schedules", post(create_schedule))
+        .route("/api/groups/{id}/schedules", get(routines::list_schedules))
+        .route("/api/schedules/{id}", patch(routines::update_schedule))
+        .route("/api/groups/{id}/choices", post(choices::create_choice))
+        .route("/api/choices/{id}/answer", post(choices::answer_choice))
         .with_state(state)
 }
 
@@ -186,7 +192,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             prompt TEXT NOT NULL,
             next_run_at TEXT NOT NULL,
             last_task_id TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            paused_at TEXT
         );
         ",
     )?;
@@ -209,6 +216,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["intent_kind", "intent_line", "intent_hash"] {
         let _ = conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {column} TEXT"), []);
     }
+    // Routines: a paused schedule is skipped by tick.
+    let _ = conn.execute("ALTER TABLE schedules ADD COLUMN paused_at TEXT", []);
+    conn.execute_batch(choices::SCHEMA)?;
     Ok(())
 }
 
@@ -690,6 +700,8 @@ async fn list_events(
                 timed.push(item?);
             }
         }
+
+        timed.extend(choices::timed_events(&conn, &group_id)?);
 
         timed.sort_by(|a, b| {
             a.created_at
@@ -1534,6 +1546,244 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{schedule}");
         (group_id, schedule)
+    }
+
+    // ---- routines: list and pause ----
+
+    fn patch(uri: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method("PATCH")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn set_paused(app: &Router, id: &str, paused: bool) -> (StatusCode, Value) {
+        read_json(call(app, patch(&format!("/api/schedules/{id}"), json!({ "paused": paused }))).await).await
+    }
+
+    #[tokio::test]
+    async fn list_schedules_returns_group_schedules_with_paused() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (group_id, schedule) = seed_schedule(&app, "例行", "早报").await;
+        let other = create_group(&app, "别的群").await["id"].as_str().unwrap().to_string();
+
+        let (status, body) = read_json(call(&app, get(&format!("/api/groups/{group_id}/schedules"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let mut expected = schedule.clone();
+        expected["paused"] = json!(false);
+        assert_eq!(body, json!({ "schedules": [expected] }));
+
+        let (status, body) = read_json(call(&app, get(&format!("/api/groups/{other}/schedules"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "schedules": [] }));
+
+        let (status, _) = read_json(call(&app, get("/api/groups/nope/schedules")).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_schedule_shape_is_unchanged_by_paused() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (_, schedule) = seed_schedule(&app, "例行", "早报").await;
+        assert!(schedule.get("paused").is_none(), "POST /api/schedules keeps the frozen shape");
+    }
+
+    #[tokio::test]
+    async fn paused_schedule_is_skipped_by_tick_and_resume_does_not_backfill() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (_, schedule) = seed_schedule(&app, "例行", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let due = at(schedule["nextRunAt"].as_str().unwrap());
+
+        let (status, body) = set_paused(&app, id, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], true);
+        assert_eq!(body["id"], id);
+
+        let report = tick_db(&path, due + ChronoDuration::hours(2));
+        assert!(report.created.is_empty() && report.skipped.is_empty());
+        assert_eq!(task_count(&path), 0);
+
+        // Pausing again is a no-op.
+        let (status, body) = set_paused(&app, id, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], true);
+
+        let (status, body) = set_paused(&app, id, false).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], false);
+        let next = at(body["nextRunAt"].as_str().unwrap());
+        assert!(next > Utc::now() - ChronoDuration::seconds(1), "resume picks a slot after now");
+        assert_eq!(schedule_row(&path, id).0, body["nextRunAt"].as_str().unwrap());
+
+        let report = tick_db(&path, next);
+        assert_eq!(report.created.len(), 1, "resumed schedule fires once at its next slot");
+    }
+
+    #[tokio::test]
+    async fn patch_schedule_errors() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let (status, _) = set_paused(&app, "nope", true).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (_, schedule) = seed_schedule(&app, "例行", "早报").await;
+        let id = schedule["id"].as_str().unwrap();
+        let response = call(&app, patch(&format!("/api/schedules/{id}"), json!({ "paused": "yes" }))).await;
+        assert!(response.status().is_client_error());
+        let response = call(&app, patch(&format!("/api/schedules/{id}"), json!({}))).await;
+        assert!(response.status().is_client_error());
+    }
+
+    #[test]
+    fn migration_adds_paused_at_to_existing_schedules() {
+        let path = temp_db();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schedules (
+                    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, group_id TEXT NOT NULL,
+                    assignee_bot_id TEXT NOT NULL, cron TEXT NOT NULL, prompt TEXT NOT NULL,
+                    next_run_at TEXT NOT NULL, last_task_id TEXT, created_at TEXT NOT NULL);
+                 INSERT INTO schedules VALUES ('s1','local','g1','bot-ada','* * * * *','早报',
+                    '2026-10-08T09:00:00.000Z',NULL,'2026-10-01T00:00:00.000Z');",
+            )
+            .unwrap();
+        }
+        let _ = test_app(&path);
+        let _ = test_app(&path); // second open stays idempotent
+        let conn = Connection::open(&path).unwrap();
+        let paused: Option<String> = conn
+            .query_row("SELECT paused_at FROM schedules WHERE id = 's1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(paused, None);
+    }
+
+    // ---- choice cards ----
+
+    async fn post_choice(app: &Router, group_id: &str, body: Value) -> (StatusCode, Value) {
+        read_json(call(app, post(&format!("/api/groups/{group_id}/choices"), body)).await).await
+    }
+
+    async fn answer(app: &Router, id: &str, choice: Value) -> (StatusCode, Value) {
+        read_json(call(app, post(&format!("/api/choices/{id}/answer"), json!({ "choice": choice }))).await).await
+    }
+
+    fn two_options() -> Value {
+        json!([{ "id": "a", "label": "方案 A", "primary": true }, { "id": "b", "label": "方案 B", "primary": false }])
+    }
+
+    #[tokio::test]
+    async fn choice_card_flow_answer_comes_back_as_choice() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "选项").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+
+        let (status, card) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": " 用哪个？ ", "options": two_options() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        assert_eq!(card["type"], "choice");
+        assert_eq!(card["botName"], "Ada");
+        assert_eq!(card["prompt"], "用哪个？");
+        assert_eq!(card["options"], two_options());
+        assert_eq!(card["multi"], false);
+        assert_eq!(card["choice"], Value::Null);
+        assert_eq!(card["answeredAt"], Value::Null);
+        let id = card["id"].as_str().unwrap();
+
+        let events = events_of(&app, &group_id).await;
+        let open: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "choice").collect();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0], &card);
+
+        let (status, _) = answer(&app, id, json!(["a", "b"])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "single choice takes one value");
+        let (status, answered) = answer(&app, id, json!(["b"])).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(answered["choice"], json!(["b"]));
+        assert!(answered["answeredAt"].is_string());
+
+        let events = events_of(&app, &group_id).await;
+        let cards: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "choice").collect();
+        assert_eq!(cards, vec![&answered], "same card, now answered");
+
+        let (status, _) = answer(&app, id, json!(["a"])).await;
+        assert_eq!(status, StatusCode::CONFLICT, "answered once only");
+    }
+
+    #[tokio::test]
+    async fn multi_choice_takes_several_and_drops_primary() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "多选").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+        let options = json!([
+            { "id": "a", "label": "A", "primary": true },
+            { "id": "b", "label": "B" },
+            { "id": "c", "label": "C" }
+        ]);
+        let (status, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "选几个", "options": options, "multi": true })).await;
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        assert_eq!(card["multi"], true);
+        assert!(card["options"].as_array().unwrap().iter().all(|o| o["primary"] == false));
+        let id = card["id"].as_str().unwrap();
+        for bad in [json!([]), json!(["a", "a"]), json!(["a", "z"])] {
+            let (status, _) = answer(&app, id, bad.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (status, body) = answer(&app, id, json!(["c", "a"])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["choice"], json!(["c", "a"]));
+    }
+
+    #[tokio::test]
+    async fn choice_validation() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "选项").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+
+        let (status, _) = post_choice(&app, "nope", json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = post_choice(&app, &group_id, json!({ "botId": "bot-zed", "prompt": "?", "options": two_options() })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "  ", "options": two_options() })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        for options in [
+            json!([{ "id": "a", "label": "A" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": " a ", "label": "B" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": "", "label": "B" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": "b", "label": " " }]),
+            json!([{ "id": "a", "label": "A", "primary": true }, { "id": "b", "label": "B", "primary": true }]),
+            json!((0..5).map(|i| json!({ "id": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
+        ] {
+            let (status, body) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": options })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{options} -> {body}");
+        }
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM choices", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 0, "rejected cards are not stored");
+        drop(conn);
+
+        let (_, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() })).await;
+        let id = card["id"].as_str().unwrap();
+        let (status, _) = answer(&app, id, json!(["c"])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = answer(&app, "nope", json!(["a"])).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = answer(&app, id, json!(["a"])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["choice"], json!(["a"]));
     }
 
     #[tokio::test]
