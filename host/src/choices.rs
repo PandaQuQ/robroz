@@ -40,15 +40,15 @@ pub fn validate_options(options: &[ChoiceOption], multi: bool) -> Result<Vec<Cho
     }
     let mut clean: Vec<ChoiceOption> = Vec::with_capacity(options.len());
     for option in options {
-        let value = option.value.trim().to_string();
+        let value = option.id.trim().to_string();
         let label = option.label.trim().to_string();
         if value.is_empty() || label.is_empty() {
             return Err("选项不能为空");
         }
-        if clean.iter().any(|o| o.value == value) {
+        if clean.iter().any(|o| o.id == value) {
             return Err("选项重复");
         }
-        clean.push(ChoiceOption { value, label, primary: option.primary && !multi });
+        clean.push(ChoiceOption { id: value, label, primary: option.primary && !multi });
     }
     Ok(clean)
 }
@@ -64,7 +64,7 @@ pub fn validate_pick(options: &[ChoiceOption], multi: bool, pick: &[String]) -> 
         if pick[..i].contains(value) {
             return Err("选项重复");
         }
-        if !options.iter().any(|o| &o.value == value) {
+        if !options.iter().any(|o| &o.id == value) {
             return Err("没有这个选项");
         }
     }

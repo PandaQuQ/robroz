@@ -174,11 +174,11 @@ pub struct UpdateSchedule {
     pub paused: bool,
 }
 
-/// One option on a choice card. `value` is what comes back in `choice`.
+/// One option on a choice card. `id` is what comes back in `choice`.
 /// `primary` marks the bot's recommendation; at most one, ignored when `multi`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChoiceOption {
-    pub value: String,
+    pub id: String,
     pub label: String,
     #[serde(default)]
     pub primary: bool,
@@ -195,7 +195,7 @@ pub struct CreateChoice {
     pub multi: bool,
 }
 
-/// `POST /api/choices/{id}/answer` body: option `value`s, always an array.
+/// `POST /api/choices/{id}/answer` body: option `id`s, always an array.
 /// Single choice sends exactly one; multi sends one or more, no repeats.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerChoice {
@@ -391,8 +391,8 @@ mod tests {
     #[test]
     fn choice_event_json() {
         let options = vec![
-            ChoiceOption { value: "a".into(), label: "方案 A".into(), primary: true },
-            ChoiceOption { value: "b".into(), label: "方案 B".into(), primary: false },
+            ChoiceOption { id: "a".into(), label: "方案 A".into(), primary: true },
+            ChoiceOption { id: "b".into(), label: "方案 B".into(), primary: false },
         ];
         assert_round_trip(
             &Event::Choice {
@@ -413,8 +413,8 @@ mod tests {
                 "botName": "Ada",
                 "prompt": "用哪个方案？",
                 "options": [
-                    { "value": "a", "label": "方案 A", "primary": true },
-                    { "value": "b", "label": "方案 B", "primary": false }
+                    { "id": "a", "label": "方案 A", "primary": true },
+                    { "id": "b", "label": "方案 B", "primary": false }
                 ],
                 "multi": false,
                 "choice": null,
@@ -425,7 +425,7 @@ mod tests {
         let request: CreateChoice = serde_json::from_value(serde_json::json!({
             "botId": "bot-ada",
             "prompt": "用哪个方案？",
-            "options": [{ "value": "a", "label": "方案 A" }]
+            "options": [{ "id": "a", "label": "方案 A" }]
         }))
         .unwrap();
         assert_eq!(request.bot_id, "bot-ada");

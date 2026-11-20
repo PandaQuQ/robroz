@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     fn two_options() -> Value {
-        json!([{ "value": "a", "label": "方案 A", "primary": true }, { "value": "b", "label": "方案 B", "primary": false }])
+        json!([{ "id": "a", "label": "方案 A", "primary": true }, { "id": "b", "label": "方案 B", "primary": false }])
     }
 
     #[tokio::test]
@@ -1706,9 +1706,9 @@ mod tests {
         let group_id = create_group(&app, "多选").await["id"].as_str().unwrap().to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
         let options = json!([
-            { "value": "a", "label": "A", "primary": true },
-            { "value": "b", "label": "B" },
-            { "value": "c", "label": "C" }
+            { "id": "a", "label": "A", "primary": true },
+            { "id": "b", "label": "B" },
+            { "id": "c", "label": "C" }
         ]);
         let (status, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "选几个", "options": options, "multi": true })).await;
         assert_eq!(status, StatusCode::CREATED, "{card}");
@@ -1738,12 +1738,12 @@ mod tests {
         let (status, _) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "  ", "options": two_options() })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         for options in [
-            json!([{ "value": "a", "label": "A" }]),
-            json!([{ "value": "a", "label": "A" }, { "value": " a ", "label": "B" }]),
-            json!([{ "value": "a", "label": "A" }, { "value": "", "label": "B" }]),
-            json!([{ "value": "a", "label": "A" }, { "value": "b", "label": " " }]),
-            json!([{ "value": "a", "label": "A", "primary": true }, { "value": "b", "label": "B", "primary": true }]),
-            json!((0..5).map(|i| json!({ "value": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
+            json!([{ "id": "a", "label": "A" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": " a ", "label": "B" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": "", "label": "B" }]),
+            json!([{ "id": "a", "label": "A" }, { "id": "b", "label": " " }]),
+            json!([{ "id": "a", "label": "A", "primary": true }, { "id": "b", "label": "B", "primary": true }]),
+            json!((0..5).map(|i| json!({ "id": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
         ] {
             let (status, body) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": options })).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{options} -> {body}");

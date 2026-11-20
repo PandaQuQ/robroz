@@ -31,7 +31,7 @@ pub struct ChoiceCard {
     pub choice_id: String,
     pub bot_name: String,
     pub prompt: String,
-    /// `(value, label)` in the order the bot gave them.
+    /// `(id, label)` in the order the bot gave them.
     pub options: Vec<(String, String)>,
     pub multi: bool,
     /// The picked `value`s, once answered. Single choice holds one.
@@ -141,7 +141,7 @@ fn to_row(event: &Event) -> (Key, Row) {
                 prompt: prompt.clone(),
                 options: options
                     .iter()
-                    .map(|o| (o.value.clone(), o.label.clone()))
+                    .map(|o| (o.id.clone(), o.label.clone()))
                     .collect(),
                 multi: *multi,
                 choice: choice.clone(),
@@ -338,8 +338,8 @@ mod tests {
             bot_name: "Ada".into(),
             prompt: "用哪个？".into(),
             options: vec![
-                robroz_contract::ChoiceOption { value: "a".into(), label: "A".into(), primary: true },
-                robroz_contract::ChoiceOption { value: "b".into(), label: "B".into(), primary: false },
+                robroz_contract::ChoiceOption { id: "a".into(), label: "A".into(), primary: true },
+                robroz_contract::ChoiceOption { id: "b".into(), label: "B".into(), primary: false },
             ],
             multi: false,
             choice: choice.map(|v| vec![v.to_string()]),
