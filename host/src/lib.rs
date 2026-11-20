@@ -3364,15 +3364,27 @@ mod tests {
         assert_eq!(events_of(&app, &group).await["events"].as_array().unwrap().len(), 0);
     }
 
-    /// Fake model: answers or fails, and counts calls.
+    /// Fake model: answers or fails, and records each call's prompt and memory paragraph.
     struct FakeModel {
         answer: Result<String, String>,
         calls: std::sync::atomic::AtomicUsize,
+        seen: std::sync::Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl FakeModel {
+        fn new(answer: Result<String, String>) -> Self {
+            Self { answer, calls: Default::default(), seen: Default::default() }
+        }
+
+        fn memory_sections(&self) -> Vec<Option<String>> {
+            self.seen.lock().unwrap().iter().map(|(_, section)| section.clone()).collect()
+        }
     }
 
     impl robroz_model::Model for FakeModel {
-        fn reply(&self, prompt: &str) -> Result<String, robroz_model::ModelError> {
+        fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, robroz_model::ModelError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seen.lock().unwrap().push((prompt.to_string(), memory_section.map(str::to_string)));
             self.answer
                 .clone()
                 .map(|a| format!("{a}（{prompt}）"))
@@ -3404,7 +3416,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
-        let model = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+        let model = FakeModel::new(Ok("周报写好了".into()));
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
@@ -3420,6 +3432,69 @@ mod tests {
         assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 
+    async fn post_memory(app: &Router, scope: &str, kind: &str, text: &str) {
+        let (status, body) = read_json(
+            call(app, post("/api/memories", json!({ "scope": scope, "kind": kind, "text": text }))).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    #[tokio::test]
+    async fn kept_memories_are_injected_into_the_system_prompt() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, _) = seed_task(&app, "记忆注入", "先跑一次").await;
+        let (status, _) = add_member(&app, &group_id, "bot-bob", "Bob").await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // No memories yet: the system prompt stays the opening only.
+        let empty = FakeModel::new(Ok("好".into()));
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &empty);
+        assert_eq!(empty.memory_sections(), [None]);
+        assert_eq!(fake.containers[0].prompt, "先跑一次", "prompt.txt is still just the task");
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &empty);
+        assert_eq!(empty.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "done tasks are not asked again");
+
+        post_memory(&app, "user", "habit", "共享习惯").await;
+        post_memory(&app, "bot:bot-ada", "profile", "Ada 专用旧").await;
+        post_memory(&app, "bot:bot-bob", "habit", "Bob 的，Ada 不该看到").await;
+        post_memory(&app, "bot:bot-ada", "project", "Ada 专用新").await;
+        post_memory(&app, "user", "habit", "忘掉的").await;
+        let forgotten = memories_with(&app, "").await.into_iter().find(|m| m["text"] == "忘掉的").unwrap();
+        let resp = call(&app, delete_req(&format!("/api/memories/{}", forgotten["id"].as_str().unwrap()))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let conn = Connection::open(&path).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        for (id, scope, status, text) in [
+            ("pending-row", "user", "pending", "还没点头"),
+            ("rejected-row", "bot:bot-ada", "rejected", "被拒绝的"),
+        ] {
+            conn.execute(
+                "INSERT INTO memories (id, scope, kind, text, source, status, created_at, updated_at, forgotten_at)
+                 VALUES (?1, ?2, 'habit', ?3, 'user', ?4, '2026-01-01T00:00:09.000Z', '2026-01-01T00:00:09.000Z', NULL)",
+                rusqlite::params![id, scope, status, text],
+            )
+            .unwrap();
+        }
+
+        let (_, next) = seed_task_in(&app, &group_id, "再写周报").await;
+        let model = FakeModel::new(Ok("周报写好了".into()));
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let section = model.memory_sections()[0].clone().expect("kept memories go into the system prompt");
+        assert_eq!(
+            section,
+            "你记得这些：\n[project] Ada 专用新\n[profile] Ada 专用旧\n[habit] 共享习惯"
+        );
+        assert!(!section.contains("Bob") && !section.contains("还没点头") && !section.contains("被拒绝的") && !section.contains("忘掉的"));
+        let started = fake.containers.iter().find(|c| c.task_id == next).expect("second task started");
+        assert_eq!(started.prompt, "再写周报", "user prompt unchanged");
+    }
+
     fn status_of<'a>(events: &'a Value, task_id: &str) -> &'a Value {
         statuses(events).into_iter().find(|s| s["taskId"] == task_id).expect("status card")
     }
@@ -3430,7 +3505,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "进度", "写周报").await;
-        let model = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+        let model = FakeModel::new(Ok("周报写好了".into()));
         let mut fake = super::sandbox::FakeSandbox::new();
 
         let events = events_of(&app, &group_id).await;
@@ -3491,7 +3566,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "进度", "写周报").await;
-        let model = FakeModel { answer: Ok("robroz-progress:在整理要点\n周报写好了".into()), calls: Default::default() };
+        let model = FakeModel::new(Ok("robroz-progress:在整理要点\n周报写好了".into()));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["progress"], "在整理要点");
@@ -3540,7 +3615,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
-        let model = FakeModel { answer: Err("模型服务返回 401".into()), calls: Default::default() };
+        let model = FakeModel::new(Err("模型服务返回 401".into()));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
@@ -3553,7 +3628,7 @@ mod tests {
         assert_eq!(statuses(&events)[0]["failure"], "模型没回：模型服务返回 401", "status card too");
 
         // The next task with a working model gets a normal delivery: no failure key at all.
-        let ok = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+        let ok = FakeModel::new(Ok("周报写好了".into()));
         let (_, next) = seed_task_in(&app, &group_id, "再写一次").await;
         pump_with_model(&path, &volumes, &mut fake, &ok);
         fake.finish(0);
@@ -3915,7 +3990,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "记忆", "写周报").await;
-        let model = FakeModel { answer: Ok(format!("{}\n周报写好了", memory_line("habit", "周五交周报"))), calls: Default::default() };
+        let model = FakeModel::new(Ok(format!("{}\n周报写好了", memory_line("habit", "周五交周报"))));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
@@ -3928,7 +4003,7 @@ mod tests {
         assert_eq!(cards[0]["taskId"], task_id.as_str());
 
         // A run that did not get done proposes nothing.
-        let failing = FakeModel { answer: Err("模型服务返回 500".into()), calls: Default::default() };
+        let failing = FakeModel::new(Err("模型服务返回 500".into()));
         seed_task_in(&app, &group_id, &format!("{}\n再写", memory_line("habit", "失败也想记"))).await;
         pump_with_model(&path, &volumes, &mut fake, &failing);
         fake.finish(0);
