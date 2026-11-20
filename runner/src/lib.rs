@@ -2,8 +2,9 @@
 //!
 //! Files in the group volume (mounted at `/workspace`, writable by the container):
 //! - `tasks/{taskId}/result.txt`, `outbound.txt`, `intent`: written by the runner.
-//! - `tasks/{taskId}/proposals.jsonl`: what the bro proposes to remember, one
-//!   [`robroz_contract::Proposal`] per line, from `robroz-memory:{json}` lines in
+//! - `tasks/{taskId}/proposals.jsonl`: what the bro proposes to remember or
+//!   keep as a skill, one [`robroz_contract::Proposal`] per line, from
+//!   `robroz-memory:{json}` and `robroz-skill:{json}` lines in
 //!   the prompt and the model's reply (see [`memory_payload`]). The host reads it
 //!   once the task is done; a person confirms each one on a `confirm` card.
 //! - `tasks/{taskId}/progress`: the latest `robroz-progress:` text (see
@@ -91,15 +92,23 @@ pub fn proposals_path(root: &Path, task_id: &str) -> PathBuf {
 /// Prefix of a memory proposal line: `robroz-memory:{"kind":"habit","text":"…"}`.
 pub const MEMORY_PREFIX: &str = "robroz-memory:";
 
+/// Prefix of a skill proposal line: `robroz-skill:{"slug":"weekly-report","title":"…","instruction":"…"}`.
+pub const SKILL_PREFIX: &str = "robroz-skill:";
+
 /// The JSON after `robroz-memory:`, trimmed. `None` for any other line.
 /// Whether the JSON is any good is decided later; the line never reaches the result.
 pub fn memory_payload(line: &str) -> Option<&str> {
     line.trim().strip_prefix(MEMORY_PREFIX).map(str::trim)
 }
 
+/// The JSON after `robroz-skill:`, trimmed. `None` for any other line.
+pub fn skill_payload(line: &str) -> Option<&str> {
+    line.trim().strip_prefix(SKILL_PREFIX).map(str::trim)
+}
+
 /// A line that is for the host, not for the result: progress or a proposal.
 fn side_line(line: &str) -> bool {
-    progress_text(line).is_some() || memory_payload(line).is_some()
+    progress_text(line).is_some() || memory_payload(line).is_some() || skill_payload(line).is_some()
 }
 
 /// `text` without its progress and proposal lines; byte for byte when it has none.
@@ -110,12 +119,17 @@ pub fn strip_side_lines(text: &str) -> String {
     text.lines().filter(|line| !side_line(line)).collect::<Vec<_>>().join("\n")
 }
 
-/// The `proposals.jsonl` lines for the `robroz-memory:` lines in `text`.
-/// A payload that is not a JSON object is dropped.
+/// The `proposals.jsonl` lines for the `robroz-memory:` and `robroz-skill:`
+/// lines in `text`, in order. A payload that is not a JSON object is dropped.
 pub fn proposal_lines(text: &str) -> Vec<String> {
     text.lines()
-        .filter_map(memory_payload)
-        .filter_map(robroz_contract::Proposal::memory_line)
+        .filter_map(|line| {
+            if let Some(payload) = memory_payload(line) {
+                robroz_contract::Proposal::memory_line(payload)
+            } else {
+                skill_payload(line).and_then(robroz_contract::Proposal::skill_line)
+            }
+        })
         .collect()
 }
 
@@ -243,8 +257,8 @@ pub fn apply_prompt(root: &Path, task_id: &str, prompt: &str) -> io::Result<()> 
 /// Apply a prompt to the group volume.
 ///
 /// `robroz-action:get` lines are recorded as `GET` in `outbound.txt`.
-/// The last `robroz-progress:` line goes to `progress`, `robroz-memory:` lines
-/// go to `proposals.jsonl`; both are left out of `result.txt`.
+/// The last `robroz-progress:` line goes to `progress`, `robroz-memory:` and
+/// `robroz-skill:` lines go to `proposals.jsonl`; both are left out of `result.txt`.
 /// Where to stop comes from [`blocking_line`] (shared with the host): if it finds
 /// an unapproved blocking line, write `intent` and skip `result.txt`. Otherwise
 /// write the prompt to `result.txt`, leaving out approved blocking lines (byte for
@@ -543,6 +557,24 @@ mod tests {
         apply_prompt(&root, "p", "只有正文").unwrap();
         assert!(!proposals_path(&root, "p").exists());
         assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "只有正文");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skill_lines_go_to_proposals_not_result() {
+        assert_eq!(
+            skill_payload(r#"  robroz-skill: {"slug":"weekly-report","title":"写周报"} "#),
+            Some(r#"{"slug":"weekly-report","title":"写周报"}"#)
+        );
+        let root = scratch();
+        let prompt = "robroz-skill:{\"slug\":\"weekly-report\",\"title\":\"写周报\",\"instruction\":\"先列三点\"}\n正文\nrobroz-skill:不是 json";
+        apply_prompt(&root, "p", prompt).unwrap();
+        assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
+        let lines = fs::read_to_string(proposals_path(&root, "p")).unwrap();
+        let parsed: Vec<_> = lines.lines().map(robroz_contract::Proposal::parse_line).collect();
+        assert_eq!(parsed.len(), 1, "{lines}");
+        let Some(robroz_contract::Proposal::Skill(s)) = &parsed[0] else { panic!("{lines}") };
+        assert_eq!((s.slug.as_str(), s.title.as_str(), s.instruction.as_str()), ("weekly-report", "写周报", "先列三点"));
         let _ = fs::remove_dir_all(&root);
     }
 

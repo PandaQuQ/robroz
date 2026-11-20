@@ -327,7 +327,7 @@ pub(crate) async fn forget_memory(State(state): State<AppState>, AxumPath(id): A
                 let now = now_rfc3339();
                 conn.execute("UPDATE memories SET forgotten_at = ?2 WHERE id = ?1", params![id, now])?;
                 // A pending one may still have a card asking about it: close it.
-                crate::proposals::close_for_forgotten(&conn, &id, &now)?;
+                crate::proposals::close_for_forgotten(&conn, robroz_contract::ConfirmSubject::Memory, &id, &now)?;
                 conn.commit()?;
                 Ok::<_, rusqlite::Error>(true)
             }
