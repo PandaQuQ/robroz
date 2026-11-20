@@ -172,6 +172,17 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - 状态卡只在 `done` 时带 `failure`。任务再次开跑时会清掉它，不会沿用上一次的。
 - 客户端只要看到 `failure`，就把卡显示成灰色的「没做成：原因」，不显示绿色的完成，也没有按钮。
 
+## 进度（`progress`）
+
+状态卡有一个冻结后新增的可选字段 `progress`：bro 正在干什么，原地更新在同一张状态卡上，不新增卡片类型，也不发消息。
+
+- 只在 `running` 且容器在跑（`containerUp` 为 true）时带。`queued`、`blocked`、`done`（成功或带 `failure`）和容器没了的 `running` 都不带，旧 JSON 一点不变。
+- 宿主机自己报的关键节点：开跑时「开始干活」（接了模型时是「在想怎么回」），沙箱起来后「在沙箱里跑」。
+- bro 也能自己报：prompt 或模型回复里写一行 `robroz-progress:文字`。runner 把最后一行进度写到群目录 `tasks/{taskId}/progress`，宿主机在任务运行时读取；模型回复里的进度行开跑时就用上。进度行不会出现在 `result.txt` 里。
+- 宿主机规范成一行：换行和连续空白变成一个空格，去掉首尾空白，最多 60 个字（超了截到 59 个字加「…」），不报错。
+- 规范后的文字没变就不改 `updatedAt`，不会多推一次状态卡；变了才推。
+- 任务结束、卡住、容器没了时清掉进度；重新开跑时从头报。
+
 ## 实时推送
 
 `GET /api/groups/{id}/stream` 用 Server-Sent Events（`text/event-stream`）推送这个群的事件，和 `/events` 一样要带令牌。
