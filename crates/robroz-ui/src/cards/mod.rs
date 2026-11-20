@@ -226,6 +226,7 @@ mod tests {
             decision: Some(decision),
             created_at: "2026-11-20T08:40:00Z".into(),
             answered_at: Some("2026-11-20T08:48:00Z".into()),
+            answered_by: None,
         };
         let utc = chrono::Utc;
         for (d, want) in [
