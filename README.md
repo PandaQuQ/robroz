@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-dark.svg">
+    <img src="assets/brand/wordmark-light.svg" alt="robroz" width="240">
+  </picture>
+</p>
+
 # robroz
 
 robroz。单机私有化的多智能体协同，交互是 IM，不是 IDE。
