@@ -406,6 +406,10 @@ pub enum Event {
         created_at: String,
         updated_at: String,
         container_up: bool,
+        /// Added after the freeze: a `done` task that did not get done (model
+        /// failed, approval denied). Absent otherwise, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<String>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -414,6 +418,10 @@ pub enum Event {
         path: String,
         briefing: bool,
         created_at: String,
+        /// Added after the freeze: why the task did not get done (e.g. the
+        /// model call failed). Absent on a normal result, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<String>,
     },
     /// Added after the node-1 freeze; the three types above are unchanged.
     /// `choice` and `answeredAt` are always present and `null` until answered.
@@ -561,6 +569,7 @@ mod tests {
                 created_at: "2026-10-03T19:00:01.000Z".into(),
                 updated_at: "2026-10-03T19:00:01.000Z".into(),
                 container_up: false,
+            failure: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -578,6 +587,27 @@ mod tests {
     }
 
     #[test]
+    fn delivery_failure_is_optional() {
+        let failed = Event::Delivery {
+            id: "d2".into(),
+            summary: "已写入结果".into(),
+            path: "tasks/t1/result.txt".into(),
+            briefing: false,
+            created_at: "2026-10-03T19:00:02.000Z".into(),
+            failure: Some("模型没回：模型服务返回 500".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["failure"], "模型没回：模型服务返回 500");
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), failed);
+        let old = serde_json::json!({
+            "type": "delivery", "id": "d1", "summary": "草图", "path": "out/sketch.png",
+            "briefing": false, "createdAt": "2026-10-03T19:00:02.000Z"
+        });
+        let Event::Delivery { failure, .. } = serde_json::from_value(old).unwrap() else { panic!() };
+        assert_eq!(failure, None, "old JSON without the field still parses");
+    }
+
+    #[test]
     fn delivery_event_json() {
         assert_round_trip(
             &Event::Delivery {
@@ -586,6 +616,7 @@ mod tests {
                 path: "out/sketch.png".into(),
                 briefing: true,
                 created_at: "2026-10-03T19:00:02.000Z".into(),
+                failure: None,
             },
             serde_json::json!({
                 "type": "delivery",

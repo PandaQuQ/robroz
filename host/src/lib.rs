@@ -259,6 +259,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for table in ["choices", "approvals"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN answered_by TEXT"), []);
     }
+    // Why a run did not get done; copied from the task onto its delivery.
+    for table in ["tasks", "deliveries"] {
+        let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN failure TEXT"), []);
+    }
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     Ok(())
@@ -727,7 +731,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut task_stmt = conn.prepare(
-            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up
+            "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1",
@@ -739,6 +743,8 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             let container_up: i64 = row.get(6)?;
             let container_up = container_up != 0;
             let updated_at: String = row.get(5)?;
+            // Only a finished task reports why it was not done.
+            let failure: Option<String> = if state == TaskState::Done { row.get(7)? } else { None };
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -753,6 +759,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     created_at,
                     updated_at,
                     container_up,
+                    failure,
                 },
             })
         })?;
@@ -763,7 +770,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut delivery_stmt = conn.prepare(
-            "SELECT id, summary, path, briefing, created_at FROM deliveries WHERE group_id = ?1",
+            "SELECT id, summary, path, briefing, created_at, failure FROM deliveries WHERE group_id = ?1",
         )?;
         let deliveries = delivery_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
@@ -779,6 +786,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     path: row.get(2)?,
                     briefing: briefing != 0,
                     created_at,
+                    failure: row.get(5)?,
                 },
             })
         })?;
@@ -3328,6 +3336,12 @@ mod tests {
         assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
     }
 
+    async fn seed_task_in(app: &Router, group_id: &str, prompt: &str) -> (StatusCode, String) {
+        let url = format!("/api/groups/{group_id}/tasks");
+        let (status, task) = read_json(call(app, post(&url, json!({ "assigneeBotId": "bot-ada", "prompt": prompt }))).await).await;
+        (status, task["id"].as_str().unwrap().to_string())
+    }
+
     #[tokio::test]
     async fn model_failure_is_written_as_the_result() {
         let path = temp_db();
@@ -3341,7 +3355,22 @@ mod tests {
         pump_with_model(&path, &volumes, &mut fake, &model);
         let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
         assert_eq!(std::fs::read_to_string(result).unwrap(), "模型没回：模型服务返回 401");
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert_eq!(deliveries(&events)[0]["failure"], "模型没回：模型服务返回 401", "card can say it was not done");
+        assert_eq!(statuses(&events)[0]["failure"], "模型没回：模型服务返回 401", "status card too");
+
+        // The next task with a working model gets a normal delivery: no failure key at all.
+        let ok = FakeModel { answer: Ok("周报写好了".into()), calls: Default::default() };
+        let (_, next) = seed_task_in(&app, &group_id, "再写一次").await;
+        pump_with_model(&path, &volumes, &mut fake, &ok);
+        fake.finish(0);
+        pump_with_model(&path, &volumes, &mut fake, &ok);
+        let events = events_of(&app, &group_id).await;
+        let delivered = deliveries(&events);
+        assert_eq!(delivered.len(), 2, "{next}");
+        assert!(delivered.iter().filter(|d| d.get("failure").is_some()).count() == 1);
+        assert!(statuses(&events).iter().filter(|t| t.get("failure").is_some()).count() == 1);
     }
 
     #[tokio::test]

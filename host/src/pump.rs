@@ -115,7 +115,7 @@ fn start_task(
     let claimed_at = newer_than(&task.updated_at);
     let claimed = db.with(|conn| {
         conn.execute(
-            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1
+            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL
              WHERE id = ?2 AND state = 'queued'",
             params![claimed_at, task.id],
         )
@@ -124,7 +124,11 @@ fn start_task(
         return Ok(());
     }
     if let Some(model) = cfg.model {
-        write_reply(&control_dir, &task.id, &task.prompt, model);
+        if let Some(failure) = write_reply(&control_dir, &task.id, &task.prompt, model) {
+            db.with(|conn| {
+                conn.execute("UPDATE tasks SET failure = ?1 WHERE id = ?2", params![failure, task.id])
+            })?;
+        }
     }
 
     let name = container_name(&task.id);
@@ -276,8 +280,8 @@ fn write_outcome(
             )?;
             if changed > 0 {
                 tx.execute(
-                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at)
-                     VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6)",
+                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure)
+                     VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6, (SELECT failure FROM tasks WHERE id = ?3))",
                     params![delivery_id, task.group_id, task.id, rel, task.briefing as i64, updated_at],
                 )?;
             }
@@ -316,17 +320,22 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 /// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
 /// Ask the model outside the DB lock and leave its answer for the runner.
 /// A failed call becomes the result text, so the task still finishes and the
-/// person sees why. Old replies are removed first so a retry never reuses one.
-fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) {
+/// person sees why; the reason is also returned so the delivery can say the
+/// task was not done. Old replies are removed first so a retry never reuses one.
+fn write_reply(control_dir: &Path, task_id: &str, prompt: &str, model: &dyn robroz_model::Model) -> Option<String> {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
-    let text = model.reply(prompt).unwrap_or_else(|err| {
-        eprintln!("pump: model for {task_id}: {err}");
-        format!("模型没回：{err}")
-    });
+    let (text, failure) = match model.reply(prompt) {
+        Ok(text) => (text, None),
+        Err(err) => {
+            eprintln!("pump: model for {task_id}: {err}");
+            (format!("模型没回：{err}"), Some(format!("模型没回：{err}")))
+        }
+    };
     if let Err(err) = std::fs::write(&path, text) {
         eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
     }
+    failure
 }
 
 fn remove_intent(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
