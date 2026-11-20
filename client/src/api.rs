@@ -628,9 +628,9 @@ mod tests {
             assert_eq!(bros[0].dm_group_id.as_deref(), Some(dm.as_str()));
         }
 
-        /// Events of a group as raw JSON (kind + fields).
+        /// Events of a group as raw JSON (`type` + fields).
         fn events(base: &str, group: &str) -> Vec<serde_json::Value> {
-            let mut source = crate::source::HttpSource::new(Conn::new(base), Vec::new());
+            let source = crate::source::HttpSource::new(Conn::new(base), Vec::new());
             source
                 .events(group, None)
                 .unwrap()
@@ -659,10 +659,10 @@ mod tests {
             let seen = events(&base, &group.id);
             assert!(seen
                 .iter()
-                .any(|e| e["kind"] == "message" && e["body"] == "@文档哥 写 README"));
+                .any(|e| e["type"] == "message" && e["body"] == "@文档哥 写 README"));
             assert!(seen
                 .iter()
-                .any(|e| e["kind"] == "status" && e["botId"] == "bot-doc"));
+                .any(|e| e["type"] == "status" && e["botId"] == "bot-doc"));
 
             // DM: the bro behind it gets the task.
             let bro = api.create_bro().unwrap();
@@ -673,10 +673,10 @@ mod tests {
             let seen = events(&base, &dm);
             assert!(seen
                 .iter()
-                .any(|e| e["kind"] == "message" && e["body"] == "整理一下周报"));
+                .any(|e| e["type"] == "message" && e["body"] == "整理一下周报"));
             assert!(seen
                 .iter()
-                .any(|e| e["kind"] == "status" && e["botId"] == bro.id.as_str()));
+                .any(|e| e["type"] == "status" && e["botId"] == bro.id.as_str()));
         }
 
         #[test]

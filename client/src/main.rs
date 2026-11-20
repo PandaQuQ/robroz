@@ -1002,6 +1002,7 @@ impl App {
             .convs
             .get(id)
             .map_or((id.as_str(), false), |c| (c.name.as_str(), c.dm));
+        let hint = robroz_ui::conversations::composer_hint(name, dm);
         let draft = self.drafts.get(id).map_or("", String::as_str);
         let note = self.send_note.get(id).map(String::as_str);
         column![
@@ -1009,7 +1010,7 @@ impl App {
             view::rule(t),
             feed,
             view::rule(t),
-            view::composer(t, draft, self.sending, note).map(Message::Ui),
+            view::composer(t, draft, &hint, self.sending, note).map(Message::Ui),
         ]
         .height(Fill)
         .width(Fill)

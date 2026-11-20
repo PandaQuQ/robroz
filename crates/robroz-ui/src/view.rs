@@ -1115,11 +1115,16 @@ pub fn conversation_list<'a>(
 ) -> Element<'a, Action> {
     let h = t.controls.touch_target.max(t.controls.button_h);
     let new_bro = || {
-        button(text(conversations::NEW_BRO).size(t.type_.foot))
-            .height(Length::Fixed(h))
-            .padding(Padding::from([0.0, 10.0]))
-            .style(nav_button_style(*t, false))
-            .on_press(Action::NewBro)
+        button(
+            text(conversations::NEW_BRO)
+                .size(t.type_.foot)
+                .height(Fill)
+                .align_y(Alignment::Center),
+        )
+        .height(Length::Fixed(h))
+        .padding(Padding::from([0.0, 10.0]))
+        .style(nav_button_style(*t, false))
+        .on_press(Action::NewBro)
     };
     let head = row![
         text(conversations::TITLE)
@@ -1160,11 +1165,16 @@ pub fn chat_header<'a>(t: &Skin, name: &str, dm: bool, back: bool) -> Element<'a
     let mut bar = row![].spacing(8).align_y(Alignment::Center);
     if back {
         bar = bar.push(
-            button(text("‹ 聊天").size(t.type_.row_name))
-                .height(Length::Fixed(h))
-                .padding(Padding::from([0.0, 8.0]))
-                .style(nav_button_style(*t, false))
-                .on_press(Action::BackToList),
+            button(
+                text("‹ 聊天")
+                    .size(t.type_.row_name)
+                    .height(Fill)
+                    .align_y(Alignment::Center),
+            )
+            .height(Length::Fixed(h))
+            .padding(Padding::from([0.0, 8.0]))
+            .style(nav_button_style(*t, false))
+            .on_press(Action::BackToList),
         );
     }
     bar = bar.push(
@@ -1190,12 +1200,13 @@ pub fn chat_header<'a>(t: &Skin, name: &str, dm: bool, back: bool) -> Element<'a
 pub fn composer<'a>(
     t: &Skin,
     draft: &str,
+    hint: &str,
     sending: bool,
     note: Option<&str>,
 ) -> Element<'a, Action> {
     let h = t.controls.touch_target.max(t.controls.button_h);
     let can_send = !sending && !draft.trim().is_empty();
-    let mut input = text_input(conversations::COMPOSER_HINT, draft)
+    let mut input = text_input(hint, draft)
         .size(t.type_.body)
         .padding(Padding::from([8.0, 10.0]));
     if !sending {

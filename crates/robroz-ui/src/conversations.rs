@@ -11,8 +11,17 @@ use chrono::{DateTime, TimeZone};
 pub const EMPTY_HINT: &str = "还没有 bro，引入第一个";
 /// Button that creates a bro and opens its DM (PM wording).
 pub const NEW_BRO: &str = "引入一个 bro";
-/// Composer placeholder.
-pub const COMPOSER_HINT: &str = "发消息… 私聊里直接交给 bro；群里用 @名字 派活";
+/// Composer placeholder in a group (a DM says 「发给 {name}…」).
+pub const GROUP_HINT: &str = "发消息，@名字 派活";
+
+/// Composer placeholder for this chat.
+pub fn composer_hint(name: &str, dm: bool) -> String {
+    if dm {
+        format!("发给 {name}…")
+    } else {
+        GROUP_HINT.to_string()
+    }
+}
 /// Composer button.
 pub const SEND: &str = "发送";
 /// List heading.
@@ -264,6 +273,8 @@ mod tests {
         assert_eq!(initial("bro 2"), "B");
         assert_eq!(initial("小明"), "小");
         assert_eq!(initial("  "), "?");
+        assert_eq!(composer_hint("Ada", true), "发给 Ada…");
+        assert_eq!(composer_hint("官网", false), GROUP_HINT);
         assert_eq!(fit("abc", 3), "abc");
         assert_eq!(fit("abcdef", 5), "abc…");
         assert_eq!(
