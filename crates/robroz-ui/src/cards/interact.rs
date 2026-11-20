@@ -388,7 +388,7 @@ mod tests {
         card.state = ChoiceState::Answered {
             selected: vec!["both".into()],
             at: None,
-            elsewhere: false,
+            by: None,
         };
         let b = choice_buttons(&card, &CardUi::default());
         assert_eq!(looks(&b), [Look::Disabled, Look::Disabled, Look::Selected]);
@@ -397,7 +397,7 @@ mod tests {
         m.state = ChoiceState::Answered {
             selected: vec!["chat".into(), "routines".into()],
             at: None,
-            elsewhere: false,
+            by: None,
         };
         assert_eq!(confirm_button(&m, &CardUi::default()), None);
     }
@@ -451,7 +451,7 @@ mod tests {
         a.state = ApprovalState::Pending;
         ui.action_done(Some(Note::AlreadyDecided));
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
-        a.state = ApprovalState::Approved { at: 0 };
+        a.state = ApprovalState::Approved { by: None, at: 0 };
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
 
         let mut d = DraftCard {

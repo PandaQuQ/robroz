@@ -101,9 +101,8 @@ fn with_time(text: String, time: &str) -> String {
 
 /// Footnote under a choice card; `tz` is the computer's local zone.
 ///
-/// Answered cards always read 「已选「…」 · HH:MM」. The contract has no
-/// who/where field yet (backend adds an optional one with DMs), so there is
-/// no 你选了 / 已在私聊里回答 wording until then (UI decision on #24).
+/// Answered cards read 「X 选了「…」 · HH:MM」 when the host knows who
+/// answered (「我」 for this client), else 「已选「…」 · HH:MM」.
 pub fn choice_footnote<Tz: TimeZone>(card: &ChoiceCard, tz: &Tz) -> Option<String>
 where
     Tz::Offset: std::fmt::Display,
@@ -111,7 +110,7 @@ where
     match &card.state {
         ChoiceState::Open => None,
         ChoiceState::Expired => Some("已过期，没有人作答".into()),
-        ChoiceState::Answered { selected, at, .. } => {
+        ChoiceState::Answered { selected, at, by } => {
             let labels = selected
                 .iter()
                 .map(|id| card.label_of(id).unwrap_or(id).to_string())
@@ -121,24 +120,32 @@ where
                 .as_deref()
                 .map(|a| clock_iso_in(a, tz))
                 .unwrap_or_default();
-            Some(with_time(format!("已选「{labels}」"), &time))
+            let text = match by {
+                Some(by) => format!("{by} 选了「{labels}」"),
+                None => format!("已选「{labels}」"),
+            };
+            Some(with_time(text, &time))
         }
     }
 }
 
-/// Footnote under an answered approval card: 「已批准 · HH:MM」 /
-/// 「已拒绝 · HH:MM」, time from the host's `answeredAt`. No person: the
-/// contract has no answeredBy yet, and 「我」 would be wrong when someone
-/// else or another device answered (UI decision after #40).
-// TODO(answeredBy): once the host sends it, show 「我」 for this user and
-// the other person's name otherwise, for approval and choice cards.
+/// Footnote under an answered approval card, time from the host's
+/// `answeredAt`: 「X 批准 · HH:MM」 / 「X 拒绝 · HH:MM」 when the host knows
+/// who answered (「我」 for this client), else 「已批准 · HH:MM」 /
+/// 「已拒绝 · HH:MM」 (UI decision after #40).
 pub fn approval_footnote<Tz: TimeZone>(state: &ApprovalState, tz: &Tz) -> Option<String>
 where
     Tz::Offset: std::fmt::Display,
 {
     match state {
-        ApprovalState::Approved { at } => Some(with_time("已批准".into(), &clock_in(*at, tz))),
-        ApprovalState::Denied { at } => Some(with_time("已拒绝".into(), &clock_in(*at, tz))),
+        ApprovalState::Approved { by, at } => {
+            let text = by.as_ref().map_or("已批准".into(), |b| format!("{b} 批准"));
+            Some(with_time(text, &clock_in(*at, tz)))
+        }
+        ApprovalState::Denied { by, at } => {
+            let text = by.as_ref().map_or("已拒绝".into(), |b| format!("{b} 拒绝"));
+            Some(with_time(text, &clock_in(*at, tz)))
+        }
         ApprovalState::Pending | ApprovalState::NeedsOwner => None,
     }
 }
@@ -322,7 +329,7 @@ mod tests {
             choice_status(&ChoiceState::Answered {
                 selected: vec![],
                 at: None,
-                elsewhere: false
+                by: None
             }),
             ("已选", Dot::Done)
         );
@@ -332,11 +339,11 @@ mod tests {
             ("等你批准", Dot::Waiting)
         );
         assert_eq!(
-            approval_status(&ApprovalState::Approved { at: 0 }),
+            approval_status(&ApprovalState::Approved { by: None, at: 0 }),
             ("已批准", Dot::Done)
         );
         assert_eq!(
-            approval_status(&ApprovalState::Denied { at: 0 }),
+            approval_status(&ApprovalState::Denied { by: None, at: 0 }),
             ("已拒绝", Dot::Void)
         );
         assert_eq!(
@@ -377,12 +384,27 @@ mod tests {
     fn footnotes() {
         let at = dt(2026, 11, 20, 1, 52).and_utc().timestamp();
         assert_eq!(
-            approval_footnote(&ApprovalState::Approved { at }, &Utc),
+            approval_footnote(&ApprovalState::Approved { by: None, at }, &Utc),
             Some("已批准 · 01:52".into())
         );
         assert_eq!(
-            approval_footnote(&ApprovalState::Denied { at }, &Utc),
+            approval_footnote(&ApprovalState::Denied { by: None, at }, &Utc),
             Some("已拒绝 · 01:52".into())
+        );
+        let by = |b: &str| Some(b.to_string());
+        assert_eq!(
+            approval_footnote(&ApprovalState::Approved { by: by("我"), at }, &Utc),
+            Some("我 批准 · 01:52".into())
+        );
+        assert_eq!(
+            approval_footnote(
+                &ApprovalState::Denied {
+                    by: by("Panda 的手机"),
+                    at
+                },
+                &Utc
+            ),
+            Some("Panda 的手机 拒绝 · 01:52".into())
         );
         assert_eq!(approval_footnote(&ApprovalState::NeedsOwner, &Utc), None);
         assert_eq!(
@@ -426,21 +448,30 @@ mod tests {
         card.state = ChoiceState::Answered {
             selected: vec!["a".into()],
             at: Some("2026-11-20T01:52:00.000Z".into()),
-            elsewhere: false,
+            by: None,
         };
         assert_eq!(
             choice_footnote(&card, &Utc).unwrap(),
             "已选「两种都写」 · 01:52"
         );
-        // No who/where field yet: same wording whoever answered, wherever.
+        // Known answerer: that name (or 「我」) before the verb.
         card.state = ChoiceState::Answered {
             selected: vec!["a".into(), "b".into()],
             at: Some("2026-11-20T01:52:00.000Z".into()),
-            elsewhere: true,
+            by: Some("Panda 的手机".into()),
         };
         assert_eq!(
             choice_footnote(&card, &Utc).unwrap(),
-            "已选「两种都写、cargo install」 · 01:52"
+            "Panda 的手机 选了「两种都写、cargo install」 · 01:52"
+        );
+        card.state = ChoiceState::Answered {
+            selected: vec!["a".into()],
+            at: Some("2026-11-20T01:52:00.000Z".into()),
+            by: Some("我".into()),
+        };
+        assert_eq!(
+            choice_footnote(&card, &Utc).unwrap(),
+            "我 选了「两种都写」 · 01:52"
         );
         card.state = ChoiceState::Expired;
         assert_eq!(choice_footnote(&card, &Utc).unwrap(), "已过期，没有人作答");
