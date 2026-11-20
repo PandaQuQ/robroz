@@ -888,11 +888,11 @@ impl App {
                             (Some(event), Some((group, _))) => self.apply_event(group, &event),
                             // No echo (fake API): show the answer locally.
                             (None, Some((group, Card::Approval(mut c)))) => {
-                                let (by, at) = (user_name(), now_unix());
+                                let at = now_unix();
                                 c.state = if approve {
-                                    ApprovalState::Approved { by, at }
+                                    ApprovalState::Approved { at }
                                 } else {
-                                    ApprovalState::Denied { by, at }
+                                    ApprovalState::Denied { at }
                                 };
                                 self.set_card(&group, Card::Approval(c));
                             }
