@@ -11,6 +11,11 @@ use chrono::{DateTime, TimeZone};
 pub const EMPTY_HINT: &str = "还没有 bro，引入第一个";
 /// Button that creates a bro and opens its DM (PM wording).
 pub const NEW_BRO: &str = "引入一个 bro";
+/// Tooltip-ish hint after a bro DM's name: click the name to rename.
+pub const RENAME_HINT: &str = "改名";
+/// Rename input placeholder.
+pub const RENAME_PLACEHOLDER: &str = "bro 的新名字，回车保存，Esc 取消";
+
 /// Composer placeholder in a group (a DM says 「发给 {name}…」).
 pub const GROUP_HINT: &str = "发消息，@名字 派活";
 

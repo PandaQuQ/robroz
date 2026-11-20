@@ -17,8 +17,8 @@ use std::sync::Mutex;
 
 use robroz_contract::{
     next_bro_name, AnswerChoice, Bro, Bros, CreateBro, CreateTask, ErrorBody, Event, Message,
-    MessageKind, PostMessage, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
-    UpdateSchedule,
+    MessageKind, PostMessage, RenameBro, ScheduleEntry, Schedules, Task, TaskState, Unread,
+    Unreads, UpdateSchedule,
 };
 use robroz_ui::cards::interact::Note;
 
@@ -45,6 +45,10 @@ pub mod paths {
     }
     /// robroz#28.
     pub const BROS: &str = "/api/bros";
+    /// robroz#28: rename a bro (its DM follows).
+    pub fn bro(id: &str) -> String {
+        format!("/api/bros/{id}")
+    }
     /// Existing host route: store a user message in a group.
     pub fn messages(group_id: &str) -> String {
         format!("/api/groups/{group_id}/messages")
@@ -97,6 +101,14 @@ pub mod bodies {
         .expect("serialize task")
     }
 
+    /// `{"name":…}`.
+    pub fn rename(name: &str) -> String {
+        serde_json::to_string(&RenameBro {
+            name: name.to_string(),
+        })
+        .expect("serialize rename")
+    }
+
     pub fn paused(paused: bool) -> String {
         serde_json::to_string(&UpdateSchedule { paused }).expect("serialize patch")
     }
@@ -138,6 +150,8 @@ pub trait CardApi: Send + Sync {
     fn bros(&self) -> Result<Vec<Bro>, ApiError>;
     /// New bro with the next default name and its DM.
     fn create_bro(&self) -> Result<Bro, ApiError>;
+    /// Rename a bro; the host renames its DM too.
+    fn rename_bro(&self, id: &str, name: &str) -> Result<Bro, ApiError>;
     /// Composer: store a text message in a group.
     fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError>;
     /// Composer: queue `prompt` for a bro who is in the group.
@@ -233,6 +247,10 @@ impl CardApi for HttpApi {
     fn create_bro(&self) -> Result<Bro, ApiError> {
         let body = serde_json::to_string(&CreateBro::default()).expect("serialize bro");
         decode(&self.post(paths::BROS, Some(body))?)
+    }
+
+    fn rename_bro(&self, id: &str, name: &str) -> Result<Bro, ApiError> {
+        decode(&self.patch(&paths::bro(id), bodies::rename(name))?)
     }
 
     fn send_message(&self, group_id: &str, body: &str) -> Result<Message, ApiError> {
@@ -335,6 +353,20 @@ impl CardApi for FakeApi {
         Ok(bro)
     }
 
+    fn rename_bro(&self, id: &str, name: &str) -> Result<Bro, ApiError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ApiError::BadRequest("请填写名称".into()));
+        }
+        let mut bros = self.bros.lock().expect("fake bros lock");
+        let bro = bros
+            .iter_mut()
+            .find(|b| b.id == id)
+            .ok_or_else(|| ApiError::NotFound("bro 不存在".into()))?;
+        bro.name = name.to_string();
+        Ok(bro.clone())
+    }
+
     fn send_message(&self, _: &str, body: &str) -> Result<Message, ApiError> {
         if body.trim().is_empty() {
             return Err(ApiError::BadRequest("请填写内容".into()));
@@ -414,6 +446,8 @@ mod tests {
         assert_eq!(paths::BROS, "/api/bros");
         assert_eq!(paths::messages("g1"), "/api/groups/g1/messages");
         assert_eq!(paths::tasks("g1"), "/api/groups/g1/tasks");
+        assert_eq!(paths::bro("b1"), "/api/bros/b1");
+        assert_eq!(bodies::rename("Ada"), r#"{"name":"Ada"}"#);
     }
 
     #[test]
@@ -677,6 +711,33 @@ mod tests {
             assert!(seen
                 .iter()
                 .any(|e| e["type"] == "status" && e["botId"] == bro.id.as_str()));
+        }
+
+        #[test]
+        fn rename_bro_renames_its_dm() {
+            let base = spawn_host();
+            let api = HttpApi::new(Conn::new(&base));
+            let bro = api.create_bro().unwrap();
+            let dm = bro.dm_group_id.clone().unwrap();
+            let renamed = api.rename_bro(&bro.id, "  文档哥 ").unwrap();
+            assert_eq!(renamed.name, "文档哥");
+            assert_eq!(renamed.dm_group_id.as_deref(), Some(dm.as_str()));
+            // The list and the header read the DM group's name.
+            let mut source = crate::source::HttpSource::new(Conn::new(&base), Vec::new());
+            use crate::source::EventSource;
+            let groups = source.groups().unwrap();
+            assert!(groups.iter().any(|g| g.id == dm && g.name == "文档哥"));
+            assert_eq!(api.bros().unwrap()[0].name, "文档哥");
+            // The next default name is free again.
+            assert_eq!(api.create_bro().unwrap().name, "bro");
+            assert!(matches!(
+                api.rename_bro(&bro.id, "   "),
+                Err(ApiError::BadRequest(_))
+            ));
+            assert!(matches!(
+                api.rename_bro("nope", "x"),
+                Err(ApiError::NotFound(_))
+            ));
         }
 
         #[test]

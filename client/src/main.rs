@@ -131,6 +131,11 @@ enum Message {
     BroCreated(Result<Bro, ApiError>),
     GroupsReloaded(Result<Vec<GroupTab>, SourceError>),
     Live(stream::Live),
+    /// Rename result for the bro behind DM `group`.
+    Renamed {
+        group: String,
+        result: Result<Bro, ApiError>,
+    },
     /// Composer result: the stored message, then the queued task if any.
     Sent {
         group: String,
@@ -167,6 +172,11 @@ struct App {
     send_note: HashMap<String, String>,
     /// `--fake` / gallery: canned data, test-only env knobs allowed.
     fake: bool,
+    /// Bro rename in progress: `(dm group, draft)`.
+    rename: Option<(String, String)>,
+    renaming: bool,
+    /// Last rename error: `(dm group, note)`.
+    rename_note: Option<(String, String)>,
     origin: String,
     interval: Duration,
     groups: Vec<GroupTab>,
@@ -255,6 +265,9 @@ impl App {
             sending: false,
             send_note: HashMap::new(),
             fake,
+            rename: None,
+            renaming: false,
+            rename_note: None,
             origin,
             interval,
             groups: Vec::new(),
@@ -349,6 +362,51 @@ impl App {
                 })
             }
         }
+    }
+
+    /// The bro whose DM is `group`.
+    fn dm_bro(&self, group: &str) -> Option<&Bro> {
+        self.bros
+            .iter()
+            .find(|b| b.dm_group_id.as_deref() == Some(group))
+    }
+
+    /// Click on a bro DM's name: edit it in place.
+    fn start_rename(&mut self) -> Task<Message> {
+        let Some(group) = self.selected.clone() else {
+            return Task::none();
+        };
+        let Some(bro) = self.dm_bro(&group) else {
+            return Task::none();
+        };
+        self.rename = Some((group, bro.name.clone()));
+        self.rename_note = None;
+        iced::widget::operation::focus(view::RENAME_INPUT)
+    }
+
+    fn save_rename(&mut self) -> Task<Message> {
+        if self.renaming {
+            return Task::none();
+        }
+        let Some((group, draft)) = self.rename.clone() else {
+            return Task::none();
+        };
+        let Some(bro) = self.dm_bro(&group).cloned() else {
+            self.rename = None;
+            return Task::none();
+        };
+        if draft.trim() == bro.name {
+            self.rename = None;
+            return Task::none();
+        }
+        self.renaming = true;
+        Task::perform(
+            call(&self.api, move |api| api.rename_bro(&bro.id, &draft)),
+            move |result| Message::Renamed {
+                group: group.clone(),
+                result,
+            },
+        )
     }
 
     /// Composer: store the text, then queue it for a bro when one is meant.
@@ -514,6 +572,22 @@ impl App {
                 Task::none()
             }
             Action::ComposerSend => self.send(),
+            Action::RenameStart => self.start_rename(),
+            Action::RenameEdit { text } => {
+                if let Some((_, draft)) = &mut self.rename {
+                    *draft = text;
+                }
+                self.rename_note = None;
+                Task::none()
+            }
+            Action::RenameCancel => {
+                if !self.renaming {
+                    self.rename = None;
+                    self.rename_note = None;
+                }
+                Task::none()
+            }
+            Action::RenameSave => self.save_rename(),
             Action::NewBro => {
                 Task::perform(call(&self.api, |api| api.create_bro()), Message::BroCreated)
             }
@@ -596,6 +670,14 @@ impl App {
             Message::BrosLoaded(result) => {
                 if let Ok(bros) = result {
                     self.bros = bros.clone();
+                    // `--fake` + `ROBROZ_RENAME=<draft>`: open the rename box
+                    // on the selected DM (screenshots).
+                    if let Some(draft) = std::env::var("ROBROZ_RENAME").ok().filter(|_| self.fake) {
+                        if let Some(g) = self.selected.clone().filter(|g| self.dm_bro(g).is_some())
+                        {
+                            self.rename = Some((g, draft));
+                        }
+                    }
                     let tasks: Vec<_> = bros
                         .into_iter()
                         .filter_map(|b| b.dm_group_id.map(|id| GroupTab { id, name: b.name }))
@@ -633,6 +715,28 @@ impl App {
                         .map(|g| self.learn_group(g, false))
                         .collect();
                     return Task::batch(tasks);
+                }
+            }
+            Message::Renamed { group, result } => {
+                self.renaming = false;
+                match result {
+                    Ok(bro) => {
+                        self.rename = None;
+                        self.rename_note = None;
+                        if let Some(b) = self.bros.iter_mut().find(|b| b.id == bro.id) {
+                            b.name = bro.name.clone();
+                        }
+                        return self.learn_group(
+                            GroupTab {
+                                id: bro.dm_group_id.unwrap_or(group),
+                                name: bro.name,
+                            },
+                            true,
+                        );
+                    }
+                    Err(err) => {
+                        self.rename_note = Some((group, format!("没改成：{}", err.note().text())));
+                    }
                 }
             }
             Message::Sent {
@@ -843,6 +947,16 @@ impl App {
         if self.loaded && self.gallery.is_none() {
             subs.push(iced::time::every(UNREAD_EVERY).map(|_| Message::UnreadTick));
         }
+        if self.rename.is_some() {
+            // The rename box captures Esc, so listen to captured keys too.
+            subs.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::Ui(Action::RenameCancel)),
+                _ => None,
+            }));
+        }
         if let (Some(conn), Some(group), Page::Group) = (&self.conn, &self.selected, self.page) {
             let key = stream::Key {
                 conn: conn.clone(),
@@ -1003,10 +1117,23 @@ impl App {
             .get(id)
             .map_or((id.as_str(), false), |c| (c.name.as_str(), c.dm));
         let hint = robroz_ui::conversations::composer_hint(name, dm);
+        let rename = self.dm_bro(id).map(|_| view::HeaderRename {
+            draft: self
+                .rename
+                .as_ref()
+                .filter(|(g, _)| g == id)
+                .map(|(_, d)| d.as_str()),
+            saving: self.renaming,
+            note: self
+                .rename_note
+                .as_ref()
+                .filter(|(g, _)| g == id)
+                .map(|(_, n)| n.as_str()),
+        });
         let draft = self.drafts.get(id).map_or("", String::as_str);
         let note = self.send_note.get(id).map(String::as_str);
         column![
-            view::chat_header(t, name, dm, t.narrow).map(Message::Ui),
+            view::chat_header(t, name, dm, t.narrow, rename).map(Message::Ui),
             view::rule(t),
             feed,
             view::rule(t),

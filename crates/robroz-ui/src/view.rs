@@ -73,6 +73,15 @@ pub enum Action {
     },
     /// Enter or 发送 in the composer.
     ComposerSend,
+    /// Bro DM header: click the name to rename the bro.
+    RenameStart,
+    RenameEdit {
+        text: String,
+    },
+    /// Enter in the rename box.
+    RenameSave,
+    /// Esc or 取消.
+    RenameCancel,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -1175,9 +1184,30 @@ pub fn conversation_list<'a>(
 
 // ---------- Chat page ----------
 
+/// Rename state for a bro DM's header; `None` in groups.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeaderRename<'a> {
+    /// `Some(draft)` while editing.
+    pub draft: Option<&'a str>,
+    pub saving: bool,
+    /// Last rename error.
+    pub note: Option<&'a str>,
+}
+
+/// Widget id of the rename box, focused when editing starts.
+pub const RENAME_INPUT: &str = "robroz-rename-bro";
+
 /// Top of the chat page: the group or bro name (and `私聊` for a DM).
 /// `back` adds 「‹」 for narrow screens, where the chat covers the list.
-pub fn chat_header<'a>(t: &Skin, name: &str, dm: bool, back: bool) -> Element<'a, Action> {
+/// With `rename` (bro DMs) the name is a button that turns into an input:
+/// Enter saves, Esc or 取消 cancels.
+pub fn chat_header<'a>(
+    t: &Skin,
+    name: &str,
+    dm: bool,
+    back: bool,
+    rename: Option<HeaderRename<'_>>,
+) -> Element<'a, Action> {
     let h = t.controls.touch_target.max(t.controls.button_h);
     let mut bar = row![].spacing(8).align_y(Alignment::Center);
     if back {
@@ -1194,20 +1224,72 @@ pub fn chat_header<'a>(t: &Skin, name: &str, dm: bool, back: bool) -> Element<'a
             .on_press(Action::BackToList),
         );
     }
-    bar = bar.push(
+    let title = || {
         text(name.to_string())
             .size(t.type_.list_title)
             .font(bold())
             .wrapping(Wrapping::None)
-            .color(color(t.palette.text)),
-    );
-    if dm {
+            .color(color(t.palette.text))
+    };
+    match rename {
+        Some(HeaderRename {
+            draft: Some(draft),
+            saving,
+            ..
+        }) => {
+            let mut input = text_input(conversations::RENAME_PLACEHOLDER, draft)
+                .id(RENAME_INPUT)
+                .size(t.type_.row_name)
+                .padding(Padding::from([6.0, 8.0]));
+            if !saving {
+                input = input
+                    .on_input(|text| Action::RenameEdit { text })
+                    .on_submit(Action::RenameSave);
+            }
+            bar = bar.push(container(input).width(Fill)).push(btn(
+                t,
+                "取消".into(),
+                Look::Secondary,
+                Leading::None,
+                (!saving).then_some(Action::RenameCancel),
+            ));
+        }
+        Some(_) => {
+            bar = bar.push(
+                button(
+                    row![
+                        title(),
+                        text(conversations::RENAME_HINT)
+                            .size(t.type_.tag)
+                            .color(color(t.palette.text3)),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding(Padding::from([4.0, 6.0]))
+                .style(nav_button_style(*t, false))
+                .on_press(Action::RenameStart),
+            );
+        }
+        None => bar = bar.push(title()),
+    }
+    let editing = matches!(rename, Some(HeaderRename { draft: Some(_), .. }));
+    if dm && !editing {
         bar = bar.push(tag(t, "私聊", t.palette.text2));
     }
-    container(bar)
+    let mut col = column![container(bar)
         .width(Fill)
         .height(Length::Fixed(h + 12.0))
-        .align_y(Alignment::Center)
+        .align_y(Alignment::Center)]
+    .spacing(0);
+    if let Some(note) = rename.and_then(|r| r.note) {
+        col = col.push(container(footnote(t, note.to_string())).padding(Padding {
+            bottom: 6.0,
+            ..Padding::ZERO
+        }));
+    }
+    container(col)
+        .width(Fill)
         .padding(Padding::from([0.0, t.metrics.stream_padding]))
         .into()
 }
