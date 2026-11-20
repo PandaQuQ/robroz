@@ -1073,12 +1073,10 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
         }
         let can_save = book.can_add();
         let mut form = column![input, scopes.wrap()].spacing(m.head_gap);
-        if new.scope.is_none() {
-            form = form.push(
-                text(memories::PICK_SCOPE)
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text3)),
-            );
+        // One grey row, always there: 「选一下谁能用这条」 until a scope is
+        // picked, then 「只给 Bob 用」. Keeps 保存 from moving.
+        if let Some(hint) = book.add_scope_hint() {
+            form = form.push(text(hint).size(t.type_.foot).color(color(t.palette.text3)));
         }
         if let Some(note) = &book.add_note {
             form = form.push(inline_note(t, note));

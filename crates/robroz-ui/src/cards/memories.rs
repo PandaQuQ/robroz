@@ -53,6 +53,15 @@ pub fn scope_label(scope: &str, bros: &[(String, String)]) -> String {
     }
 }
 
+/// The add form's hint row once a scope is picked: 「所有 bro 都能用」
+/// or 「只给 Bob 用」. Same row as [`PICK_SCOPE`], so 保存 never moves.
+pub fn chosen_scope_text(scope: &str, bros: &[(String, String)]) -> String {
+    match MemoryScope::parse(scope) {
+        Some(MemoryScope::Bot(_)) => format!("{} 用", scope_label(scope, bros)),
+        _ => format!("{ALL_BROS} 都能用"),
+    }
+}
+
 /// Updated time in local time: `11月20日 10:31`, or `今天 10:31`.
 pub fn updated_text_in<Tz: TimeZone>(at: &str, now: i64, tz: &Tz) -> String
 where
@@ -360,6 +369,16 @@ impl Book {
     }
 
     /// Scope choices for the form: 所有 bro, then 只给 each bro.
+    /// The add form's hint row: [`PICK_SCOPE`] until a scope is picked,
+    /// then the picked result. `None` when the form is closed.
+    pub fn add_scope_hint(&self) -> Option<String> {
+        let new = self.adding.as_ref()?;
+        Some(match &new.scope {
+            None => PICK_SCOPE.to_string(),
+            Some(scope) => chosen_scope_text(scope, &self.bros),
+        })
+    }
+
     pub fn scope_choices(&self) -> Vec<(String, String)> {
         let mut out = vec![(MemoryScope::User.to_string(), ALL_BROS.to_string())];
         out.extend(
@@ -559,6 +578,24 @@ mod tests {
             Some("没保存：scope 只能是 user 或 bot:<botId>")
         );
         assert_eq!(b.adding.as_ref().unwrap().text, "x", "typed text kept");
+    }
+
+    #[test]
+    fn add_form_hint_row_stays_and_shows_the_picked_scope() {
+        let mut b = book();
+        assert_eq!(b.add_scope_hint(), None, "form closed");
+        b.open_add();
+        assert_eq!(b.add_scope_hint().as_deref(), Some(PICK_SCOPE));
+        b.adding.as_mut().unwrap().scope = Some("user".into());
+        assert_eq!(b.add_scope_hint().as_deref(), Some("所有 bro 都能用"));
+        b.adding.as_mut().unwrap().scope = Some("bot:bot-bob".into());
+        assert_eq!(b.add_scope_hint().as_deref(), Some("只给 Bob 用"));
+        b.adding.as_mut().unwrap().scope = Some("bot:bot-zed".into());
+        assert_eq!(
+            b.add_scope_hint().as_deref(),
+            Some("只给 bot-zed 用"),
+            "unknown bot falls back to its id"
+        );
     }
 
     #[test]
