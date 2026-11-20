@@ -135,7 +135,7 @@ cron 由宿主机按 UTC 计算，解析用 `croner`。接受 5 段（`分 时 �
 
 `client/` 是 iced 0.14 原生客户端，Windows、Linux、macOS 同一套代码。左边群列表，右边选中群的消息流：文字消息、图片/文件（只显示一行带标签的名字，不做查看器）、状态卡、交付卡和选项卡。
 
-状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `robroz-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住只有「去私聊接管」，这一期只打日志。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `robroz-card::briefing_badge`）。选项卡按 `id` 原地更新；这一期只显示，回传接口见上一节。
+状态卡一个任务一张，按 `taskId` 原地更新。左边 Bot 名，右边一句状态。颜色、那句话和动作都来自 `robroz-card`（`appearance`、`status_line`、`palette`），客户端不自己定。卡住（`waitingFor` 为 `takeover`，或旧宿主机没带这个字段）是琥珀色，只有「去私聊接管」，这一期只打日志。`waitingFor` 为 `approval` 时不算卡住：灰色「等你批准」，没有按钮，去回答旁边那张审批卡就行。running 且容器在跑时，有 `progress` 就在 Bot 名下面左对齐加一行浅灰小字，超长用「…」，没有就不占位。`running` 且 `containerUp` 为 false 是灰色「没写出结果」，没有动作。交付卡是摘要加一行等宽的卷内相对路径，只显示，不能点。定时简报不是新卡种，就是同一个 delivery 事件 `briefing` 为 true，客户端只看这个字段，在角上加「简报」（文字来自 `robroz-card::briefing_badge`）。选项卡按 `id` 原地更新；这一期只显示，回传接口见上一节。
 
 事件来源藏在 `EventSource` trait 后面（`client/src/source/`）。默认是 `HttpSource`：每秒轮询宿主机 `GET /api/groups/{id}/events`，直接解成 `robroz-contract` 的 `Events`，对不上契约就在底栏报错，不做兼容。事件流里出现 `type` 为 `choice` 的卡时，契约里还没有该类型的旧客户端会整段解码失败，而不是跳过这张卡。
 
@@ -181,6 +181,7 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 - `approval`：这个任务有一张还没回答、而且对应它当前卡住那一行的审批卡（`robroz-action:external`）。去回答审批卡就行，同意后任务重新排队，拒绝后变成带 `failure` 的 `done`。
 - `takeover`：没有这样的审批卡，比如验证码（`robroz-action:captcha`），得有人去私聊接管，再 `POST /api/tasks/:id/resume`。
 - 同一个任务始终只有一张状态卡，按 `taskId` 原地更新。`waitingFor` 只改这张卡怎么显示，不另出卡。
+- 客户端：`approval` 显示成灰色「等你批准」，没有按钮，列表预览写「Ada：等你批准」，不会被同时出现的审批卡摘要顶掉；`takeover` 或没有这个字段时，还是琥珀色「卡住」加「去私聊接管」。
 
 ## 进度（`progress`）
 
