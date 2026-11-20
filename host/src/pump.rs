@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use robroz_policy::{outbound, side_effect, Outbound, SideEffect, SideEffectDecision};
+use robroz_policy::{blocking_effect, meter, tier, OverQuota, SideEffect, Tier};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -49,6 +49,9 @@ struct TaskRow {
 enum Outcome {
     /// With the host-computed blocking line, when there is one.
     Blocked(Option<robroz_policy::BlockingLine>),
+    /// Done without the work, with the task's `failure` (e.g. over the GET
+    /// quota). No delivery, never blocked.
+    Failed(String),
     Dead,
     Done,
 }
@@ -181,8 +184,8 @@ fn collect_task(
         }
     };
 
-    // Workspace reads of the group volume are allowed. This is not a scheduler.
-    if side_effect(SideEffect::WorkspaceRead) != SideEffectDecision::Allow {
+    // Tier Allow: workspace reads of the group volume, nobody is told.
+    if tier(SideEffect::WorkspaceRead) != Tier::Allow {
         eprintln!("pump: workspace read denied for {}", task.id);
         return Ok(());
     }
@@ -200,15 +203,14 @@ fn collect_task(
     } else {
         None
     };
-    let (get_count, quota_fail) = outbound_record(&group_dir, &task.id, cfg.get_limit);
+    // Tier Metered: GET only, counted per task.
+    let (get_count, over_quota) = outbound_record(&group_dir, &task.id, cfg.get_limit);
 
-    let block = match stop.as_ref().map(|stop| stop.kind) {
-        Some("external") => {
-            side_effect(SideEffect::ExternalWrite) == SideEffectDecision::BlockAndDropContainer
-        }
-        Some("captcha") => side_effect(SideEffect::Captcha) == SideEffectDecision::BlockAndDropContainer,
-        _ => false,
-    };
+    // Tier Takeover: external writes and captchas.
+    let block = stop
+        .as_ref()
+        .and_then(|stop| blocking_effect(stop.kind))
+        .is_some_and(|effect| tier(effect) == Tier::Takeover);
     // Claims to be blocked, but every blocking line is already taken over (or there
     // are none): not blocked, a run that produced no result.
     let bogus_block = claims_blocked && stop.is_none();
@@ -220,11 +222,13 @@ fn collect_task(
 
     let outcome = if block {
         Outcome::Blocked(stop)
-    } else if bogus_block || quota_fail || code != 0 || !result_file.is_file() {
+    } else if let Some(over) = over_quota {
+        Outcome::Failed(over.failure())
+    } else if bogus_block || code != 0 || !result_file.is_file() {
         // Container is gone and there is no successful result. Stay running
         // with containerUp false so the card uses the dead-run line. Not blocked.
         Outcome::Dead
-    } else if side_effect(SideEffect::WorkspaceWrite) != SideEffectDecision::Allow {
+    } else if tier(SideEffect::WorkspaceWrite) != Tier::Allow {
         Outcome::Blocked(None)
     } else {
         Outcome::Done
@@ -268,6 +272,13 @@ fn write_outcome(
                 crate::approvals::gate_task(&tx, &task.id, &task.prompt, &stop.hash, updated_at)?;
             }
             tx.commit()?;
+        }
+        Outcome::Failed(failure) => {
+            conn.execute(
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4
+                 WHERE id = ?3 AND state = 'running'",
+                params![get_count, updated_at, task.id, failure],
+            )?;
         }
         Outcome::Dead => {
             conn.execute(
@@ -370,28 +381,16 @@ pub(crate) fn group_volume(volumes_root: &Path, group_id: &str) -> PathBuf {
     std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
-/// Count `GET` lines and ask robroz-policy. A non-GET line is Fail and is not blocked.
-fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, bool) {
-    let path = group_dir.join("tasks").join(task_id).join("outbound.txt");
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(_) => return (0, false),
-    };
-    let mut gets: u64 = 0;
-    let mut non_get_fail = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line == "GET" {
-            gets += 1;
-        } else if outbound(line, 0, limit) == Outbound::Fail {
-            non_get_fail = true;
-        }
+/// Read `outbound.txt` and ask [`meter`]: the GET count, and why the task
+/// fails, if it does (over the limit, or not a GET). Never blocks.
+fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, Option<OverQuota>) {
+    let text = std::fs::read_to_string(robroz_runner::outbound_path(group_dir, task_id)).unwrap_or_default();
+    let methods = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let gets = methods.clone().filter(|m| *m == "GET").count() as i64;
+    match meter(methods, limit) {
+        Ok(_) => (gets, None),
+        Err(over) => (gets, Some(over)),
     }
-    let over = gets > 0 && outbound("GET", gets, limit) == Outbound::Fail;
-    (gets as i64, over || non_get_fail)
 }
 
 fn newer_than(previous: &str) -> String {
