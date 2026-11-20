@@ -356,6 +356,7 @@ fn status(
             container_up,
             failure: None,
             progress: None,
+            waiting_for: None,
         },
     }
 }
