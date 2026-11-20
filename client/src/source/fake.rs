@@ -358,6 +358,7 @@ fn status(
             updated_at: at("02"),
             container_up,
             failure: None,
+            waiting_for: None,
         },
     }
 }

@@ -12,6 +12,16 @@ pub enum TaskState {
     Done,
 }
 
+/// Why a blocked task is waiting: an unanswered approval card, or a person
+/// taking over (captcha and the like). Only present when `state` is `blocked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitingFor {
+    #[serde(rename = "approval")]
+    Approval,
+    #[serde(rename = "takeover")]
+    Takeover,
+}
+
 impl TaskState {
     pub fn label(&self) -> &'static str {
         match self {
@@ -410,6 +420,11 @@ pub enum Event {
         /// failed, approval denied). Absent otherwise, so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<String>,
+        /// Added after the freeze: why a `blocked` task is waiting.
+        /// `approval` if an unanswered gated card still matches this intent,
+        /// otherwise `takeover`. Absent unless blocked, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_for: Option<WaitingFor>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -569,7 +584,8 @@ mod tests {
                 created_at: "2026-10-03T19:00:01.000Z".into(),
                 updated_at: "2026-10-03T19:00:01.000Z".into(),
                 container_up: false,
-            failure: None,
+                failure: None,
+                waiting_for: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -584,6 +600,54 @@ mod tests {
                 "containerUp": false
             }),
         );
+    }
+
+    #[test]
+    fn status_waiting_for_is_optional() {
+        let blocked = Event::Status {
+            id: "t2".into(),
+            task_id: "t2".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            state: TaskState::Blocked,
+            label: TaskState::Blocked.label().into(),
+            created_at: "2026-10-03T19:00:01.000Z".into(),
+            updated_at: "2026-10-03T19:00:01.000Z".into(),
+            container_up: false,
+            failure: None,
+            waiting_for: Some(WaitingFor::Approval),
+        };
+        let json = serde_json::to_value(&blocked).unwrap();
+        assert_eq!(json["waitingFor"], "approval");
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), blocked);
+        let takeover = Event::Status {
+            id: "t3".into(),
+            task_id: "t3".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            state: TaskState::Blocked,
+            label: TaskState::Blocked.label().into(),
+            created_at: "2026-10-03T19:00:01.000Z".into(),
+            updated_at: "2026-10-03T19:00:01.000Z".into(),
+            container_up: false,
+            failure: None,
+            waiting_for: Some(WaitingFor::Takeover),
+        };
+        assert_eq!(serde_json::to_value(&takeover).unwrap()["waitingFor"], "takeover");
+        let old = serde_json::json!({
+            "type": "status",
+            "id": "t1",
+            "taskId": "t1",
+            "botId": "bot-ada",
+            "botName": "Ada",
+            "state": "queued",
+            "label": "排队",
+            "createdAt": "2026-10-03T19:00:01.000Z",
+            "updatedAt": "2026-10-03T19:00:01.000Z",
+            "containerUp": false
+        });
+        let Event::Status { waiting_for, .. } = serde_json::from_value(old).unwrap() else { panic!() };
+        assert_eq!(waiting_for, None, "old JSON without the field still parses");
     }
 
     #[test]
