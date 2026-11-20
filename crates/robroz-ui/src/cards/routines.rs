@@ -56,7 +56,7 @@ impl RoutineRow {
 pub const PAUSED_TAG: &str = "已暂停";
 pub const TITLE: &str = "例行任务";
 pub const EMPTY_TITLE: &str = "还没有例行任务";
-pub const EMPTY_HINT: &str = "在群里对 bot 说「每天 8 点给我发简报」就会出现在这里";
+pub const EMPTY_HINT: &str = "在群里对 bro 说「每天 8 点给我发简报」就会出现在这里";
 
 /// Rows plus in-flight pause toggles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -260,25 +260,24 @@ pub fn middle_ellipsis(path: &str, max: usize) -> String {
             return candidate;
         }
     }
-    // Keep as much of both ends as fits around one "…".
-    let budget = max.saturating_sub(1).max(2);
+    // Keep as much of both ends as fits around one "…": the start gets
+    // the larger half, the end the rest.
+    let budget = max.saturating_sub(units('…')).max(2);
     let chars: Vec<char> = path.chars().collect();
-    let (mut head, mut tail) = (String::new(), Vec::new());
-    let (mut used, mut i, mut j) = (0usize, 0usize, chars.len());
-    while i < j {
-        let take_tail = used % 2 == 1 || tail.is_empty() && used > 0;
-        let c = if take_tail { chars[j - 1] } else { chars[i] };
-        if used + units(c) > budget {
-            break;
-        }
-        used += units(c);
-        if take_tail {
-            tail.push(c);
-            j -= 1;
-        } else {
-            head.push(c);
-            i += 1;
-        }
+    let mut head = String::new();
+    let mut used = 0;
+    let mut i = 0;
+    while i < chars.len() && used + units(chars[i]) <= budget.div_ceil(2) {
+        used += units(chars[i]);
+        head.push(chars[i]);
+        i += 1;
+    }
+    let mut tail = Vec::new();
+    let mut j = chars.len();
+    while j > i && used + units(chars[j - 1]) <= budget {
+        used += units(chars[j - 1]);
+        tail.push(chars[j - 1]);
+        j -= 1;
     }
     tail.reverse();
     format!("{head}…{}", tail.into_iter().collect::<String>())
@@ -297,7 +296,7 @@ mod tests {
             short_bot_name("最详尽开发文档哥哥").as_deref(),
             Some("最详尽开发文档哥…")
         );
-        assert_eq!(short_bot_name("GitHubBot!").as_deref(), Some("GitHubBo…"));
+        assert_eq!(short_bot_name("GitHubBro!").as_deref(), Some("GitHubBr…"));
     }
 
     #[test]
@@ -308,7 +307,7 @@ mod tests {
             "logs/…/server.log"
         );
         assert_eq!(
-            middle_ellipsis("workspace/cache/2026-10/", 20),
+            middle_ellipsis("workspace/cache/2026-10/", 22),
             "workspace/…/2026-10/"
         );
         let cut = middle_ellipsis("a_very_long_single_file_name.tar.gz", 16);
