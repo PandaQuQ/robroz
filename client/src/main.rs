@@ -77,9 +77,41 @@ fn now_unix() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// Name used in local footnotes after an action (「Panda 批准」).
-fn user_name() -> String {
-    std::env::var("ROBROZ_USER_NAME").unwrap_or_else(|_| "我".into())
+/// This client's name: sent as `answeredBy` when it answers a card, and
+/// shown as 「我」 when a card comes back with it. `ROBROZ_USER_NAME`, else
+/// the computer's hostname, else `robroz`. Two devices must not share it, or
+/// each shows the other's answers as 「我」.
+fn user_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| pick_name(std::env::var("ROBROZ_USER_NAME").ok(), hostname()))
+}
+
+/// First usable of `env` and `host`, cut to what the host stores
+/// (one line, at most `ANSWERED_BY_MAX` characters); else `robroz`.
+fn pick_name(env: Option<String>, host: Option<String>) -> String {
+    [env, host]
+        .into_iter()
+        .flatten()
+        .filter_map(|raw| {
+            let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+            Some(
+                line.chars()
+                    .take(robroz_contract::ANSWERED_BY_MAX)
+                    .collect::<String>(),
+            )
+        })
+        .find_map(|n| robroz_contract::clean_answered_by(Some(&n)).ok().flatten())
+        .unwrap_or_else(|| "robroz".into())
+}
+
+/// The computer's hostname, if it can be read (`hostname` exists on
+/// Linux, macOS and Windows).
+fn hostname() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
 }
 
 type Shared = Arc<Mutex<Box<dyn EventSource>>>;
@@ -245,7 +277,7 @@ impl App {
             let http = HttpSource::from_env();
             let conn = http.conn().clone();
             let origin = http.base().to_string();
-            let api = Arc::new(HttpApi::new(conn.clone()));
+            let api = Arc::new(HttpApi::new(conn.clone()).answering_as(user_name()));
             (Box::new(http), api, origin, Some(conn))
         };
         let interval = source.interval();
@@ -855,7 +887,7 @@ impl App {
                                 c.state = ChoiceState::Answered {
                                     selected: sent,
                                     at: Some(chrono::Utc::now().to_rfc3339()),
-                                    elsewhere: false,
+                                    by: Some(robroz_ui::cards::ME.into()),
                                 };
                                 self.set_card(&group, Card::Choice(c));
                             }
@@ -890,9 +922,15 @@ impl App {
                             (None, Some((group, Card::Approval(mut c)))) => {
                                 let at = now_unix();
                                 c.state = if approve {
-                                    ApprovalState::Approved { at }
+                                    ApprovalState::Approved {
+                                        by: Some(robroz_ui::cards::ME.into()),
+                                        at,
+                                    }
                                 } else {
-                                    ApprovalState::Denied { at }
+                                    ApprovalState::Denied {
+                                        by: Some(robroz_ui::cards::ME.into()),
+                                        at,
+                                    }
                                 };
                                 self.set_card(&group, Card::Approval(c));
                             }
@@ -916,7 +954,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         ui.action_done(None);
-                        let (by, at) = (user_name(), now_unix());
+                        let (by, at) = (user_name().to_string(), now_unix());
                         match self.find_card(&id) {
                             Some((group, Card::Draft(mut c))) if tag == ">" => {
                                 c.state = DraftState::Sent { by, at };
@@ -1364,4 +1402,21 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
     .width(Fill)
     .style(view::card_style(*t))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_name;
+
+    #[test]
+    fn user_name_env_then_hostname_then_robroz() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(pick_name(s(" Panda 的 Mac "), s("mbp")), "Panda 的 Mac");
+        assert_eq!(pick_name(s("  "), s("mbp.local\n")), "mbp.local");
+        assert_eq!(pick_name(None, s("box")), "box");
+        assert_eq!(pick_name(None, None), "robroz");
+        assert_eq!(pick_name(s("  "), s("")), "robroz");
+        let long = "字".repeat(60);
+        assert_eq!(pick_name(Some(long), None).chars().count(), 40);
+    }
 }

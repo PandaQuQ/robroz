@@ -220,12 +220,16 @@ fn to_row(event: &Event) -> (Key, Row) {
         }
         // Keyed by id, so the answered snapshot replaces the open card in place.
         Event::Choice { id, .. } => {
-            let card = ChoiceCard::from_event(event).expect("choice event");
+            let card = ChoiceCard::from_event(event)
+                .expect("choice event")
+                .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Choice(card)))
         }
         // Same as choice: the answered snapshot replaces the pending card.
         Event::Approval { id, .. } => {
-            let card = ApprovalCard::from_event(event).expect("approval event");
+            let card = ApprovalCard::from_event(event)
+                .expect("approval event")
+                .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
         }
     }
@@ -530,7 +534,7 @@ mod tests {
         feed.apply(&text("m1", "先问一下"));
         feed.apply_card(card(ApprovalState::Pending));
         feed.apply(&text("m2", "后面的话"));
-        feed.apply_card(card(ApprovalState::Approved { at: 0 }));
+        feed.apply_card(card(ApprovalState::Approved { by: None, at: 0 }));
         assert_eq!(feed.len(), 3, "one approval card, not two");
         assert!(matches!(
             feed.card("a1"),
