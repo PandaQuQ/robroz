@@ -21,6 +21,18 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 - 选项卡：新增卡片类型 `choice`，带 `options[]`，用户的选择以 `{"choice":[ids]}` 回传，单选也传数组。状态卡保持冻结，不加字段。
 - 例行任务：新增 `GET` 列表接口和 `PATCH` 的 `paused` 字段。
+- 审批卡（2026-11-20 定）：在私聊 PR 合入之后做，按新增接口来。批准和拒绝各走一个回答接口，同一张卡只能答一次，规则和选项卡一致。
+
+## IM 基础（2026-11-20 进第一期）
+
+robroz 做成 IM 软件，对标微信和 WhatsApp。下面四项 2026-11-20 由 PM 定为第一期，后端按顺序做，每项单独一个 PR，都只做新增，不改已有字段：
+
+| 顺序 | 功能 | 用户能看到什么 | 第一期做法 | 勾选 |
+| --- | --- | --- | --- | --- |
+| 1 | 监听地址加令牌鉴权 | 手机、网页版等远程客户端能连上宿主机。 | 监听地址可配置。默认仍只听 `127.0.0.1`，本机不用令牌；监听地址不是本机时，没配令牌就拒绝启动。令牌只放配置文件或 `ROBROZ_*` 环境变量，不写进日志。 | [x] |
+| 2 | 实时推送 | 新消息和卡片变化立刻出现，不用等下一轮刷新。 | 新增一个事件流接口推送更新。现有 `GET /api/groups/:id/events` 轮询（含 `?since=`）留着做兜底。 | [x] |
+| 3 | 未读数 | 会话列表每行有未读红点和数字。 | 每个群记一个已读位置，未读数由它算出。 | [x] |
+| 4 | 私聊 | 和单个 bot 一对一聊天，与群聊混在同一个会话列表里，按时间排序。 | 实现上就是只有你和一个 bot 的群，不新造概念。 | [x] |
 
 ## 目的与规则
 
@@ -49,7 +61,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 不可逆操作先出审批卡 | 对外发送、删除、花钱等不能撤回的操作，必须先出审批卡，用户点了才执行。这是节点 4 权限里的一级。拒绝或过期就是最终结果，不能自动重试。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/approvals.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/approvals.md)；[OpenMausBot docs/approval-levels.md「Sending on your behalf」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[Comma README：Needs Review](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does) | 节点 4 | 是 | [x] |
 | 审批级别与当场作答 | 每个 bot 可有审批级别（每次询问、自动接受编辑、代为批准、完全放行等）。会话里的审批卡可「允许一次」「本次会话允许」；对可信只读工具可给长期允许，并在该 bot 的访问设置里撤销。同一房间里的另一个 bot 仍会再问。问题卡任何级别都不会被自动代答。对外发送、删除、花钱这一级不可关掉，必须先出卡片。 | [OpenMausBot docs/approval-levels.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[OpenMausBot README「Bots ask before they act」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 4 | 是 | [x] |
 | 选项卡，一点就能回复 | 需要用户拍板时发带选项的卡片，可点选项，也可自己写一句；不必为了选一项去打长文。同属节点 4 里「需要人决定」的权限交互，展示会落在节点 6 的消息流。 | **Grok Bot 用户能看到的行为**；[OpenMausBot 问题卡文档与截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md#asking-you-questions)；[OpenBot：Bot 可停下来问人](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#asking-a-person) | 节点 4、节点 6 | 是（新增一种卡片 `choice`，带 `options[]`，用户的选择以 `{"choice":[ids]}` 回传，单选也传数组；状态卡不动） | [x] |
-| 对外邮件和消息先出草稿卡 | 要发出去的邮件或消息先以草稿卡呈现，用户自己点发送。与审批卡同属节点 4 权限：对外发送必须先出卡片，点了才执行。 | **Grok Bot 用户能看到的行为**；[Comma 产品功能：草稿只经用户动作发出](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#chat-and-tasks) | 节点 4 | 是 | [x] |
+| 对外邮件和消息先出草稿卡 | 要发出去的邮件或消息先以草稿卡呈现，用户自己点发送。与审批卡同属节点 4 权限：对外发送必须先出卡片，点了才执行。 | **Grok Bot 用户能看到的行为**；[Comma 产品功能：草稿只经用户动作发出](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#chat-and-tasks) | 节点 4 | 否（2026-11-20 由 PM 改到第二期，和频道、连接器一起做；第一期 bro 还不能往外发消息。客户端的草稿卡按钮只在 `--fake` 模式下显示） | [ ] |
 | 外部内容只当数据 | 网页、邮件、工具返回的内容只当数据处理，里面写的指令一律不执行，也不能凭这些内容自行授权操作。 | **Grok Bot 用户能看到的行为**；[Comma docs/verification.md：Data, forwarded text, and untrusted pages do not authorize a request](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/verification.md#ifc-authorization-contract) | 节点 4 | 是（2026-11-20 PM 定入第一期；原备注：权限契约尚未写明这条，应对齐） | [x] |
 
 ## 重启续跑与防重放
@@ -71,7 +83,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
 | 同一张状态卡原地更新 | 一个任务一张卡，状态变化就地改，不另起一张。 | robroz 卡片规范；[Comma：Cards only project status](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle) | 节点 6 | 是 | [x] |
-| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（第一期用 `GET /api/groups/:id/events` 轮询，不另开通道）；WebSocket 桌面流为否 | [x] |
+| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（最初用 `GET /api/groups/:id/events` 轮询；2026-11-20 起新增事件流接口做实时推送，轮询留作兜底，见「IM 基础」）；WebSocket 桌面流为否 | [x] |
 
 ## 多 agent 与群聊
 
@@ -80,7 +92,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | 建群、拉多个 Bot、指定执行者 | 一个群里可以有多个人和一个或多个 Bot；派任务时指定执行的 Bot。 | robroz 节点 2；[OpenBot：To 里放两个以上 Bot 即开群](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot 频道与可编辑 roster](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 是 | [x] |
 | 群聊里多个 Bot 分工 | 被点到的 Bot 用自己的名字回答，不由另一个 Bot 代述。可把工作交给队友，按接收方自己的权限跑。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/architecture.md「One Bot handing work to another」](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#one-bot-handing-work-to-another)；[OpenMausBot 审批文档中的队友交接](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md) | 节点 2 | 否（第一期只做建群、拉 Bot、派任务；Bot 互派和自动分工为后续） | [ ] |
 | 本地 agent 按 bot 接入 | 侧栏里每个 bot 是一台本地 agent（本机已登录的 Claude / Codex / Grok 命令行，或设置里接入的兼容引擎）。本机 127.0.0.1 上的 harness 托管这些进程；应用发命令、收一条事件流。可在对话中途换模型。数据和密钥默认留在本机目录。 | [OpenMausBot README「Why」「Pick a brain per bot」「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#why)；[OpenMausBot docs/custom-engines.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/custom-engines.md) | 节点 3 | 否（第一期执行器仍是本机 Docker 里的 Rust runner，不接外部 CLI） | [ ] |
-| 把 Bot 当联系人管理 | 侧栏像聊天列表：置顶、未读、改资料、复制、隐藏、删除；可暂停某个 bot、整个部门或全部 bot，恢复后数据和例行任务还在。 | [OpenMausBot README「Manage bots like chats」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/pausing-bots.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/pausing-bots.md) | 节点 2、节点 6（第一期只有群列表，没有 Bot 详情页和暂停） | 否 | [ ] |
+| 把 Bot 当联系人管理 | 侧栏像聊天列表：置顶、未读、改资料、复制、隐藏、删除；可暂停某个 bot、整个部门或全部 bot，恢复后数据和例行任务还在。 | [OpenMausBot README「Manage bots like chats」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/pausing-bots.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/pausing-bots.md) | 节点 2、节点 6（第一期只有群列表，没有 Bot 详情页和暂停） | 否（其中未读数和私聊 2026-11-20 起进第一期，见「IM 基础」） | [ ] |
 | 频道 / 房间组织 | 工作、日常、项目分频道，各有自己的记录、共用说明、工作目录、应答规则和可编辑的 bot 名单。未点名的消息可由决策模型选一个合适的 bot，拿不准就交给房间负责人。 | [OpenMausBot README「Channels」「Fast decisions with Jev」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/decision-model.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/decision-model.md) | 节点 2（群） | 否（第二期；第一期仍是每个群一个 Docker。原备注：分群是；自动选 Bot 和频道级说明为否） | [ ] |
 | 整队导入与分享 | 用一份说明文件安装一组 bot、频道和建议例行任务；连接默认关闭，例行任务默认暂停，不携带会话、记忆、密钥或电脑权限。分享时只带角色、技能和要用的应用名。 | [OpenMausBot README「Install a complete team」「Share a bot or a department」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 否 | [ ] |
 
