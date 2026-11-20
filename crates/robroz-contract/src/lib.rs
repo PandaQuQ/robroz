@@ -174,11 +174,14 @@ pub struct UpdateSchedule {
     pub paused: bool,
 }
 
-/// One option on a choice card. `value` is what comes back as `choice`.
+/// One option on a choice card. `value` is what comes back in `choice`.
+/// `primary` marks the bot's recommendation; at most one, ignored when `multi`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChoiceOption {
     pub value: String,
     pub label: String,
+    #[serde(default)]
+    pub primary: bool,
 }
 
 /// `POST /api/groups/{id}/choices` body: a bot in the group asks the person.
@@ -188,17 +191,20 @@ pub struct CreateChoice {
     pub bot_id: String,
     pub prompt: String,
     pub options: Vec<ChoiceOption>,
+    #[serde(default)]
+    pub multi: bool,
 }
 
-/// `POST /api/choices/{id}/answer` body. `choice` must be one option's `value`.
+/// `POST /api/choices/{id}/answer` body: option `value`s, always an array.
+/// Single choice sends exactly one; multi sends one or more, no repeats.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerChoice {
-    pub choice: String,
+    pub choice: Vec<String>,
 }
 
-/// Choice cards hold 2 to 6 options with distinct, non-empty values.
+/// Choice cards hold 2 to 4 options with distinct, non-empty values.
 pub const CHOICE_OPTIONS_MIN: usize = 2;
-pub const CHOICE_OPTIONS_MAX: usize = 6;
+pub const CHOICE_OPTIONS_MAX: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
@@ -246,7 +252,8 @@ pub enum Event {
         bot_name: String,
         prompt: String,
         options: Vec<ChoiceOption>,
-        choice: Option<String>,
+        multi: bool,
+        choice: Option<Vec<String>>,
         created_at: String,
         answered_at: Option<String>,
     },
@@ -384,8 +391,8 @@ mod tests {
     #[test]
     fn choice_event_json() {
         let options = vec![
-            ChoiceOption { value: "a".into(), label: "方案 A".into() },
-            ChoiceOption { value: "b".into(), label: "方案 B".into() },
+            ChoiceOption { value: "a".into(), label: "方案 A".into(), primary: true },
+            ChoiceOption { value: "b".into(), label: "方案 B".into(), primary: false },
         ];
         assert_round_trip(
             &Event::Choice {
@@ -394,6 +401,7 @@ mod tests {
                 bot_name: "Ada".into(),
                 prompt: "用哪个方案？".into(),
                 options: options.clone(),
+                multi: false,
                 choice: None,
                 created_at: "2026-10-03T19:00:03.000Z".into(),
                 answered_at: None,
@@ -405,9 +413,10 @@ mod tests {
                 "botName": "Ada",
                 "prompt": "用哪个方案？",
                 "options": [
-                    { "value": "a", "label": "方案 A" },
-                    { "value": "b", "label": "方案 B" }
+                    { "value": "a", "label": "方案 A", "primary": true },
+                    { "value": "b", "label": "方案 B", "primary": false }
                 ],
+                "multi": false,
                 "choice": null,
                 "createdAt": "2026-10-03T19:00:03.000Z",
                 "answeredAt": null
@@ -420,8 +429,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.bot_id, "bot-ada");
-        let answer: AnswerChoice = serde_json::from_value(serde_json::json!({ "choice": "b" })).unwrap();
-        assert_eq!(answer.choice, "b");
+        assert!(!request.multi && !request.options[0].primary, "multi and primary default to false");
+        let answer: AnswerChoice = serde_json::from_value(serde_json::json!({ "choice": ["b"] })).unwrap();
+        assert_eq!(answer.choice, vec!["b".to_string()]);
     }
 
     #[test]

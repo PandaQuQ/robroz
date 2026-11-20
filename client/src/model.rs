@@ -33,8 +33,9 @@ pub struct ChoiceCard {
     pub prompt: String,
     /// `(value, label)` in the order the bot gave them.
     pub options: Vec<(String, String)>,
-    /// The picked `value`, once answered.
-    pub choice: Option<String>,
+    pub multi: bool,
+    /// The picked `value`s, once answered. Single choice holds one.
+    pub choice: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +131,7 @@ fn to_row(event: &Event) -> (Key, Row) {
             bot_name,
             prompt,
             options,
+            multi,
             choice,
             ..
         } => {
@@ -141,6 +143,7 @@ fn to_row(event: &Event) -> (Key, Row) {
                     .iter()
                     .map(|o| (o.value.clone(), o.label.clone()))
                     .collect(),
+                multi: *multi,
                 choice: choice.clone(),
             };
             (Key::Event(id.clone()), Row::Choice(card))
@@ -335,10 +338,11 @@ mod tests {
             bot_name: "Ada".into(),
             prompt: "用哪个？".into(),
             options: vec![
-                robroz_contract::ChoiceOption { value: "a".into(), label: "A".into() },
-                robroz_contract::ChoiceOption { value: "b".into(), label: "B".into() },
+                robroz_contract::ChoiceOption { value: "a".into(), label: "A".into(), primary: true },
+                robroz_contract::ChoiceOption { value: "b".into(), label: "B".into(), primary: false },
             ],
-            choice: choice.map(Into::into),
+            multi: false,
+            choice: choice.map(|v| vec![v.to_string()]),
             created_at: "2026-10-03T19:00:00.000Z".into(),
             answered_at: choice.map(|_| "2026-10-03T19:01:00.000Z".into()),
         };
@@ -346,9 +350,10 @@ mod tests {
         feed.apply(&card(None));
         feed.apply(&card(Some("b")));
         assert_eq!(feed.len(), 1);
-        match feed.rows().next().unwrap() {
+        let row = feed.rows().next().unwrap().clone();
+        match row {
             Row::Choice(c) => {
-                assert_eq!(c.choice.as_deref(), Some("b"));
+                assert_eq!(c.choice, Some(vec!["b".to_string()]));
                 assert_eq!(c.options.len(), 2);
             }
             other => panic!("expected choice row, got {other:?}"),

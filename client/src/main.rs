@@ -248,7 +248,7 @@ fn row_view(r: &Row) -> Element<'_, Message> {
 fn choice_view(card: &ChoiceCard) -> Element<'_, Message> {
     let mut options = row![].spacing(8);
     for (value, label) in &card.options {
-        let picked = card.choice.as_deref() == Some(value.as_str());
+        let picked = card.choice.as_ref().is_some_and(|c| c.contains(value));
         let style = if picked { button::primary } else { button::secondary };
         options = options.push(button(text(label).size(13)).style(style));
     }

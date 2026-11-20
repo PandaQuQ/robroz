@@ -1648,12 +1648,12 @@ mod tests {
         read_json(call(app, post(&format!("/api/groups/{group_id}/choices"), body)).await).await
     }
 
-    async fn answer(app: &Router, id: &str, choice: &str) -> (StatusCode, Value) {
+    async fn answer(app: &Router, id: &str, choice: Value) -> (StatusCode, Value) {
         read_json(call(app, post(&format!("/api/choices/{id}/answer"), json!({ "choice": choice }))).await).await
     }
 
     fn two_options() -> Value {
-        json!([{ "value": "a", "label": "方案 A" }, { "value": "b", "label": "方案 B" }])
+        json!([{ "value": "a", "label": "方案 A", "primary": true }, { "value": "b", "label": "方案 B", "primary": false }])
     }
 
     #[tokio::test]
@@ -1674,6 +1674,7 @@ mod tests {
         assert_eq!(card["botName"], "Ada");
         assert_eq!(card["prompt"], "用哪个？");
         assert_eq!(card["options"], two_options());
+        assert_eq!(card["multi"], false);
         assert_eq!(card["choice"], Value::Null);
         assert_eq!(card["answeredAt"], Value::Null);
         let id = card["id"].as_str().unwrap();
@@ -1683,17 +1684,44 @@ mod tests {
         assert_eq!(open.len(), 1);
         assert_eq!(open[0], &card);
 
-        let (status, answered) = answer(&app, id, "b").await;
+        let (status, _) = answer(&app, id, json!(["a", "b"])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "single choice takes one value");
+        let (status, answered) = answer(&app, id, json!(["b"])).await;
         assert_eq!(status, StatusCode::OK, "{answered}");
-        assert_eq!(answered["choice"], "b");
+        assert_eq!(answered["choice"], json!(["b"]));
         assert!(answered["answeredAt"].is_string());
 
         let events = events_of(&app, &group_id).await;
         let cards: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "choice").collect();
         assert_eq!(cards, vec![&answered], "same card, now answered");
 
-        let (status, _) = answer(&app, id, "a").await;
+        let (status, _) = answer(&app, id, json!(["a"])).await;
         assert_eq!(status, StatusCode::CONFLICT, "answered once only");
+    }
+
+    #[tokio::test]
+    async fn multi_choice_takes_several_and_drops_primary() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "多选").await["id"].as_str().unwrap().to_string();
+        add_member(&app, &group_id, "bot-ada", "Ada").await;
+        let options = json!([
+            { "value": "a", "label": "A", "primary": true },
+            { "value": "b", "label": "B" },
+            { "value": "c", "label": "C" }
+        ]);
+        let (status, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "选几个", "options": options, "multi": true })).await;
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        assert_eq!(card["multi"], true);
+        assert!(card["options"].as_array().unwrap().iter().all(|o| o["primary"] == false));
+        let id = card["id"].as_str().unwrap();
+        for bad in [json!([]), json!(["a", "a"]), json!(["a", "z"])] {
+            let (status, _) = answer(&app, id, bad.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (status, body) = answer(&app, id, json!(["c", "a"])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["choice"], json!(["c", "a"]));
     }
 
     #[tokio::test]
@@ -1714,7 +1742,8 @@ mod tests {
             json!([{ "value": "a", "label": "A" }, { "value": " a ", "label": "B" }]),
             json!([{ "value": "a", "label": "A" }, { "value": "", "label": "B" }]),
             json!([{ "value": "a", "label": "A" }, { "value": "b", "label": " " }]),
-            json!((0..7).map(|i| json!({ "value": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
+            json!([{ "value": "a", "label": "A", "primary": true }, { "value": "b", "label": "B", "primary": true }]),
+            json!((0..5).map(|i| json!({ "value": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
         ] {
             let (status, body) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": options })).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{options} -> {body}");
@@ -1726,13 +1755,13 @@ mod tests {
 
         let (_, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() })).await;
         let id = card["id"].as_str().unwrap();
-        let (status, _) = answer(&app, id, "c").await;
+        let (status, _) = answer(&app, id, json!(["c"])).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, _) = answer(&app, "nope", "a").await;
+        let (status, _) = answer(&app, "nope", json!(["a"])).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, body) = answer(&app, id, "a").await;
+        let (status, body) = answer(&app, id, json!(["a"])).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["choice"], "a");
+        assert_eq!(body["choice"], json!(["a"]));
     }
 
     #[tokio::test]
