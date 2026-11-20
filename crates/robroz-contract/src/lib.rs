@@ -104,6 +104,13 @@ pub struct Group {
     pub tenant_id: String,
 }
 
+/// `GET /api/groups` body, oldest group first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Groups {
+    pub groups: Vec<Group>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
@@ -318,6 +325,31 @@ mod tests {
             ..schedule
         };
         assert_eq!(serde_json::to_value(&ran).unwrap()["lastTaskId"], "t1");
+    }
+
+    #[test]
+    fn groups_json() {
+        let groups = Groups {
+            groups: vec![
+                Group { id: "g1".into(), name: "设计群".into(), tenant_id: "local".into() },
+                Group { id: "g2".into(), name: "运营群".into(), tenant_id: "local".into() },
+            ],
+        };
+        let value = serde_json::to_value(&groups).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "groups": [
+                    { "id": "g1", "name": "设计群", "tenantId": "local" },
+                    { "id": "g2", "name": "运营群", "tenantId": "local" }
+                ]
+            })
+        );
+        let back: Groups = serde_json::from_value(value).unwrap();
+        assert_eq!(back, groups);
+
+        let empty = Groups { groups: vec![] };
+        assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!({ "groups": [] }));
     }
 
     #[test]

@@ -20,6 +20,7 @@ CI 跑宿主机测试，并在 Windows、Linux、macOS 上构建客户端。
 宿主机是单个 Rust 进程（`robroz-host`）。这一节点只做五件事：建群、加 Bot、发消息、派任务、拉事件。任务写入后状态保持 `queued`，不会启动容器，也不跑执行器。
 
 - `POST /api/groups`：创建群
+- `GET /api/groups`：列出群，按创建先后排序，返回 `{"groups":[{"id","name","tenantId"}]}`，没有群时为 `{"groups":[]}`
 - `POST /api/groups/:id/members`：把 Bot 加入群；同一个 Bot 重复加入成功且不重复记账
 - `POST /api/groups/:id/messages`：保存消息，`kind` 为 `text`、`image` 或 `file`。只落库，不写文件
 - `POST /api/groups/:id/tasks`：给已在群里的 Bot 派任务，`state` 固定为 `queued`
