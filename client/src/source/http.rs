@@ -4,6 +4,7 @@
 //! Groups: `ROBROZ_GROUPS`, comma-separated `id` or `id=名字`. The host
 //! has no `GET /api/groups` yet, so the client cannot discover groups on its
 //! own. When that endpoint lands, `groups()` switches to it.
+//! Token: `ROBROZ_TOKEN`, sent as `Authorization: Bearer …` when set. Never printed.
 
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ pub struct HttpSource {
     base: String,
     groups: Vec<GroupTab>,
     agent: ureq::Agent,
+    token: Option<String>,
 }
 
 impl HttpSource {
@@ -30,7 +32,13 @@ impl HttpSource {
             base: base.into().trim_end_matches('/').to_string(),
             groups,
             agent,
+            token: None,
         }
+    }
+
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        self
     }
 
     pub fn from_env() -> Self {
@@ -38,7 +46,7 @@ impl HttpSource {
         let groups = std::env::var("ROBROZ_GROUPS")
             .map(|v| parse_groups(&v))
             .unwrap_or_default();
-        Self::new(base, groups)
+        Self::new(base, groups).with_token(std::env::var("ROBROZ_TOKEN").ok())
     }
 
     pub fn base(&self) -> &str {
@@ -49,9 +57,11 @@ impl HttpSource {
     /// [`Events`]. A shape mismatch is reported, not patched over.
     pub fn events(&self, group_id: &str) -> Result<Events, SourceError> {
         let url = format!("{}/api/groups/{}/events", self.base, group_id);
-        let mut response = self
-            .agent
-            .get(&url)
+        let mut request = self.agent.get(&url);
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let mut response = request
             .call()
             .map_err(|err| SourceError(format!("连不上宿主机 {}: {err}", self.base)))?;
         let status = response.status().as_u16();
