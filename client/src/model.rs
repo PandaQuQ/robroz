@@ -260,6 +260,7 @@ mod tests {
             updated_at: "2026-10-07T19:00:00.000Z".into(),
             container_up,
             failure: None,
+            waiting_for: None,
         }
     }
 
