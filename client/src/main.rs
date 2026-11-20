@@ -1498,7 +1498,7 @@ fn row_view<'a>(
         .spacing(8)
         .align_y(Alignment::Center)
         .into(),
-        Row::Status(card) => status_view(t, card),
+        Row::Status(card) => status_view(t, card, width),
         Row::Delivery(card) => delivery_view(t, card, width),
         Row::Card(card) => {
             let state = ui.get(card.id()).unwrap_or(empty);
@@ -1508,14 +1508,11 @@ fn row_view<'a>(
 }
 
 /// Frozen status card: palette from `robroz-card`, outline from the skin.
-fn status_view<'a>(t: &Skin, card: &'a StatusCard) -> Element<'a, Message> {
-    let mut line = row![
-        text(&card.bot_name),
-        space::horizontal(),
-        text(&card.status_line)
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
+fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
+    let line = progress_cell(t, card, width);
+    let mut line = row![line, text(&card.status_line)]
+        .spacing(12)
+        .align_y(Alignment::Center);
     if let Some(action) = card.action {
         line = line.push(
             button(text(action).size(t.type_.button))
@@ -1535,6 +1532,47 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard) -> Element<'a, Message> {
             card.palette.text,
         ))
         .into()
+}
+
+/// Left side of a status card: the bro name, and under it, left-aligned,
+/// what the bro is doing (`progress`). One line, cut with "…", at a fixed
+/// line height, so the card is one row taller with progress and exactly
+/// its old height without it, whatever the text says.
+fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
+    use iced::widget::text::{LineHeight, Wrapping};
+    let name = text(&card.bot_name);
+    let Some(progress) = &card.progress else {
+        return container(name).width(Fill).into();
+    };
+    let size = t.type_.status;
+    // Room left of the status word (and button), in ASCII width units.
+    let unit = |s: &str| {
+        s.chars()
+            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+            .sum::<f32>()
+    };
+    let right = unit(&card.status_line) * t.type_.body * t.type_.unit_width
+        + card.action.map_or(0.0, |a| {
+            unit(a) * t.type_.button * t.type_.unit_width + 2.0 * t.controls.card_pad_h + 12.0
+        })
+        + 12.0;
+    let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
+    let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
+    let fitted = robroz_ui::cards::status::clamp_lines(progress, cols, 1);
+    let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
+    let line = text(fitted)
+        .size(size)
+        .line_height(LineHeight::Absolute(progress_line_height(size).into()))
+        .wrapping(Wrapping::None)
+        .color(color(rgb));
+    container(column![name, container(line).clip(true).width(Fill)].spacing(2))
+        .width(Fill)
+        .into()
+}
+
+/// Fixed height of the progress line: the card never jumps as the text changes.
+fn progress_line_height(size: f32) -> f32 {
+    (size * 1.5).round()
 }
 
 fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a, Message> {
