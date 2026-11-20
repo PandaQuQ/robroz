@@ -11,9 +11,16 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 | [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | [`ecabd15caa08f674877e155d03c553c30a35a63b`](https://github.com/milind-soni/OpenMausBot/tree/ecabd15caa08f674877e155d03c553c30a35a63b) | 主体 Apache-2.0；`enterprise/` 为独立商业许可，**不参考、不使用** |
 | Grok Bot 用户能看到的行为 | — | 只写用户看得见的产品行为，不写内部提示词或配置 |
 
-「第一期？」按 robroz 已冻结的范围填写：单机私有化，跑通「说话、建群、拉 Bot、本机 Docker 隔离运行、做完休眠」，外加一次定时简报和一次私聊接管。文件树、终端、桌面流、Bot 详情页、Webhook、MCP 网关、浏览器自动化、多租户等不在第一期。勾选列留给 Panda。
+「第一期？」按 robroz 已冻结的范围填写：单机私有化，跑通「说话、建群、拉 Bot、本机 Docker 隔离运行、做完休眠」，外加一次定时简报和一次私聊接管。文件树、终端、桌面流、Bot 详情页、Webhook、MCP 网关、浏览器自动化、多租户等不在第一期。勾选列按 Panda 2026-11-20 的要求（「我只要一个完美的完整的 grok bot 体验」）由 PM 拍板后勾选：「是」的行打勾，其余待定项仍不勾，不进第一期。
 
-本 PR 合并前，第一期范围不再加项。Panda 在最后一列勾选后，再合并。
+## 契约变更规则（2026-11-20 起）
+
+第一期契约（节点 1）只开一个口子：**可以新增卡片类型和接口，已有字段一个都不改**，包括字段名、类型、含义和已有枚举值。新卡片和新接口必须是加法，旧客户端忽略不认识的卡片类型和字段后照样能用。改已有字段仍然要 Panda 拍板。
+
+第一期据此新增两项：
+
+- 选项卡：状态卡加可选字段 `options`，用户的选择以 `choice` 回传。
+- 例行任务：新增 `GET` 列表接口和 `PATCH` 的 `paused` 字段。
 
 ## 目的与规则
 
@@ -28,28 +35,28 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 请求变成可持久任务 | 简短提问可在对话里直接回答；较大的工作成为独立任务，在「进行中 / 待审 / 完成」一类状态里流转。同一任务只改状态，不另开一张卡。 | [Comma README「What Comma does」](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[Comma 产品概念：Task lifecycle](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/architecture/PRODUCT_MODEL.md#核心概念) | 节点 2、节点 6 | 是（四态为 queued / running / blocked / done，没有单独的「待审」看板） | [ ] |
-| 后台执行，用户可继续聊天 | 长任务放到后台跑，聊天不卡住。进行中用状态卡原地更新。 | **Grok Bot 用户能看到的行为**；[Comma README：Tasks 是持久执行状态](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#philosophy)；[OpenBot README：在频道里看它工作](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot README：Status 环路含流式回复与工具](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#status) | 节点 2、节点 3、节点 6 | 是（状态卡排队 / 进行 / 卡住 / 完成） | [ ] |
+| 请求变成可持久任务 | 简短提问可在对话里直接回答；较大的工作成为独立任务，在「进行中 / 待审 / 完成」一类状态里流转。同一任务只改状态，不另开一张卡。 | [Comma README「What Comma does」](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[Comma 产品概念：Task lifecycle](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/architecture/PRODUCT_MODEL.md#核心概念) | 节点 2、节点 6 | 是（四态为 queued / running / blocked / done，没有单独的「待审」看板） | [x] |
+| 后台执行，用户可继续聊天 | 长任务放到后台跑，聊天不卡住。进行中用状态卡原地更新。 | **Grok Bot 用户能看到的行为**；[Comma README：Tasks 是持久执行状态](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#philosophy)；[OpenBot README：在频道里看它工作](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot README：Status 环路含流式回复与工具](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#status) | 节点 2、节点 3、节点 6 | 是（状态卡排队 / 进行 / 卡住 / 完成） | [x] |
 | 关键节点汇报进度 | 执行中在关键里程碑推一次进度，而不是不停刷屏。 | **Grok Bot 用户能看到的行为** | 节点 6 | 待定（第一期已有四态原地更新；更细的里程碑文字需先对契约） | [ ] |
 | 收到任务先短确认 | 先回一句短确认再开始干活，之后只在关键节点更新。 | **Grok Bot 用户能看到的行为**（界面建议进第一期） | 节点 6 | 待定（可用文本消息，但契约未要求执行器必须先发确认） | [ ] |
-| 卡住时提醒需要输入 | 任务需要人决定时停在「需要输入 / 卡住」，并给出下一步入口。 | [Comma 任务文档：escalated 显示为 Needs input](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle)；robroz 卡住只留「去私聊接管」 | 节点 4、节点 6 | 是 | [ ] |
+| 卡住时提醒需要输入 | 任务需要人决定时停在「需要输入 / 卡住」，并给出下一步入口。 | [Comma 任务文档：escalated 显示为 Needs input](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle)；robroz 卡住只留「去私聊接管」 | 节点 4、节点 6 | 是 | [x] |
 
 ## 审批与权限
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 写外部资产或遇到验证码则停下 | 不代填凭据。任务变成卡住，删掉容器，人到私聊接管；恢复后挂回原来的共享卷。 | robroz 已冻结的权限契约；[OpenBot README：登录墙或 2FA 时把控制权交给用户](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 4 | 是 | [ ] |
-| 不可逆操作先出审批卡 | 对外发送、删除、花钱等不能撤回的操作，必须先出审批卡，用户点了才执行。这是节点 4 权限里的一级。拒绝或过期就是最终结果，不能自动重试。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/approvals.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/approvals.md)；[OpenMausBot docs/approval-levels.md「Sending on your behalf」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[Comma README：Needs Review](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does) | 节点 4 | 是 | [ ] |
-| 审批级别与当场作答 | 每个 bot 可有审批级别（每次询问、自动接受编辑、代为批准、完全放行等）。会话里的审批卡可「允许一次」「本次会话允许」；对可信只读工具可给长期允许，并在该 bot 的访问设置里撤销。同一房间里的另一个 bot 仍会再问。问题卡任何级别都不会被自动代答。对外发送、删除、花钱这一级不可关掉，必须先出卡片。 | [OpenMausBot docs/approval-levels.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[OpenMausBot README「Bots ask before they act」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 4 | 是 | [ ] |
-| 选项卡，一点就能回复 | 需要用户拍板时发带选项的卡片，可点选项，也可自己写一句；不必为了选一项去打长文。同属节点 4 里「需要人决定」的权限交互，展示会落在节点 6 的消息流。 | **Grok Bot 用户能看到的行为**；[OpenMausBot 问题卡文档与截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md#asking-you-questions)；[OpenBot：Bot 可停下来问人](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#asking-a-person) | 节点 4、节点 6 | 待定（当前卡片契约只有状态卡和交付卡，是否在第一期出选项卡尚未定） | [ ] |
-| 对外邮件和消息先出草稿卡 | 要发出去的邮件或消息先以草稿卡呈现，用户自己点发送。与审批卡同属节点 4 权限：对外发送必须先出卡片，点了才执行。 | **Grok Bot 用户能看到的行为**；[Comma 产品功能：草稿只经用户动作发出](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#chat-and-tasks) | 节点 4 | 是 | [ ] |
+| 写外部资产或遇到验证码则停下 | 不代填凭据。任务变成卡住，删掉容器，人到私聊接管；恢复后挂回原来的共享卷。 | robroz 已冻结的权限契约；[OpenBot README：登录墙或 2FA 时把控制权交给用户](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 4 | 是 | [x] |
+| 不可逆操作先出审批卡 | 对外发送、删除、花钱等不能撤回的操作，必须先出审批卡，用户点了才执行。这是节点 4 权限里的一级。拒绝或过期就是最终结果，不能自动重试。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/approvals.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/approvals.md)；[OpenMausBot docs/approval-levels.md「Sending on your behalf」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[Comma README：Needs Review](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does) | 节点 4 | 是 | [x] |
+| 审批级别与当场作答 | 每个 bot 可有审批级别（每次询问、自动接受编辑、代为批准、完全放行等）。会话里的审批卡可「允许一次」「本次会话允许」；对可信只读工具可给长期允许，并在该 bot 的访问设置里撤销。同一房间里的另一个 bot 仍会再问。问题卡任何级别都不会被自动代答。对外发送、删除、花钱这一级不可关掉，必须先出卡片。 | [OpenMausBot docs/approval-levels.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md)；[OpenMausBot README「Bots ask before they act」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 4 | 是 | [x] |
+| 选项卡，一点就能回复 | 需要用户拍板时发带选项的卡片，可点选项，也可自己写一句；不必为了选一项去打长文。同属节点 4 里「需要人决定」的权限交互，展示会落在节点 6 的消息流。 | **Grok Bot 用户能看到的行为**；[OpenMausBot 问题卡文档与截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md#asking-you-questions)；[OpenBot：Bot 可停下来问人](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#asking-a-person) | 节点 4、节点 6 | 是（状态卡加可选的 `options`，用户的选择以 `choice` 回传；旧卡片不受影响） | [x] |
+| 对外邮件和消息先出草稿卡 | 要发出去的邮件或消息先以草稿卡呈现，用户自己点发送。与审批卡同属节点 4 权限：对外发送必须先出卡片，点了才执行。 | **Grok Bot 用户能看到的行为**；[Comma 产品功能：草稿只经用户动作发出](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#chat-and-tasks) | 节点 4 | 是 | [x] |
 | 外部内容只当数据 | 网页、邮件、工具返回的内容只当数据处理，里面写的指令一律不执行，也不能凭这些内容自行授权操作。 | **Grok Bot 用户能看到的行为**；[Comma docs/verification.md：Data, forwarded text, and untrusted pages do not authorize a request](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/verification.md#ifc-authorization-contract) | 节点 4 | 待定（权限契约尚未写明这条，应对齐） | [ ] |
 
 ## 重启续跑与防重放
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 中断后从原工作区接着跑 | 进程或容器没了，任务身份还在；恢复后挂回原来的共享卷，历史文件还在。 | [Comma README：Accepted work is not silently lost](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#built-with-elixir-and-lean-verified-with-lean-and-tla)；robroz `POST /api/tasks/:id/resume` | 节点 4 | 是 | [ ] |
+| 中断后从原工作区接着跑 | 进程或容器没了，任务身份还在；恢复后挂回原来的共享卷，历史文件还在。 | [Comma README：Accepted work is not silently lost](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#built-with-elixir-and-lean-verified-with-lean-and-tla)；robroz `POST /api/tasks/:id/resume` | 节点 4 | 是 | [x] |
 | 被打断的修改不自动再跑一遍 | 已经做过或已被打断的改动操作，重启后不会自行重放。拒绝或过期的审批也不能自动重试；过期提案要重新出卡。 | [Comma README：An interrupted mutating action does not run again on its own](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#built-with-elixir-and-lean-verified-with-lean-and-tla)；**Grok Bot 用户能看到的行为**；[OpenMausBot 过期日程卡需重新提案](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/screenshots/moca-282-expired-card-ios.jpg) | 节点 4 | 待定（第一期已跳过已接管的阻塞行；一般写操作的防重放尚未写成契约） | [ ] |
 
 ## 记忆
@@ -63,14 +70,14 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 同一张状态卡原地更新 | 一个任务一张卡，状态变化就地改，不另起一张。 | robroz 卡片规范；[Comma：Cards only project status](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle) | 节点 6 | 是 | [ ] |
-| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（第一期用 `GET /api/groups/:id/events` 轮询，不另开通道）；WebSocket 桌面流为否 | [ ] |
+| 同一张状态卡原地更新 | 一个任务一张卡，状态变化就地改，不另起一张。 | robroz 卡片规范；[Comma：Cards only project status](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/salix/tasks-background-execution.md#canonical-lifecycle) | 节点 6 | 是 | [x] |
+| 流式回复与活动提示 | 回复边生成边出现；工具或步骤用活动提示标出。客户端从一条事件流收更新。 | [OpenMausBot README「Also in the box」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot README「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#how-it-works)；[OpenBot：看屏幕与 Activity 列表](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 6 | 是（第一期用 `GET /api/groups/:id/events` 轮询，不另开通道）；WebSocket 桌面流为否 | [x] |
 
 ## 多 agent 与群聊
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 建群、拉多个 Bot、指定执行者 | 一个群里可以有多个人和一个或多个 Bot；派任务时指定执行的 Bot。 | robroz 节点 2；[OpenBot：To 里放两个以上 Bot 即开群](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot 频道与可编辑 roster](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 是 | [ ] |
+| 建群、拉多个 Bot、指定执行者 | 一个群里可以有多个人和一个或多个 Bot；派任务时指定执行的 Bot。 | robroz 节点 2；[OpenBot：To 里放两个以上 Bot 即开群](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot 频道与可编辑 roster](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features) | 节点 2 | 是 | [x] |
 | 群聊里多个 Bot 分工 | 被点到的 Bot 用自己的名字回答，不由另一个 Bot 代述。可把工作交给队友，按接收方自己的权限跑。 | **Grok Bot 用户能看到的行为**；[OpenBot docs/architecture.md「One Bot handing work to another」](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/architecture.md#one-bot-handing-work-to-another)；[OpenMausBot 审批文档中的队友交接](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/approval-levels.md) | 节点 2 | 否（第一期只做建群、拉 Bot、派任务；Bot 互派和自动分工为后续） | [ ] |
 | 本地 agent 按 bot 接入 | 侧栏里每个 bot 是一台本地 agent（本机已登录的 Claude / Codex / Grok 命令行，或设置里接入的兼容引擎）。本机 127.0.0.1 上的 harness 托管这些进程；应用发命令、收一条事件流。可在对话中途换模型。数据和密钥默认留在本机目录。 | [OpenMausBot README「Why」「Pick a brain per bot」「How it works」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#why)；[OpenMausBot docs/custom-engines.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/custom-engines.md) | 节点 3 | 否（第一期执行器仍是本机 Docker 里的 Rust runner，不接外部 CLI） | [ ] |
 | 把 Bot 当联系人管理 | 侧栏像聊天列表：置顶、未读、改资料、复制、隐藏、删除；可暂停某个 bot、整个部门或全部 bot，恢复后数据和例行任务还在。 | [OpenMausBot README「Manage bots like chats」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[OpenMausBot docs/pausing-bots.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/pausing-bots.md) | 节点 2、节点 6（第一期只有群列表，没有 Bot 详情页和暂停） | 否 | [ ] |
@@ -81,10 +88,10 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 定时任务，到点出简报 | 宿主机按计划拉起任务，写下产物，发一张标了「简报」的交付卡。睡着的容器不能自己醒来。错过的窗口不补跑。 | robroz 节点 5；**Grok Bot 用户能看到的行为**；[Comma README：Routines 在设定时间给简报](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[OpenBot docs/routines.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/routines.md) | 节点 5、节点 6 | 是 | [ ] |
+| 定时任务，到点出简报 | 宿主机按计划拉起任务，写下产物，发一张标了「简报」的交付卡。睡着的容器不能自己醒来。错过的窗口不补跑。 | robroz 节点 5；**Grok Bot 用户能看到的行为**；[Comma README：Routines 在设定时间给简报](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[OpenBot docs/routines.md](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/routines.md) | 节点 5、节点 6 | 是 | [x] |
 | 事件触发 | 收件箱、仓库或已连接应用有约定变化时才叫醒 bot；安静时段不跑大模型。 | **Grok Bot 用户能看到的行为**；[Comma README：Loops](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[OpenMausBot README「Triggers: schedules and webhooks」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#triggers-schedules-and-webhooks) | 节点 5 | 否（后续。Webhook 也不在第一期） | [ ] |
 | 没变化时不打扰 | 没有新情况就不推送、不刷存在感。例行任务连续失败应停下并说明，而不是反复打扰。 | **Grok Bot 用户能看到的行为**；[Comma README：A quiet hour uses no large-model tokens](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does)；[OpenBot：疲劳规则与错过窗口跳过](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/routines.md)；[OpenMausBot：空简报不发出](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/proactive-routines.md#what-the-person-sees) | 节点 5（错过不补跑） | 待定（完整「无变化不推送」还需产品规则） | [ ] |
-| 例行任务列表，可看可暂停 | 单独的列表里能看到所有定时和触发项、运行历史，并能暂停、恢复、立刻跑一次。对话里创建时出一张可编辑 / 暂停的卡片；过期或已变更的提案要重新出卡，不能再点旧卡。第一期已有的是节点 5 的 cron 与简报卡。 | **Grok Bot 用户能看到的行为**；[OpenBot `/routines`](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot README 与 Tasks & routines 截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#triggers-schedules-and-webhooks) | 节点 5 | 待定（第一期只做 cron；列表与暂停接口尚未写入契约，合并前不加进范围） | [ ] |
+| 例行任务列表，可看可暂停 | 单独的列表里能看到所有定时和触发项、运行历史，并能暂停、恢复、立刻跑一次。对话里创建时出一张可编辑 / 暂停的卡片；过期或已变更的提案要重新出卡，不能再点旧卡。第一期已有的是节点 5 的 cron 与简报卡。 | **Grok Bot 用户能看到的行为**；[OpenBot `/routines`](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#main-surfaces)；[OpenMausBot README 与 Tasks & routines 截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#triggers-schedules-and-webhooks) | 节点 5 | 是（第一期只做列表和暂停：`GET` 列表、`PATCH paused`；运行历史、立刻跑一次、编辑放到后续） | [x] |
 
 ## 工具 / 连接器
 
@@ -98,7 +105,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 本机隔离沙箱，做完休眠 | 每个任务在隔离环境里跑，做完删掉容器，群共享目录里的文件还在，交付卡上给出相对路径。 | robroz 节点 3；[Comma coding sandboxes](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/compute-devices.md#coding-sandboxes)；[OpenBot：每人/每 Bot 一台电脑](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 3 | 是（本机 Docker，不是微型虚拟机或第三方沙箱云） | [ ] |
+| 本机隔离沙箱，做完休眠 | 每个任务在隔离环境里跑，做完删掉容器，群共享目录里的文件还在，交付卡上给出相对路径。 | robroz 节点 3；[Comma coding sandboxes](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/compute-devices.md#coding-sandboxes)；[OpenBot：每人/每 Bot 一台电脑](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 节点 3 | 是（本机 Docker，不是微型虚拟机或第三方沙箱云） | [x] |
 | 按 bot 分配电脑 | 每个 bot 可单独选择运行处：云桌面、本机隔离的 Local VM、这台电脑，或关闭。电脑面板显示该 bot 的屏幕；云电脑未配置时说明如何补上密钥。选「这台电脑」需明确开启，并受平台限制。 | [OpenMausBot README「Every bot gets a computer」](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[Computer 面板截图](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/screenshots/docs-computer-panel.png)；[docs/computer-use-integration.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/computer-use-integration.md) | 节点 3 | 否（第一期仍是每个群一个 Docker 加共享卷；按 bot 单独虚拟机为后续） | [ ] |
 | 云端电脑和浏览器代办 | 看它的桌面或浏览器，必要时由用户接管（登录、验证码）。第一期不做桌面流和浏览器自动化。 | **Grok Bot 用户能看到的行为**；[OpenBot README：Watch / Take the wheel](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features)；[OpenMausBot：实时预览与「Open desktop」接管](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#features)；[Comma：Agent browser / Salix](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#what-comma-does) | 节点 4（私聊接管，无屏幕） | 否（浏览器、Playwright、桌面流均不在第一期） | [ ] |
 | 文件树、终端、桌面流 | 在卡片或侧栏里浏览文件树、打开终端、看实时桌面。 | [OpenBot：屏幕与 Activity](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features) | 明确不在本期 | 否 | [ ] |
@@ -107,7 +114,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 交付卡片 | 摘要加一条不能点开的等宽相对路径。定时简报仍是同一张交付卡，角上标「简报」。 | robroz 卡片规范 | 节点 6 | 是 | [ ] |
+| 交付卡片 | 摘要加一条不能点开的等宽相对路径。定时简报仍是同一张交付卡，角上标「简报」。 | robroz 卡片规范 | 节点 6 | 是 | [x] |
 | 可发布的页面或小应用 | 用户让 agent 做一个可打开的预览页，确认后再发布；对外行动仍要在产品界面里点一下。 | [Comma docs/product-features.md Mini-apps](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/product-features.md#mini-apps) | 后续（第一期范围外） | 否 | [ ] |
 | 对话里的通用组件 | 除状态卡和交付卡之外，用可交互组件代替纯文字（例如画廊、选项板）。 | [OpenBot README：Components instead of prose](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/README.md#features)；[Comma Chat dynamic UI](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/docs/clients.md#chat-dynamic-ui) | 节点 6 | 否（第一期只做状态卡和交付卡） | [ ] |
 
@@ -115,7 +122,7 @@ robroz 的目标是做出一个开源版的 Grok Bot：用 Rust 自研、单机�
 
 | 功能 | 行为描述 | 来源 | robroz 节点 | 第一期? | 勾选 |
 | --- | --- | --- | --- | --- | --- |
-| 单机私有化，模型自备 | 在自己的机器上跑完整产品，不依赖对方账号；模型用自己的密钥或本机已有登录。 | robroz 第一期范围；[Comma README：Self-host with Docker Compose](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#self-host-with-docker-compose)；[OpenBot Personal Edition](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/personal-edition.md)；[OpenMausBot README：本机优先，桌面包内嵌 harness](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#why) | 节点 7 | 是 | [ ] |
+| 单机私有化，模型自备 | 在自己的机器上跑完整产品，不依赖对方账号；模型用自己的密钥或本机已有登录。 | robroz 第一期范围；[Comma README：Self-host with Docker Compose](https://github.com/AFK-surf/Comma/blob/66ab3dc92475005aea9afd123df36a28e4ef86ab/README.md#self-host-with-docker-compose)；[OpenBot Personal Edition](https://github.com/CopilotKit/openbot/blob/8d18f5d88be67334678c7f18c54c3b4797976a20/docs/personal-edition.md)；[OpenMausBot README：本机优先，桌面包内嵌 harness](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/README.md#why) | 节点 7 | 是 | [x] |
 | 用量可见、可设上限 | 能看到用量；可为整台机器或单个 bot 设每日 / 每月上限。到上限默认只拦住无人值守的例行任务，本人发的消息仍可走。80% 只改变用量条颜色，不弹窗。 | [OpenMausBot docs/usage-caps.md](https://github.com/milind-soni/OpenMausBot/blob/ecabd15caa08f674877e155d03c553c30a35a63b/docs/usage-caps.md)（开源版即有；许可制月度支出上限属 enterprise，不参考） | 后续（第一期范围外） | 否 | [ ] |
 
 ## 界面（前端补充）
