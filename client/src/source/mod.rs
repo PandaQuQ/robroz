@@ -1,13 +1,15 @@
 //! Where events come from.
 //!
-//! [`HttpSource`] polls the host's `GET /api/groups/{id}/events`.
+//! [`HttpSource`] polls the host's `GET /api/groups/{id}/events?since=…`.
+//! [`stream`] reads `GET /api/groups/{id}/stream` (SSE) for the open chat.
 //! [`FakeSource`] replays a script offline and backs the unit tests.
 //! The app and [`crate::model::Feed`] only see [`EventSource`].
 
 mod fake;
 mod http;
+pub mod stream;
 
-pub use fake::{fake_schedules, FakeSource, DRAFT_BODY};
+pub use fake::{fake_chats, fake_schedules, FakeSource, DRAFT_BODY};
 pub use http::HttpSource;
 
 use std::fmt;
@@ -16,9 +18,8 @@ use std::time::Duration;
 use robroz_contract::Event;
 use robroz_ui::cards::Card;
 
-/// One entry in the left column. Client-side view data, not a contract
-/// type: the host has no group-listing endpoint yet, so a live source may
-/// only know the id and a local name.
+/// One group or DM the client knows: id and display name, from
+/// `GET /api/groups` (or `ROBROZ_GROUPS` when pinned).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupTab {
     pub id: String,
@@ -52,8 +53,11 @@ impl fmt::Display for SourceError {
 /// Calls block (the HTTP source does network I/O); the app runs them off the
 /// UI thread.
 pub trait EventSource: Send {
-    /// Groups to show in the left column.
+    /// Groups to show in the left column. Called again when the host
+    /// reports a group the client has not seen (e.g. a new DM).
     fn groups(&mut self) -> Result<Vec<GroupTab>, SourceError>;
+    /// Start polling a group created by this client (a new bro's DM).
+    fn add_group(&mut self, _group: GroupTab) {}
     /// Events since the last poll. Returning the full snapshot is also fine,
     /// because `Feed::apply` is idempotent.
     fn poll(&mut self) -> Result<Vec<GroupEvent>, SourceError>;
@@ -68,4 +72,55 @@ pub trait EventSource: Send {
     fn interval(&self) -> Duration {
         Duration::from_secs(1)
     }
+}
+
+#[cfg(test)]
+fn temp_db() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "robroz-client-test-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+/// Test helper: the real host router in-process on a free port, fresh DB.
+#[cfg(test)]
+pub fn http_test_host() -> String {
+    serve(robroz_host::router(&temp_db()).unwrap())
+}
+
+/// Same, with the host requiring `Authorization: Bearer <token>` (robroz#22).
+#[cfg(test)]
+pub fn http_test_host_with_token(token: &str) -> String {
+    let volumes = std::env::temp_dir().join(format!("robroz-client-vol-{}", std::process::id()));
+    std::fs::create_dir_all(&volumes).unwrap();
+    let token = robroz_host::auth::ApiToken::parse(token).unwrap();
+    serve(
+        robroz_host::Host::open(&temp_db(), volumes, "robroz-runner:local")
+            .unwrap()
+            .with_token(token)
+            .router(),
+    )
+}
+
+#[cfg(test)]
+fn serve(router: axum::Router) -> String {
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let addr = std_listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+            axum::serve(listener, router).await.unwrap();
+        });
+    });
+    format!("http://{addr}")
 }

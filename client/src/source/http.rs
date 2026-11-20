@@ -1,69 +1,70 @@
-//! Live events from the host over plain HTTP.
+//! Live events from the host over plain HTTP: incremental polling.
 //!
-//! Base URL: `ROBROZ_HOST`, default `http://127.0.0.1:8790`.
-//! Groups: `ROBROZ_GROUPS`, comma-separated `id` or `id=名字`. The host
-//! has no `GET /api/groups` yet, so the client cannot discover groups on its
-//! own. When that endpoint lands, `groups()` switches to it.
-//! Token: `ROBROZ_TOKEN`, sent as `Authorization: Bearer …` when set. Never printed.
+//! Base URL `ROBROZ_HOST` (default `http://127.0.0.1:8790`), token
+//! `ROBROZ_TOKEN` (see [`crate::conn`]).
+//! Groups come from `GET /api/groups`. `ROBROZ_GROUPS` (comma-separated `id`
+//! or `id=名字`) still overrides the list, for pinning a test setup.
+//! Each group keeps a cursor: the newest change time seen. Polls ask for
+//! `GET /api/groups/{id}/events?since=<cursor − 1ms>`, so only changed cards
+//! come back; the 1ms overlap catches rows written in the cursor's own
+//! millisecond, and [`crate::model::Feed`] dedupes them by id.
+//! The live stream ([`super::stream`]) is the fast path; this poll is the
+//! fallback while the stream is down and a slow safety net while it is up.
 
-use std::time::Duration;
+use std::collections::HashMap;
 
-use robroz_contract::Events;
+use robroz_contract::{Events, Groups};
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
-
-pub const DEFAULT_HOST: &str = "http://127.0.0.1:8790";
+use crate::conn::Conn;
+use crate::model::change_time;
 
 pub struct HttpSource {
-    base: String,
+    conn: Conn,
     groups: Vec<GroupTab>,
-    agent: ureq::Agent,
-    token: Option<String>,
+    /// `ROBROZ_GROUPS` was set: do not replace the list from the host.
+    pinned: bool,
+    /// Group id → newest change time seen (RFC 3339).
+    cursors: HashMap<String, String>,
 }
 
 impl HttpSource {
-    pub fn new(base: impl Into<String>, groups: Vec<GroupTab>) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(5)))
-            .http_status_as_error(false)
-            .build()
-            .into();
+    pub fn new(conn: Conn, pinned: Vec<GroupTab>) -> Self {
         Self {
-            base: base.into().trim_end_matches('/').to_string(),
-            groups,
-            agent,
-            token: None,
+            conn,
+            pinned: !pinned.is_empty(),
+            groups: pinned,
+            cursors: HashMap::new(),
         }
-    }
-
-    pub fn with_token(mut self, token: Option<String>) -> Self {
-        self.token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        self
     }
 
     pub fn from_env() -> Self {
-        let base = std::env::var("ROBROZ_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
-        let groups = std::env::var("ROBROZ_GROUPS")
+        let pinned = std::env::var("ROBROZ_GROUPS")
             .map(|v| parse_groups(&v))
             .unwrap_or_default();
-        Self::new(base, groups).with_token(std::env::var("ROBROZ_TOKEN").ok())
+        Self::new(Conn::from_env(), pinned)
     }
 
     pub fn base(&self) -> &str {
-        &self.base
+        self.conn.base()
     }
 
-    /// `GET /api/groups/{id}/events`, decoded straight into the contract's
-    /// [`Events`]. A shape mismatch is reported, not patched over.
-    pub fn events(&self, group_id: &str) -> Result<Events, SourceError> {
-        let url = format!("{}/api/groups/{}/events", self.base, group_id);
-        let mut request = self.agent.get(&url);
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", &format!("Bearer {token}"));
-        }
-        let mut response = request
+    pub fn conn(&self) -> &Conn {
+        &self.conn
+    }
+
+    /// The `since` this group's next poll sends, if any.
+    pub fn since(&self, group_id: &str) -> Option<String> {
+        self.cursors.get(group_id).map(|at| overlap(at))
+    }
+
+    fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, SourceError> {
+        let url = self.conn.url(path);
+        let mut response = self
+            .conn
+            .get(path)
             .call()
-            .map_err(|err| SourceError(format!("连不上宿主机 {}: {err}", self.base)))?;
+            .map_err(|err| SourceError(format!("连不上宿主机 {}: {err}", self.conn.base())))?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
@@ -72,25 +73,91 @@ impl HttpSource {
         if status != 200 {
             return Err(SourceError(format!("GET {url} 返回 {status}: {body}")));
         }
-        serde_json::from_str::<Events>(&body)
+        serde_json::from_str::<T>(&body)
             .map_err(|err| SourceError(format!("GET {url} 与契约不符: {err}")))
     }
+
+    /// `GET /api/groups/{id}/events[?since=…]`, decoded straight into the
+    /// contract's [`Events`]. A shape mismatch is reported, not patched over.
+    pub fn events(&self, group_id: &str, since: Option<&str>) -> Result<Events, SourceError> {
+        let path = match since {
+            Some(s) => format!("/api/groups/{group_id}/events?since={}", query_escape(s)),
+            None => format!("/api/groups/{group_id}/events"),
+        };
+        self.get_json(&path)
+    }
+
+    fn advance(&mut self, group_id: &str, events: &Events) {
+        for e in &events.events {
+            let at = change_time(e);
+            let cur = self.cursors.entry(group_id.to_string()).or_default();
+            if later(at, cur) {
+                *cur = at.to_string();
+            }
+        }
+    }
+}
+
+/// `true` when `a` is after `b` (RFC 3339; empty `b` is "never").
+fn later(a: &str, b: &str) -> bool {
+    if b.is_empty() {
+        return true;
+    }
+    match (
+        chrono::DateTime::parse_from_rfc3339(a),
+        chrono::DateTime::parse_from_rfc3339(b),
+    ) {
+        (Ok(x), Ok(y)) => x > y,
+        _ => a > b,
+    }
+}
+
+/// Cursor minus 1ms, in the host's own format.
+fn overlap(at: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(at) {
+        Ok(t) => (t - chrono::Duration::milliseconds(1))
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        Err(_) => at.to_string(),
+    }
+}
+
+/// RFC 3339 in a query string: `+` and `:` must not be read as space/sep.
+fn query_escape(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('+', "%2B")
+        .replace(':', "%3A")
 }
 
 impl EventSource for HttpSource {
     fn groups(&mut self) -> Result<Vec<GroupTab>, SourceError> {
-        if self.groups.is_empty() {
-            return Err(SourceError(
-                "没有群：宿主机还没有列群接口，请用 ROBROZ_GROUPS=<id>[=名字],… 指定".into(),
-            ));
+        if !self.pinned {
+            let groups: Groups = self.get_json("/api/groups")?;
+            self.groups = groups
+                .groups
+                .into_iter()
+                .map(|g| GroupTab {
+                    id: g.id,
+                    name: g.name,
+                })
+                .collect();
         }
         Ok(self.groups.clone())
     }
 
+    fn add_group(&mut self, group: GroupTab) {
+        if !self.groups.iter().any(|g| g.id == group.id) {
+            self.groups.push(group);
+        }
+    }
+
     fn poll(&mut self) -> Result<Vec<GroupEvent>, SourceError> {
         let mut out = Vec::new();
-        for group in &self.groups {
-            for event in self.events(&group.id)?.events {
+        for group in self.groups.clone() {
+            let since = self.since(&group.id);
+            let events = self.events(&group.id, since.as_deref())?;
+            self.advance(&group.id, &events);
+            for event in events.events {
                 out.push(GroupEvent {
                     group_id: group.id.clone(),
                     event,
@@ -145,17 +212,36 @@ mod tests {
     }
 
     #[test]
-    fn no_groups_is_an_error_not_an_empty_list() {
-        let mut source = HttpSource::new(DEFAULT_HOST, Vec::new());
-        assert!(source.groups().is_err());
+    fn trailing_slash_is_trimmed() {
+        assert_eq!(
+            HttpSource::new(Conn::new("http://h:1/"), Vec::new()).base(),
+            "http://h:1"
+        );
     }
 
     #[test]
-    fn trailing_slash_is_trimmed() {
+    fn cursor_overlap_and_escape() {
         assert_eq!(
-            HttpSource::new("http://h:1/", Vec::new()).base(),
-            "http://h:1"
+            overlap("2026-11-20T02:00:00.000Z"),
+            "2026-11-20T01:59:59.999Z"
         );
+        assert_eq!(
+            overlap("2026-11-20T10:00:00.500+08:00"),
+            "2026-11-20T02:00:00.499Z"
+        );
+        assert_eq!(
+            query_escape("2026-11-20T02:00:00.000+08:00"),
+            "2026-11-20T02%3A00%3A00.000%2B08%3A00"
+        );
+        assert!(later(
+            "2026-11-20T02:00:00.001Z",
+            "2026-11-20T02:00:00.000Z"
+        ));
+        assert!(!later(
+            "2026-11-20T10:00:00.000+08:00",
+            "2026-11-20T02:00:00.000Z"
+        ));
+        assert!(later("2026-11-20T02:00:00.000Z", ""));
     }
 
     /// Runs the real host router in-process and reads it through
@@ -169,30 +255,7 @@ mod tests {
         };
 
         fn spawn_host() -> String {
-            let db = std::env::temp_dir().join(format!(
-                "robroz-client-test-{}-{}.db",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            let router = robroz_host::router(&db).unwrap();
-            let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            std_listener.set_nonblocking(true).unwrap();
-            let addr = std_listener.local_addr().unwrap();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(async move {
-                    let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
-                    axum::serve(listener, router).await.unwrap();
-                });
-            });
-            format!("http://{addr}")
+            crate::source::http_test_host()
         }
 
         fn post<T: serde::Serialize, R: serde::de::DeserializeOwned>(
@@ -233,6 +296,7 @@ mod tests {
                     body: "hero.png".into(),
                 },
             );
+            std::thread::sleep(std::time::Duration::from_millis(5));
             let task: Task = post(
                 &base,
                 &format!("/api/groups/{}/tasks", group.id),
@@ -242,19 +306,52 @@ mod tests {
                 },
             );
 
-            let mut source = HttpSource::new(base, parse_groups(&format!("{}=官网", group.id)));
-            assert_eq!(source.groups().unwrap()[0].name, "官网");
+            // No ROBROZ_GROUPS: the list comes from GET /api/groups.
+            let mut source = HttpSource::new(Conn::new(&base), Vec::new());
+            let groups = source.groups().unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].id, group.id);
+            assert_eq!(groups[0].name, "官网");
 
             let mut feed = Feed::default();
-            for _ in 0..2 {
-                // Two full snapshots: the second must not duplicate rows.
-                for ge in source.poll().unwrap() {
-                    assert_eq!(ge.group_id, group.id);
-                    feed.apply(&ge.event);
-                }
+            let first = source.poll().unwrap();
+            assert_eq!(first.len(), 2, "first poll: everything");
+            for ge in &first {
+                assert_eq!(ge.group_id, group.id);
+                feed.apply(&ge.event);
             }
+            assert!(source.since(&group.id).is_some(), "cursor set");
+
+            // Second poll sends ?since= and gets only what changed: the new
+            // text (plus at most the cursor's own millisecond), not hero.png.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let _: serde_json::Value = post(
+                &base,
+                &format!("/api/groups/{}/messages", group.id),
+                &PostMessage {
+                    kind: MessageKind::Text,
+                    body: "第二条".into(),
+                },
+            );
+            let second = source.poll().unwrap();
+            let bodies: Vec<_> = second
+                .iter()
+                .filter_map(|ge| match &ge.event {
+                    robroz_contract::Event::Message { body, .. } => Some(body.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bodies, ["第二条"], "{second:?}");
+            for ge in &second {
+                feed.apply(&ge.event);
+            }
+            assert!(
+                source.poll().unwrap().len() <= 1,
+                "nothing new: only the overlap"
+            );
             let rows: Vec<Row> = feed.rows().cloned().collect();
-            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert_eq!(rows.len(), 3, "no duplicates: {rows:?}");
+            assert!(matches!(&rows[2], Row::Text { body } if body == "第二条"));
             assert!(
                 matches!(&rows[0], Row::Attachment { kind: MessageKind::Image, name } if name == "hero.png")
             );
@@ -274,7 +371,7 @@ mod tests {
         #[test]
         fn unknown_group_is_an_error() {
             let base = spawn_host();
-            let mut source = HttpSource::new(base, parse_groups("nope"));
+            let mut source = HttpSource::new(Conn::new(base), parse_groups("nope"));
             let err = source.poll().unwrap_err();
             assert!(err.0.contains("404"), "{err}");
         }
@@ -287,7 +384,10 @@ mod tests {
                 .local_addr()
                 .unwrap()
                 .port();
-            let mut source = HttpSource::new(format!("http://127.0.0.1:{port}"), parse_groups("g"));
+            let mut source = HttpSource::new(
+                Conn::new(format!("http://127.0.0.1:{port}")),
+                parse_groups("g"),
+            );
             assert!(source.poll().is_err());
         }
     }
