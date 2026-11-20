@@ -158,15 +158,12 @@ pub fn apply_prompt_with(
 mod tests {
     use super::*;
 
+    /// A fresh dir per call; a counter, not the clock, so parallel tests never share one.
     fn scratch() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "robroz-runner-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("robroz-runner-{}-{n}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         path
     }
