@@ -21,6 +21,14 @@ pub const FORGET_ASK: &str = "忘掉这条？bro 以后不会再用到它。";
 pub const NEW_PLACEHOLDER: &str = "想让 bro 记住什么";
 pub const TOO_LONG: &str = "最多 2000 字";
 pub const EMPTY_TEXT: &str = "写点什么再保存";
+/// Shown next to the time right after a save.
+pub const SAVED: &str = "已保存";
+/// Under the scope choices until one is picked.
+pub const PICK_SCOPE: &str = "选一下谁能用这条";
+/// Inline failure: 「没保存：<reason>」.
+pub fn failed(reason: &str) -> String {
+    format!("没保存：{reason}")
+}
 
 /// 资料 / 习惯 / 项目.
 pub fn kind_label(kind: MemoryKind) -> &'static str {
@@ -83,7 +91,8 @@ pub struct Group<'a> {
 /// The new-memory form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMemory {
-    pub scope: String,
+    /// `None` until the person picks one; 保存 stays grey until then.
+    pub scope: Option<String>,
     pub kind: MemoryKind,
     pub text: String,
 }
@@ -91,7 +100,7 @@ pub struct NewMemory {
 impl Default for NewMemory {
     fn default() -> Self {
         Self {
-            scope: MemoryScope::User.to_string(),
+            scope: None,
             kind: MemoryKind::Profile,
             text: String::new(),
         }
@@ -112,8 +121,14 @@ pub struct Book {
     pub adding: Option<NewMemory>,
     /// A request is in flight.
     pub busy: bool,
-    /// Last problem, shown at the top until the next action.
+    /// Page-level problem (the list did not load), shown at the top.
     pub note: Option<String>,
+    /// A failed save or forget, shown under that entry: `(id, text)`.
+    pub entry_note: Option<(String, String)>,
+    /// A failed 记一条, shown in the form.
+    pub add_note: Option<String>,
+    /// The entry saved last, marked 已保存 until the next action.
+    pub just_saved: Option<String>,
 }
 
 /// Why a text cannot be saved, or `None` when it can.
@@ -129,6 +144,51 @@ pub fn text_problem(text: &str) -> Option<&'static str> {
 }
 
 impl Book {
+    fn clear_notes(&mut self) {
+        self.note = None;
+        self.entry_note = None;
+        self.add_note = None;
+        self.just_saved = None;
+    }
+
+    /// The inline note under this entry, if its last request failed.
+    pub fn note_for(&self, id: &str) -> Option<&str> {
+        self.entry_note
+            .as_ref()
+            .filter(|(e, _)| e == id)
+            .map(|(_, n)| n.as_str())
+    }
+
+    /// A save or forget of this entry failed: say so under it.
+    pub fn entry_failed(&mut self, id: &str, reason: &str) {
+        self.busy = false;
+        self.entry_note = Some((id.to_string(), failed(reason)));
+    }
+
+    /// 记一条 failed: say so in the form and keep what was typed.
+    pub fn add_failed(&mut self, reason: &str) {
+        self.busy = false;
+        self.add_note = Some(failed(reason));
+    }
+
+    /// 改 can save: text not empty, within the limit, and changed.
+    pub fn can_save_edit(&self) -> bool {
+        let Some((id, draft)) = &self.editing else {
+            return false;
+        };
+        let Some(m) = self.memories.iter().find(|m| &m.id == id) else {
+            return false;
+        };
+        !self.busy && text_problem(draft).is_none() && draft.trim() != m.text.trim()
+    }
+
+    /// 记一条 can save: a scope picked and some text within the limit.
+    pub fn can_add(&self) -> bool {
+        self.adding
+            .as_ref()
+            .is_some_and(|n| !self.busy && n.scope.is_some() && text_problem(&n.text).is_none())
+    }
+
     pub fn load(&mut self, mut memories: Vec<Memory>) {
         // Rejected ones are never listed; the host leaves them out by default.
         memories.retain(|m| m.status != MemoryStatus::Rejected);
@@ -200,7 +260,7 @@ impl Book {
         if let Some(m) = self.memories.iter().find(|m| m.id == id) {
             self.editing = Some((id.to_string(), m.text.clone()));
             self.confirm_forget = None;
-            self.note = None;
+            self.clear_notes();
         }
     }
 
@@ -212,35 +272,38 @@ impl Book {
 
     pub fn cancel_edit(&mut self) {
         self.editing = None;
-        self.note = None;
+        self.clear_notes();
     }
 
     /// The PATCH to send for the open edit: `(id, trimmed text)`, or a note.
     pub fn edit_to_save(&mut self) -> Option<(String, String)> {
-        let (id, draft) = self.editing.clone()?;
-        if let Some(p) = text_problem(&draft) {
-            self.note = Some(p.to_string());
+        if !self.can_save_edit() {
             return None;
         }
+        let (id, draft) = self.editing.clone()?;
+        self.entry_note = None;
         Some((id, draft.trim().to_string()))
     }
 
     /// The host's row after PATCH replaces ours and closes the edit.
     pub fn saved(&mut self, memory: Memory) {
+        let id = memory.id.clone();
         if let Some(slot) = self.memories.iter_mut().find(|m| m.id == memory.id) {
             *slot = memory;
         }
         self.memories
             .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        self.busy = false;
         self.editing = None;
-        self.note = None;
+        self.clear_notes();
+        self.just_saved = Some(id);
     }
 
     /// First click on 忘掉: ask once.
     pub fn ask_forget(&mut self, id: &str) {
         self.confirm_forget = Some(id.to_string());
         self.editing = None;
-        self.note = None;
+        self.clear_notes();
     }
 
     pub fn cancel_forget(&mut self) {
@@ -254,6 +317,7 @@ impl Book {
 
     /// DELETE succeeded (204, also when it was already gone): drop it.
     pub fn forgotten(&mut self, id: &str) {
+        self.busy = false;
         self.memories.retain(|m| m.id != id);
         if self.editing.as_ref().is_some_and(|(e, _)| e == id) {
             self.editing = None;
@@ -264,32 +328,35 @@ impl Book {
         self.adding = Some(NewMemory::default());
         self.editing = None;
         self.confirm_forget = None;
-        self.note = None;
+        self.clear_notes();
     }
 
     pub fn close_add(&mut self) {
         self.adding = None;
-        self.note = None;
+        self.clear_notes();
     }
 
     /// The POST to send for the form, or a note.
     pub fn add_to_send(&mut self) -> Option<NewMemory> {
-        let new = self.adding.clone()?;
-        if let Some(p) = text_problem(&new.text) {
-            self.note = Some(p.to_string());
+        if !self.can_add() {
             return None;
         }
+        let new = self.adding.clone()?;
+        self.add_note = None;
         Some(NewMemory {
             text: new.text.trim().to_string(),
             ..new
         })
     }
 
-    /// POST succeeded: newest first, form closed.
+    /// POST succeeded: newest first, form closed, marked 已保存.
     pub fn added(&mut self, memory: Memory) {
+        self.busy = false;
+        let id = memory.id.clone();
         self.memories.insert(0, memory);
         self.adding = None;
-        self.note = None;
+        self.clear_notes();
+        self.just_saved = Some(id);
     }
 
     /// Scope choices for the form: 所有 bro, then 只给 each bro.
@@ -428,43 +495,96 @@ mod tests {
     }
 
     #[test]
-    fn inline_edit_checks_text_and_takes_the_hosts_row() {
+    fn edit_save_is_grey_until_the_text_changes_and_marks_saved() {
         let mut b = book();
+        assert!(!b.can_save_edit(), "nothing open");
         b.start_edit("2");
         assert_eq!(b.editing.as_ref().unwrap().1, "记忆 2");
+        assert!(!b.can_save_edit(), "unchanged");
+        assert_eq!(b.edit_to_save(), None);
+        b.edit_text("  记忆 2 ".into());
+        assert!(!b.can_save_edit(), "only spaces changed");
         b.edit_text("   ".into());
-        assert_eq!(b.edit_to_save(), None);
-        assert_eq!(b.note.as_deref(), Some(EMPTY_TEXT));
+        assert!(!b.can_save_edit(), "empty");
         b.edit_text("x".repeat(2001));
-        assert_eq!(b.edit_to_save(), None);
-        assert_eq!(b.note.as_deref(), Some(TOO_LONG));
+        assert!(!b.can_save_edit(), "too long");
         b.edit_text("  喜欢简短的周报 ".into());
+        assert!(b.can_save_edit());
         assert_eq!(
             b.edit_to_save(),
             Some(("2".into(), "喜欢简短的周报".into()))
         );
+        b.busy = true;
+        assert!(!b.can_save_edit(), "grey while in flight");
         let mut row = b.memories.iter().find(|m| m.id == "2").unwrap().clone();
         row.text = "喜欢简短的周报".into();
         row.updated_at = "2026-11-20T12:00:00Z".into();
         b.saved(row);
+        assert!(!b.busy);
         assert_eq!(b.editing, None);
         assert_eq!(b.memories[0].id, "2", "newest first after the edit");
+        assert_eq!(
+            b.memories[0].updated_at, "2026-11-20T12:00:00Z",
+            "time is the host's new one"
+        );
+        assert_eq!(b.just_saved.as_deref(), Some("2"), "marked 已保存");
+        b.start_edit("1");
+        assert_eq!(b.just_saved, None, "the mark goes with the next action");
     }
 
     #[test]
-    fn add_form_defaults_to_all_bros_and_inserts_on_top() {
+    fn failed_save_stays_open_with_an_inline_note() {
         let mut b = book();
+        b.start_edit("2");
+        b.edit_text("新的".into());
+        let _ = b.edit_to_save().unwrap();
+        b.busy = true;
+        b.entry_failed("2", "连不上主机");
+        assert!(!b.busy);
+        assert_eq!(b.note_for("2"), Some("没保存：连不上主机"));
+        assert_eq!(b.note_for("1"), None);
+        assert_eq!(
+            b.editing.as_ref().unwrap().1,
+            "新的",
+            "draft kept for a retry"
+        );
+
         b.open_add();
-        let form = b.adding.as_mut().unwrap();
-        assert_eq!(form.scope, "user");
-        assert_eq!(form.kind, MemoryKind::Profile);
-        form.text = "  我在伦敦  ".into();
-        form.scope = "bot:bot-ada".into();
+        b.adding.as_mut().unwrap().scope = Some("user".into());
+        b.adding.as_mut().unwrap().text = "x".into();
+        let _ = b.add_to_send().unwrap();
+        b.add_failed("scope 只能是 user 或 bot:<botId>");
+        assert_eq!(
+            b.add_note.as_deref(),
+            Some("没保存：scope 只能是 user 或 bot:<botId>")
+        );
+        assert_eq!(b.adding.as_ref().unwrap().text, "x", "typed text kept");
+    }
+
+    #[test]
+    fn add_needs_a_scope_and_text_then_inserts_on_top() {
+        let mut b = book();
+        assert!(!b.can_add(), "form closed");
+        b.open_add();
+        assert_eq!(
+            b.adding.as_ref().unwrap().scope,
+            None,
+            "no scope until picked"
+        );
+        b.adding.as_mut().unwrap().text = "  我在伦敦  ".into();
+        assert!(!b.can_add(), "no scope yet");
+        assert_eq!(b.add_to_send(), None);
+        b.adding.as_mut().unwrap().scope = Some("bot:bot-ada".into());
+        assert!(b.can_add());
+        b.adding.as_mut().unwrap().text = " ".into();
+        assert!(!b.can_add(), "empty text");
+        b.adding.as_mut().unwrap().text = "  我在伦敦  ".into();
         let new = b.add_to_send().unwrap();
         assert_eq!(new.text, "我在伦敦");
+        let scope = new.scope.clone().unwrap();
         let mut row = mem(
             "9",
-            &new.scope,
+            &scope,
             new.kind,
             MemoryStatus::Kept,
             "2026-11-20T12:00:00Z",
@@ -473,6 +593,7 @@ mod tests {
         b.added(row);
         assert_eq!(b.adding, None);
         assert_eq!(b.memories[0].id, "9");
+        assert_eq!(b.just_saved.as_deref(), Some("9"));
         let choices: Vec<_> = b.scope_choices().into_iter().map(|(_, l)| l).collect();
         assert_eq!(choices, ["所有 bro", "只给 Ada", "只给 Bob"]);
     }

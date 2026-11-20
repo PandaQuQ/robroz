@@ -138,7 +138,8 @@ enum Message {
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     /// PATCH (edit) or POST (new) answered.
     MemorySaved {
-        created: bool,
+        /// `None` for 记一条, the memory id for 改.
+        id: Option<String>,
         result: Result<Memory, ApiError>,
     },
     MemoryForgot {
@@ -592,7 +593,7 @@ impl App {
             }
             Action::MemoryAddScope { scope } => {
                 if let Some(new) = &mut book.adding {
-                    new.scope = scope;
+                    new.scope = Some(scope);
                 }
             }
             Action::MemoryAddKind { kind } => {
@@ -608,13 +609,11 @@ impl App {
                     return Task::none();
                 };
                 book.busy = true;
+                let scope = new.scope.clone().unwrap_or_default();
                 let job = call(&self.api, move |api| {
-                    api.create_memory(&new.scope, new.kind, &new.text)
+                    api.create_memory(&scope, new.kind, &new.text)
                 });
-                return Task::perform(job, |result| Message::MemorySaved {
-                    created: true,
-                    result,
-                });
+                return Task::perform(job, |result| Message::MemorySaved { id: None, result });
             }
             Action::MemoryEdit { id } => book.start_edit(&id),
             Action::MemoryEditText { text } => book.edit_text(text),
@@ -627,9 +626,10 @@ impl App {
                     return Task::none();
                 };
                 book.busy = true;
-                let job = call(&self.api, move |api| api.update_memory(&id, &text));
-                return Task::perform(job, |result| Message::MemorySaved {
-                    created: false,
+                let mid = id.clone();
+                let job = call(&self.api, move |api| api.update_memory(&mid, &text));
+                return Task::perform(job, move |result| Message::MemorySaved {
+                    id: Some(id.clone()),
                     result,
                 });
             }
@@ -817,21 +817,16 @@ impl App {
                 }
                 Err(err) => self.memories.note = Some(err.reason()),
             },
-            Message::MemorySaved { created, result } => {
-                self.memories.busy = false;
-                match result {
-                    Ok(m) if created => self.memories.added(m),
-                    Ok(m) => self.memories.saved(m),
-                    Err(err) => self.memories.note = Some(err.reason()),
-                }
-            }
-            Message::MemoryForgot { id, result } => {
-                self.memories.busy = false;
-                match result {
-                    Ok(()) | Err(ApiError::NotFound(_)) => self.memories.forgotten(&id),
-                    Err(err) => self.memories.note = Some(err.reason()),
-                }
-            }
+            Message::MemorySaved { id, result } => match (id, result) {
+                (None, Ok(m)) => self.memories.added(m),
+                (Some(_), Ok(m)) => self.memories.saved(m),
+                (None, Err(err)) => self.memories.add_failed(&err.reason()),
+                (Some(id), Err(err)) => self.memories.entry_failed(&id, &err.reason()),
+            },
+            Message::MemoryForgot { id, result } => match result {
+                Ok(()) | Err(ApiError::NotFound(_)) => self.memories.forgotten(&id),
+                Err(err) => self.memories.entry_failed(&id, &err.reason()),
+            },
             Message::Back => self.narrow_open = false,
             Message::UnreadTick => return self.load_unread(),
             Message::UnreadLoaded(result) => match result {

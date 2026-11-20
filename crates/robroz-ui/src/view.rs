@@ -975,6 +975,14 @@ pub fn routines_panel<'a>(t: &Skin, routines: &'a Routines, now: i64) -> Element
 
 // ---------- 记忆 page ----------
 
+/// A failed save, shown where it happened: accent text, never silent.
+fn inline_note<'a, M: 'a>(t: &Skin, note: &str) -> Element<'a, M> {
+    text(note.to_string())
+        .size(t.type_.foot)
+        .color(color(t.palette.accent))
+        .into()
+}
+
 /// The 记忆 page: one panel like the routines list. Groups by who may use a
 /// memory (「所有 bro」 first, then each bro); pending apart from kept.
 pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Action> {
@@ -1035,7 +1043,7 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
         }
         let mut scopes = row![].spacing(t.controls.button_gap);
         for (scope, label) in book.scope_choices() {
-            let look = if scope == new.scope {
+            let look = if new.scope.as_deref() == Some(scope.as_str()) {
                 Look::Selected
             } else {
                 Look::Secondary
@@ -1063,12 +1071,22 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
                 Some(Action::MemoryAddKind { kind }),
             ));
         }
-        let can_save = !busy && !new.text.trim().is_empty();
+        let can_save = book.can_add();
+        let mut form = column![input, scopes.wrap()].spacing(m.head_gap);
+        if new.scope.is_none() {
+            form = form.push(
+                text(memories::PICK_SCOPE)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+            );
+        }
+        if let Some(note) = &book.add_note {
+            form = form.push(inline_note(t, note));
+        }
         col = col.push(
             container(
                 column![
-                    input,
-                    scopes.wrap(),
+                    form,
                     kinds,
                     row![
                         btn(
@@ -1132,7 +1150,15 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
         if pending {
             top = top.push(tag(t, memories::PENDING_TAG, t.palette.accent));
         }
-        top = top.push(space::horizontal()).push(
+        top = top.push(space::horizontal());
+        if book.just_saved.as_deref() == Some(mem.id.as_str()) {
+            top = top.push(
+                text(memories::SAVED)
+                    .size(t.type_.row_time)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        top = top.push(
             text(memories::updated_text(&mem.updated_at, now))
                 .size(t.type_.row_time)
                 .color(color(t.palette.text3)),
@@ -1158,14 +1184,18 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
                 .width(Fill)
                 .into(),
         };
-        let actions: Element<'a, Action> = if editing.is_some() {
+        let actions: Element<'a, Action> = if pending {
+            // 记下 / 不用 arrive with the confirm answer API (robroz ②);
+            // until then pending entries are display only.
+            Space::new().height(Length::Fixed(0.0)).into()
+        } else if editing.is_some() {
             row![
                 btn(
                     t,
                     memories::SAVE.into(),
                     Look::Primary,
                     Leading::None,
-                    (!busy).then_some(Action::MemoryEditSave)
+                    book.can_save_edit().then_some(Action::MemoryEditSave)
                 ),
                 btn(
                     t,
@@ -1221,10 +1251,11 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
             .spacing(t.controls.button_gap)
             .into()
         };
-        container(column![top, body, actions].spacing(m.dot_gap + 2.0))
-            .padding(pad)
-            .width(Fill)
-            .into()
+        let mut entry_col = column![top, body, actions].spacing(m.dot_gap + 2.0);
+        if let Some(note) = book.note_for(&mem.id) {
+            entry_col = entry_col.push(inline_note(t, note));
+        }
+        container(entry_col).padding(pad).width(Fill).into()
     };
 
     for (gi, group) in book.groups().into_iter().enumerate() {
