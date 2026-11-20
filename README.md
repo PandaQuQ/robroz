@@ -67,7 +67,10 @@ CI 只编译 `robroz-runner`，不构建镜像，测试也不需要 Docker daemo
 
 状态事件增加字段 `containerUp`。排队、完成、卡住，以及容器已经删掉的失败运行，都是 false。只有容器还在跑的 `running` 才是 true。失败运行仍然是 `TaskState::Running`，没有第五种状态：色调和排队一样是灰，标签是「没写出结果」，动作是空。容器还在时标签仍是「进行」。卡住才是琥珀色，动作「去私聊接管」。容器中途消失（宿主机或 Docker 重启、容器被删）也走这条失败运行：保持 `running`，`containerUp` 为 false，标签「没写出结果」，不重新排队，也不再启动容器。对它调用 `POST /api/tasks/:id/resume` 返回 409「这次不能恢复」。
 
-GET 次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz-policy::outbound` 判断，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8。超限或非 GET：删掉容器，保持 `running`，`containerUp` false，不发 delivery，也不改成 blocked。`robroz-action:external` 和 `robroz-action:captcha` 走 `side_effect`，变成 blocked / 「卡住」。工作区读写允许，成功时仍把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
+权限分三级，都在 `robroz-policy::tier`：
+- 放行（`Allow`）：工作区读写，不通知人，成功时把 prompt 写入 `tasks/{taskId}/result.txt` 并完成。
+- 计数（`Metered`）：出网只允许 GET，次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz-policy::meter` 按任务计数，上限是环境变量 `ROBROZ_GET_LIMIT`，默认 8（用满上限仍算正常）。超限或非 GET：删掉容器，任务以 `done` 结束，带 `failure`「出网超额：已用 N 次，上限 M」或「出网只允许 GET：用了 POST」，不发 delivery，也不改成 blocked。
+- 接管（`Takeover`）：`robroz-action:external` 和 `robroz-action:captcha`，不代填凭据，删掉容器，变成 blocked /「卡住」（external 另发审批卡），人到私聊接管，`POST /api/tasks/:id/resume` 恢复时挂回原来的群目录。
 
 `POST /api/tasks/:id/resume` 只接受 blocked：任务不存在返回 404「任务不存在」，不是 blocked 返回 409「这次不能恢复」。成功返回 200 `{"id","state":"queued"}`：按库里存的卡住记录写接管标记，清掉这条记录，状态回到 `queued`，`containerUp` false。resume 不读群目录。库里没有这条卡住记录（比如宿主机存这条记录之前就卡住的旧任务）返回 500 `{"error":"恢复失败，找不到卡住记录"}`；写接管标记失败返回 500 `{"error":"恢复失败，无法写入接管标记"}`。这两种情况任务都留在 `blocked`，状态和 `updatedAt` 都不变，也不写标记。容器由之后的 `pump` 在原来的群目录上再启动，resume 本身不启动容器。没有定时，也不调用 `should_start_container`。容器仍然 `--network none`，挂载 `/workspace`，不挂 docker.sock，本节点不建代理。
 
@@ -162,9 +165,10 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 
 状态卡和交付卡都有一个冻结后新增的可选字段 `failure`，表示任务算 `done` 了，但活没做成。只有这种情况才带这个键，正常结果不带，所以旧 JSON 一点不变。
 
-- 有两种情况会填 `failure`：
+- 有三种情况会填 `failure`：
   - 模型调用失败：值是「模型没回：原因」。任务照样会走到 `done`，并且会出一张交付卡，状态卡和交付卡上带的是同一个 `failure`。
   - 审批被拒绝：值是「你拒绝了：要做的事」，其中「要做的事」取 prompt 里第一行普通内容，最多 60 个字。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见「审批卡」一节里的「任务自动发的审批卡」。
+  - 出网超额或用了非 GET：值是「出网超额：已用 N 次，上限 M」或「出网只允许 GET：用了 POST」。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见上面权限三级里的「计数」。
 - 状态卡只在 `done` 时带 `failure`。任务再次开跑时会清掉它，不会沿用上一次的。
 - 客户端只要看到 `failure`，就把卡显示成灰色的「没做成：原因」，不显示绿色的完成，也没有按钮。
 
