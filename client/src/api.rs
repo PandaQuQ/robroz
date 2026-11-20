@@ -9,9 +9,10 @@
 //! - Bros and DMs use robroz#28: `GET /api/bros`, `POST /api/bros`.
 //! - The composer uses the existing `POST /api/groups/:id/messages` (store
 //!   the text) and `POST /api/groups/:id/tasks` (queue it for a bro).
-//! - `approval` and `draft` have no backend endpoints yet. They use the UI
-//!   SPEC §9 suggestions (`POST /api/cards/:id/decision`,
-//!   `POST /api/cards/:id/send`) until the backend defines them.
+//! - `approval` uses robroz#32: `POST /api/approvals/:id/approve` and
+//!   `/deny`, no body, answered once (409 after).
+//! - `draft` has no backend endpoint yet (phase 2). It uses the UI SPEC §9
+//!   suggestion `POST /api/cards/:id/send` until the backend defines it.
 
 use std::sync::Mutex;
 
@@ -57,9 +58,10 @@ pub mod paths {
     pub fn tasks(group_id: &str) -> String {
         format!("/api/groups/{group_id}/tasks")
     }
-    /// SPEC §9 suggestion; not in the backend yet.
-    pub fn approval_decision(id: &str) -> String {
-        format!("/api/cards/{id}/decision")
+    /// robroz#32: approve or deny an approval card, once.
+    pub fn approval_decision(id: &str, approve: bool) -> String {
+        let verb = if approve { "approve" } else { "deny" };
+        format!("/api/approvals/{id}/{verb}")
     }
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn send_draft(id: &str) -> String {
@@ -77,10 +79,6 @@ pub mod bodies {
             choice: choice.to_vec(),
         })
         .expect("serialize answer")
-    }
-
-    pub fn decision(approve: bool) -> String {
-        serde_json::json!({ "approve": approve }).to_string()
     }
 
     /// `{"kind":"text","body":…}`.
@@ -171,7 +169,8 @@ pub trait CardApi: Send + Sync {
     fn create_task(&self, group_id: &str, bot_id: &str, prompt: &str) -> Result<Task, ApiError>;
     /// Returns the updated `choice` event when the host sends it back.
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError>;
-    fn decide(&self, id: &str, approve: bool) -> Result<(), ApiError>;
+    /// Returns the answered `approval` event when the host sends it back.
+    fn decide(&self, id: &str, approve: bool) -> Result<Option<Event>, ApiError>;
     fn send_draft(&self, id: &str) -> Result<(), ApiError>;
     fn schedules(&self, group_id: &str) -> Result<Vec<ScheduleEntry>, ApiError>;
     fn set_paused(&self, id: &str, paused: bool) -> Result<ScheduleEntry, ApiError>;
@@ -279,12 +278,9 @@ impl CardApi for HttpApi {
         Ok(decode::<Event>(&body).ok())
     }
 
-    fn decide(&self, id: &str, approve: bool) -> Result<(), ApiError> {
-        self.post(
-            &paths::approval_decision(id),
-            Some(bodies::decision(approve)),
-        )
-        .map(|_| ())
+    fn decide(&self, id: &str, approve: bool) -> Result<Option<Event>, ApiError> {
+        let body = self.post(&paths::approval_decision(id, approve), None)?;
+        decode(&body).map(Some)
     }
 
     fn send_draft(&self, id: &str) -> Result<(), ApiError> {
@@ -408,8 +404,8 @@ impl CardApi for FakeApi {
         Ok(None)
     }
 
-    fn decide(&self, _: &str, _: bool) -> Result<(), ApiError> {
-        Ok(())
+    fn decide(&self, _: &str, _: bool) -> Result<Option<Event>, ApiError> {
+        Ok(None)
     }
 
     fn send_draft(&self, _: &str) -> Result<(), ApiError> {
@@ -455,7 +451,14 @@ mod tests {
         assert_eq!(paths::answer_choice("c1"), "/api/choices/c1/answer");
         assert_eq!(paths::group_schedules("g1"), "/api/groups/g1/schedules");
         assert_eq!(paths::schedule("s1"), "/api/schedules/s1");
-        assert_eq!(paths::approval_decision("a1"), "/api/cards/a1/decision");
+        assert_eq!(
+            paths::approval_decision("a1", true),
+            "/api/approvals/a1/approve"
+        );
+        assert_eq!(
+            paths::approval_decision("a1", false),
+            "/api/approvals/a1/deny"
+        );
         assert_eq!(paths::send_draft("d1"), "/api/cards/d1/send");
         assert_eq!(paths::UNREAD, "/api/unread");
         assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
@@ -473,7 +476,6 @@ mod tests {
             bodies::answer(&["a".into(), "b".into()]),
             r#"{"choice":["a","b"]}"#
         );
-        assert_eq!(bodies::decision(true), r#"{"approve":true}"#);
         assert_eq!(bodies::paused(false), r#"{"paused":false}"#);
     }
 
@@ -760,6 +762,45 @@ mod tests {
                 api.rename_bro("nope", "x"),
                 Err(ApiError::NotFound(_))
             ));
+        }
+
+        #[test]
+        fn approve_once_then_409_deny_and_404() {
+            let base = spawn_host();
+            let group = group_with_bot(&base);
+            let created: Event = post(
+                &base,
+                &format!("/api/groups/{}/approvals", group.id),
+                &serde_json::json!({
+                    "botId": "bot-doc", "action": "send", "summary": "把周报发给团队"
+                }),
+            );
+            let Event::Approval { id, decision, .. } = created else {
+                panic!("expected approval event");
+            };
+            assert_eq!(decision, None);
+            let api = HttpApi::new(Conn::new(&base));
+            match api.decide(&id, false).unwrap() {
+                Some(Event::Approval {
+                    decision,
+                    answered_at,
+                    ..
+                }) => {
+                    assert_eq!(decision, Some(robroz_contract::ApprovalDecision::Denied));
+                    assert!(answered_at.is_some());
+                }
+                other => panic!("expected answered approval, got {other:?}"),
+            }
+            assert!(matches!(api.decide(&id, true), Err(ApiError::Conflict(_))));
+            assert!(matches!(
+                api.decide("missing", true),
+                Err(ApiError::NotFound(_))
+            ));
+            // Polling (`?since=` path) sees the answered card too.
+            let seen = events(&base, &group.id);
+            assert!(seen
+                .iter()
+                .any(|e| e["type"] == "approval" && e["decision"] == "denied"));
         }
 
         #[test]

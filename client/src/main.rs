@@ -30,7 +30,7 @@ use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscr
 use robroz_contract::{
     Bro, Event, Message as HostMessage, ScheduleEntry, Task as HostTask, Unread,
 };
-use robroz_ui::cards::interact::CardUi;
+use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
@@ -116,6 +116,12 @@ enum Message {
     Acted {
         card: String,
         result: Result<(), ApiError>,
+    },
+    /// Approval answered (or refused) by the host.
+    Decided {
+        card: String,
+        approve: bool,
+        result: Result<Option<Event>, ApiError>,
     },
     RoutinesLoaded(Result<Vec<ScheduleEntry>, ApiError>),
     Paused {
@@ -442,6 +448,25 @@ impl App {
         self.convs
             .touch(&group, Some(preview(event)), Some(change_time(event)));
         self.feeds.entry(group).or_default().apply(event);
+        // A 409 note ("refreshing") goes once the answered card arrives.
+        let answered = match event {
+            Event::Choice {
+                id,
+                answered_at: Some(_),
+                ..
+            }
+            | Event::Approval {
+                id,
+                decision: Some(_),
+                ..
+            } => Some(id),
+            _ => None,
+        };
+        if let Some(ui) = answered.and_then(|id| self.ui.get_mut(id)) {
+            if matches!(ui.note, Some(Note::AlreadyAnswered | Note::AlreadyDecided)) {
+                ui.note = None;
+            }
+        }
     }
 
     fn poll(&mut self) -> Task<Message> {
@@ -519,10 +544,9 @@ impl App {
                 }
                 let id = card.clone();
                 let job = call(&self.api, move |api| api.decide(&id, approve));
-                // Remember the decision so the local state can follow.
-                let job = async move { (job.await, approve) };
-                Task::perform(job, move |(result, approve)| Message::Acted {
-                    card: format!("{}{card}", if approve { "+" } else { "-" }),
+                Task::perform(job, move |result| Message::Decided {
+                    card: card.clone(),
+                    approve,
                     result,
                 })
             }
@@ -870,6 +894,42 @@ impl App {
                     }
                 }
             }
+            Message::Decided {
+                card,
+                approve,
+                result,
+            } => {
+                let found = self.find_card(&card);
+                let ui = self.ui.entry(card.clone()).or_default();
+                match result {
+                    Ok(reply) => {
+                        ui.action_done(None);
+                        match (reply, found) {
+                            // The host's answered card replaces the pending one.
+                            (Some(event), Some((group, _))) => self.apply_event(group, &event),
+                            // No echo (fake API): show the answer locally.
+                            (None, Some((group, Card::Approval(mut c)))) => {
+                                let (by, at) = (user_name(), now_unix());
+                                c.state = if approve {
+                                    ApprovalState::Approved { by, at }
+                                } else {
+                                    ApprovalState::Denied { by, at }
+                                };
+                                self.set_card(&group, Card::Approval(c));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(ApiError::Conflict(_)) => {
+                        // Answered already (elsewhere): fetch the real state;
+                        // the answered card clears this note when it lands.
+                        ui.action_done(Some(Note::AlreadyDecided));
+                        self.has_more = true;
+                        return self.poll();
+                    }
+                    Err(err) => ui.action_done(Some(err.note())),
+                }
+            }
             Message::Acted { card, result } => {
                 let (tag, id) = card.split_at(1);
                 let id = id.to_string();
@@ -879,15 +939,7 @@ impl App {
                         ui.action_done(None);
                         let (by, at) = (user_name(), now_unix());
                         match self.find_card(&id) {
-                            Some((group, Card::Approval(mut c))) => {
-                                c.state = if tag == "+" {
-                                    ApprovalState::Approved { by, at }
-                                } else {
-                                    ApprovalState::Denied { by, at }
-                                };
-                                self.set_card(&group, Card::Approval(c));
-                            }
-                            Some((group, Card::Draft(mut c))) => {
+                            Some((group, Card::Draft(mut c))) if tag == ">" => {
                                 c.state = DraftState::Sent { by, at };
                                 self.set_card(&group, Card::Draft(c));
                             }

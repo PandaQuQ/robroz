@@ -209,6 +209,39 @@ pub struct AnswerChoice {
     pub choice: Vec<String>,
 }
 
+/// What an approval card asks to do. Shown as the card's verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalAction {
+    Delete,
+    Send,
+    Spend,
+}
+
+/// The person's answer on an approval card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalDecision {
+    Approved,
+    Denied,
+}
+
+/// `POST /api/groups/{id}/approvals` body: a bot in the group asks before it
+/// acts. `path` is display only. Answered with `POST /api/approvals/{id}/approve`
+/// or `/deny`, once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApproval {
+    pub bot_id: String,
+    pub action: ApprovalAction,
+    pub summary: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Approval summaries are one line on the card.
+pub const APPROVAL_SUMMARY_MAX: usize = 200;
+
 /// Choice cards hold 2 to 4 options with distinct, non-empty values.
 pub const CHOICE_OPTIONS_MIN: usize = 2;
 pub const CHOICE_OPTIONS_MAX: usize = 4;
@@ -260,7 +293,7 @@ pub fn next_bro_name<'a>(taken: impl IntoIterator<Item = &'a str>) -> String {
 }
 
 /// Unread state of one group for the conversation list.
-/// `unread` counts what a bro sent since `readAt`: deliveries, choice cards,
+/// `unread` counts what a bro sent since `readAt`: deliveries, choice and approval cards,
 /// and tasks that got stuck and need you. Your own messages and routine status
 /// moves (queued, running, done) do not count; the delivery does.
 /// `lastActivityAt` is the newest change of any card, for sorting; `null` when empty.
@@ -339,6 +372,20 @@ pub enum Event {
         created_at: String,
         answered_at: Option<String>,
     },
+    /// Added after `choice`. `path`, `decision` and `answeredAt` are always
+    /// present; the last two are `null` until answered.
+    #[serde(rename = "approval")]
+    Approval {
+        id: String,
+        bot_id: String,
+        bot_name: String,
+        action: ApprovalAction,
+        summary: String,
+        path: Option<String>,
+        decision: Option<ApprovalDecision>,
+        created_at: String,
+        answered_at: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +414,41 @@ mod tests {
         assert_eq!(value, expected);
         let back: Event = serde_json::from_value(value).unwrap();
         assert_eq!(&back, event);
+    }
+
+    #[test]
+    fn approval_event_json() {
+        assert_round_trip(
+            &Event::Approval {
+                id: "a1".into(),
+                bot_id: "bot-ops".into(),
+                bot_name: "运维".into(),
+                action: ApprovalAction::Delete,
+                summary: "删掉旧的构建缓存".into(),
+                path: Some("target/".into()),
+                decision: None,
+                created_at: "2026-11-20T08:30:00.000Z".into(),
+                answered_at: None,
+            },
+            serde_json::json!({
+                "type": "approval",
+                "id": "a1",
+                "botId": "bot-ops",
+                "botName": "运维",
+                "action": "delete",
+                "summary": "删掉旧的构建缓存",
+                "path": "target/",
+                "decision": null,
+                "createdAt": "2026-11-20T08:30:00.000Z",
+                "answeredAt": null,
+            }),
+        );
+        let request: CreateApproval = serde_json::from_value(serde_json::json!({
+            "botId": "bot-ops", "action": "spend", "summary": "买域名"
+        }))
+        .unwrap();
+        assert_eq!(request.path, None);
+        assert_eq!(serde_json::to_value(ApprovalDecision::Denied).unwrap(), "denied");
     }
 
     #[test]
