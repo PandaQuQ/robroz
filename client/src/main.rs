@@ -20,13 +20,14 @@ mod gallery;
 mod model;
 mod source;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
-use robroz_contract::{Bro, Event, Memory, Said, ScheduleEntry, Unread};
+use robroz_contract::{ApprovalDecision, Bro, Event, Memory, Said, ScheduleEntry, Unread};
+use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::memories::Book;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
@@ -146,6 +147,12 @@ enum Message {
         id: String,
         result: Result<(), ApiError>,
     },
+    /// 记下 / 不用 from the 记忆 page, answered on the entry's confirm card.
+    MemoryDecided {
+        id: String,
+        keep: bool,
+        result: Result<Option<Event>, ApiError>,
+    },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
     Polled(Result<Polled, SourceError>),
@@ -234,6 +241,8 @@ struct App {
     selected: Option<String>,
     page: Page,
     ui: HashMap<String, CardUi>,
+    /// Tasks whose folded confirm cards were opened (「还有 N 条待确认」).
+    unfolded: HashSet<String>,
     routines: Routines,
     /// 记忆 page (robroz#62).
     memories: Book,
@@ -328,6 +337,7 @@ impl App {
             selected: None,
             page: Page::Group,
             ui: HashMap::new(),
+            unfolded: HashSet::new(),
             routines: Routines::default(),
             memories: Book::default(),
             mode,
@@ -486,10 +496,16 @@ impl App {
     }
 
     fn apply_event(&mut self, group: String, event: &Event) {
-        // Confirm cards (bro proposals) get their own card in a later client
-        // PR; until then they are skipped like an unknown event type.
-        if matches!(event, Event::Confirm { .. }) {
-            return;
+        // A confirm card answered anywhere (chat, page, another device, or a
+        // forgotten pending memory) moves its entry on the 记忆 page too.
+        if let Event::Confirm {
+            memory_id: Some(memory),
+            decision: Some(d),
+            ..
+        } = event
+        {
+            self.memories
+                .answered(memory, *d == ApprovalDecision::Approved);
         }
         // Newest change time wins the list preview; a tie goes to the
         // outcome (see `model::preview_wins`), not to arrival order.
@@ -512,6 +528,11 @@ impl App {
                 ..
             }
             | Event::Approval {
+                id,
+                decision: Some(_),
+                ..
+            }
+            | Event::Confirm {
                 id,
                 decision: Some(_),
                 ..
@@ -638,6 +659,17 @@ impl App {
                     result,
                 });
             }
+            Action::MemoryDecide { id, keep } => {
+                let Some(card) = book.decide_to_send(&id) else {
+                    return Task::none();
+                };
+                let job = call(&self.api, move |api| api.decide(&card, keep));
+                return Task::perform(job, move |result| Message::MemoryDecided {
+                    id: id.clone(),
+                    keep,
+                    result,
+                });
+            }
             Action::MemoryForgetAsk { id } => book.ask_forget(&id),
             Action::MemoryForgetCancel => book.cancel_forget(),
             Action::MemoryForgetConfirm => {
@@ -674,7 +706,17 @@ impl App {
             | Action::MemoryEditCancel
             | Action::MemoryForgetAsk { .. }
             | Action::MemoryForgetConfirm
-            | Action::MemoryForgetCancel => self.on_memory_action(action),
+            | Action::MemoryForgetCancel
+            | Action::MemoryDecide { .. } => self.on_memory_action(action),
+            Action::ToggleInstruction { card } => {
+                let ui = self.ui.entry(card).or_default();
+                ui.more_open = !ui.more_open;
+                Task::none()
+            }
+            Action::UnfoldConfirms { task } => {
+                self.unfolded.insert(task);
+                Task::none()
+            }
             Action::Choose { card, option } => {
                 let Some((_, Card::Choice(c))) = self.find_card(&card) else {
                     return Task::none();
@@ -827,6 +869,31 @@ impl App {
                 (Some(_), Ok(m)) => self.memories.saved(m),
                 (None, Err(err)) => self.memories.add_failed(&err.reason()),
                 (Some(id), Err(err)) => self.memories.entry_failed(&id, &err.reason()),
+            },
+            Message::MemoryDecided { id, keep, result } => match result {
+                Ok(reply) => {
+                    self.memories.decided(&id, keep);
+                    // The chat card shows the answer at once; the stream
+                    // brings the same snapshot again later.
+                    if let Some(event @ Event::Confirm { .. }) = reply {
+                        let card = robroz_ui::cards::confirm::ConfirmCard::from_event(&event);
+                        let group = card.and_then(|c| self.find_card(&c.id)).map(|(g, _)| g);
+                        if let Some(group) = group {
+                            self.apply_event(group, &event);
+                        }
+                    }
+                }
+                Err(ApiError::Conflict(_)) => {
+                    // Answered elsewhere: say so here and fetch the real state.
+                    self.memories.decide_failed(&id, confirm::ALREADY_ANSWERED);
+                    return Task::perform(
+                        call(&self.api, |api| api.memories()),
+                        Message::MemoriesLoaded,
+                    );
+                }
+                Err(err) => self
+                    .memories
+                    .decide_failed(&id, &confirm::decide_failed(&err.reason())),
             },
             Message::MemoryForgot { id, result } => match result {
                 Ok(()) | Err(ApiError::NotFound(_)) => self.memories.forgotten(&id),
@@ -1099,6 +1166,18 @@ impl App {
                                 };
                                 self.set_card(&group, Card::Approval(c));
                             }
+                            (None, Some((group, Card::Confirm(mut c)))) => {
+                                let (by, at) = (Some(robroz_ui::cards::ME.into()), now_unix());
+                                c.state = if approve {
+                                    ConfirmState::Kept { by, at }
+                                } else {
+                                    ConfirmState::Dropped { by, at }
+                                };
+                                if let Some(m) = &c.memory_id {
+                                    self.memories.answered(m, approve);
+                                }
+                                self.set_card(&group, Card::Confirm(c));
+                            }
                             _ => {}
                         }
                     }
@@ -1358,7 +1437,24 @@ impl App {
             .get(id)
             .into_iter()
             .flat_map(Feed::rows)
-            .map(|r| row_view(t, r, &self.ui, &empty, self.caps, width));
+            .collect::<Vec<_>>();
+        // More than three pending confirm cards from one task fold away
+        // behind 「还有 N 条待确认」.
+        let plan = confirm::fold_plan(
+            rows.iter().map(|r| match r {
+                Row::Card(Card::Confirm(c)) => c.task_id.as_deref().map(|t| (t, c.is_pending())),
+                _ => None,
+            }),
+            &self.unfolded,
+        );
+        let rows = rows
+            .into_iter()
+            .zip(plan)
+            .filter_map(|(r, fold)| match fold {
+                Fold::Show => Some(row_view(t, r, &self.ui, &empty, self.caps, width)),
+                Fold::Hide => None,
+                Fold::More { task, n } => Some(view::confirm_more(t, &task, n).map(Message::Ui)),
+            });
         let feed = scrollable(
             column(rows)
                 .spacing(t.metrics.stream_spacing)

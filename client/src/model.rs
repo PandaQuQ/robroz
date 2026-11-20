@@ -5,6 +5,7 @@
 
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
+use robroz_ui::cards::confirm::ConfirmCard;
 use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,14 +332,13 @@ fn to_row(event: &Event) -> (Key, Row) {
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
         }
-        // The confirm card UI comes in its own client PR; until then the
-        // app skips these events (`apply_event`). A plain line is the fallback.
-        Event::Confirm { id, .. } => (
-            Key::Event(id.clone()),
-            Row::Text {
-                body: preview(event),
-            },
-        ),
+        // A bro's proposal; the answered snapshot replaces the pending card.
+        Event::Confirm { id, .. } => {
+            let card = ConfirmCard::from_event(event)
+                .expect("confirm event")
+                .seen_by(crate::user_name());
+            (Key::Event(id.clone()), Row::Card(Card::Confirm(card)))
+        }
     }
 }
 
@@ -374,6 +374,49 @@ pub fn attachment_label(kind: MessageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confirm(decision: Option<robroz_contract::ApprovalDecision>) -> Event {
+        Event::Confirm {
+            id: "c1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            subject: robroz_contract::ConfirmSubject::Memory,
+            task_id: Some("t1".into()),
+            memory_id: Some("m1".into()),
+            kind: Some(robroz_contract::MemoryKind::Habit),
+            text: Some("周报先说结论".into()),
+            scope: Some("user".into()),
+            slug: None,
+            title: None,
+            instruction: None,
+            decision,
+            created_at: "2026-11-20T11:00:00.000Z".into(),
+            answered_at: decision.map(|_| "2026-11-20T11:05:00.000Z".into()),
+            answered_by: decision.map(|_| "Panda 的手机".into()),
+        }
+    }
+
+    #[test]
+    fn confirm_card_is_drawn_and_answered_in_place() {
+        use robroz_ui::cards::confirm::ConfirmState;
+        let mut feed = Feed::default();
+        feed.apply(&confirm(None));
+        let Some(Card::Confirm(c)) = feed.card("c1") else {
+            panic!("confirm card expected");
+        };
+        assert!(c.is_pending());
+        assert_eq!(c.scope_line.as_deref(), Some("所有 bro"));
+        assert_eq!(preview(&confirm(None)), "Ada：周报先说结论");
+        // The answered snapshot (here: someone else, after our 409) replaces it.
+        feed.apply(&confirm(Some(robroz_contract::ApprovalDecision::Denied)));
+        assert_eq!(feed.len(), 1, "one card, updated in place");
+        let Some(Card::Confirm(c)) = feed.card("c1") else {
+            panic!("confirm card expected");
+        };
+        assert!(
+            matches!(&c.state, ConfirmState::Dropped { by: Some(b), .. } if b == "Panda 的手机")
+        );
+    }
 
     fn status(task: &str, bot: &str, state: TaskState, container_up: bool) -> Event {
         Event::Status {
