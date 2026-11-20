@@ -55,7 +55,7 @@ crate 名固定为：`robroz-skin-macos`（Liquid Glass）、`robroz-skin-fluent
 | iOS（沿用 `robroz-skin-macos` 的玻璃参数） | 44pt |
 | 桌面三个平台（macos、fluent、adwaita） | 32px |
 
-`robroz-ui` 只设一条底线：不能小于 44。
+`robroz-ui` 只设一条底线：触屏平台（安卓、iOS，以及在手机上打开的网页版）不能小于 44；桌面平台用 32px，不受这条底线约束。
 
 ## 第二期条目
 
