@@ -14,12 +14,16 @@ use iced::{
 
 use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
+use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
 use crate::cards::routines::{self, Routines};
+use crate::cards::secret;
 use crate::cards::skills::{self, Book as SkillBook};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
 use crate::conversations::{self, Conversation, Conversations};
+use robroz_contract::{McpSecretIn, McpServer};
+
 use crate::theme::{Rgb, Skin};
 use crate::widgets::{Check, CheckBox, Rings, Toggle};
 
@@ -172,6 +176,70 @@ pub enum Action {
     /// Enable or disable a kept skill in this group.
     SkillToggleGroup {
         slug: String,
+        group: String,
+    },
+    /// MCP page: open the 加一台 form.
+    McpAddOpen,
+    McpFormClose,
+    McpFormName {
+        text: String,
+    },
+    McpFormTransport {
+        http: bool,
+    },
+    McpFormCommand {
+        text: String,
+    },
+    McpFormArgs {
+        text: String,
+    },
+    McpFormUrl {
+        text: String,
+    },
+    McpSecretName {
+        index: usize,
+        text: String,
+    },
+    McpSecretPlacement {
+        index: usize,
+        header: bool,
+    },
+    McpSecretKey {
+        index: usize,
+        text: String,
+    },
+    McpSecretReplace {
+        index: usize,
+    },
+    McpSecretClear {
+        index: usize,
+    },
+    McpSecretCancel {
+        index: usize,
+    },
+    McpSecretAdd,
+    McpSecretRemove {
+        index: usize,
+    },
+    McpSave,
+    McpEdit {
+        id: String,
+    },
+    /// Open or close a server's tool list.
+    McpOpen {
+        id: String,
+    },
+    McpDeleteAsk {
+        id: String,
+    },
+    McpDeleteConfirm,
+    McpDeleteCancel,
+    /// Flip the server's own enable switch.
+    McpToggleEnabled {
+        id: String,
+    },
+    McpToggleGroup {
+        id: String,
         group: String,
     },
 }
@@ -2023,6 +2091,555 @@ pub fn skills_panel<'a>(
             ..container::Style::default()
         })
         .into()
+}
+
+// ---------- MCP page ----------
+
+/// The MCP page: a list of servers, each with an enable switch and tool
+/// count, plus a form to add or edit one, a tool list, and per-group toggles.
+pub fn mcp_panel<'a>(t: &Skin, book: &'a McpBook, _now: i64, _width: f32) -> Element<'a, Action> {
+    let m = t.metrics;
+    let busy = book.busy;
+    let mut head = row![text(mcp::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if !book.servers.is_empty() {
+        head = head.push(
+            text(book.servers.len().to_string())
+                .size(t.type_.list_count)
+                .color(color(t.palette.text3)),
+        );
+    }
+    head = head.push(space::horizontal());
+    if book.form.is_none() {
+        head = head.push(btn(
+            t,
+            mcp::ADD.into(),
+            Look::Secondary,
+            Leading::None,
+            (!busy).then_some(Action::McpAddOpen),
+        ));
+    }
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+
+    if let Some(note) = &book.note {
+        col = col.push(
+            container(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            )
+            .padding(Padding::from([8.0, m.row_pad_h])),
+        );
+    }
+
+    if book.form.as_ref().is_some_and(|f| f.id.is_none()) {
+        col = col.push(container(mcp_form(t, book, busy)).padding(pad));
+        col = col.push(divider(t, 0.0));
+    }
+
+    if book.loaded && book.is_empty() && book.form.is_none() {
+        let rings = Rings {
+            color: color(t.palette.text3),
+            radius: m.empty_ring_r,
+            stroke: m.empty_ring_stroke,
+        };
+        let size = rings.size();
+        col = col.push(
+            container(
+                column![
+                    canvas(rings).width(size.width).height(size.height),
+                    gap(m.head_gap),
+                    text(mcp::EMPTY_TITLE)
+                        .size(t.type_.empty_title)
+                        .font(bold())
+                        .color(color(t.palette.text2)),
+                    gap(m.dot_gap),
+                    text(mcp::EMPTY_HINT)
+                        .size(t.type_.empty_hint)
+                        .color(color(t.palette.text3)),
+                ]
+                .align_x(Alignment::Center)
+                .spacing(0),
+            )
+            .center_x(Fill)
+            .padding(Padding::from([40.0, m.row_pad_h])),
+        );
+        return col.into();
+    }
+
+    let mut list = column![];
+    for (i, server) in book.servers.iter().enumerate() {
+        if i > 0 {
+            list = list.push(divider(t, 0.0));
+        }
+        let editing = book
+            .form
+            .as_ref()
+            .is_some_and(|f| f.id.as_deref() == Some(server.id.as_str()));
+        if editing {
+            list = list.push(container(mcp_form(t, book, busy)).padding(pad));
+            continue;
+        }
+        list = list.push(container(mcp_row(t, book, server, busy)).padding(pad));
+    }
+    col = col.push(list);
+    col.into()
+}
+
+fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> {
+    let m = t.metrics;
+    let form = book.form.as_ref().expect("form open");
+    let mut name = text_input(mcp::NAME_PLACEHOLDER, &form.name)
+        .size(t.type_.body)
+        .padding(Padding::from([8.0, 10.0]));
+    if !busy {
+        name = name.on_input(|text| Action::McpFormName { text });
+    }
+    let mut transports = row![].spacing(t.controls.button_gap);
+    for (http, label) in [(false, mcp::STDIO), (true, mcp::HTTP)] {
+        let selected = form.transport == mcp::Transport::Http && http
+            || form.transport == mcp::Transport::Stdio && !http;
+        let look = if selected {
+            Look::Selected
+        } else {
+            Look::Secondary
+        };
+        transports = transports.push(btn(
+            t,
+            label.into(),
+            look,
+            Leading::None,
+            Some(Action::McpFormTransport { http }),
+        ));
+    }
+    let mut fields = column![name, transports].spacing(m.head_gap);
+    match form.transport {
+        mcp::Transport::Stdio => {
+            let mut command = text_input(mcp::COMMAND_PLACEHOLDER, &form.command)
+                .size(t.type_.body)
+                .padding(Padding::from([8.0, 10.0]));
+            let mut args = text_input(mcp::ARGS_PLACEHOLDER, &form.args)
+                .size(t.type_.body)
+                .padding(Padding::from([8.0, 10.0]));
+            if !busy {
+                command = command.on_input(|text| Action::McpFormCommand { text });
+                args = args.on_input(|text| Action::McpFormArgs { text });
+            }
+            fields = fields.push(command).push(args);
+        }
+        mcp::Transport::Http => {
+            let mut url = text_input(mcp::URL_PLACEHOLDER, &form.url)
+                .size(t.type_.body)
+                .padding(Padding::from([8.0, 10.0]));
+            if !busy {
+                url = url.on_input(|text| Action::McpFormUrl { text });
+            }
+            fields = fields.push(url);
+        }
+    }
+    for (index, secret) in form.secrets.iter().enumerate() {
+        fields = fields.push(mcp_secret_row(t, index, secret, busy));
+    }
+    fields = fields.push(btn(
+        t,
+        mcp::ADD_SECRET.into(),
+        Look::Secondary,
+        Leading::None,
+        (!busy).then_some(Action::McpSecretAdd),
+    ));
+    if let Some(note) = &book.form_note {
+        fields = fields.push(inline_note(t, note));
+    }
+    let can_save = form.problem().is_none();
+    column![
+        fields,
+        row![
+            btn(
+                t,
+                mcp::SAVE.into(),
+                Look::Primary,
+                Leading::None,
+                (can_save && !busy).then_some(Action::McpSave)
+            ),
+            btn(
+                t,
+                mcp::CANCEL.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(Action::McpFormClose)
+            ),
+        ]
+        .spacing(t.controls.button_gap),
+    ]
+    .spacing(m.head_gap)
+    .into()
+}
+
+fn mcp_secret_row<'a>(
+    t: &Skin,
+    index: usize,
+    secret: &'a mcp::SecretDraft,
+    busy: bool,
+) -> Element<'a, Action> {
+    let mut name = text_input(mcp::SECRET_NAME_PLACEHOLDER, &secret.name)
+        .size(t.type_.body)
+        .padding(Padding::from([8.0, 10.0]));
+    if !busy {
+        name = name.on_input(move |text| Action::McpSecretName { index, text });
+    }
+    let env_look = if secret.placement == McpSecretIn::Env {
+        Look::Selected
+    } else {
+        Look::Secondary
+    };
+    let header_look = if secret.placement == McpSecretIn::Header {
+        Look::Selected
+    } else {
+        Look::Secondary
+    };
+    let place = row![
+        btn(
+            t,
+            mcp::ENV.into(),
+            env_look,
+            Leading::None,
+            Some(Action::McpSecretPlacement {
+                index,
+                header: false
+            }),
+        ),
+        btn(
+            t,
+            mcp::HEADER.into(),
+            header_look,
+            Leading::None,
+            Some(Action::McpSecretPlacement {
+                index,
+                header: true
+            }),
+        ),
+        btn(
+            t,
+            mcp::REMOVE_SECRET.into(),
+            Look::Secondary,
+            Leading::None,
+            (!busy).then_some(Action::McpSecretRemove { index }),
+        ),
+    ]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    let key_row: Element<'a, Action> = if secret.key.shows_stored() {
+        row![
+            text(secret::filled(secret.key.last4.as_deref()))
+                .size(t.type_.body)
+                .color(color(t.palette.text2)),
+            btn(
+                t,
+                secret::REPLACE.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(Action::McpSecretReplace { index }),
+            ),
+            btn(
+                t,
+                secret::CLEAR.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(Action::McpSecretClear { index }),
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        let mut key = text_input(mcp::SECRET_KEY_PLACEHOLDER, &secret.key.draft)
+            .secure(true)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        if !busy {
+            key = key.on_input(move |text| Action::McpSecretKey { index, text });
+        }
+        let mut row = row![key]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+        if secret.key.has_key {
+            row = row.push(btn(
+                t,
+                mcp::CANCEL.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(Action::McpSecretCancel { index }),
+            ));
+        }
+        row.into()
+    };
+    column![name, place, key_row]
+        .spacing(t.metrics.head_gap)
+        .into()
+}
+
+/// A switch drawn with containers, not `canvas(Toggle)`. Iced's canvas
+/// cache can leave a stale geometry when the first row used to be the
+/// empty-state Rings, or when a row is removed.
+fn switch_control<'a>(
+    t: &Skin,
+    on: bool,
+    track_on: iced::Color,
+    track_off: iced::Color,
+    knob: iced::Color,
+    on_press: Option<Action>,
+) -> Element<'a, Action> {
+    let w = t.controls.switch_w;
+    let h = t.controls.switch_h;
+    let k = t.controls.knob;
+    let inset = ((h - k) / 2.0).max(0.0);
+    let knob_dot = container(space::horizontal())
+        .width(Length::Fixed(k))
+        .height(Length::Fixed(k))
+        .style(move |_| container::Style {
+            background: Some(knob.into()),
+            border: Border::default().rounded(k / 2.0),
+            ..container::Style::default()
+        });
+    let track = container(knob_dot)
+        .width(Length::Fixed(w))
+        .height(Length::Fixed(h))
+        .padding(Padding::from([inset, inset]))
+        .align_x(if on { Alignment::End } else { Alignment::Start })
+        .align_y(Alignment::Center)
+        .style(move |_| container::Style {
+            background: Some(if on { track_on } else { track_off }.into()),
+            border: Border::default().rounded(h / 2.0),
+            ..container::Style::default()
+        });
+    hit_area(t, track.into(), Some(w), h, on_press)
+}
+
+fn mcp_row<'a>(
+    t: &Skin,
+    book: &'a McpBook,
+    server: &'a McpServer,
+    busy: bool,
+) -> Element<'a, Action> {
+    let m = t.metrics;
+    let id = server.id.clone();
+    let open = book.open.as_deref() == Some(server.id.as_str());
+    let asking = book.confirm_delete.as_deref() == Some(server.id.as_str());
+    let toggle = switch_control(
+        t,
+        server.enabled,
+        color(t.palette.accent),
+        color(t.palette.toggle_off),
+        color(t.palette.knob),
+        (!busy).then(|| Action::McpToggleEnabled { id: id.clone() }),
+    );
+    let top = row![
+        button(
+            column![
+                text(server.name.as_str())
+                    .size(t.type_.row_name)
+                    .font(bold())
+                    .color(color(t.palette.text)),
+                text(mcp::tool_count_text(server.tool_count))
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+            ]
+            .spacing(2.0)
+        )
+        .padding(0)
+        .style(|_, _| button::Style {
+            background: None,
+            ..button::Style::default()
+        })
+        .on_press(Action::McpOpen { id: id.clone() }),
+        space::horizontal(),
+        toggle,
+    ]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center)
+    .width(Fill);
+
+    let mut col = column![top].spacing(m.dot_gap + 2.0);
+    if let Some(test) = book.test_for(&server.id) {
+        col = col.push(
+            text(test.text())
+                .size(t.type_.foot)
+                .color(color(match test {
+                    mcp::TestState::Ok { .. } => t.palette.text2,
+                    mcp::TestState::Failed(_) => t.palette.text2,
+                    mcp::TestState::Running => t.palette.text3,
+                })),
+        );
+    }
+    if open {
+        col = col.push(mcp_tools(t, book, &server.id));
+        if !book.chats.is_empty() {
+            col = col.push(mcp_group_toggles(t, book, &server.id, busy));
+        }
+        if asking {
+            col = col.push(
+                column![
+                    text(mcp::DELETE_ASK)
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text2)),
+                    row![
+                        btn(
+                            t,
+                            mcp::DELETE.into(),
+                            Look::Primary,
+                            Leading::None,
+                            (!busy).then_some(Action::McpDeleteConfirm),
+                        ),
+                        btn(
+                            t,
+                            mcp::CANCEL.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            Some(Action::McpDeleteCancel),
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap),
+                ]
+                .spacing(m.dot_gap),
+            );
+        } else {
+            col = col.push(
+                row![
+                    btn(
+                        t,
+                        mcp::EDIT.into(),
+                        Look::Secondary,
+                        Leading::None,
+                        (!busy).then_some(Action::McpEdit { id: id.clone() }),
+                    ),
+                    btn(
+                        t,
+                        mcp::DELETE.into(),
+                        Look::Secondary,
+                        Leading::None,
+                        (!busy).then_some(Action::McpDeleteAsk { id: id.clone() }),
+                    ),
+                ]
+                .spacing(t.controls.button_gap),
+            );
+        }
+    }
+    if let Some(note) = book.note_for(&server.id) {
+        col = col.push(inline_note(t, note));
+    }
+    col.into()
+}
+
+fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, id: &str) -> Element<'a, Action> {
+    match book.tools.get(id) {
+        None => text(mcp::LOADING)
+            .size(t.type_.foot)
+            .color(color(t.palette.text3))
+            .into(),
+        Some(Err(err)) => text(mcp::cannot_connect(err))
+            .size(t.type_.foot)
+            .color(color(t.palette.text2))
+            .into(),
+        Some(Ok(tools)) if tools.is_empty() => text("这台服务器还没有工具")
+            .size(t.type_.foot)
+            .color(color(t.palette.text3))
+            .into(),
+        Some(Ok(tools)) => {
+            let mut list = column![].spacing(t.metrics.dot_gap);
+            for tool in tools {
+                let mut row = row![text(tool.name.as_str())
+                    .size(t.type_.body)
+                    .color(color(t.palette.text))]
+                .spacing(t.controls.button_gap)
+                .align_y(Alignment::Center);
+                if tool.needs_approval {
+                    row = row.push(tag(t, mcp::NEEDS_APPROVAL, t.palette.accent));
+                }
+                let mut item = column![row];
+                if let Some(desc) = &tool.description {
+                    item = item.push(
+                        text(desc.as_str())
+                            .size(t.type_.foot)
+                            .color(color(t.palette.text3)),
+                    );
+                }
+                list = list.push(item);
+            }
+            list.into()
+        }
+    }
+}
+
+fn mcp_group_toggles<'a>(
+    t: &Skin,
+    book: &'a McpBook,
+    server_id: &str,
+    busy: bool,
+) -> Element<'a, Action> {
+    let m = t.metrics;
+    let mut toggles = row![text(mcp::GROUP_ENABLE)
+        .size(t.type_.foot)
+        .color(color(t.palette.text3))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    for (group, name) in &book.chats {
+        let load = book.group_load_state(group);
+        let known = (load == mcp::GroupLoad::Ready)
+            .then(|| book.enable_state(group, server_id))
+            .flatten();
+        let hint = match load {
+            mcp::GroupLoad::Failed => Some(mcp::LOAD_FAILED),
+            mcp::GroupLoad::Ready if known.is_some() => None,
+            _ => Some(mcp::LOADING),
+        };
+        let (track_on, track_off, knob) = if known.is_some() {
+            (
+                color(t.palette.accent),
+                color(t.palette.toggle_off),
+                color(t.palette.knob),
+            )
+        } else {
+            let grey = color(t.palette.text3);
+            (grey, grey, color(t.palette.surface))
+        };
+        let toggle = switch_control(
+            t,
+            known.unwrap_or(false),
+            track_on,
+            track_off,
+            knob,
+            known.and_then(|_| {
+                (!busy).then(|| Action::McpToggleGroup {
+                    id: server_id.to_string(),
+                    group: group.clone(),
+                })
+            }),
+        );
+        let mut cell = row![
+            text(name.as_str())
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+            toggle,
+        ]
+        .spacing(m.dot_gap)
+        .align_y(Alignment::Center);
+        if let Some(hint) = hint {
+            cell = cell.push(text(hint).size(t.type_.foot).color(color(t.palette.text3)));
+        }
+        toggles = toggles.push(cell);
+    }
+    toggles.wrap().into()
 }
 
 // ---------- Conversation list ----------

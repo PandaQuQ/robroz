@@ -7,8 +7,10 @@
 
 pub mod confirm;
 pub mod interact;
+pub mod mcp;
 pub mod memories;
 pub mod routines;
+pub mod secret;
 pub mod skills;
 pub mod status;
 
