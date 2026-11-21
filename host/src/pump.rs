@@ -36,6 +36,8 @@ pub struct PumpConfig<'a> {
     pub get_limit: u64,
     /// `None`: no model, the runner echoes the prompt.
     pub model: Option<&'a dyn robroz_model::Model>,
+    /// Tools the model may call. Empty: the request has no `tools` field.
+    pub tools: &'a crate::tools::ToolRegistry,
 }
 
 struct TaskRow {
@@ -76,6 +78,7 @@ pub fn pump(
             image,
             get_limit,
             model: None,
+            tools: crate::tools::ToolRegistry::empty(),
         },
     )
 }
@@ -151,7 +154,15 @@ fn start_task(
     }
     let mut reply_progress = None;
     if let Some(model) = cfg.model {
-        let reply = write_reply(&control_dir, &task.id, &task.prompt, memory_section.as_deref(), model);
+        let reply = write_reply(
+            db,
+            &control_dir,
+            &task.id,
+            &task.prompt,
+            memory_section.as_deref(),
+            model,
+            cfg.tools,
+        );
         reply_progress = reply.progress;
         if let Some(failure) = reply.failure {
             db.with(|conn| {
@@ -403,19 +414,38 @@ fn system_extra(memory: Option<String>, skill: Option<String>) -> Option<String>
 /// task was not done. Old replies are removed first so a retry never reuses one.
 /// The reply's last `robroz-progress:` line is returned for the status card.
 fn write_reply(
+    db: &impl Db,
     control_dir: &Path,
     task_id: &str,
     prompt: &str,
     memory_section: Option<&str>,
     model: &dyn robroz_model::Model,
+    tools: &crate::tools::ToolRegistry,
 ) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
-    let (text, failure) = match model.reply(prompt, memory_section) {
-        Ok(text) => (text, None),
-        Err(err) => {
-            eprintln!("pump: model for {task_id}: {err}");
-            (format!("模型没回：{err}"), Some(format!("模型没回：{err}")))
+    let (text, failure) = if tools.is_empty() {
+        match model.reply(prompt, memory_section) {
+            Ok(text) => (text, None),
+            Err(err) => {
+                eprintln!("pump: model for {task_id}: {err}");
+                let text = format!("模型没回：{err}");
+                (text.clone(), Some(text))
+            }
+        }
+    } else {
+        match crate::tools::complete(model, prompt, memory_section, tools, |name| {
+            let line = format!("在用 {name}");
+            if let Err(err) = db.with(|conn| progress::set_progress(conn, task_id, &line)) {
+                eprintln!("pump: progress for {task_id}: {err}");
+            }
+        }) {
+            Ok(text) => (text, None),
+            Err(err) => {
+                eprintln!("pump: model for {task_id}: {}", err.failure_text());
+                let text = err.failure_text();
+                (text.clone(), Some(text))
+            }
         }
     };
     let progress = robroz_runner::last_progress(&text).map(str::to_string);

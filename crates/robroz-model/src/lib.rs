@@ -8,6 +8,10 @@
 //! No key means no model: bros keep echoing the prompt, which is what CI and
 //! e2e use. The key never appears in `Debug`, errors or logs.
 
+mod chat;
+
+pub use chat::{chat_body, parse_turn, AssistantTurn, ChatMessage, ToolCall, ToolDefinition};
+
 use std::fmt;
 use std::time::Duration;
 
@@ -17,12 +21,25 @@ pub const ENV_KEY: &str = "ROBROZ_MODEL_KEY";
 pub const ENV_KEY_FILE: &str = "ROBROZ_MODEL_KEY_FILE";
 
 /// Told to every bro before the task prompt.
-pub const SYSTEM_PROMPT: &str = "你是 robroz 里的一个 bro，替用户完成交给你的任务。直接给出结果，简洁，用用户的语言。";
+pub const SYSTEM_PROMPT: &str =
+    "你是 robroz 里的一个 bro，替用户完成交给你的任务。直接给出结果，简洁，用用户的语言。";
 
 /// A model call. `Send + Sync` so the pump thread can own one.
 pub trait Model: Send + Sync {
     /// `memory_section` is appended to [`SYSTEM_PROMPT`] when present.
     fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, ModelError>;
+
+    /// One turn of a tool-calling conversation. `tools` is omitted from the
+    /// request when empty. Providers that cannot do function calling return a
+    /// clear "not supported" error; [`OpenAiCompat`] implements this.
+    fn chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<AssistantTurn, ModelError> {
+        let _ = (messages, tools);
+        Err(ModelError("此模型不支持工具调用".into()))
+    }
 }
 
 /// Why a call failed. Never carries the key or the request headers.
@@ -65,7 +82,11 @@ pub fn config_from(
     get: impl Fn(&str) -> Option<String>,
     read_file: impl Fn(&str) -> std::io::Result<String>,
 ) -> Result<Option<ModelConfig>, String> {
-    let set = |name: &str| get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let set = |name: &str| {
+        get(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     let key = match (set(ENV_KEY), set(ENV_KEY_FILE)) {
         (Some(_), Some(_)) => return Err(format!("{ENV_KEY} 和 {ENV_KEY_FILE} 只能设一个")),
         (Some(key), None) => key,
@@ -95,7 +116,10 @@ pub fn config_from(
 
 /// [`config_from`] on the process environment.
 pub fn config_from_env() -> Result<Option<ModelConfig>, String> {
-    config_from(|name| std::env::var(name).ok(), |path: &str| std::fs::read_to_string(path))
+    config_from(
+        |name| std::env::var(name).ok(),
+        |path: &str| std::fs::read_to_string(path),
+    )
 }
 
 /// The system message: the fixed opening, plus the memory paragraph when there is one.
@@ -106,30 +130,25 @@ pub fn system_content(memory_section: Option<&str>) -> String {
     }
 }
 
-/// The `/chat/completions` body.
+/// The `/chat/completions` body for a single prompt, with no tools.
 pub fn request_body(model: &str, prompt: &str, memory_section: Option<&str>) -> serde_json::Value {
-    serde_json::json!({
-        "model": model,
-        "messages": [
-            { "role": "system", "content": system_content(memory_section) },
-            { "role": "user", "content": prompt },
+    chat_body(
+        model,
+        &[
+            ChatMessage::System(system_content(memory_section)),
+            ChatMessage::User(prompt.to_string()),
         ],
-    })
+        &[],
+    )
 }
 
-/// `choices[0].message.content`, trimmed. Empty is an error.
+/// `choices[0].message.content`, trimmed. Empty is an error. A tool call in a
+/// reply that was not asked for is also an error.
 pub fn parse_reply(body: &str) -> Result<String, ModelError> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| ModelError("模型返回的不是 JSON".into()))?;
-    let content = value
-        .pointer("/choices/0/message/content")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .ok_or_else(|| ModelError("模型返回里没有 choices[0].message.content".into()))?;
-    if content.is_empty() {
-        return Err(ModelError("模型返回了空内容".into()));
+    match parse_turn(body)? {
+        AssistantTurn::Text(text) => Ok(text),
+        AssistantTurn::ToolCalls(_) => Err(ModelError("模型在没有工具时返回了工具调用".into())),
     }
-    Ok(content.to_string())
 }
 
 /// Calls an OpenAI-compatible service over HTTP(S).
@@ -151,18 +170,18 @@ impl OpenAiCompat {
     pub fn config(&self) -> &ModelConfig {
         &self.config
     }
-}
 
-impl Model for OpenAiCompat {
-    fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, ModelError> {
+    fn post(&self, body: serde_json::Value) -> Result<String, ModelError> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let body = request_body(&self.config.model, prompt, memory_section).to_string();
         let mut response = self
             .agent
             .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.config.key.expose()))
+            .header(
+                "Authorization",
+                &format!("Bearer {}", self.config.key.expose()),
+            )
             .header("Content-Type", "application/json")
-            .send(body.as_bytes())
+            .send(body.to_string().as_bytes())
             // ureq transport errors carry no headers, so no key.
             .map_err(|err| ModelError(format!("连不上模型服务：{err}")))?;
         let status = response.status().as_u16();
@@ -175,7 +194,21 @@ impl Model for OpenAiCompat {
         if !(200..300).contains(&status) {
             return Err(ModelError(format!("模型服务返回 {status}")));
         }
-        parse_reply(&text)
+        Ok(text)
+    }
+}
+
+impl Model for OpenAiCompat {
+    fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, ModelError> {
+        parse_reply(&self.post(request_body(&self.config.model, prompt, memory_section))?)
+    }
+
+    fn chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<AssistantTurn, ModelError> {
+        parse_turn(&self.post(chat_body(&self.config.model, messages, tools))?)
     }
 }
 
@@ -188,7 +221,10 @@ mod tests {
     use std::sync::mpsc;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         move |name| map.get(name).cloned()
     }
 
@@ -201,12 +237,18 @@ mod tests {
     #[test]
     fn no_key_means_no_model() {
         assert_eq!(config_from(env(&[]), no_file), Ok(None));
-        assert_eq!(config_from(env(&[(ENV_MODEL, "m"), (ENV_KEY, "  ")]), no_file), Ok(None));
+        assert_eq!(
+            config_from(env(&[(ENV_MODEL, "m"), (ENV_KEY, "  ")]), no_file),
+            Ok(None)
+        );
     }
 
     #[test]
     fn config_reads_key_or_file_and_never_shows_the_key() {
-        let base = [(ENV_BASE_URL, "https://api.example.com/v1/"), (ENV_MODEL, "m1")];
+        let base = [
+            (ENV_BASE_URL, "https://api.example.com/v1/"),
+            (ENV_MODEL, "m1"),
+        ];
         let mut with_key = base.to_vec();
         with_key.push((ENV_KEY, SECRET));
         let cfg = config_from(env(&with_key), no_file).unwrap().unwrap();
@@ -229,9 +271,29 @@ mod tests {
         let errors = [
             config_from(env(&both), no_file).unwrap_err(),
             config_from(env(&[(ENV_KEY, SECRET), (ENV_MODEL, "m")]), no_file).unwrap_err(),
-            config_from(env(&[(ENV_KEY, SECRET), (ENV_BASE_URL, "https://x")]), no_file).unwrap_err(),
-            config_from(env(&[(ENV_KEY, SECRET), (ENV_BASE_URL, "ftp://x"), (ENV_MODEL, "m")]), no_file).unwrap_err(),
-            config_from(env(&[(ENV_KEY, "sk a"), (ENV_BASE_URL, "https://x"), (ENV_MODEL, "m")]), no_file).unwrap_err(),
+            config_from(
+                env(&[(ENV_KEY, SECRET), (ENV_BASE_URL, "https://x")]),
+                no_file,
+            )
+            .unwrap_err(),
+            config_from(
+                env(&[
+                    (ENV_KEY, SECRET),
+                    (ENV_BASE_URL, "ftp://x"),
+                    (ENV_MODEL, "m"),
+                ]),
+                no_file,
+            )
+            .unwrap_err(),
+            config_from(
+                env(&[
+                    (ENV_KEY, "sk a"),
+                    (ENV_BASE_URL, "https://x"),
+                    (ENV_MODEL, "m"),
+                ]),
+                no_file,
+            )
+            .unwrap_err(),
             config_from(env(&with_file), |_| Ok("\n".into())).unwrap_err(),
         ];
         for err in errors {
@@ -244,17 +306,31 @@ mod tests {
         let body = request_body("m1", "写周报", None);
         assert_eq!(body["model"], "m1");
         assert_eq!(body["messages"][0]["content"], SYSTEM_PROMPT);
-        assert_eq!(body["messages"][1], serde_json::json!({ "role": "user", "content": "写周报" }));
+        assert_eq!(
+            body["messages"][1],
+            serde_json::json!({ "role": "user", "content": "写周报" })
+        );
         let with = request_body("m1", "写周报", Some("你记得这些：\n[habit] 周五交周报"));
         assert_eq!(
             with["messages"][0]["content"],
             format!("{SYSTEM_PROMPT}\n\n你记得这些：\n[habit] 周五交周报")
         );
-        assert_eq!(request_body("m1", "写周报", Some(""))["messages"][0]["content"], SYSTEM_PROMPT);
-        assert_eq!(parse_reply(r#"{"choices":[{"message":{"content":"  好的\n"}}]}"#), Ok("好的".into()));
+        assert_eq!(
+            request_body("m1", "写周报", Some(""))["messages"][0]["content"],
+            SYSTEM_PROMPT
+        );
+        assert_eq!(
+            parse_reply(r#"{"choices":[{"message":{"content":"  好的\n"}}]}"#),
+            Ok("好的".into())
+        );
         assert!(parse_reply("not json").is_err());
         assert!(parse_reply(r#"{"choices":[]}"#).is_err());
         assert!(parse_reply(r#"{"choices":[{"message":{"content":"  "}}]}"#).is_err());
+        assert!(body.get("tools").is_none());
+        assert!(parse_reply(
+            r#"{"choices":[{"message":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}"#
+        )
+        .is_err());
     }
 
     /// One-shot HTTP server: returns `(status, body)` and hands back the request.
@@ -294,15 +370,25 @@ mod tests {
     }
 
     fn model_at(url: &str) -> OpenAiCompat {
-        OpenAiCompat::new(ModelConfig { base_url: url.into(), model: "m1".into(), key: ModelKey(SECRET.into()) })
+        OpenAiCompat::new(ModelConfig {
+            base_url: url.into(),
+            model: "m1".into(),
+            key: ModelKey(SECRET.into()),
+        })
     }
 
     #[test]
     fn calls_chat_completions_with_bearer_key() {
         let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"周报写好了"}}]}"#);
-        assert_eq!(model_at(&url).reply("写周报", None), Ok("周报写好了".into()));
+        assert_eq!(
+            model_at(&url).reply("写周报", None),
+            Ok("周报写好了".into())
+        );
         let request = rx.recv().unwrap();
-        assert!(request.starts_with("POST /v1/chat/completions "), "{request}");
+        assert!(
+            request.starts_with("POST /v1/chat/completions "),
+            "{request}"
+        );
         assert!(request.contains(&format!("Bearer {SECRET}")));
         assert!(request.contains("写周报"));
     }
@@ -312,7 +398,59 @@ mod tests {
         let (url, _rx) = fake_server(401, r#"{"error":"bad key sk-test-SECRET123"}"#);
         let err = model_at(&url).reply("hi", None).unwrap_err();
         assert_eq!(err.0, "模型服务返回 401");
-        let dead = model_at("http://127.0.0.1:9").reply("hi", None).unwrap_err();
+        let dead = model_at("http://127.0.0.1:9")
+            .reply("hi", None)
+            .unwrap_err();
         assert!(!dead.0.contains(SECRET), "{dead}");
+    }
+
+    #[test]
+    fn chat_sends_tools_and_parses_tool_calls() {
+        let (url, rx) = fake_server(
+            200,
+            r#"{"choices":[{"message":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]}}]}"#,
+        );
+        let tools = [ToolDefinition {
+            name: "echo".into(),
+            description: "原样返回".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let turn = model_at(&url)
+            .chat(&[ChatMessage::User("叫一下 echo".into())], &tools)
+            .unwrap();
+        match turn {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].id, "c1");
+                assert_eq!(calls[0].name, "echo");
+            }
+            other => panic!("{other:?}"),
+        }
+        let request = rx.recv().unwrap();
+        assert!(request.contains(r#""tools""#), "{request}");
+        assert!(
+            request.contains(r#""name":"echo""#) || request.contains(r#""name": "echo""#),
+            "{request}"
+        );
+        assert!(request.contains(&format!("Bearer {SECRET}")));
+    }
+
+    #[test]
+    fn reply_request_does_not_include_tools() {
+        let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"好"}}]}"#);
+        assert_eq!(model_at(&url).reply("写周报", None), Ok("好".into()));
+        let request = rx.recv().unwrap();
+        assert!(!request.contains(r#""tools""#), "{request}");
+    }
+
+    #[test]
+    fn default_chat_is_clearly_unsupported() {
+        struct OnlyReply;
+        impl Model for OnlyReply {
+            fn reply(&self, prompt: &str, _: Option<&str>) -> Result<String, ModelError> {
+                Ok(prompt.into())
+            }
+        }
+        let err = OnlyReply.chat(&[], &[]).unwrap_err();
+        assert_eq!(err.0, "此模型不支持工具调用");
     }
 }
