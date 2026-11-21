@@ -33,6 +33,7 @@ use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::memories::Book;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
+use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
 use robroz_ui::cards::skills::Book as SkillBook;
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
@@ -134,6 +135,7 @@ enum Page {
     Routines,
     Memories,
     Skills,
+    Search,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +143,11 @@ enum Message {
     OpenRoutines,
     OpenMemories,
     OpenSkills,
+    /// 联网搜索 page (sidebar, or 「去设置」 on a delivery).
+    OpenSearch,
+    SearchLoaded(Result<SearchCurrent, ApiError>),
+    SearchSaved(Result<SearchCurrent, ApiError>),
+    SearchTested(Result<(bool, Option<String>), ApiError>),
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     SkillsLoaded(Result<Vec<Skill>, ApiError>),
     /// PATCH (edit) or POST (new) answered.
@@ -280,6 +287,8 @@ struct App {
     memories: Book,
     /// 技能 page (robroz#71).
     skills: SkillBook,
+    /// 联网搜索 page (robroz#76).
+    search: SearchPage,
     mode: Mode,
     width: f32,
     loaded: bool,
@@ -375,6 +384,7 @@ impl App {
             routines: Routines::default(),
             memories: Book::default(),
             skills: SkillBook::default(),
+            search: SearchPage::default(),
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
@@ -885,6 +895,34 @@ impl App {
         Task::none()
     }
 
+    fn on_search_action(&mut self, action: Action) -> Task<Message> {
+        let page = &mut self.search;
+        match action {
+            Action::SearchPick { provider } => page.pick(provider),
+            Action::SearchUrl { text } => page.url = text,
+            Action::SearchKey { text } => page.key = text,
+            Action::SearchReplaceKey => page.replace_key(),
+            Action::SearchClearKey => page.clear_key(),
+            Action::SearchCancelKey => page.cancel_key(),
+            Action::SearchSave => {
+                if page.busy {
+                    return Task::none();
+                }
+                let Some(put) = page.to_send() else {
+                    return Task::none();
+                };
+                page.busy = true;
+                page.test = None;
+                return Task::perform(
+                    call(&self.api, move |api| api.put_search(&put)),
+                    Message::SearchSaved,
+                );
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::MemoryAddOpen
@@ -919,6 +957,13 @@ impl App {
             | Action::SkillDecide { .. }
             | Action::SkillToggleInstruction { .. }
             | Action::SkillToggleGroup { .. } => self.on_skill_action(action),
+            Action::SearchPick { .. }
+            | Action::SearchUrl { .. }
+            | Action::SearchKey { .. }
+            | Action::SearchReplaceKey
+            | Action::SearchClearKey
+            | Action::SearchCancelKey
+            | Action::SearchSave => self.on_search_action(action),
             Action::ToggleInstruction { card } => {
                 let ui = self.ui.entry(card).or_default();
                 ui.more_open = !ui.more_open;
@@ -1068,6 +1113,34 @@ impl App {
                 self.narrow_open = true;
                 return self.load_memories();
             }
+            Message::OpenSearch => {
+                self.page = Page::Search;
+                self.narrow_open = true;
+                self.search.test = None;
+                self.search.note = None;
+                return Task::perform(
+                    call(&self.api, |api| api.search_settings()),
+                    Message::SearchLoaded,
+                );
+            }
+            Message::SearchLoaded(result) => match result {
+                Ok(cur) => self.search.load(cur),
+                Err(err) => self.search.note = Some(err.reason()),
+            },
+            Message::SearchSaved(result) => match result {
+                Ok(cur) => {
+                    self.search.saved(cur);
+                    return Task::perform(
+                        call(&self.api, |api| api.test_search()),
+                        Message::SearchTested,
+                    );
+                }
+                Err(err) => self.search.save_failed(&err.reason()),
+            },
+            Message::SearchTested(result) => match result {
+                Ok((ok, error)) => self.search.tested(ok, error),
+                Err(err) => self.search.tested(false, Some(err.reason())),
+            },
             Message::OpenSkills => {
                 self.page = Page::Skills;
                 self.narrow_open = true;
@@ -1673,12 +1746,29 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Skills))
             .on_press(Message::OpenSkills);
-        container(column![scrollable(list).height(Fill), routines, memories, skills].spacing(4))
-            .width(width)
-            .height(Fill)
-            .padding(8)
-            .style(view::sidebar_style(*t))
-            .into()
+        let search = button(text(search_page::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::Search))
+            .on_press(Message::OpenSearch);
+        container(
+            column![
+                scrollable(list).height(Fill),
+                routines,
+                memories,
+                skills,
+                search
+            ]
+            .spacing(4),
+        )
+        .width(width)
+        .height(Fill)
+        .padding(8)
+        .style(view::sidebar_style(*t))
+        .into()
     }
 
     fn content_width(&self, t: &Skin) -> f32 {
@@ -1709,6 +1799,16 @@ impl App {
                 )
                 .padding(t.metrics.stream_padding)
                 .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
+        if self.page == Page::Search {
+            return scrollable(
+                container(view::search_panel(t, &self.search).map(Message::Ui))
+                    .padding(t.metrics.stream_padding)
+                    .width(Fill),
             )
             .height(Fill)
             .width(Fill)
@@ -1979,7 +2079,21 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
     // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
     if let Some(failure) = &card.failure {
         let gray = robroz_card::palette(robroz_card::Tone::Gray);
-        return container(text(model::failure_line(failure)))
+        let line = text(model::failure_line(failure));
+        let body: Element<'a, Message> = if card.needs_search_setup {
+            row![
+                line,
+                space::horizontal(),
+                button(text(search_page::GO_SETUP).size(t.type_.button))
+                    .style(view::nav_button_style(*t, false))
+                    .on_press(Message::OpenSearch),
+            ]
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            line.into()
+        };
+        return container(body)
             .padding(view::status_card_padding(t))
             .width(Fill)
             .style(view::status_card_style(*t, gray.fill, gray.text))
