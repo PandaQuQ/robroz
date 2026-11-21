@@ -1900,14 +1900,25 @@ pub fn skills_panel<'a>(
             .spacing(t.controls.button_gap)
             .align_y(Alignment::Center);
             for (group, name) in &book.chats {
-                let on = book.is_enabled(group, &skill.slug);
+                let state = book.enable_state(group, &skill.slug);
+                let known = state.known();
+                let (track_on, track_off, knob) = if known.is_some() {
+                    (
+                        color(t.palette.accent),
+                        color(t.palette.toggle_off),
+                        color(t.palette.knob),
+                    )
+                } else {
+                    let grey = color(t.palette.text3);
+                    (grey, grey, color(t.palette.surface))
+                };
                 let toggle = hit_area(
                     t,
                     canvas(Toggle {
-                        on,
-                        track_on: color(t.palette.accent),
-                        track_off: color(t.palette.toggle_off),
-                        knob: color(t.palette.knob),
+                        on: known.unwrap_or(false),
+                        track_on,
+                        track_off,
+                        knob,
                         knob_size: t.controls.knob,
                     })
                     .width(t.controls.switch_w)
@@ -1915,21 +1926,29 @@ pub fn skills_panel<'a>(
                     .into(),
                     Some(t.controls.switch_w),
                     t.controls.switch_h,
-                    (!busy).then(|| Action::SkillToggleGroup {
-                        slug: skill.slug.clone(),
-                        group: group.clone(),
+                    known.and_then(|_| {
+                        (!busy).then(|| Action::SkillToggleGroup {
+                            slug: skill.slug.clone(),
+                            group: group.clone(),
+                        })
                     }),
                 );
-                toggles = toggles.push(
-                    row![
-                        text(name.as_str())
+                let mut cell = row![
+                    text(name.as_str())
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text2)),
+                    toggle,
+                ]
+                .spacing(m.dot_gap)
+                .align_y(Alignment::Center);
+                if known.is_none() {
+                    cell = cell.push(
+                        text(skills::LOADING)
                             .size(t.type_.foot)
-                            .color(color(t.palette.text2)),
-                        toggle,
-                    ]
-                    .spacing(m.dot_gap)
-                    .align_y(Alignment::Center),
-                );
+                            .color(color(t.palette.text3)),
+                    );
+                }
+                toggles = toggles.push(cell);
             }
             entry_col = entry_col.push(toggles.wrap());
         }

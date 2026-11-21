@@ -3,7 +3,7 @@
 //! one-step confirm before 删除, a small form to write one down, and a
 //! per-group enable toggle.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use robroz_contract::{
     parse_skill_slug, MemoryScope, MemoryStatus, Skill, SKILL_INSTRUCTION_MAX, SKILL_TITLE_MAX,
@@ -36,12 +36,45 @@ pub const INSTRUCTION_TOO_LONG: &str = "说明最多 8000 个字";
 pub const SAVED: &str = "已保存";
 /// Section label above the per-group switches on a kept skill.
 pub const GROUP_ENABLE: &str = "在这些群里用";
+/// Shown next to a switch whose state has not been loaded yet.
+pub const LOADING: &str = "读取中";
 /// Skill instructions show this many lines until opened.
 pub const INSTRUCTION_LINES: usize = 3;
 
 /// Inline failure: 「没保存：<reason>」.
 pub fn failed(reason: &str) -> String {
     format!("没保存：{reason}")
+}
+
+/// Whether a skill is on in a given group. `Unknown` until the host
+/// lists that group's enabled skills; the switch stays grey and
+/// unclickable until then. `GET /api/groups/{id}/skills` is not there
+/// yet, so every switch starts as `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnableState {
+    #[default]
+    Unknown,
+    On,
+    Off,
+}
+
+impl EnableState {
+    /// `None` when unknown, otherwise whether the skill is on.
+    pub fn known(self) -> Option<bool> {
+        match self {
+            EnableState::Unknown => None,
+            EnableState::On => Some(true),
+            EnableState::Off => Some(false),
+        }
+    }
+
+    pub fn from_known(on: bool) -> Self {
+        if on {
+            EnableState::On
+        } else {
+            EnableState::Off
+        }
+    }
 }
 
 /// Re-export so the page uses the same scope wording as memories.
@@ -97,12 +130,13 @@ pub struct Book {
     pub bros: Vec<(String, String)>,
     /// `(group id, name)` for the per-group enable toggles.
     pub chats: Vec<(String, String)>,
-    /// Enabled `(group id, slug)` pairs known in this session.
+    /// Per-group enable state, keyed by `(group id, slug)`.
     ///
-    /// The host has no list of which groups have a skill on, so a freshly
-    /// loaded page starts with every switch off. A successful toggle is
-    /// remembered until the client exits.
-    pub enabled: HashSet<(String, String)>,
+    /// Missing keys are [`EnableState::Unknown`]: the host cannot yet
+    /// list which skills a group has on, so the page must not invent
+    /// "off". Once `GET /api/groups/{id}/skills` exists, fill these in
+    /// with [`Book::set_enabled`].
+    pub enabled: HashMap<(String, String), EnableState>,
     /// Slugs whose instruction is fully open.
     pub open: HashSet<String>,
     pub loaded: bool,
@@ -225,17 +259,28 @@ impl Book {
             }
         }
         self.enabled
-            .retain(|(_, slug)| self.skills.iter().any(|s| s.slug == *slug));
+            .retain(|(_, slug), _| self.skills.iter().any(|s| s.slug == *slug));
     }
 
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
 
-    /// Whether this skill is on in this group, as far as this session knows.
-    pub fn is_enabled(&self, group: &str, slug: &str) -> bool {
+    /// This skill's switch in this group: [`EnableState::Unknown`] until
+    /// the host has said on or off.
+    pub fn enable_state(&self, group: &str, slug: &str) -> EnableState {
         self.enabled
-            .contains(&(group.to_string(), slug.to_string()))
+            .get(&(group.to_string(), slug.to_string()))
+            .copied()
+            .unwrap_or(EnableState::Unknown)
+    }
+
+    /// Record a known on/off from the host, ready for the list endpoint.
+    pub fn set_enabled(&mut self, group: &str, slug: &str, on: bool) {
+        self.enabled.insert(
+            (group.to_string(), slug.to_string()),
+            EnableState::from_known(on),
+        );
     }
 
     /// 「所有 bro」 first, then one group per bro in the host's bro order,
@@ -385,7 +430,7 @@ impl Book {
     pub fn answered(&mut self, slug: &str, keep: bool) {
         if !keep {
             self.skills.retain(|s| s.slug != slug);
-            self.enabled.retain(|(_, s)| s != slug);
+            self.enabled.retain(|(_, s), _| s != slug);
             return;
         }
         if let Some(s) = self.skills.iter_mut().find(|s| s.slug == slug) {
@@ -397,7 +442,7 @@ impl Book {
     pub fn deleted(&mut self, slug: &str) {
         self.busy = false;
         self.skills.retain(|s| s.slug != slug);
-        self.enabled.retain(|(_, s)| s != slug);
+        self.enabled.retain(|(_, s), _| s != slug);
         if self.editing.as_ref().is_some_and(|e| e.slug == slug) {
             self.editing = None;
         }
@@ -450,8 +495,8 @@ impl Book {
         }
     }
 
-    /// The PUT (`true`) or DELETE (`false`) to send, or nothing if busy
-    /// or the skill is not kept.
+    /// The PUT (`true`) or DELETE (`false`) to send, or nothing if busy,
+    /// the skill is not kept, or the current state is still unknown.
     pub fn toggle_to_send(&mut self, slug: &str, group: &str) -> Option<bool> {
         if self.busy {
             return None;
@@ -463,20 +508,16 @@ impl Book {
         if !kept {
             return None;
         }
+        let on = self.enable_state(group, slug).known()?;
         self.clear_notes();
         self.busy = true;
-        Some(!self.is_enabled(group, slug))
+        Some(!on)
     }
 
     /// The host took the enable or disable.
     pub fn toggled(&mut self, slug: &str, group: &str, on: bool) {
         self.busy = false;
-        let key = (group.to_string(), slug.to_string());
-        if on {
-            self.enabled.insert(key);
-        } else {
-            self.enabled.remove(&key);
-        }
+        self.set_enabled(group, slug, on);
     }
 
     pub fn add_scope_hint(&self) -> Option<String> {
@@ -725,20 +766,32 @@ mod tests {
     }
 
     #[test]
-    fn toggle_is_off_until_a_successful_put() {
+    fn enable_state_stays_unknown_until_the_host_says() {
         let mut b = book();
-        assert!(!b.is_enabled("g-team", "shared"));
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::Unknown);
+        assert_eq!(
+            b.toggle_to_send("shared", "g-team"),
+            None,
+            "unknown is not clickable"
+        );
+        assert!(!b.busy, "a refused toggle must not lock the page");
+        b.set_enabled("g-team", "shared", false);
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::Off);
         assert_eq!(b.toggle_to_send("shared", "g-team"), Some(true));
         assert!(b.busy);
         b.toggled("shared", "g-team", true);
-        assert!(b.is_enabled("g-team", "shared"));
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::On);
         assert_eq!(b.toggle_to_send("shared", "g-team"), Some(false));
         b.toggled("shared", "g-team", false);
-        assert!(!b.is_enabled("g-team", "shared"));
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::Off);
         assert_eq!(b.toggle_to_send("ada-pending", "g-team"), None, "pending");
-        b.enabled.insert(("g-team".into(), "shared".into()));
+        b.set_enabled("g-team", "shared", true);
         b.deleted("shared");
-        assert!(!b.is_enabled("g-team", "shared"));
+        assert_eq!(
+            b.enable_state("g-team", "shared"),
+            EnableState::Unknown,
+            "a forgotten skill drops its known state"
+        );
     }
 
     #[test]
