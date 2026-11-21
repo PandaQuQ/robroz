@@ -181,6 +181,10 @@ enum Message {
         on: bool,
         result: Result<(), ApiError>,
     },
+    GroupSkillsLoaded {
+        group: String,
+        result: Result<Vec<Skill>, ApiError>,
+    },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
     Polled(Result<Polled, SourceError>),
@@ -649,10 +653,29 @@ impl App {
 
     fn load_skills(&mut self) -> Task<Message> {
         self.sync_skill_context();
-        Task::batch([
+        let groups = self.skills.begin_enable_loads();
+        let mut tasks = vec![
             Task::perform(call(&self.api, |api| api.skills()), Message::SkillsLoaded),
             self.load_bros(),
-        ])
+        ];
+        tasks.extend(groups.into_iter().map(|g| self.fetch_group_skills(g)));
+        Task::batch(tasks)
+    }
+
+    fn fetch_group_skills(&self, group: String) -> Task<Message> {
+        let key = group.clone();
+        let job = call(&self.api, move |api| api.group_skills(&key));
+        Task::perform(job, move |result| Message::GroupSkillsLoaded {
+            group,
+            result,
+        })
+    }
+
+    /// Fetch enable lists for chats that have not been asked yet.
+    fn ensure_group_skill_fetches(&mut self) -> Task<Message> {
+        self.sync_skill_context();
+        let groups = self.skills.take_groups_to_load();
+        Task::batch(groups.into_iter().map(|g| self.fetch_group_skills(g)))
     }
 
     /// Bro names and chats for the 技能 page (scope labels and toggles).
@@ -1101,6 +1124,7 @@ impl App {
                     }
                     Err(err) => self.skills.note = Some(err.reason()),
                 }
+                return self.ensure_group_skill_fetches();
             }
             Message::SkillSaved { slug, result } => match (slug, result) {
                 (None, Ok(s)) => self.skills.added(s),
@@ -1143,6 +1167,10 @@ impl App {
                 Ok(()) => self.skills.toggled(&slug, &group, on),
                 Err(err) => self.skills.entry_failed(&slug, &err.reason()),
             },
+            Message::GroupSkillsLoaded { group, result } => match result {
+                Ok(list) => self.skills.apply_group_skills(&group, &list),
+                Err(_) => self.skills.group_skills_failed(&group),
+            },
             Message::Back => self.narrow_open = false,
             Message::UnreadTick => return self.load_unread(),
             Message::UnreadLoaded(result) => match result {
@@ -1175,6 +1203,9 @@ impl App {
                             Message::GroupsReloaded,
                         ));
                         tasks.push(self.load_bros());
+                    }
+                    if self.page == Page::Skills {
+                        tasks.push(self.ensure_group_skill_fetches());
                     }
                     return Task::batch(tasks);
                 }
