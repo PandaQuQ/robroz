@@ -25,6 +25,7 @@ mod proposals;
 mod pump;
 mod tools;
 mod search;
+mod mcp;
 mod routines;
 mod sandbox;
 mod say;
@@ -191,6 +192,18 @@ fn router_from(state: AppState) -> Router {
         )
         .route("/api/settings/search", get(search::get_search).put(search::put_search))
         .route("/api/settings/search/test", post(search::test_search))
+        .route("/api/mcp/servers", get(mcp::list_servers).post(mcp::create_server))
+        .route(
+            "/api/mcp/servers/{id}",
+            patch(mcp::patch_server).delete(mcp::delete_server),
+        )
+        .route("/api/mcp/servers/{id}/tools", get(mcp::list_tools))
+        .route("/api/mcp/servers/{id}/test", post(mcp::test_connection))
+        .route("/api/groups/{id}/mcp", get(mcp::list_group_mcp))
+        .route(
+            "/api/groups/{id}/mcp/{serverId}",
+            get(mcp::get_group_mcp).put(mcp::enable_group_mcp).delete(mcp::disable_group_mcp),
+        )
         .with_state(state)
 }
 
@@ -305,6 +318,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN needs_setup TEXT", []);
     let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
     crate::search::migrate(conn)?;
+    crate::mcp::migrate(conn)?;
     Ok(())
 }
 

@@ -747,6 +747,154 @@ pub struct SearchTestResult {
     pub error: Option<String>,
 }
 
+/// Where an MCP secret is applied: a child-process environment variable, or an HTTP header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpSecretIn {
+    Env,
+    Header,
+}
+
+impl McpSecretIn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpSecretIn::Env => "env",
+            McpSecretIn::Header => "header",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "env" => Some(McpSecretIn::Env),
+            "header" => Some(McpSecretIn::Header),
+            _ => None,
+        }
+    }
+}
+
+/// A secret as the API returns it. The value itself is never included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSecretPublic {
+    pub name: String,
+    #[serde(rename = "in")]
+    pub placement: McpSecretIn,
+    pub has_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_last4: Option<String>,
+}
+
+/// One MCP server, minus secret values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub secrets: Vec<McpSecretPublic>,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<u32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// `GET /api/mcp/servers` or `GET /api/groups/{id}/mcp`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServers {
+    pub servers: Vec<McpServer>,
+}
+
+/// One secret in a create or patch body. `key` omitted leaves the stored value
+/// alone (patch only); `null` clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSecretInput {
+    pub name: String,
+    #[serde(default, rename = "in")]
+    pub placement: Option<McpSecretIn>,
+    #[serde(default, deserialize_with = "mcp_opt_opt_string")]
+    pub key: Option<Option<String>>,
+}
+
+fn mcp_opt_opt_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
+/// `POST /api/mcp/servers`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMcpServer {
+    pub name: String,
+    pub transport: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub secrets: Option<Vec<McpSecretInput>>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// `PATCH /api/mcp/servers/{id}`. Only given fields change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMcpServer {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default, deserialize_with = "mcp_opt_opt_string")]
+    pub command: Option<Option<String>>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "mcp_opt_opt_string")]
+    pub url: Option<Option<String>>,
+    #[serde(default)]
+    pub secrets: Option<Vec<McpSecretInput>>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// One tool from `GET /api/mcp/servers/{id}/tools`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub needs_approval: bool,
+}
+
+/// `GET /api/mcp/servers/{id}/tools`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTools {
+    pub tools: Vec<McpTool>,
+}
+
+/// `POST /api/mcp/servers/{id}/test`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTestResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<u32>,
+}
+
 /// Internally tagged on `type` so message, status, and delivery round-trip
 /// with the JSON already returned by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
