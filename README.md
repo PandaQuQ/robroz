@@ -262,6 +262,7 @@ bro 会的做法，只是一段提示文字：标题、`slug` 和说明。权限
 - `POST /api/skills`：你自己写一条，请求体 `{"scope", "slug", "title", "instruction"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Skill`。已经有同样的 `slug` 且没忘掉时返回 409「这个 slug 已经有了」。
 - `PATCH /api/skills/{slug}`：请求体 `{"title"?, "instruction"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。`status` 和 `slug` 不能用 `PATCH` 改。
 - `DELETE /api/skills/{slug}`：忘掉。只是软删。返回 204；重复忘掉也返回 204；从没有过的 slug 返回 404。忘掉一条还在 `pending` 的技能时，它那张没回答的确认卡会一起关掉，记成 `denied`，`answeredBy` 是 `null`。忘掉以后这个 slug 可以再写一条。
+- `GET /api/groups/{id}/skills`：列出该群已启用、未忘掉的技能，返回形状和 `GET /api/skills` 一样，按 `updatedAt` 从新到旧。没有启用的返回 `{"skills":[]}`，群不存在返回 404「群不存在」。
 - `PUT /api/groups/{id}/skills/{slug}`：在这个群里启用这条技能。群或技能不存在（或已忘掉）返回 404。已经启用再点一次也是 204。
 - `DELETE /api/groups/{id}/skills/{slug}`：关掉。群或技能不存在返回 404；本来就没启用也是 204。
 - `scope` 和记忆一样：`user` 是所有 bro 都能用，`bot:<botId>` 只给这个 bro。

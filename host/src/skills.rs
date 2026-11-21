@@ -13,7 +13,10 @@
 //! ([`memories::checked_scope`](crate::memories::checked_scope)).
 //!
 //! A group enables a kept skill with `PUT /api/groups/{id}/skills/{slug}` and
-//! turns it off with `DELETE`. Only enabled, kept, in-scope skills go into the
+//! turns it off with `DELETE`. `GET /api/groups/{id}/skills` lists the
+//! enabled, not-forgotten skills for that group (same [`Skills`] body as
+//! `GET /api/skills`); a missing group is 404, none enabled is an empty list.
+//! Only enabled, kept, in-scope skills go into the
 //! model prompt ([`kept_for`] plus [`prompt_section`]). Skills are prompt text;
 //! permissions stay in `robroz-policy`.
 //!
@@ -106,6 +109,19 @@ pub(crate) fn has_live_slug(conn: &Connection, slug: &str) -> rusqlite::Result<b
         .query_row("SELECT 1 FROM skills WHERE slug = ?1 AND forgotten_at IS NULL", [slug], |r| r.get(0))
         .optional()?;
     Ok(found.is_some())
+}
+
+/// Live (not forgotten) skills enabled on this group, any status, newest
+/// `updatedAt` first. Used by `GET /api/groups/{id}/skills`.
+pub(crate) fn enabled_for(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<Skill>> {
+    let mut stmt = conn.prepare(&format!(
+        "{SELECT}
+         JOIN group_skills g ON g.slug = skills.slug
+         WHERE g.group_id = ?1 AND skills.forgotten_at IS NULL
+         {ORDER}"
+    ))?;
+    let rows = stmt.query_map([group_id], from_row)?;
+    rows.collect()
 }
 
 /// Kept, not forgotten skills a bro may use in this group: everyone's (`user`)
@@ -365,6 +381,25 @@ pub(crate) async fn forget_skill(State(state): State<AppState>, AxumPath(slug): 
     }
 }
 
+pub(crate) async fn list_group_skills(
+    State(state): State<AppState>,
+    AxumPath(group_id): AxumPath<String>,
+) -> Response {
+    let conn = lock_db(&state);
+    let result = (|| {
+        if !crate::group_exists(&conn, &group_id)? {
+            return Ok(Err((StatusCode::NOT_FOUND, GROUP_NOT_FOUND)));
+        }
+        Ok(Ok(Skills { skills: enabled_for(&conn, &group_id)? }))
+    })();
+    drop(conn);
+    match result {
+        Ok(Ok(body)) => (StatusCode::OK, Json(body)).into_response(),
+        Ok(Err((status, msg))) => error_response(status, msg),
+        Err(err) => db_error(err),
+    }
+}
+
 pub(crate) async fn enable_skill(
     State(state): State<AppState>,
     AxumPath((group_id, slug)): AxumPath<(String, String)>,
@@ -432,7 +467,7 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    use super::{kept_for, prompt_section, prompt_section_with, SCHEMA, SKILL_PROMPT_HEADER, SKILL_PROMPT_MAX};
+    use super::{enabled_for, kept_for, prompt_section, prompt_section_with, SCHEMA, SKILL_PROMPT_HEADER, SKILL_PROMPT_MAX};
 
     fn temp_path(ext: &str) -> PathBuf {
         std::env::temp_dir().join(format!("robroz-skill-test-{}.{ext}", uuid::Uuid::new_v4()))
@@ -572,6 +607,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn group_skills_list_tracks_enable_disable_forget_and_missing() {
+        let (app, _) = app();
+        let (status, group) = send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let group_id = group["id"].as_str().unwrap();
+        let list = format!("/api/groups/{group_id}/skills");
+
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["skills"].as_array().unwrap().len(), 0);
+
+        let (status, _) = post_skill(&app, "user", "weekly-report", "写周报", "先列三点").await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = post_skill(&app, "user", "ada-notes", "笔记", "记下").await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK, "not enabled yet");
+        assert_eq!(body["skills"].as_array().unwrap().len(), 0);
+
+        let (status, _) = send(&app, "PUT", &format!("/api/groups/{group_id}/skills/weekly-report"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(body["skills"][0]["slug"], "weekly-report");
+
+        let (status, _) = send(&app, "PUT", &format!("/api/groups/{group_id}/skills/ada-notes"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let slugs: Vec<&str> = body["skills"].as_array().unwrap().iter().map(|s| s["slug"].as_str().unwrap()).collect();
+        assert_eq!(slugs, ["ada-notes", "weekly-report"], "newest updatedAt first");
+
+        let (status, _) = send(&app, "DELETE", &format!("/api/groups/{group_id}/skills/weekly-report"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(body["skills"][0]["slug"], "ada-notes");
+
+        let (status, _) = send(&app, "DELETE", "/api/skills/ada-notes", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(&app, "GET", &list, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["skills"].as_array().unwrap().len(), 0);
+
+        let (status, body) = send(&app, "GET", "/api/groups/missing/skills", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "群不存在");
+    }
+
+    #[tokio::test]
     async fn group_enable_is_idempotent_and_missing_is_404() {
         let (app, _) = app();
         let (status, group) = send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
@@ -608,6 +695,7 @@ mod tests {
             ("POST", "/api/skills"),
             ("PATCH", "/api/skills/x"),
             ("DELETE", "/api/skills/x"),
+            ("GET", "/api/groups/g/skills"),
             ("PUT", "/api/groups/g/skills/x"),
             ("DELETE", "/api/groups/g/skills/x"),
         ] {
@@ -703,5 +791,34 @@ mod tests {
         assert!(!section.contains("bob") && !section.contains("pending") && !section.contains("rejected"));
         assert!(!section.contains("forgotten") && !section.contains("\noff") && !section.contains("(off)"));
         assert!(kept_for(&conn, "ada", "g-missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn enabled_for_skips_forgotten_and_other_groups() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(crate::approvals::SCHEMA).unwrap();
+        let _ = conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []);
+        crate::proposals::migrate(&conn).unwrap();
+        // Enable a forgotten skill by leaving a leftover group_skills row.
+        let rows = [
+            ("live", "kept", "live", None, "2026-01-01T00:00:02.000Z"),
+            ("gone", "kept", "gone", Some("2026-01-01T00:00:03.000Z"), "2026-01-01T00:00:01.000Z"),
+            ("other", "kept", "other", None, "2026-01-01T00:00:04.000Z"),
+        ];
+        for (id, status, slug, forgotten, at) in rows {
+            conn.execute(
+                "INSERT INTO skills (id, scope, slug, title, instruction, source, status, created_at, updated_at, forgotten_at)
+                 VALUES (?1, 'user', ?3, ?3, ?1, 'user', ?2, ?5, ?5, ?4)",
+                rusqlite::params![id, status, slug, forgotten, at],
+            )
+            .unwrap();
+        }
+        conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g1', 'live', '2026-01-01T00:00:00.000Z')", []).unwrap();
+        conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g1', 'gone', '2026-01-01T00:00:00.000Z')", []).unwrap();
+        conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g2', 'other', '2026-01-01T00:00:00.000Z')", []).unwrap();
+        let slugs = enabled_for(&conn, "g1").unwrap().into_iter().map(|s| s.slug).collect::<Vec<_>>();
+        assert_eq!(slugs, ["live"]);
+        assert!(enabled_for(&conn, "g-missing").unwrap().is_empty());
     }
 }

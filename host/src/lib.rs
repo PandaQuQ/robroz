@@ -181,6 +181,7 @@ fn router_from(state: AppState) -> Router {
             "/api/skills/{slug}",
             patch(skills::update_skill).delete(skills::forget_skill),
         )
+        .route("/api/groups/{id}/skills", get(skills::list_group_skills))
         .route(
             "/api/groups/{id}/skills/{slug}",
             put(skills::enable_skill).delete(skills::disable_skill),
