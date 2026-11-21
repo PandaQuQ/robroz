@@ -24,6 +24,7 @@ mod progress;
 mod proposals;
 mod pump;
 mod tools;
+mod search;
 mod routines;
 mod sandbox;
 mod say;
@@ -105,6 +106,8 @@ impl Host {
     /// its own thread. The DB lock is only held for SQL, never across docker calls.
     /// Tests call [`pump`] directly and do not start that loop.
     pub fn pump_once(&self, sandbox: &mut dyn Sandbox) -> rusqlite::Result<()> {
+        let mut tools = crate::tools::ToolRegistry::new();
+        crate::search::register_tools(&mut tools, self.db.clone());
         pump_with(
             &*self.db,
             sandbox,
@@ -114,7 +117,7 @@ impl Host {
                 image: &self.image,
                 get_limit: self.get_limit,
                 model: self.model.as_deref(),
-                tools: crate::tools::ToolRegistry::empty(),
+                tools: &tools,
             },
         )
     }
@@ -186,6 +189,8 @@ fn router_from(state: AppState) -> Router {
             "/api/groups/{id}/skills/{slug}",
             put(skills::enable_skill).delete(skills::disable_skill),
         )
+        .route("/api/settings/search", get(search::get_search).put(search::put_search))
+        .route("/api/settings/search/test", post(search::test_search))
         .with_state(state)
 }
 
@@ -297,6 +302,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(unread::SCHEMA)?;
     conn.execute_batch(memories::SCHEMA)?;
     conn.execute_batch(skills::SCHEMA)?;
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN needs_setup TEXT", []);
+    let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
+    crate::search::migrate(conn)?;
     Ok(())
 }
 
@@ -829,7 +837,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
 
     {
         let mut delivery_stmt = conn.prepare(
-            "SELECT id, summary, path, briefing, created_at, failure FROM deliveries WHERE group_id = ?1",
+            "SELECT id, summary, path, briefing, created_at, failure, needs_setup FROM deliveries WHERE group_id = ?1",
         )?;
         let deliveries = delivery_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
@@ -846,6 +854,7 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                     briefing: briefing != 0,
                     created_at,
                     failure: row.get(5)?,
+                    needs_setup: row.get(6)?,
                 },
             })
         })?;

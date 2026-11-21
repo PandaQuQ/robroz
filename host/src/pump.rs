@@ -47,6 +47,7 @@ struct TaskRow {
     prompt: String,
     updated_at: String,
     briefing: bool,
+    get_count: i64,
 }
 
 /// What pump decided for an exited container, written back under the lock.
@@ -84,7 +85,11 @@ pub fn pump(
 }
 
 /// One pass. Reads under the lock, drops it for docker, re-locks to write.
-pub fn pump_with(db: &impl Db, sandbox: &mut dyn Sandbox, cfg: &PumpConfig<'_>) -> rusqlite::Result<()> {
+pub fn pump_with(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    cfg: &PumpConfig<'_>,
+) -> rusqlite::Result<()> {
     let queued = db.with(|conn| load_tasks(conn, "queued"))?;
     for task in queued {
         start_task(db, sandbox, cfg, &task)?;
@@ -110,12 +115,18 @@ fn start_task(
         return Ok(());
     };
     if let Err(err) = write_prompt(&control_dir, &task.prompt) {
-        eprintln!("pump: write prompt for {}: {err}; task stays queued", task.id);
+        eprintln!(
+            "pump: write prompt for {}: {err}; task stays queued",
+            task.id
+        );
         return Ok(());
     }
     // A leftover intent would make this run look blocked again.
     if let Err(err) = remove_intent(&group_dir, &task.id) {
-        eprintln!("pump: clear old intent for {}: {err}; task stays queued", task.id);
+        eprintln!(
+            "pump: clear old intent for {}: {err}; task stays queued",
+            task.id
+        );
         return Ok(());
     }
     // A leftover progress file would put the last run's text on the new card.
@@ -132,7 +143,11 @@ fn start_task(
     // Memories and skills are loaded in the same lock, before the claim, so a
     // load error leaves the task queued.
     let claimed_at = newer_than(&task.updated_at);
-    let first = if cfg.model.is_some() { progress::THINKING } else { progress::STARTED };
+    let first = if cfg.model.is_some() {
+        progress::THINKING
+    } else {
+        progress::STARTED
+    };
     let (claimed, memory_section) = db.with(|conn| -> rusqlite::Result<_> {
         let section = if cfg.model.is_some() {
             system_extra(
@@ -143,7 +158,8 @@ fn start_task(
             None
         };
         let claimed = conn.execute(
-            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3
+            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3,
+                              get_count = 0, needs_setup = NULL
              WHERE id = ?2 AND state = 'queued'",
             params![claimed_at, task.id, first],
         )?;
@@ -153,21 +169,36 @@ fn start_task(
         return Ok(());
     }
     let mut reply_progress = None;
-    if let Some(model) = cfg.model {
+    if cfg.model.is_some() {
         let reply = write_reply(
             db,
             &control_dir,
             &task.id,
             &task.prompt,
             memory_section.as_deref(),
-            model,
-            cfg.tools,
+            cfg,
         );
         reply_progress = reply.progress;
-        if let Some(failure) = reply.failure {
+        db.with(|conn| {
+            conn.execute(
+                "UPDATE tasks SET get_count = ?1, needs_setup = ?2, failure = COALESCE(?3, failure) WHERE id = ?4",
+                params![reply.get_count as i64, reply.needs_setup, reply.failure, task.id],
+            )
+        })?;
+        if reply.over_quota {
+            let updated_at = newer_than(&claimed_at);
             db.with(|conn| {
-                conn.execute("UPDATE tasks SET failure = ?1 WHERE id = ?2", params![failure, task.id])
+                write_outcome(
+                    conn,
+                    task,
+                    &Outcome::Failed(reply.failure.clone().unwrap_or_else(|| "出网超额".into())),
+                    reply.get_count as i64,
+                    &updated_at,
+                    &crate::sandbox::result_rel(&task.id),
+                    &[],
+                )
             })?;
+            return Ok(());
         }
     }
 
@@ -180,7 +211,10 @@ fn start_task(
         task_id: &task.id,
     });
     if let Err(err) = started {
-        eprintln!("pump: start {} failed: {}; task stays queued", task.id, err.message);
+        eprintln!(
+            "pump: start {} failed: {}; task stays queued",
+            task.id, err.message
+        );
         let reverted_at = newer_than(&claimed_at);
         db.with(|conn| {
             conn.execute(
@@ -225,10 +259,14 @@ fn collect_task(
         // Never re-queue: the run may have half-changed the volume, and a rerun
         // would repeat it. Mark it a dead run and leave it for a person.
         ContainerPhase::Missing => {
-            eprintln!("pump: container for {} is gone; marking interrupted, not rerunning", task.id);
+            eprintln!(
+                "pump: container for {} is gone; marking interrupted, not rerunning",
+                task.id
+            );
             let updated_at = newer_than(&task.updated_at);
             let rel = result_rel(&task.id);
-            return db.with(|conn| write_outcome(conn, task, &Outcome::Dead, 0, &updated_at, &rel, &[]));
+            return db
+                .with(|conn| write_outcome(conn, task, &Outcome::Dead, 0, &updated_at, &rel, &[]));
         }
     };
 
@@ -244,7 +282,8 @@ fn collect_task(
     // `intent` only signals "blocked"; its content is never read. Where the task
     // stopped is recomputed here from the stored prompt and the host's takeover
     // hashes, with the same function the runner uses.
-    let claims_blocked = std::fs::symlink_metadata(robroz_runner::intent_path(&group_dir, &task.id)).is_ok();
+    let claims_blocked =
+        std::fs::symlink_metadata(robroz_runner::intent_path(&group_dir, &task.id)).is_ok();
     let stop = if claims_blocked {
         let approved = robroz_runner::read_takeover(&cfg.control_root.join(&task.id));
         robroz_policy::blocking_line(&task.prompt, &approved)
@@ -252,7 +291,8 @@ fn collect_task(
         None
     };
     // Tier Metered: GET only, counted per task.
-    let (get_count, over_quota) = outbound_record(&group_dir, &task.id, cfg.get_limit);
+    let (get_count, over_quota) =
+        outbound_record(&group_dir, &task.id, task.get_count as u64, cfg.get_limit);
 
     // Tier Takeover: external writes and captchas.
     let block = stop
@@ -290,7 +330,17 @@ fn collect_task(
         Vec::new()
     };
     let updated_at = newer_than(&task.updated_at);
-    db.with(|conn| write_outcome(conn, task, &outcome, get_count, &updated_at, &rel, &proposals))?;
+    db.with(|conn| {
+        write_outcome(
+            conn,
+            task,
+            &outcome,
+            get_count,
+            &updated_at,
+            &rel,
+            &proposals,
+        )
+    })?;
     if let Err(err) = crate::proposals::remove(&group_dir, &task.id) {
         // The next start clears it again before docker run.
         eprintln!("pump: remove proposals for {}: {err}", task.id);
@@ -328,7 +378,10 @@ fn write_outcome(
                 ],
             )?;
             // Writing outside asks first: an approval card the person answers.
-            if let Some(stop) = stop.as_ref().filter(|s| changed > 0 && crate::approvals::needs_approval(s.kind)) {
+            if let Some(stop) = stop
+                .as_ref()
+                .filter(|s| changed > 0 && crate::approvals::needs_approval(s.kind))
+            {
                 crate::approvals::gate_task(&tx, &task.id, &task.prompt, &stop.hash, updated_at)?;
             }
             tx.commit()?;
@@ -357,8 +410,10 @@ fn write_outcome(
             )?;
             if changed > 0 {
                 tx.execute(
-                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure)
-                     VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6, (SELECT failure FROM tasks WHERE id = ?3))",
+                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure, needs_setup)
+                     VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6,
+                             (SELECT failure FROM tasks WHERE id = ?3),
+                             (SELECT needs_setup FROM tasks WHERE id = ?3))",
                     params![delivery_id, task.group_id, task.id, rel, task.briefing as i64, updated_at],
                 )?;
                 // One pending memory and one confirm card per good proposal.
@@ -373,9 +428,13 @@ fn write_outcome(
 /// Running tasks with a live container. Dead runs (containerUp false) have
 /// no container left to inspect.
 fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> {
-    let live_only = if state == "running" { " AND container_up = 1" } else { "" };
+    let live_only = if state == "running" {
+        " AND container_up = 1"
+    } else {
+        ""
+    };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing FROM tasks
+        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing, get_count FROM tasks
          WHERE state = ?1{live_only} ORDER BY created_at, id"
     ))?;
     let rows = stmt.query_map([state], |row| {
@@ -386,6 +445,7 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
             prompt: row.get(3)?,
             updated_at: row.get(4)?,
             briefing: row.get::<_, i64>(5)? != 0,
+            get_count: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -400,7 +460,11 @@ fn write_prompt(control_dir: &Path, prompt: &str) -> std::io::Result<()> {
 /// Delete `tasks/{taskId}/intent` from the volume. Missing is fine.
 /// Join the memory and skill paragraphs, in that order. Missing ones are omitted.
 fn system_extra(memory: Option<String>, skill: Option<String>) -> Option<String> {
-    let parts: Vec<String> = [memory, skill].into_iter().flatten().filter(|s| !s.is_empty()).collect();
+    let parts: Vec<String> = [memory, skill]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         None
     } else {
@@ -419,46 +483,66 @@ fn write_reply(
     task_id: &str,
     prompt: &str,
     memory_section: Option<&str>,
-    model: &dyn robroz_model::Model,
-    tools: &crate::tools::ToolRegistry,
+    cfg: &PumpConfig<'_>,
 ) -> Reply {
+    let model = cfg.model.expect("write_reply requires a model");
+    let tools = cfg.tools;
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
-    let (text, failure) = if tools.is_empty() {
+    let mut ctx = crate::tools::ToolCtx::new(cfg.get_limit);
+    let (mut text, failure, over_quota) = if tools.is_empty() {
         match model.reply(prompt, memory_section) {
-            Ok(text) => (text, None),
+            Ok(text) => (text, None, false),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {err}");
                 let text = format!("模型没回：{err}");
-                (text.clone(), Some(text))
+                (text.clone(), Some(text), false)
             }
         }
     } else {
-        match crate::tools::complete(model, prompt, memory_section, tools, |name| {
+        match crate::tools::complete(model, prompt, memory_section, tools, &mut ctx, |name| {
             let line = format!("在用 {name}");
             if let Err(err) = db.with(|conn| progress::set_progress(conn, task_id, &line)) {
                 eprintln!("pump: progress for {task_id}: {err}");
             }
         }) {
-            Ok(text) => (text, None),
+            Ok(text) => (text, None, false),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {}", err.failure_text());
                 let text = err.failure_text();
-                (text.clone(), Some(text))
+                let over = matches!(err, crate::tools::CompleteError::OverQuota(_));
+                (text.clone(), Some(text), over)
             }
         }
     };
+    if ctx.needs_setup.as_deref() == Some("search") && !text.contains(crate::search::NOT_CONFIGURED)
+    {
+        if text.is_empty() {
+            text = crate::search::NOT_CONFIGURED.to_string();
+        } else {
+            text = format!("{}\n{text}", crate::search::NOT_CONFIGURED);
+        }
+    }
     let progress = robroz_runner::last_progress(&text).map(str::to_string);
     if let Err(err) = std::fs::write(&path, text) {
         eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
     }
-    Reply { failure, progress }
+    Reply {
+        failure,
+        progress,
+        get_count: ctx.used,
+        needs_setup: ctx.needs_setup,
+        over_quota,
+    }
 }
 
 /// What [`write_reply`] hands back to pump.
 struct Reply {
     failure: Option<String>,
     progress: Option<String>,
+    get_count: u64,
+    needs_setup: Option<String>,
+    over_quota: bool,
 }
 
 /// The runner's latest progress text, if it wrote one.
@@ -502,10 +586,22 @@ pub(crate) fn group_volume(volumes_root: &Path, group_id: &str) -> PathBuf {
 
 /// Read `outbound.txt` and ask [`meter`]: the GET count, and why the task
 /// fails, if it does (over the limit, or not a GET). Never blocks.
-fn outbound_record(group_dir: &Path, task_id: &str, limit: u64) -> (i64, Option<OverQuota>) {
-    let text = std::fs::read_to_string(robroz_runner::outbound_path(group_dir, task_id)).unwrap_or_default();
-    let methods = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    let gets = methods.clone().filter(|m| *m == "GET").count() as i64;
+fn outbound_record(
+    group_dir: &Path,
+    task_id: &str,
+    already_used: u64,
+    limit: u64,
+) -> (i64, Option<OverQuota>) {
+    let text = std::fs::read_to_string(robroz_runner::outbound_path(group_dir, task_id))
+        .unwrap_or_default();
+    let sandbox: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let host: Vec<&str> = vec!["GET"; already_used as usize];
+    let methods: Vec<&str> = host.into_iter().chain(sandbox).collect();
+    let gets = methods.iter().filter(|m| **m == "GET").count() as i64;
     match meter(methods, limit) {
         Ok(_) => (gets, None),
         Err(over) => (gets, Some(over)),

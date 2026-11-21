@@ -35,7 +35,53 @@ pub trait Tool: Send + Sync {
     fn schema(&self) -> Value;
     /// The side effect [`robroz_policy::tier`] uses to decide whether to run it.
     fn effect(&self) -> SideEffect;
-    fn call(&self, args: &Value) -> Result<String, String>;
+    fn call(&self, args: &Value, ctx: &mut ToolCtx) -> Result<String, String>;
+}
+
+/// Per-task state for tool calls: outbound quota and setup hints.
+#[derive(Debug, Default)]
+pub struct ToolCtx {
+    pub used: u64,
+    pub limit: u64,
+    pub needs_setup: Option<String>,
+    pub over_quota: Option<robroz_policy::OverQuota>,
+}
+
+impl ToolCtx {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            used: 0,
+            limit,
+            needs_setup: None,
+            over_quota: None,
+        }
+    }
+
+    /// Charge one GET against the same meter the sandbox uses.
+    pub fn charge_get(&mut self) -> Result<(), robroz_policy::OverQuota> {
+        let over = if robroz_policy::outbound("GET", self.used, self.limit)
+            == robroz_policy::Outbound::Fail
+        {
+            self.used += 1;
+            Some(robroz_policy::OverQuota::TooMany {
+                used: self.used,
+                limit: self.limit,
+            })
+        } else {
+            self.used += 1;
+            None
+        };
+        if let Some(over) = over {
+            self.over_quota = Some(over.clone());
+            Err(over)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn mark_needs_setup(&mut self, kind: &str) {
+        self.needs_setup = Some(kind.to_string());
+    }
 }
 
 /// Named tools available to one pump pass. Empty by default.
@@ -91,7 +137,7 @@ impl ToolRegistry {
     }
 
     /// Run one call and turn every outcome into text the model can read back.
-    pub fn invoke(&self, call: &ToolCall) -> String {
+    pub fn invoke(&self, call: &ToolCall, ctx: &mut ToolCtx) -> String {
         let Some(tool) = self.get(&call.name) else {
             return format!("没有这个工具：{}", call.name);
         };
@@ -102,7 +148,7 @@ impl ToolRegistry {
             Ok(value) => value,
             Err(err) => return format!("参数不是 JSON：{err}"),
         };
-        match tool.call(&args) {
+        match tool.call(&args, ctx) {
             Ok(text) => clip_result(text),
             Err(err) => format!("调用失败：{err}"),
         }
@@ -124,6 +170,7 @@ fn clip_result(text: String) -> String {
 pub enum CompleteError {
     Model(ModelError),
     RoundLimit,
+    OverQuota(robroz_policy::OverQuota),
 }
 
 impl CompleteError {
@@ -132,6 +179,7 @@ impl CompleteError {
         match self {
             CompleteError::Model(err) => format!("模型没回：{err}"),
             CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
+            CompleteError::OverQuota(over) => over.failure(),
         }
     }
 }
@@ -144,6 +192,7 @@ pub fn complete(
     prompt: &str,
     memory_section: Option<&str>,
     tools: &ToolRegistry,
+    ctx: &mut ToolCtx,
     mut on_using: impl FnMut(&str),
 ) -> Result<String, CompleteError> {
     let mut messages = vec![
@@ -164,11 +213,14 @@ pub fn complete(
                 )));
                 for call in &calls {
                     on_using(&call.name);
-                    let content = tools.invoke(call);
+                    let content = tools.invoke(call, ctx);
                     messages.push(ChatMessage::Tool {
                         tool_call_id: call.id.clone(),
                         content,
                     });
+                    if let Some(over) = ctx.over_quota.clone() {
+                        return Err(CompleteError::OverQuota(over));
+                    }
                 }
             }
         }
@@ -266,7 +318,7 @@ mod tests {
         fn effect(&self) -> SideEffect {
             self.effect
         }
-        fn call(&self, args: &Value) -> Result<String, String> {
+        fn call(&self, args: &Value, _ctx: &mut ToolCtx) -> Result<String, String> {
             self.calls.lock().unwrap().push(args.clone());
             self.result.clone()
         }
@@ -296,7 +348,15 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "hi"));
         let (cb, used) = using();
-        let text = complete(&model, "叫一下 echo", None, &tools, cb).unwrap();
+        let text = complete(
+            &model,
+            "叫一下 echo",
+            None,
+            &tools,
+            &mut ToolCtx::new(8),
+            cb,
+        )
+        .unwrap();
         assert_eq!(text, "收到 hi");
         assert_eq!(*used.lock().unwrap(), ["echo"]);
         let seen = model.seen.lock().unwrap();
@@ -332,7 +392,7 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::failing("boom", "磁盘满了"));
         let (cb, _) = using();
-        let text = complete(&model, "跑 boom", None, &tools, cb).unwrap();
+        let text = complete(&model, "跑 boom", None, &tools, &mut ToolCtx::new(8), cb).unwrap();
         assert_eq!(text, "工具出错了");
         let seen = model.seen.lock().unwrap();
         match &seen[1].0.last() {
@@ -350,13 +410,13 @@ mod tests {
             "big",
             &"字".repeat(MAX_TOOL_RESULT_CHARS + 50),
         ));
-        let out = tools.invoke(&call("big", "c1", "{}"));
+        let out = tools.invoke(&call("big", "c1", "{}"), &mut ToolCtx::new(8));
         assert_eq!(out.chars().count(), MAX_TOOL_RESULT_CHARS);
         assert!(out.ends_with(TRUNCATED_MARK), "{out}");
         let exact = {
             let mut tools = ToolRegistry::new();
             tools.register(FakeTool::ok("fit", &"字".repeat(MAX_TOOL_RESULT_CHARS)));
-            tools.invoke(&call("fit", "c1", "{}"))
+            tools.invoke(&call("fit", "c1", "{}"), &mut ToolCtx::new(8))
         };
         assert_eq!(exact.chars().count(), MAX_TOOL_RESULT_CHARS);
         assert!(!exact.contains("已截断"), "{exact}");
@@ -371,7 +431,7 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "ok"));
         let (cb, used) = using();
-        let err = complete(&model, "循环", None, &tools, cb).unwrap_err();
+        let err = complete(&model, "循环", None, &tools, &mut ToolCtx::new(8), cb).unwrap_err();
         assert_eq!(err, CompleteError::RoundLimit);
         assert_eq!(err.failure_text(), ROUND_LIMIT_FAILURE);
         assert_eq!(model.seen.lock().unwrap().len(), MAX_TOOL_ROUNDS);
@@ -397,13 +457,16 @@ mod tests {
             fn effect(&self) -> SideEffect {
                 self.0.effect()
             }
-            fn call(&self, args: &Value) -> Result<String, String> {
-                self.0.call(args)
+            fn call(&self, args: &Value, ctx: &mut ToolCtx) -> Result<String, String> {
+                self.0.call(args, ctx)
             }
         }
         let mut tools = ToolRegistry::new();
         tools.register(Shared(tool.clone()));
-        assert_eq!(tools.invoke(&call("wire", "c1", "{}")), APPROVAL_DENIED);
+        assert_eq!(
+            tools.invoke(&call("wire", "c1", "{}"), &mut ToolCtx::new(8)),
+            APPROVAL_DENIED
+        );
         assert!(tool.calls.lock().unwrap().is_empty());
     }
 
@@ -411,14 +474,17 @@ mod tests {
     fn unknown_tool_and_bad_json_are_filled_back() {
         let tools = ToolRegistry::new();
         assert_eq!(
-            tools.invoke(&call("nope", "c1", "{}")),
+            tools.invoke(&call("nope", "c1", "{}"), &mut ToolCtx::new(8)),
             "没有这个工具：nope"
         );
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "hi"));
-        let out = tools.invoke(&call("echo", "c1", "not-json"));
+        let out = tools.invoke(&call("echo", "c1", "not-json"), &mut ToolCtx::new(8));
         assert!(out.starts_with("参数不是 JSON："), "{out}");
-        assert_eq!(tools.invoke(&call("echo", "c1", "{}")), "hi");
+        assert_eq!(
+            tools.invoke(&call("echo", "c1", "{}"), &mut ToolCtx::new(8)),
+            "hi"
+        );
     }
 
     #[test]
@@ -431,7 +497,10 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "ok"));
         let (cb, used) = using();
-        assert_eq!(complete(&model, "循环", None, &tools, cb).unwrap(), "好了");
+        assert_eq!(
+            complete(&model, "循环", None, &tools, &mut ToolCtx::new(8), cb).unwrap(),
+            "好了"
+        );
         assert_eq!(used.lock().unwrap().len(), MAX_TOOL_ROUNDS - 1);
     }
 }
