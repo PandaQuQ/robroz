@@ -329,6 +329,7 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 
 - 可以选 [Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
 - 设置接口：`GET` / `PUT /api/settings/search`，以及 `POST /api/settings/search/test` 用来试连。`GET` 返回 `provider`（`brave`、`searxng` 或 `null`）、`url`、`hasKey` 和 `keyLast4`，绝不回显密钥。`PUT` 时 `key` 不传表示不改，传 `null` 表示清除；不合法的值返回 400。`POST …/test` 会真的发一次查询，返回 `{ok}` 或 `{ok: false, error}`，超时 10 秒。设置接口里的值优先于环境变量。密钥存在本机 SQLite 的 `settings` 表，不进日志，也不进报错。
+- `source`：已生效时，`GET` 和 `PUT` 的返回体带可选字段 `source`，为 `settings`（来自设置接口，优先）或 `env`（来自环境变量）；完全没配置时不返回这个字段。
 - 也可以用环境变量：`ROBROZ_SEARCH_PROVIDER`（`brave` 或 `searxng`）、`ROBROZ_BRAVE_KEY`（Brave 的订阅密钥）、`ROBROZ_SEARXNG_URL`（SearXNG 实例地址，要以 `http://` 或 `https://` 开头）。
 - 还没设置时，`web_search` 仍可以调用，会返回「还没设置联网搜索」。这句话会原样出现在交付里，交付事件带可选字段 `needsSetup: "search"`，客户端按这个字段显示「去设置」，不要靠匹配文字。
 
