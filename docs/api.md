@@ -277,7 +277,7 @@ pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:
    - 非 0 退出或没写出结果、容器中途消失：保持 `running`，`containerUp` false，标签「没写出结果」，不重排队。
 5. 成功完成的任务，读它的 `proposals.jsonl`，每条记忆或技能提议发一张确认卡。
 
-完整的权限规则见 README 的「节点 4」和「接模型」（以后搬到 `docs/permissions.md`）。
+完整的权限规则见 [permissions.md](permissions.md)，容器和模型调用的细节见 [architecture.md](architecture.md)。
 
 ---
 
