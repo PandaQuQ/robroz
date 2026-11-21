@@ -18,10 +18,10 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro, CreateMemory,
-    ErrorBody, Event, Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message,
-    MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Task, TaskState, Unread, Unreads,
-    UpdateMemory, UpdateSchedule,
+    next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro,
+    CreateMemory, CreateSkill, ErrorBody, Event, Memories, Memory, MemoryKind, MemorySource,
+    MemoryStatus, Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Skill,
+    Skills, Task, TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
 };
 use robroz_ui::cards::interact::Note;
 
@@ -33,6 +33,16 @@ pub mod paths {
     /// robroz#62: edit (PATCH) or forget (DELETE) one memory.
     pub fn memory(id: &str) -> String {
         format!("/api/memories/{id}")
+    }
+    /// robroz#71: list and write skills.
+    pub const SKILLS: &str = "/api/skills";
+    /// robroz#71: edit (PATCH) or forget (DELETE) one skill.
+    pub fn skill(slug: &str) -> String {
+        format!("/api/skills/{slug}")
+    }
+    /// robroz#71: enable (PUT) or disable (DELETE) a skill in a group.
+    pub fn group_skill(group_id: &str, slug: &str) -> String {
+        format!("/api/groups/{group_id}/skills/{slug}")
     }
     /// robroz#15.
     pub fn answer_choice(id: &str) -> String {
@@ -187,6 +197,22 @@ pub trait CardApi: Send + Sync {
     fn update_memory(&self, id: &str, text: &str) -> Result<Memory, ApiError>;
     /// 忘掉: soft delete; already gone is fine (204).
     fn forget_memory(&self, id: &str) -> Result<(), ApiError>;
+    /// 技能 page: kept and pending skills, newest first (robroz#71).
+    fn skills(&self) -> Result<Vec<Skill>, ApiError>;
+    /// The person writes one down; the host keeps it at once.
+    fn create_skill(
+        &self,
+        scope: &str,
+        slug: &str,
+        title: &str,
+        instruction: &str,
+    ) -> Result<Skill, ApiError>;
+    /// Change a skill's title and instruction.
+    fn update_skill(&self, slug: &str, title: &str, instruction: &str) -> Result<Skill, ApiError>;
+    /// 删除: soft delete; already gone is fine (204).
+    fn forget_skill(&self, slug: &str) -> Result<(), ApiError>;
+    /// Enable or disable a kept skill in this group.
+    fn set_skill_enabled(&self, group_id: &str, slug: &str, on: bool) -> Result<(), ApiError>;
 }
 
 pub struct HttpApi {
@@ -251,6 +277,12 @@ impl HttpApi {
             .header("content-type", "application/json")
             .send(body);
         self.finish("PATCH", &url, result)
+    }
+
+    fn put(&self, path: &str) -> Result<String, ApiError> {
+        let url = self.conn.url(path);
+        let result = self.conn.put(path).send_empty();
+        self.finish("PUT", &url, result)
     }
 
     fn get(&self, path: &str) -> Result<String, ApiError> {
@@ -351,12 +383,58 @@ impl CardApi for HttpApi {
     fn forget_memory(&self, id: &str) -> Result<(), ApiError> {
         self.delete(&paths::memory(id)).map(|_| ())
     }
+
+    fn skills(&self) -> Result<Vec<Skill>, ApiError> {
+        Ok(decode::<Skills>(&self.get(paths::SKILLS)?)?.skills)
+    }
+
+    fn create_skill(
+        &self,
+        scope: &str,
+        slug: &str,
+        title: &str,
+        instruction: &str,
+    ) -> Result<Skill, ApiError> {
+        let body = serde_json::to_string(&CreateSkill {
+            scope: scope.to_string(),
+            slug: slug.to_string(),
+            title: title.to_string(),
+            instruction: instruction.to_string(),
+        })
+        .expect("serialize skill");
+        decode(&self.post(paths::SKILLS, Some(body))?)
+    }
+
+    fn update_skill(&self, slug: &str, title: &str, instruction: &str) -> Result<Skill, ApiError> {
+        let body = serde_json::to_string(&UpdateSkill {
+            title: Some(title.to_string()),
+            instruction: Some(instruction.to_string()),
+            ..UpdateSkill::default()
+        })
+        .expect("serialize skill edit");
+        decode(&self.patch(&paths::skill(slug), body)?)
+    }
+
+    fn forget_skill(&self, slug: &str) -> Result<(), ApiError> {
+        self.delete(&paths::skill(slug)).map(|_| ())
+    }
+
+    fn set_skill_enabled(&self, group_id: &str, slug: &str, on: bool) -> Result<(), ApiError> {
+        let path = paths::group_skill(group_id, slug);
+        if on {
+            self.put(&path).map(|_| ())
+        } else {
+            self.delete(&path).map(|_| ())
+        }
+    }
 }
 
 /// Offline API for `--fake` and the gallery: accepts everything and keeps
 /// schedules, unread counts and bros in memory.
 pub struct FakeApi {
     memories: Mutex<Vec<Memory>>,
+    skills: Mutex<Vec<Skill>>,
+    skill_enabled: Mutex<std::collections::HashSet<(String, String)>>,
     schedules: Mutex<Vec<ScheduleEntry>>,
     unread: Mutex<Vec<Unread>>,
     bros: Mutex<Vec<Bro>>,
@@ -366,6 +444,8 @@ impl FakeApi {
     pub fn new(schedules: Vec<ScheduleEntry>) -> Self {
         Self {
             memories: Mutex::new(Vec::new()),
+            skills: Mutex::new(Vec::new()),
+            skill_enabled: Mutex::new(std::collections::HashSet::new()),
             schedules: Mutex::new(schedules),
             unread: Mutex::new(Vec::new()),
             bros: Mutex::new(Vec::new()),
@@ -543,6 +623,94 @@ impl CardApi for FakeApi {
             .retain(|m| m.id != id);
         Ok(())
     }
+
+    fn skills(&self) -> Result<Vec<Skill>, ApiError> {
+        let mut all = self.skills.lock().expect("fake skills lock").clone();
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(all)
+    }
+
+    fn create_skill(
+        &self,
+        scope: &str,
+        slug: &str,
+        title: &str,
+        instruction: &str,
+    ) -> Result<Skill, ApiError> {
+        let slug = parse_skill_slug(slug)
+            .ok_or_else(|| ApiError::BadRequest("slug 只能是小写字母、数字和连字符".into()))?
+            .to_string();
+        let title = title.trim();
+        let instruction = instruction.trim();
+        if title.is_empty() {
+            return Err(ApiError::BadRequest("请填写标题".into()));
+        }
+        if instruction.is_empty() {
+            return Err(ApiError::BadRequest("请填写说明".into()));
+        }
+        let mut all = self.skills.lock().expect("fake skills lock");
+        if all.iter().any(|s| s.slug == slug) {
+            return Err(ApiError::Conflict("这个 slug 已经有了".into()));
+        }
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let skill = Skill {
+            id: format!("s-{}", uuid_ish()),
+            scope: scope.to_string(),
+            slug,
+            title: title.to_string(),
+            instruction: instruction.to_string(),
+            source: MemorySource::User,
+            status: MemoryStatus::Kept,
+            created_at: now.clone(),
+            updated_at: now,
+            confirm_id: None,
+        };
+        all.push(skill.clone());
+        Ok(skill)
+    }
+
+    fn update_skill(&self, slug: &str, title: &str, instruction: &str) -> Result<Skill, ApiError> {
+        let mut all = self.skills.lock().expect("fake skills lock");
+        let s = all
+            .iter_mut()
+            .find(|s| s.slug == slug)
+            .ok_or_else(|| ApiError::NotFound("技能不存在".into()))?;
+        s.title = title.to_string();
+        s.instruction = instruction.to_string();
+        s.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        Ok(s.clone())
+    }
+
+    fn forget_skill(&self, slug: &str) -> Result<(), ApiError> {
+        let mut all = self.skills.lock().expect("fake skills lock");
+        let before = all.len();
+        all.retain(|s| s.slug != slug);
+        if all.len() == before {
+            // Already gone is fine, like the host's second DELETE.
+            return Ok(());
+        }
+        self.skill_enabled
+            .lock()
+            .expect("fake skill enable lock")
+            .retain(|(_, s)| s != slug);
+        Ok(())
+    }
+
+    fn set_skill_enabled(&self, group_id: &str, slug: &str, on: bool) -> Result<(), ApiError> {
+        let all = self.skills.lock().expect("fake skills lock");
+        if !all.iter().any(|s| s.slug == slug) {
+            return Err(ApiError::NotFound("技能不存在".into()));
+        }
+        drop(all);
+        let mut en = self.skill_enabled.lock().expect("fake skill enable lock");
+        let key = (group_id.to_string(), slug.to_string());
+        if on {
+            en.insert(key);
+        } else {
+            en.remove(&key);
+        }
+        Ok(())
+    }
 }
 
 /// Unique-enough id for fake echoes.
@@ -573,6 +741,12 @@ mod tests {
             "/api/approvals/a1/deny"
         );
         assert_eq!(paths::send_draft("d1"), "/api/cards/d1/send");
+        assert_eq!(paths::SKILLS, "/api/skills");
+        assert_eq!(paths::skill("weekly-report"), "/api/skills/weekly-report");
+        assert_eq!(
+            paths::group_skill("g1", "weekly-report"),
+            "/api/groups/g1/skills/weekly-report"
+        );
         assert_eq!(paths::UNREAD, "/api/unread");
         assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
         assert_eq!(paths::BROS, "/api/bros");
@@ -737,6 +911,63 @@ mod tests {
             let left = api.memories().unwrap();
             assert_eq!(left.len(), 1);
             assert_eq!(left[0].id, mine.id);
+        }
+
+        #[test]
+        fn skills_list_write_edit_forget_toggle_and_409() {
+            let base = spawn_host();
+            let group = group_with_bot(&base);
+            let api = HttpApi::new(Conn::new(&base));
+            assert!(api.skills().unwrap().is_empty());
+
+            let weekly = api
+                .create_skill("user", "weekly-report", "写周报", "先列三点")
+                .unwrap();
+            assert_eq!(weekly.status, MemoryStatus::Kept);
+            let ada = api
+                .create_skill("bot:bot-doc", "ada-notes", "Ada 的笔记", "写短一点")
+                .unwrap();
+            assert!(matches!(
+                api.create_skill("bot:nobody", "x", "x", "x"),
+                Err(ApiError::BadRequest(_))
+            ));
+            assert!(matches!(
+                api.create_skill("user", "Weekly", "x", "x"),
+                Err(ApiError::BadRequest(_))
+            ));
+            assert!(matches!(
+                api.create_skill("user", "weekly-report", "又一条", "说明"),
+                Err(ApiError::Conflict(_))
+            ));
+            assert_eq!(api.skills().unwrap().len(), 2);
+
+            let edited = api
+                .update_skill(&weekly.slug, "周报", "用中文，先结论")
+                .unwrap();
+            assert_eq!(edited.title, "周报");
+            assert_eq!(edited.instruction, "用中文，先结论");
+            assert_eq!(edited.scope, "user");
+
+            api.set_skill_enabled(&group.id, &weekly.slug, true)
+                .unwrap();
+            api.set_skill_enabled(&group.id, &weekly.slug, true)
+                .unwrap();
+            api.set_skill_enabled(&group.id, &weekly.slug, false)
+                .unwrap();
+            assert!(matches!(
+                api.set_skill_enabled(&group.id, "nope", true),
+                Err(ApiError::NotFound(_))
+            ));
+
+            api.forget_skill(&ada.slug).unwrap();
+            api.forget_skill(&ada.slug).unwrap();
+            assert!(matches!(
+                api.forget_skill("nope"),
+                Err(ApiError::NotFound(_))
+            ));
+            let left = api.skills().unwrap();
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].slug, weekly.slug);
         }
 
         #[test]

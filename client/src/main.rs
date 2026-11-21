@@ -26,11 +26,14 @@ use std::time::Duration;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
-use robroz_contract::{ApprovalDecision, Bro, Event, Memory, Said, ScheduleEntry, Unread};
+use robroz_contract::{
+    ApprovalDecision, Bro, ConfirmSubject, Event, Memory, Said, ScheduleEntry, Skill, Unread,
+};
 use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::memories::Book;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
+use robroz_ui::cards::skills::Book as SkillBook;
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
 use robroz_ui::view::{self, color, Action, Caps};
@@ -130,13 +133,16 @@ enum Page {
     Group,
     Routines,
     Memories,
+    Skills,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     OpenRoutines,
     OpenMemories,
+    OpenSkills,
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
+    SkillsLoaded(Result<Vec<Skill>, ApiError>),
     /// PATCH (edit) or POST (new) answered.
     MemorySaved {
         /// `None` for 记一条, the memory id for 改.
@@ -152,6 +158,28 @@ enum Message {
         id: String,
         keep: bool,
         result: Result<Option<Event>, ApiError>,
+    },
+    /// PATCH (edit) or POST (new) answered on the 技能 page.
+    SkillSaved {
+        /// `None` for 加一项, the slug for 改.
+        slug: Option<String>,
+        result: Result<Skill, ApiError>,
+    },
+    SkillForgot {
+        slug: String,
+        result: Result<(), ApiError>,
+    },
+    /// 保存 / 不用 from the 技能 page, answered on the entry's confirm card.
+    SkillDecided {
+        slug: String,
+        keep: bool,
+        result: Result<Option<Event>, ApiError>,
+    },
+    SkillToggled {
+        slug: String,
+        group: String,
+        on: bool,
+        result: Result<(), ApiError>,
     },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
@@ -246,6 +274,8 @@ struct App {
     routines: Routines,
     /// 记忆 page (robroz#62).
     memories: Book,
+    /// 技能 page (robroz#71).
+    skills: SkillBook,
     mode: Mode,
     width: f32,
     loaded: bool,
@@ -340,6 +370,7 @@ impl App {
             unfolded: HashSet::new(),
             routines: Routines::default(),
             memories: Book::default(),
+            skills: SkillBook::default(),
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
@@ -507,6 +538,15 @@ impl App {
             self.memories
                 .answered(memory, *d == ApprovalDecision::Approved);
         }
+        if let Event::Confirm {
+            subject: ConfirmSubject::Skill,
+            slug: Some(slug),
+            decision: Some(d),
+            ..
+        } = event
+        {
+            self.skills.answered(slug, *d == ApprovalDecision::Approved);
+        }
         // Newest change time wins the list preview; a tie goes to the
         // outcome (see `model::preview_wins`), not to arrival order.
         let at = change_time(event);
@@ -607,6 +647,29 @@ impl App {
             .collect();
     }
 
+    fn load_skills(&mut self) -> Task<Message> {
+        self.sync_skill_context();
+        Task::batch([
+            Task::perform(call(&self.api, |api| api.skills()), Message::SkillsLoaded),
+            self.load_bros(),
+        ])
+    }
+
+    /// Bro names and chats for the 技能 page (scope labels and toggles).
+    fn sync_skill_context(&mut self) {
+        self.skills.bros = self
+            .bros
+            .iter()
+            .map(|b| (b.id.clone(), b.name.clone()))
+            .collect();
+        self.skills.chats = self
+            .convs
+            .rows()
+            .iter()
+            .map(|c| (c.group_id.clone(), c.name.clone()))
+            .collect();
+    }
+
     fn on_memory_action(&mut self, action: Action) -> Task<Message> {
         let book = &mut self.memories;
         match action {
@@ -692,6 +755,113 @@ impl App {
         Task::none()
     }
 
+    fn on_skill_action(&mut self, action: Action) -> Task<Message> {
+        let book = &mut self.skills;
+        match action {
+            Action::SkillAddOpen => book.open_add(),
+            Action::SkillAddClose => book.close_add(),
+            Action::SkillAddSlug { text } => {
+                if let Some(new) = &mut book.adding {
+                    new.slug = text;
+                }
+            }
+            Action::SkillAddTitle { text } => {
+                if let Some(new) = &mut book.adding {
+                    new.title = text;
+                }
+            }
+            Action::SkillAddInstruction { text } => {
+                if let Some(new) = &mut book.adding {
+                    new.instruction = text;
+                }
+            }
+            Action::SkillAddScope { scope } => {
+                if let Some(new) = &mut book.adding {
+                    new.scope = Some(scope);
+                }
+            }
+            Action::SkillAddSave => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some(new) = book.add_to_send() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let scope = new.scope.clone().unwrap_or_default();
+                let job = call(&self.api, move |api| {
+                    api.create_skill(&scope, &new.slug, &new.title, &new.instruction)
+                });
+                return Task::perform(job, |result| Message::SkillSaved { slug: None, result });
+            }
+            Action::SkillEdit { slug } => book.start_edit(&slug),
+            Action::SkillEditTitle { text } => book.edit_title(text),
+            Action::SkillEditInstruction { text } => book.edit_instruction(text),
+            Action::SkillEditCancel => book.cancel_edit(),
+            Action::SkillEditSave => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some((slug, title, instruction)) = book.edit_to_save() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let key = slug.clone();
+                let job = call(&self.api, move |api| {
+                    api.update_skill(&key, &title, &instruction)
+                });
+                return Task::perform(job, move |result| Message::SkillSaved {
+                    slug: Some(slug.clone()),
+                    result,
+                });
+            }
+            Action::SkillDecide { slug, keep } => {
+                let Some(card) = book.decide_to_send(&slug) else {
+                    return Task::none();
+                };
+                let job = call(&self.api, move |api| api.decide(&card, keep));
+                return Task::perform(job, move |result| Message::SkillDecided {
+                    slug: slug.clone(),
+                    keep,
+                    result,
+                });
+            }
+            Action::SkillDeleteAsk { slug } => book.ask_delete(&slug),
+            Action::SkillDeleteCancel => book.cancel_delete(),
+            Action::SkillDeleteConfirm => {
+                if book.busy {
+                    return Task::none();
+                }
+                let Some(slug) = book.delete_to_send() else {
+                    return Task::none();
+                };
+                book.busy = true;
+                let key = slug.clone();
+                let job = call(&self.api, move |api| api.forget_skill(&key));
+                return Task::perform(job, move |result| Message::SkillForgot {
+                    slug: slug.clone(),
+                    result,
+                });
+            }
+            Action::SkillToggleInstruction { slug } => book.toggle_instruction(&slug),
+            Action::SkillToggleGroup { slug, group } => {
+                let Some(on) = book.toggle_to_send(&slug, &group) else {
+                    return Task::none();
+                };
+                let (s, g) = (slug.clone(), group.clone());
+                let job = call(&self.api, move |api| api.set_skill_enabled(&g, &s, on));
+                return Task::perform(job, move |result| Message::SkillToggled {
+                    slug: slug.clone(),
+                    group: group.clone(),
+                    on,
+                    result,
+                });
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::MemoryAddOpen
@@ -708,6 +878,24 @@ impl App {
             | Action::MemoryForgetConfirm
             | Action::MemoryForgetCancel
             | Action::MemoryDecide { .. } => self.on_memory_action(action),
+            Action::SkillAddOpen
+            | Action::SkillAddClose
+            | Action::SkillAddSlug { .. }
+            | Action::SkillAddTitle { .. }
+            | Action::SkillAddInstruction { .. }
+            | Action::SkillAddScope { .. }
+            | Action::SkillAddSave
+            | Action::SkillEdit { .. }
+            | Action::SkillEditTitle { .. }
+            | Action::SkillEditInstruction { .. }
+            | Action::SkillEditSave
+            | Action::SkillEditCancel
+            | Action::SkillDeleteAsk { .. }
+            | Action::SkillDeleteConfirm
+            | Action::SkillDeleteCancel
+            | Action::SkillDecide { .. }
+            | Action::SkillToggleInstruction { .. }
+            | Action::SkillToggleGroup { .. } => self.on_skill_action(action),
             Action::ToggleInstruction { card } => {
                 let ui = self.ui.entry(card).or_default();
                 ui.more_open = !ui.more_open;
@@ -857,6 +1045,11 @@ impl App {
                 self.narrow_open = true;
                 return self.load_memories();
             }
+            Message::OpenSkills => {
+                self.page = Page::Skills;
+                self.narrow_open = true;
+                return self.load_skills();
+            }
             Message::MemoriesLoaded(result) => match result {
                 Ok(list) => {
                     self.memories.load(list);
@@ -898,6 +1091,57 @@ impl App {
             Message::MemoryForgot { id, result } => match result {
                 Ok(()) | Err(ApiError::NotFound(_)) => self.memories.forgotten(&id),
                 Err(err) => self.memories.entry_failed(&id, &err.reason()),
+            },
+            Message::SkillsLoaded(result) => {
+                self.sync_skill_context();
+                match result {
+                    Ok(list) => {
+                        self.skills.load(list);
+                        self.skills.note = None;
+                    }
+                    Err(err) => self.skills.note = Some(err.reason()),
+                }
+            }
+            Message::SkillSaved { slug, result } => match (slug, result) {
+                (None, Ok(s)) => self.skills.added(s),
+                (Some(_), Ok(s)) => self.skills.saved(s),
+                (None, Err(err)) => self.skills.add_failed(&err.reason()),
+                (Some(slug), Err(err)) => self.skills.entry_failed(&slug, &err.reason()),
+            },
+            Message::SkillDecided { slug, keep, result } => match result {
+                Ok(reply) => {
+                    self.skills.decided(&slug, keep);
+                    if let Some(event @ Event::Confirm { .. }) = reply {
+                        let card = robroz_ui::cards::confirm::ConfirmCard::from_event(&event);
+                        let group = card.and_then(|c| self.find_card(&c.id)).map(|(g, _)| g);
+                        if let Some(group) = group {
+                            self.apply_event(group, &event);
+                        }
+                    }
+                }
+                Err(ApiError::Conflict(_)) => {
+                    self.skills.decide_failed(&slug, confirm::ALREADY_ANSWERED);
+                    return Task::perform(
+                        call(&self.api, |api| api.skills()),
+                        Message::SkillsLoaded,
+                    );
+                }
+                Err(err) => self
+                    .skills
+                    .decide_failed(&slug, &confirm::decide_failed(&err.reason())),
+            },
+            Message::SkillForgot { slug, result } => match result {
+                Ok(()) | Err(ApiError::NotFound(_)) => self.skills.deleted(&slug),
+                Err(err) => self.skills.entry_failed(&slug, &err.reason()),
+            },
+            Message::SkillToggled {
+                slug,
+                group,
+                on,
+                result,
+            } => match result {
+                Ok(()) => self.skills.toggled(&slug, &group, on),
+                Err(err) => self.skills.entry_failed(&slug, &err.reason()),
             },
             Message::Back => self.narrow_open = false,
             Message::UnreadTick => return self.load_unread(),
@@ -1176,6 +1420,9 @@ impl App {
                                 if let Some(m) = &c.memory_id {
                                     self.memories.answered(m, approve);
                                 }
+                                if let Some(slug) = &c.slug {
+                                    self.skills.answered(slug, approve);
+                                }
                                 self.set_card(&group, Card::Confirm(c));
                             }
                             _ => {}
@@ -1387,7 +1634,15 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Memories))
             .on_press(Message::OpenMemories);
-        container(column![scrollable(list).height(Fill), routines, memories].spacing(4))
+        let skills = button(text(robroz_ui::cards::skills::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::Skills))
+            .on_press(Message::OpenSkills);
+        container(column![scrollable(list).height(Fill), routines, memories, skills].spacing(4))
             .width(width)
             .height(Fill)
             .padding(8)
@@ -1410,6 +1665,19 @@ impl App {
                 container(view::memories_panel(t, &self.memories, now_unix()).map(Message::Ui))
                     .padding(t.metrics.stream_padding)
                     .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
+        if self.page == Page::Skills {
+            return scrollable(
+                container(
+                    view::skills_panel(t, &self.skills, now_unix(), self.content_width(t))
+                        .map(Message::Ui),
+                )
+                .padding(t.metrics.stream_padding)
+                .width(Fill),
             )
             .height(Fill)
             .width(Fill)
