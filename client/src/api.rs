@@ -44,6 +44,10 @@ pub mod paths {
     pub fn group_skill(group_id: &str, slug: &str) -> String {
         format!("/api/groups/{group_id}/skills/{slug}")
     }
+    /// robroz#75: list skills enabled in this group.
+    pub fn group_skills(group_id: &str) -> String {
+        format!("/api/groups/{group_id}/skills")
+    }
     /// robroz#15.
     pub fn answer_choice(id: &str) -> String {
         format!("/api/choices/{id}/answer")
@@ -213,6 +217,8 @@ pub trait CardApi: Send + Sync {
     fn forget_skill(&self, slug: &str) -> Result<(), ApiError>;
     /// Enable or disable a kept skill in this group.
     fn set_skill_enabled(&self, group_id: &str, slug: &str, on: bool) -> Result<(), ApiError>;
+    /// Skills this group has turned on (robroz#75). Missing group is 404.
+    fn group_skills(&self, group_id: &str) -> Result<Vec<Skill>, ApiError>;
 }
 
 pub struct HttpApi {
@@ -426,6 +432,10 @@ impl CardApi for HttpApi {
         } else {
             self.delete(&path).map(|_| ())
         }
+    }
+
+    fn group_skills(&self, group_id: &str) -> Result<Vec<Skill>, ApiError> {
+        Ok(decode::<Skills>(&self.get(&paths::group_skills(group_id))?)?.skills)
     }
 }
 
@@ -711,6 +721,18 @@ impl CardApi for FakeApi {
         }
         Ok(())
     }
+
+    fn group_skills(&self, group_id: &str) -> Result<Vec<Skill>, ApiError> {
+        let enabled = self
+            .skill_enabled
+            .lock()
+            .expect("fake skill enable lock")
+            .clone();
+        let mut all = self.skills.lock().expect("fake skills lock").clone();
+        all.retain(|s| enabled.contains(&(group_id.to_string(), s.slug.clone())));
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(all)
+    }
 }
 
 /// Unique-enough id for fake echoes.
@@ -747,6 +769,7 @@ mod tests {
             paths::group_skill("g1", "weekly-report"),
             "/api/groups/g1/skills/weekly-report"
         );
+        assert_eq!(paths::group_skills("g1"), "/api/groups/g1/skills");
         assert_eq!(paths::UNREAD, "/api/unread");
         assert_eq!(paths::mark_read("g1"), "/api/groups/g1/read");
         assert_eq!(paths::BROS, "/api/bros");
@@ -948,14 +971,23 @@ mod tests {
             assert_eq!(edited.instruction, "用中文，先结论");
             assert_eq!(edited.scope, "user");
 
+            assert!(api.group_skills(&group.id).unwrap().is_empty());
             api.set_skill_enabled(&group.id, &weekly.slug, true)
                 .unwrap();
             api.set_skill_enabled(&group.id, &weekly.slug, true)
                 .unwrap();
+            let on = api.group_skills(&group.id).unwrap();
+            assert_eq!(on.len(), 1);
+            assert_eq!(on[0].slug, weekly.slug);
             api.set_skill_enabled(&group.id, &weekly.slug, false)
                 .unwrap();
+            assert!(api.group_skills(&group.id).unwrap().is_empty());
             assert!(matches!(
                 api.set_skill_enabled(&group.id, "nope", true),
+                Err(ApiError::NotFound(_))
+            ));
+            assert!(matches!(
+                api.group_skills("missing"),
                 Err(ApiError::NotFound(_))
             ));
 
