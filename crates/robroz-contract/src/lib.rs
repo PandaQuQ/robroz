@@ -727,8 +727,27 @@ pub struct ErrorBody {
     pub error: String,
 }
 
-/// `GET /api/settings/search`. `provider` is `null` when search is not set up.
-/// The key is never returned; only `hasKey` and `keyLast4`.
+/// Where the effective search config comes from. Settings win over
+/// environment variables. Absent when search is not set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchSettingsSource {
+    Env,
+    Settings,
+}
+
+impl SearchSettingsSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchSettingsSource::Env => "env",
+            SearchSettingsSource::Settings => "settings",
+        }
+    }
+}
+
+/// `GET /api/settings/search` and the `PUT` response. `provider` is `null`
+/// when search is not set up. The key is never returned; only `hasKey` and
+/// `keyLast4`. `source` is omitted when nothing is configured.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchSettings {
@@ -736,6 +755,10 @@ pub struct SearchSettings {
     pub url: Option<String>,
     pub has_key: bool,
     pub key_last4: Option<String>,
+    /// `settings` if any search setting is saved, otherwise `env`.
+    /// Absent when search is not set up, so old JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SearchSettingsSource>,
 }
 
 /// `POST /api/settings/search/test`.
