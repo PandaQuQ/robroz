@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use robroz_contract::{SearchSettings, SearchTestResult};
+use robroz_contract::{SearchSettings, SearchSettingsSource, SearchTestResult};
 use robroz_policy::SideEffect;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
@@ -119,6 +119,7 @@ impl EffectiveConfig {
             },
             has_key: self.key.is_some(),
             key_last4: self.last4(),
+            source: None,
         }
     }
 
@@ -159,14 +160,29 @@ pub fn effective_config(conn: &Connection) -> rusqlite::Result<Option<EffectiveC
     }
 }
 
+fn settings_are_set(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(setting(conn, SETTING_PROVIDER)?.is_some()
+        || setting(conn, SETTING_URL)?.is_some()
+        || setting(conn, SETTING_KEY)?.is_some())
+}
+
 fn public_settings(conn: &Connection) -> rusqlite::Result<SearchSettings> {
     match effective_config(conn)? {
-        Some(cfg) => Ok(cfg.public()),
+        Some(cfg) => {
+            let mut body = cfg.public();
+            body.source = Some(if settings_are_set(conn)? {
+                SearchSettingsSource::Settings
+            } else {
+                SearchSettingsSource::Env
+            });
+            Ok(body)
+        }
         None => Ok(SearchSettings {
             provider: None,
             url: None,
             has_key: false,
             key_last4: None,
+            source: None,
         }),
     }
 }
@@ -911,6 +927,19 @@ mod test_env {
     }
 
     pub fn with(pairs: &[(&str, &str)], f: impl FnOnce()) {
+        let _guard = set(pairs);
+        f();
+    }
+
+    pub struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ENV.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    pub fn set(pairs: &[(&str, &str)]) -> Guard {
         ENV.with(|slot| {
             *slot.borrow_mut() = Some(
                 pairs
@@ -919,8 +948,7 @@ mod test_env {
                     .collect(),
             );
         });
-        f();
-        ENV.with(|slot| *slot.borrow_mut() = None);
+        Guard
     }
 }
 
@@ -995,6 +1023,36 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn public_settings_source_is_env_settings_or_absent() {
+        let conn = mem_db();
+        let body = public_settings(&conn).unwrap();
+        assert!(body.source.is_none());
+        assert!(body.provider.is_none());
+
+        test_env::with(
+            &[(ENV_PROVIDER, "brave"), (ENV_BRAVE_KEY, "envkeyXXXX")],
+            || {
+                let body = public_settings(&conn).unwrap();
+                assert_eq!(body.source, Some(SearchSettingsSource::Env));
+                assert_eq!(body.provider.as_deref(), Some("brave"));
+                assert_eq!(body.key_last4.as_deref(), Some("XXXX"));
+
+                upsert_setting(&conn, SETTING_PROVIDER, Some("brave")).unwrap();
+                upsert_setting(&conn, SETTING_KEY, Some("setkeyABCD")).unwrap();
+                let body = public_settings(&conn).unwrap();
+                assert_eq!(body.source, Some(SearchSettingsSource::Settings));
+                assert_eq!(body.key_last4.as_deref(), Some("ABCD"));
+
+                upsert_setting(&conn, SETTING_PROVIDER, None).unwrap();
+                upsert_setting(&conn, SETTING_KEY, None).unwrap();
+                let body = public_settings(&conn).unwrap();
+                assert_eq!(body.source, Some(SearchSettingsSource::Env));
+                assert_eq!(body.key_last4.as_deref(), Some("XXXX"));
+            },
+        );
     }
 
     #[test]
@@ -1235,6 +1293,7 @@ mod tests {
         assert_eq!(body["hasKey"], false);
         assert_eq!(body["keyLast4"], Value::Null);
         assert!(body.get("key").is_none(), "{body}");
+        assert!(body.get("source").is_none(), "{body}");
 
         let key = "secret-key-ABCD";
         let (status, body) = http(
@@ -1250,6 +1309,7 @@ mod tests {
         assert_eq!(body["provider"], "brave");
         assert_eq!(body["hasKey"], true);
         assert_eq!(body["keyLast4"], "ABCD");
+        assert_eq!(body["source"], "settings");
         assert!(body.get("key").is_none(), "{body}");
         let raw = body.to_string();
         assert!(!raw.contains(key), "GET/PUT must not echo the key: {raw}");
@@ -1302,6 +1362,54 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{body}");
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"], NOT_CONFIGURED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_source_is_env_settings_or_absent() {
+        let (_db, app) = search_app();
+
+        let (status, body) = http(&app, get_req("/api/settings/search")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert!(body.get("source").is_none(), "unconfigured omits source: {body}");
+
+        let env = [(ENV_PROVIDER, "brave"), (ENV_BRAVE_KEY, "envkeyXXXX")];
+        let _guard = test_env::set(&env);
+        let (status, body) = http(&app, get_req("/api/settings/search")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["source"], "env");
+        assert_eq!(body["provider"], "brave");
+        assert_eq!(body["keyLast4"], "XXXX");
+        assert!(body.get("key").is_none(), "{body}");
+
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/search",
+                json!({ "provider": "brave", "key": "setkeyABCD" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["source"], "settings", "PUT body carries source");
+        assert_eq!(body["keyLast4"], "ABCD");
+
+        let (status, body) = http(&app, get_req("/api/settings/search")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["source"], "settings");
+
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/search",
+                json!({ "provider": null, "url": null, "key": null }),
+            ),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["source"], "env", "cleared settings fall back to env");
+        assert_eq!(body["keyLast4"], "XXXX");
     }
 
     #[tokio::test]
