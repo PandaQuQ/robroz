@@ -321,6 +321,37 @@ fn list_enabled_for_group(conn: &Connection, group_id: &str) -> rusqlite::Result
     rows.collect()
 }
 
+/// A server that is both globally enabled and turned on for this group.
+pub(crate) struct ReadyServer {
+    pub id: String,
+    pub name: String,
+    pub config: robroz_mcp::ConnectConfig,
+}
+
+pub(crate) fn ready_servers_for_group(
+    conn: &Connection,
+    group_id: &str,
+) -> rusqlite::Result<Vec<ReadyServer>> {
+    let rows = list_enabled_for_group(conn, group_id)?;
+    let mut out = Vec::new();
+    for row in rows {
+        if !row.enabled {
+            continue;
+        }
+        match row.connect_config() {
+            Ok(config) => out.push(ReadyServer {
+                id: row.id,
+                name: row.name,
+                config,
+            }),
+            Err(err) => {
+                eprintln!("mcp: skip server {} ({err})", row.id);
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn insert_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO mcp_servers (id, name, transport, command, args, url, secrets, enabled, tool_count, created_at, updated_at)

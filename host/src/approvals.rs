@@ -1,17 +1,20 @@
 //! Approval cards: a bot in the group asks before it deletes, sends or spends.
 //! The person approves or denies once, each through its own endpoint.
 
+use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::body::Bytes;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    clean_answered_by, Answer, ApprovalAction, ApprovalDecision, CreateApproval, Event, APPROVAL_SUMMARY_MAX,
+    clean_answered_by, Answer, ApprovalAction, ApprovalDecision, CreateApproval, Event,
+    APPROVAL_SUMMARY_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent};
+use crate::{
+    db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent,
+};
 
 pub(crate) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS approvals (
@@ -29,7 +32,7 @@ pub(crate) const SCHEMA: &str = "
 
 /// Approval cards only: confirm cards (`subject_kind` set) live in [`crate::proposals`].
 const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
-            a.task_id
+            a.task_id, a.mcp_server, a.mcp_tool
      FROM approvals a JOIN bots b ON b.id = a.bot_id";
 const APPROVALS_ONLY: &str = "a.subject_kind IS NULL";
 
@@ -38,6 +41,7 @@ fn action_text(action: ApprovalAction) -> &'static str {
         ApprovalAction::Delete => "delete",
         ApprovalAction::Send => "send",
         ApprovalAction::Spend => "spend",
+        ApprovalAction::Call => "call",
     }
 }
 
@@ -49,14 +53,23 @@ pub(crate) fn decision_text(decision: ApprovalDecision) -> &'static str {
 }
 
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, format!("unknown value {text:?}").into())
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        format!("unknown value {text:?}").into(),
+    )
 }
 
 fn parse_action(text: String) -> rusqlite::Result<ApprovalAction> {
-    [ApprovalAction::Delete, ApprovalAction::Send, ApprovalAction::Spend]
-        .into_iter()
-        .find(|a| action_text(*a) == text)
-        .ok_or_else(|| bad_column(3, &text))
+    [
+        ApprovalAction::Delete,
+        ApprovalAction::Send,
+        ApprovalAction::Spend,
+        ApprovalAction::Call,
+    ]
+    .into_iter()
+    .find(|a| action_text(*a) == text)
+    .ok_or_else(|| bad_column(3, &text))
 }
 
 pub(crate) fn parse_decision(text: String) -> rusqlite::Result<ApprovalDecision> {
@@ -82,28 +95,45 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         answered_at: row.get(8)?,
         answered_by: row.get(9)?,
         task_id: row.get(10)?,
+        mcp_server: row.get(11)?,
+        mcp_tool: row.get(12)?,
     })
 }
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
-    conn.query_row(&format!("{SELECT} WHERE a.id = ?1 AND {APPROVALS_ONLY}"), [id], event_from_row).optional()
+    conn.query_row(
+        &format!("{SELECT} WHERE a.id = ?1 AND {APPROVALS_ONLY}"),
+        [id],
+        event_from_row,
+    )
+    .optional()
 }
 
 /// Approval events for one group, for the events stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
-    let mut stmt = conn.prepare(&format!("{SELECT} WHERE a.group_id = ?1 AND {APPROVALS_ONLY}"))?;
+    let mut stmt = conn.prepare(&format!(
+        "{SELECT} WHERE a.group_id = ?1 AND {APPROVALS_ONLY}"
+    ))?;
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;
         let created_at: String = row.get(7)?;
         let answered_at: Option<String> = row.get(8)?;
         let changed_at = answered_at.unwrap_or_else(|| created_at.clone());
-        Ok(TimedEvent { created_at, changed_at, id, event: event_from_row(row)? })
+        Ok(TimedEvent {
+            created_at,
+            changed_at,
+            id,
+            event: event_from_row(row)?,
+        })
     })?;
     rows.collect()
 }
 
 /// Trims summary and path; summary is one non-empty line, path is optional.
-pub fn validate(summary: &str, path: Option<&str>) -> Result<(String, Option<String>), &'static str> {
+pub fn validate(
+    summary: &str,
+    path: Option<&str>,
+) -> Result<(String, Option<String>), &'static str> {
     let summary = summary.trim();
     if summary.is_empty() {
         return Err("请填写要做什么");
@@ -111,7 +141,10 @@ pub fn validate(summary: &str, path: Option<&str>) -> Result<(String, Option<Str
     if summary.chars().count() > APPROVAL_SUMMARY_MAX || summary.contains('\n') {
         return Err("说明只能一行，最多 200 字");
     }
-    let path = path.map(str::trim).filter(|p| !p.is_empty()).map(String::from);
+    let path = path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from);
     Ok((summary.to_string(), path))
 }
 
@@ -132,7 +165,10 @@ pub(crate) async fn create_approval(
             |row| row.get(0),
         )?;
         if member == 0 {
-            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "这个 Bot 不在群里")));
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "这个 Bot 不在群里",
+            )));
         }
         let (summary, path) = match validate(&body.summary, body.path.as_deref()) {
             Ok(clean) => clean,
@@ -179,7 +215,13 @@ fn gate_line(prompt: &str) -> String {
 
 /// A blocked task asks before writing outside. The card names the task and
 /// the blocking line; answering it resumes or ends that task.
-pub(crate) fn gate_task(conn: &Connection, task_id: &str, prompt: &str, hash: &str, now: &str) -> rusqlite::Result<()> {
+pub(crate) fn gate_task(
+    conn: &Connection,
+    task_id: &str,
+    prompt: &str,
+    hash: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash)
          SELECT ?1, group_id, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4 FROM tasks WHERE id = ?5",
@@ -189,23 +231,67 @@ pub(crate) fn gate_task(conn: &Connection, task_id: &str, prompt: &str, hash: &s
 }
 
 /// What a gated card points at, if it was raised by a task.
+/// An MCP tool call waiting for approval. `action` is `call`; the card
+/// carries `mcp_server` and `mcp_tool`.
+pub(crate) fn gate_mcp_task(
+    conn: &Connection,
+    task_id: &str,
+    summary: &str,
+    hash: &str,
+    now: &str,
+    server: &str,
+    tool: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash, mcp_server, mcp_tool)
+         SELECT ?1, group_id, assignee_bot_id, 'call', ?2, NULL, NULL, ?3, NULL, id, ?4, ?5, ?6 FROM tasks WHERE id = ?7",
+        params![new_id(), summary, now, hash, server, tool, task_id],
+    )?;
+    Ok(())
+}
+
+fn is_mcp_card(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Approval {
+            action: ApprovalAction::Call,
+            ..
+        }
+    )
+}
+
 fn gate_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, String)>> {
     Ok(conn
-        .query_row("SELECT task_id, intent_hash FROM approvals WHERE id = ?1", [id], |r| {
-            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
-        })
+        .query_row(
+            "SELECT task_id, intent_hash FROM approvals WHERE id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
         .optional()?
         .and_then(|(task, hash)| task.zip(hash)))
 }
 
 /// Apply the answer to the task, only if it is still blocked on that line
 /// (a takeover through `/resume` may have moved it on already).
-fn settle_task(conn: &Connection, task_id: &str, hash: &str, decision: ApprovalDecision) -> rusqlite::Result<()> {
+fn settle_task(
+    conn: &Connection,
+    task_id: &str,
+    hash: &str,
+    decision: ApprovalDecision,
+) -> rusqlite::Result<()> {
     // Denied is done without the work: say so, so the card is not a green "done".
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
         ApprovalDecision::Denied => {
-            let prompt: String = conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))?;
+            let prompt: String =
+                conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| {
+                    r.get(0)
+                })?;
             ("done", Some(format!("你拒绝了：{}", gate_line(&prompt))))
         }
     };
@@ -232,33 +318,81 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
     let result = (|| {
         // A confirm card answers the same way but settles what a bro proposed.
         if crate::proposals::is_confirm(&conn, id)? {
-            return Ok(crate::proposals::answer(&mut conn, id, decision, by.as_deref())?
-                .map_err(|(status, message)| error_response(status, message)));
+            return Ok(
+                crate::proposals::answer(&mut conn, id, decision, by.as_deref())?
+                    .map_err(|(status, message)| error_response(status, message)),
+            );
         }
         let Some(card) = load(&conn, id)? else {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
         };
-        if matches!(card, Event::Approval { decision: Some(_), .. }) {
+        if matches!(
+            card,
+            Event::Approval {
+                decision: Some(_),
+                ..
+            }
+        ) {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
         }
         let gate = gate_of(&conn, id)?;
+        let mcp = is_mcp_card(&card);
         // Marker first: if it can't be written nothing changes and the card stays open.
-        if let (Some((task_id, hash)), ApprovalDecision::Approved) = (&gate, decision) {
-            if let Err(err) = robroz_runner::append_takeover(&state.control_root.join(task_id), hash) {
+        if let (Some((task_id, _hash)), ApprovalDecision::Approved) = (&gate, decision) {
+            if mcp {
+                if let Err(err) = crate::mcp_tools::mark_approved(&state.control_root.join(task_id))
+                {
+                    eprintln!("approve {id}: mcp pending for {task_id}: {err}");
+                    return Ok(Err(error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "批准失败，无法写入继续标记",
+                    )));
+                }
+            } else if let Err(err) =
+                robroz_runner::append_takeover(&state.control_root.join(task_id), _hash)
+            {
                 eprintln!("approve {id}: takeover for {task_id}: {err}");
-                return Ok(Err(error_response(StatusCode::INTERNAL_SERVER_ERROR, "批准失败，无法写入接管标记")));
+                return Ok(Err(error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "批准失败，无法写入接管标记",
+                )));
             }
         }
+        let now = now_rfc3339();
         let tx = conn.transaction()?;
         let changed = tx.execute(
             "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4 WHERE id = ?3 AND decision IS NULL",
-            params![decision_text(decision), now_rfc3339(), id, by],
+            params![decision_text(decision), now, id, by],
         )?;
         if changed == 0 {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
         }
         if let Some((task_id, hash)) = &gate {
-            settle_task(&tx, task_id, hash, decision)?;
+            if mcp {
+                match decision {
+                    ApprovalDecision::Approved => {
+                        crate::mcp_tools::queue_approved(&tx, task_id, hash, &now)?;
+                    }
+                    ApprovalDecision::Denied => {
+                        let line = match &card {
+                            Event::Approval {
+                                mcp_server: Some(s),
+                                mcp_tool: Some(tool),
+                                ..
+                            } => {
+                                format!("{s}.{tool}")
+                            }
+                            Event::Approval { summary, .. } => summary.clone(),
+                            _ => "MCP 工具".into(),
+                        };
+                        let failure = format!("你拒绝了：{line}");
+                        crate::mcp_tools::finish_denied(&tx, task_id, hash, &failure, &now)?;
+                        let _ = crate::mcp_tools::remove_pending(&state.control_root.join(task_id));
+                    }
+                }
+            } else {
+                settle_task(&tx, task_id, hash, decision)?;
+            }
         }
         tx.commit()?;
         Ok(Ok(load(&conn, id)?.expect("approval exists")))
@@ -277,16 +411,24 @@ fn answered_by(body: &[u8]) -> Result<Option<String>, (StatusCode, &'static str)
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
-    let answer: Answer =
-        serde_json::from_slice(body).map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
+    let answer: Answer = serde_json::from_slice(body)
+        .map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
     clean_answered_by(answer.answered_by.as_deref()).map_err(|m| (StatusCode::BAD_REQUEST, m))
 }
 
-pub(crate) async fn approve(State(state): State<AppState>, AxumPath(id): AxumPath<String>, body: Bytes) -> Response {
+pub(crate) async fn approve(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
     decide(&state, &id, ApprovalDecision::Approved, &body)
 }
 
-pub(crate) async fn deny(State(state): State<AppState>, AxumPath(id): AxumPath<String>, body: Bytes) -> Response {
+pub(crate) async fn deny(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
     decide(&state, &id, ApprovalDecision::Denied, &body)
 }
 
@@ -296,7 +438,10 @@ mod tests {
 
     #[test]
     fn summary_is_one_trimmed_line_and_path_is_optional() {
-        assert_eq!(validate("  删缓存 ", Some(" target/ ")), Ok(("删缓存".into(), Some("target/".into()))));
+        assert_eq!(
+            validate("  删缓存 ", Some(" target/ ")),
+            Ok(("删缓存".into(), Some("target/".into())))
+        );
         assert_eq!(validate("删缓存", Some("  ")), Ok(("删缓存".into(), None)));
         assert!(validate("   ", None).is_err());
         assert!(validate("两行\n不行", None).is_err());

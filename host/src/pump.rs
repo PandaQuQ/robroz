@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use robroz_policy::{blocking_effect, meter, tier, OverQuota, SideEffect, Tier};
@@ -38,6 +38,8 @@ pub struct PumpConfig<'a> {
     pub model: Option<&'a dyn robroz_model::Model>,
     /// Tools the model may call. Empty: the request has no `tools` field.
     pub tools: &'a crate::tools::ToolRegistry,
+    /// MCP servers enabled for a task's group. `None` skips MCP registration.
+    pub mcp: Option<Arc<dyn crate::mcp_tools::McpRuntime>>,
 }
 
 struct TaskRow {
@@ -80,6 +82,7 @@ pub fn pump(
             get_limit,
             model: None,
             tools: crate::tools::ToolRegistry::empty(),
+            mcp: None,
         },
     )
 }
@@ -121,6 +124,7 @@ fn start_task(
         );
         return Ok(());
     }
+    let mcp_resume = crate::mcp_tools::pending_is_approved(&control_dir);
     // A leftover intent would make this run look blocked again.
     if let Err(err) = remove_intent(&group_dir, &task.id) {
         eprintln!(
@@ -157,12 +161,20 @@ fn start_task(
         } else {
             None
         };
-        let claimed = conn.execute(
-            "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3,
-                              get_count = 0, needs_setup = NULL
-             WHERE id = ?2 AND state = 'queued'",
-            params![claimed_at, task.id, first],
-        )?;
+        let claimed = if mcp_resume {
+            conn.execute(
+                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3
+                 WHERE id = ?2 AND state = 'queued'",
+                params![claimed_at, task.id, first],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3,
+                                  get_count = 0, needs_setup = NULL
+                 WHERE id = ?2 AND state = 'queued'",
+                params![claimed_at, task.id, first],
+            )?
+        };
         Ok((claimed, section))
     })?;
     if claimed == 0 {
@@ -170,6 +182,12 @@ fn start_task(
     }
     let mut reply_progress = None;
     if cfg.model.is_some() {
+        let mut tools = cfg.tools.clone();
+        if let Some(mcp) = cfg.mcp.clone() {
+            let servers =
+                db.with(|conn| crate::mcp::ready_servers_for_group(conn, &task.group_id))?;
+            crate::mcp_tools::register_tools(&mut tools, &servers, mcp);
+        }
         let reply = write_reply(
             db,
             &control_dir,
@@ -177,14 +195,46 @@ fn start_task(
             &task.prompt,
             memory_section.as_deref(),
             cfg,
+            &tools,
         );
-        reply_progress = reply.progress;
+        reply_progress = reply.progress.clone();
         db.with(|conn| {
             conn.execute(
                 "UPDATE tasks SET get_count = ?1, needs_setup = ?2, failure = COALESCE(?3, failure) WHERE id = ?4",
                 params![reply.get_count as i64, reply.needs_setup, reply.failure, task.id],
             )
         })?;
+        if let Some(pending) = reply.pending {
+            let updated_at = newer_than(&claimed_at);
+            if let Err(err) = crate::mcp_tools::save_pending(&control_dir, &pending) {
+                eprintln!("pump: save mcp pending for {}: {err}", task.id);
+                db.with(|conn| {
+                    write_outcome(
+                        conn,
+                        task,
+                        &Outcome::Failed(format!("无法保存审批状态：{err}")),
+                        reply.get_count as i64,
+                        &updated_at,
+                        &crate::sandbox::result_rel(&task.id),
+                        &[],
+                    )
+                })?;
+                return Ok(());
+            }
+            db.with(|conn| {
+                block_mcp_task(conn, task, &pending, &updated_at, reply.get_count as i64)
+            })?;
+            return Ok(());
+        }
+        if mcp_resume {
+            let _ = crate::mcp_tools::remove_pending(&control_dir);
+            db.with(|conn| {
+                conn.execute(
+                    "UPDATE tasks SET intent_kind = NULL, intent_line = NULL, intent_hash = NULL WHERE id = ?1",
+                    [&task.id],
+                )
+            })?;
+        }
         if reply.over_quota {
             let updated_at = newer_than(&claimed_at);
             db.with(|conn| {
@@ -484,34 +534,82 @@ fn write_reply(
     prompt: &str,
     memory_section: Option<&str>,
     cfg: &PumpConfig<'_>,
+    tools: &crate::tools::ToolRegistry,
 ) -> Reply {
     let model = cfg.model.expect("write_reply requires a model");
-    let tools = cfg.tools;
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
     let mut ctx = crate::tools::ToolCtx::new(cfg.get_limit);
-    let (mut text, failure, over_quota) = if tools.is_empty() {
+    let resume = crate::mcp_tools::pending_is_approved(control_dir);
+    if resume {
+        if let Ok(pending) = crate::mcp_tools::load_approved(control_dir) {
+            ctx.used = pending.used;
+            ctx.needs_setup = pending.needs_setup.clone();
+        }
+    }
+    let mut on_using = |name: &str| {
+        let line = format!("在用 {name}");
+        if let Err(err) = db.with(|conn| progress::set_progress(conn, task_id, &line)) {
+            eprintln!("pump: progress for {task_id}: {err}");
+        }
+    };
+    let (mut text, failure, over_quota, pending) = if resume {
+        match crate::mcp_tools::load_approved(control_dir) {
+            Ok(pending) => {
+                match crate::tools::complete_resume(
+                    model,
+                    pending.messages,
+                    &pending.remaining,
+                    tools,
+                    &mut ctx,
+                    &mut on_using,
+                    pending.round,
+                ) {
+                    Ok(text) => (text, None, false, None),
+                    Err(crate::tools::CompleteError::NeedsApproval(pending)) => {
+                        (String::new(), None, false, Some(*pending))
+                    }
+                    Err(err) => {
+                        eprintln!("pump: model for {task_id}: {}", err.failure_text());
+                        let text = err.failure_text();
+                        let over = matches!(err, crate::tools::CompleteError::OverQuota(_));
+                        (text.clone(), Some(text), over, None)
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("pump: resume mcp for {task_id}: {err}");
+                let text = format!("无法继续已批准的调用：{err}");
+                (text.clone(), Some(text), false, None)
+            }
+        }
+    } else if tools.is_empty() {
         match model.reply(prompt, memory_section) {
-            Ok(text) => (text, None, false),
+            Ok(text) => (text, None, false, None),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {err}");
                 let text = format!("模型没回：{err}");
-                (text.clone(), Some(text), false)
+                (text.clone(), Some(text), false, None)
             }
         }
     } else {
-        match crate::tools::complete(model, prompt, memory_section, tools, &mut ctx, |name| {
-            let line = format!("在用 {name}");
-            if let Err(err) = db.with(|conn| progress::set_progress(conn, task_id, &line)) {
-                eprintln!("pump: progress for {task_id}: {err}");
+        match crate::tools::complete(
+            model,
+            prompt,
+            memory_section,
+            tools,
+            &mut ctx,
+            &mut on_using,
+        ) {
+            Ok(text) => (text, None, false, None),
+            Err(crate::tools::CompleteError::NeedsApproval(pending)) => {
+                (String::new(), None, false, Some(*pending))
             }
-        }) {
-            Ok(text) => (text, None, false),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {}", err.failure_text());
                 let text = err.failure_text();
                 let over = matches!(err, crate::tools::CompleteError::OverQuota(_));
-                (text.clone(), Some(text), over)
+                (text.clone(), Some(text), over, None)
             }
         }
     };
@@ -524,8 +622,10 @@ fn write_reply(
         }
     }
     let progress = robroz_runner::last_progress(&text).map(str::to_string);
-    if let Err(err) = std::fs::write(&path, text) {
-        eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
+    if pending.is_none() {
+        if let Err(err) = std::fs::write(&path, text) {
+            eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
+        }
     }
     Reply {
         failure,
@@ -533,6 +633,7 @@ fn write_reply(
         get_count: ctx.used,
         needs_setup: ctx.needs_setup,
         over_quota,
+        pending,
     }
 }
 
@@ -543,6 +644,47 @@ struct Reply {
     get_count: u64,
     needs_setup: Option<String>,
     over_quota: bool,
+    pending: Option<crate::tools::PendingApproval>,
+}
+
+fn block_mcp_task(
+    conn: &Connection,
+    task: &TaskRow,
+    pending: &crate::tools::PendingApproval,
+    updated_at: &str,
+    get_count: i64,
+) -> rusqlite::Result<()> {
+    let hash = crate::mcp_tools::intent_hash(&task.id, pending);
+    let line = format!("在用 {}", pending.display_name);
+    let changed = conn.execute(
+        "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2, progress = ?4,
+                          intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6
+         WHERE id = ?3 AND state = 'running'",
+        params![
+            get_count,
+            updated_at,
+            task.id,
+            line,
+            pending.display_name.as_str(),
+            hash.as_str(),
+        ],
+    )?;
+    if changed > 0 {
+        if let Some(mcp) = &pending.mcp {
+            let summary =
+                crate::mcp_tools::approval_summary(&mcp.server_name, &mcp.tool_name, &pending.args);
+            crate::approvals::gate_mcp_task(
+                conn,
+                &task.id,
+                &summary,
+                &hash,
+                updated_at,
+                &mcp.server_name,
+                &mcp.tool_name,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The runner's latest progress text, if it wrote one.

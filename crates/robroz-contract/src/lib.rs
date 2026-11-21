@@ -283,6 +283,8 @@ pub enum ApprovalAction {
     Delete,
     Send,
     Spend,
+    /// A model asked to call an MCP tool that is not read-only.
+    Call,
 }
 
 /// The person's answer on an approval card.
@@ -987,6 +989,11 @@ pub enum Event {
         /// so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
+        /// MCP tool call waiting for approval. Absent on older cards.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_server: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_tool: Option<String>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1220,6 +1227,8 @@ mod tests {
                 answered_at: None,
                 answered_by: None,
                 task_id: None,
+                mcp_server: None,
+                mcp_tool: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1241,6 +1250,41 @@ mod tests {
         .unwrap();
         assert_eq!(request.path, None);
         assert_eq!(serde_json::to_value(ApprovalDecision::Denied).unwrap(), "denied");
+        assert_eq!(serde_json::to_value(ApprovalAction::Call).unwrap(), "call");
+
+        assert_round_trip(
+            &Event::Approval {
+                id: "a2".into(),
+                bot_id: "bot-ops".into(),
+                bot_name: "运维".into(),
+                action: ApprovalAction::Call,
+                summary: "调用 notes.write_note：{\"title\":\"hi\"}".into(),
+                path: None,
+                decision: None,
+                created_at: "2026-11-21T01:00:00.000Z".into(),
+                answered_at: None,
+                answered_by: None,
+                task_id: Some("task-1".into()),
+                mcp_server: Some("notes".into()),
+                mcp_tool: Some("write_note".into()),
+            },
+            serde_json::json!({
+                "type": "approval",
+                "id": "a2",
+                "botId": "bot-ops",
+                "botName": "运维",
+                "action": "call",
+                "summary": "调用 notes.write_note：{\"title\":\"hi\"}",
+                "path": null,
+                "decision": null,
+                "createdAt": "2026-11-21T01:00:00.000Z",
+                "answeredAt": null,
+                "answeredBy": null,
+                "taskId": "task-1",
+                "mcpServer": "notes",
+                "mcpTool": "write_note",
+            }),
+        );
     }
 
     #[test]
