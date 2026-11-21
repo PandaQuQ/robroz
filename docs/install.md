@@ -180,7 +180,7 @@ curl -s -X POST $B/api/bros -H "$J" -d '{"name":"bob"}'
 curl -s -X POST $B/api/groups/<dmGroupId>/say -H "$J" -d '{"body":"写一句欢迎语"}'
 ```
 
-其他接口（审批、选项卡、例行任务、记忆、技能、搜索设置、MCP 服务器）目前写在 [README](../README.md) 里。
+其他接口（审批、选项卡、例行任务、记忆、技能、搜索设置、MCP 服务器）见 [api.md](api.md)。
 
 ## 跑测试
 

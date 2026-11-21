@@ -16,7 +16,7 @@ robroz 只用环境变量配置，没有配置文件。联网搜索例外：它�
 | `ROBROZ_TOKEN` | `host/src/auth.rs:token_from_env` | 不设，不鉴权 | 接口令牌。设了以后所有 `/api` 请求都要带 `Authorization: Bearer <令牌>`，本机访问也要，否则 401。去掉首尾空白；至少 16 个字符；中间不能有空白。 | `<你的令牌>` |
 | `ROBROZ_TOKEN_FILE` | `host/src/auth.rs:token_from_env` | 不设 | 从这个文件读令牌，规则同上，文件末尾的换行会去掉。和 `ROBROZ_TOKEN` 只能设一个，两个都设时拒绝启动。推荐用文件。 | `/etc/robroz/token` |
 
-令牌不会出现在日志和报错里。
+令牌不会出现在日志和报错里。空值（只有空白）等于没设。比对按常数时间做（长度不同直接不通过，`host/src/auth.rs:ApiToken::matches`）。
 
 ### 存储和容器
 
@@ -55,7 +55,7 @@ robroz 只用环境变量配置，没有配置文件。联网搜索例外：它�
 - `PUT` 时某个字段传 `null` 表示清掉设置接口里的那一项，之后退回环境变量；不传表示不改。
 - 接口只返回 `hasKey` 和 `keyLast4`，不回显密钥。
 
-设置接口的用法和 curl 示例见 [README 的「怎么填搜索服务」](../README.md)。
+设置接口的用法和 curl 示例见 [search-and-mcp.md 的「怎么填搜索服务」](search-and-mcp.md#怎么填搜索服务)。
 
 ## runner（容器内）
 

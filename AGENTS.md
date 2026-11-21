@@ -63,10 +63,11 @@ scripts/e2e.sh   # 需要 docker、curl、jq
 | [`docs/api.md`](docs/api.md) | 所有 HTTP 接口：请求、返回、状态码、原文报错、代码位置；事件（卡片）类型和字段。 |
 | [`docs/reference-features.md`](docs/reference-features.md) | 参考产品功能清单和净室规则。 |
 | [`docs/roadmap-phase2.md`](docs/roadmap-phase2.md) | 第二期路线图。 |
-| `docs/permissions.md` | 待写：三级权限、审批、接管。 |
-| `docs/memory-and-skills.md` | 待写：记忆、技能、确认卡的完整规则。 |
-| `docs/search-and-mcp.md` | 待写：联网搜索和 MCP。 |
-| `docs/concepts.md` | 待写：术语、任务状态、卡片。 |
-| `docs/architecture.md` | 待写：各 crate 分工、pump、外观层。 |
+| [`docs/concepts.md`](docs/concepts.md) | 术语表、bro 的名字、任务状态、状态卡字段、卡片类型、未读。 |
+| [`docs/permissions.md`](docs/permissions.md) | 三级权限、阻塞行和接管标记、resume、审批卡、`waitingFor`、`failure`、模型工具调用的限制。 |
+| [`docs/memory-and-skills.md`](docs/memory-and-skills.md) | 记忆和技能的规则、拼进提示（4000 / 8000 字符）、bro 怎么提议、确认卡。 |
+| [`docs/search-and-mcp.md`](docs/search-and-mcp.md) | 联网搜索（怎么填、优先级、`source`、`needsSetup`）和 MCP 配置。 |
+| [`docs/client.md`](docs/client.md) | 客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、例行任务。 |
+| [`docs/architecture.md`](docs/architecture.md) | 宿主机、pump、容器、runner、模型、例行任务、实时推送、卡片和外观层（Skin）、客户端事件来源。 |
 
-`README.md` 里还有按开发节点写的说明，正在逐步搬进 `docs/`。两边说法不一致时，以代码和 `docs/` 为准。
+`README.md` 只放简介、快速开始和文档入口，不写规则和接口。新功能的说明写进上面对应的 `docs/` 文件；没有合适的文件就新建一个并加进这张表。
