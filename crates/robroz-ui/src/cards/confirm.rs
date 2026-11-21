@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn skill_card_uses_save_and_its_own_fields() {
-        let skill = Event::Confirm {
+        let mut skill = Event::Confirm {
             id: "s1".into(),
             bot_id: "b".into(),
             bot_name: "B".into(),
@@ -355,6 +355,24 @@ mod tests {
             c.footnote_in(&chrono::Utc).as_deref(),
             Some("保存了 · 08:48")
         );
+        if let Event::Confirm { scope, .. } = &mut skill {
+            *scope = Some("user".into());
+        }
+        let c = ConfirmCard::from_event(&skill).unwrap();
+        assert_eq!(c.scope_line.as_deref(), Some("所有 bro"));
+        if let Event::Confirm {
+            scope,
+            bot_id,
+            bot_name,
+            ..
+        } = &mut skill
+        {
+            *bot_id = "bot-ada".into();
+            *bot_name = "Ada".into();
+            *scope = Some("bot:bot-ada".into());
+        }
+        let c = ConfirmCard::from_event(&skill).unwrap();
+        assert_eq!(c.scope_line.as_deref(), Some("只给 Ada"));
     }
 
     #[test]

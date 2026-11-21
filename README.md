@@ -262,6 +262,7 @@ bro 会的做法，只是一段提示文字：标题、`slug` 和说明。权限
 - `POST /api/skills`：你自己写一条，请求体 `{"scope", "slug", "title", "instruction"}`。`source` 是 `user`，`status` 直接是 `kept`，返回 201 和 `Skill`。已经有同样的 `slug` 且没忘掉时返回 409「这个 slug 已经有了」。
 - `PATCH /api/skills/{slug}`：请求体 `{"title"?, "instruction"?, "scope"?}`，只改给了的字段，`updatedAt` 更新。一个字段都没给返回 400；不存在或已经忘掉返回 404。`status` 和 `slug` 不能用 `PATCH` 改。
 - `DELETE /api/skills/{slug}`：忘掉。只是软删。返回 204；重复忘掉也返回 204；从没有过的 slug 返回 404。忘掉一条还在 `pending` 的技能时，它那张没回答的确认卡会一起关掉，记成 `denied`，`answeredBy` 是 `null`。忘掉以后这个 slug 可以再写一条。
+- `GET /api/groups/{id}/skills`：列出该群已启用、未忘掉的技能，返回形状和 `GET /api/skills` 一样，按 `updatedAt` 从新到旧。没有启用的返回 `{"skills":[]}`，群不存在返回 404「群不存在」。
 - `PUT /api/groups/{id}/skills/{slug}`：在这个群里启用这条技能。群或技能不存在（或已忘掉）返回 404。已经启用再点一次也是 204。
 - `DELETE /api/groups/{id}/skills/{slug}`：关掉。群或技能不存在返回 404；本来就没启用也是 204。
 - `scope` 和记忆一样：`user` 是所有 bro 都能用，`bot:<botId>` 只给这个 bro。
@@ -283,6 +284,7 @@ bro 想记下一条记忆或收下一项技能时不会直接写入，而是提�
   - `subject` 是 `skill` 时还有 `slug`、`title`、`instruction`、`scope`。`title`、`instruction` 和 `scope` 是技能现在的样子，`pending` 时用 `PATCH` 改了，这张卡也会再推一次。没有的字段不出现。
   - 同一个任务提了很多条时，客户端可以按 `taskId` 把超过 3 条的折叠起来。
 - 客户端：卡的左上角是「记忆」标签，下面是完整原文和一行范围（「所有 bro」或「只给 Ada」），按钮是「记下」和「不用」。回答以后按钮消失，换成「记下了 · 我 · HH:MM」或灰色的「不用了 · …」，处理人的规则和审批卡一样。别人先答了（409）时，卡上原地显示别人的结果。在记忆页忘掉一条待确认的记忆，卡显示「不用了 · HH:MM」，不带名字。同一个任务待确认的卡超过 3 张时，从第 4 张起收成「还有 N 条待确认」，点开再逐条确认。
+- 技能卡：左上角是「技能」标签，显示标题和 `slug`。说明默认只露前三行，点「展开」看全部，再点「收起」折回去。按钮是「保存」和「不用」，回答以后换成「保存了 · 我 · HH:MM」或灰色的「不用了 · …」。409、处理人和折叠的规则都跟记忆卡一样。点「保存」以后这条技能变成 `kept`，但还要在群里启用才会拼进提示，见「技能」一节。
 - 确认卡会出现在 `GET /api/groups/{id}/events` 和实时推送里，新卡算一条未读。它和审批卡存在同一张表里，但不会以 `approval` 事件出现，也不影响状态卡的 `waitingFor`。
 
 ## 发一句话（`/say`）
