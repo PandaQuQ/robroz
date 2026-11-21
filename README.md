@@ -358,6 +358,16 @@ PUT 成功后返回的就是 `GET` 的内容，只有 `hasKey` 和 `keyLast4`，
 - 宿主机会请求 SearXNG 的 `/search?format=json`（地址末尾写不写 `/search` 都行），实例要在 `settings.yml` 的 `search.formats` 里打开 `json`，否则试连会失败。
 - 搜索和 `web_fetch` 都算在每个任务的出网次数里，上限见 `ROBROZ_GET_LIMIT`。
 
+## MCP
+
+宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。本阶段只做配置和列出工具，还不会把 MCP 工具交给模型调用。
+
+- 端点：`GET` / `POST /api/mcp/servers`，`PATCH` / `DELETE /api/mcp/servers/{id}`，`GET /api/mcp/servers/{id}/tools`（实时连一次，列出工具），`POST /api/mcp/servers/{id}/test`（试连，返回 `{ok, error?, toolCount?}`）。按群启用：`GET /api/groups/{id}/mcp` 列出已启用的服务器，`PUT` / `DELETE /api/groups/{id}/mcp/{serverId}` 打开或关掉。
+- 每台服务器有唯一的名字，以及 `stdio`（填启动命令和参数）或 `http`（填地址）两种传输方式。可以存多条密钥：stdio 用环境变量，HTTP 用请求头。接口只返回 `{name, in, hasKey, keyLast4}`，绝不回显密钥。`PATCH` 时 `key` 不传表示不改，传 `null` 表示清除。密钥不进日志，也不进报错。
+- `GET …/tools` 每一项带 `name`、`description` 和 `needsApproval`：工具标注了 `readOnlyHint: true` 时为 `false`，否则为 `true`。列表项可带 `toolCount`，是最近一次成功连接时看到的工具数。
+- **stdio 启动的是本机进程，只能由用户通过这些接口配置；模型不能增删服务器。** 不要把来历不明的命令填进去。
+- 服务器配置存在本机 SQLite，表是 `mcp_servers` 和 `group_mcp`。
+
 ## 客户端环境变量
 
 - `ROBROZ_USER_NAME`：这台客户端的名字。答审批卡和选项卡时作为 `answeredBy` 发出去，卡片回来时如果和它一样就显示「我」。不设就用电脑的主机名，主机名也拿不到时用 `robroz`。只取第一行非空的内容，最多 40 个字。两台设备不要用同一个名字，否则会互相把对方的回答显示成「我」。
