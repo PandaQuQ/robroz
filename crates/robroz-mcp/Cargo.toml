@@ -1,0 +1,29 @@
+[package]
+name = "robroz-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+fixture = ["dep:axum", "rmcp/server", "rmcp/transport-io", "rmcp/transport-streamable-http-server"]
+
+[dependencies]
+http = "1"
+rmcp = { version = "3", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "net", "time"] }
+axum = { version = "0.8", optional = true }
+
+[[bin]]
+name = "robroz-mcp-fixture"
+path = "src/bin/robroz-mcp-fixture.rs"
+required-features = ["fixture"]
+
+[[test]]
+name = "transports"
+path = "tests/transports.rs"
+required-features = ["fixture"]

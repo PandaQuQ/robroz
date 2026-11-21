@@ -166,10 +166,11 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 
 状态卡和交付卡都有一个冻结后新增的可选字段 `failure`，表示任务算 `done` 了，但活没做成。只有这种情况才带这个键，正常结果不带，所以旧 JSON 一点不变。
 
-- 有三种情况会填 `failure`：
+- 有四种情况会填 `failure`：
   - 模型调用失败：值是「模型没回：原因」。任务照样会走到 `done`，并且会出一张交付卡，状态卡和交付卡上带的是同一个 `failure`。
   - 审批被拒绝：值是「你拒绝了：要做的事」，其中「要做的事」取 prompt 里第一行普通内容，最多 60 个字。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见「审批卡」一节里的「任务自动发的审批卡」。
   - 出网超额或用了非 GET：值是「出网超额：已用 N 次，上限 M」或「出网只允许 GET：用了 POST」。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见上面权限三级里的「计数」。
+  - 工具调用超过 8 轮：值是「工具调用超过 8 轮」。任务照样 `done`，结果里也写这句。见「接模型」。
 - 状态卡只在 `done` 时带 `failure`。任务再次开跑时会清掉它，不会沿用上一次的。
 - 客户端只要看到 `failure`，就把卡显示成灰色的「没做成：原因」，不显示绿色的完成，也没有按钮。
 
@@ -322,6 +323,51 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 - `source`：已生效时，`GET` 和 `PUT` 的返回体带可选字段 `source`，为 `settings`（来自设置接口，优先）或 `env`（来自环境变量）；完全没配置时不返回这个字段。
 - 也可以用环境变量：`ROBROZ_SEARCH_PROVIDER`（`brave` 或 `searxng`）、`ROBROZ_BRAVE_KEY`（Brave 的订阅密钥）、`ROBROZ_SEARXNG_URL`（SearXNG 实例地址，要以 `http://` 或 `https://` 开头）。
 - 还没设置时，`web_search` 仍可以调用，会返回「还没设置联网搜索」。这句话会原样出现在交付里，交付事件带可选字段 `needsSetup: "search"`，客户端按这个字段显示「去设置」，不要靠匹配文字。
+
+### 怎么填搜索服务
+
+两种方式选一种。设置接口里填的优先于环境变量，改了不用重启宿主机。
+
+**用设置接口**（宿主机设了令牌时加上 `-H "Authorization: Bearer $ROBROZ_TOKEN"`）：
+
+```sh
+# Brave：在 Brave Search API 后台拿订阅密钥
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"brave","key":"<你的 Brave 密钥>"}'
+
+# SearXNG：填实例地址，不用密钥
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"searxng","url":"https://searx.example.com"}'
+
+# 试连：返回 {"ok":true}，或者 {"ok":false,"error":"原因"}
+curl -X POST http://127.0.0.1:8790/api/settings/search/test
+
+# 只换密钥就只传 key；清除密钥传 null
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' -d '{"key":null}'
+```
+
+PUT 成功后返回的就是 `GET` 的内容，只有 `hasKey` 和 `keyLast4`，看不到密钥本身。
+
+**用环境变量**：启动宿主机前设 `ROBROZ_SEARCH_PROVIDER=brave` 加 `ROBROZ_BRAVE_KEY`，或者 `ROBROZ_SEARCH_PROVIDER=searxng` 加 `ROBROZ_SEARXNG_URL`。
+
+注意：
+
+- 密钥只放在宿主机本机，不要提交进仓库，也不要发到群里。
+- 宿主机会请求 SearXNG 的 `/search?format=json`（地址末尾写不写 `/search` 都行），实例要在 `settings.yml` 的 `search.formats` 里打开 `json`，否则试连会失败。
+- 搜索和 `web_fetch` 都算在每个任务的出网次数里，上限见 `ROBROZ_GET_LIMIT`。
+
+## MCP
+
+宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。本阶段只做配置和列出工具，还不会把 MCP 工具交给模型调用。
+
+- 端点：`GET` / `POST /api/mcp/servers`，`PATCH` / `DELETE /api/mcp/servers/{id}`，`GET /api/mcp/servers/{id}/tools`（实时连一次，列出工具），`POST /api/mcp/servers/{id}/test`（试连，返回 `{ok, error?, toolCount?}`）。按群启用：`GET /api/groups/{id}/mcp` 列出已启用的服务器，`PUT` / `DELETE /api/groups/{id}/mcp/{serverId}` 打开或关掉。
+- 每台服务器有唯一的名字，以及 `stdio`（填启动命令和参数）或 `http`（填地址）两种传输方式。可以存多条密钥：stdio 用环境变量，HTTP 用请求头。接口只返回 `{name, in, hasKey, keyLast4}`，绝不回显密钥。`PATCH` 时 `key` 不传表示不改，传 `null` 表示清除。密钥不进日志，也不进报错。
+- `GET …/tools` 每一项带 `name`、`description` 和 `needsApproval`：工具标注了 `readOnlyHint: true` 时为 `false`，否则为 `true`。列表项可带 `toolCount`，是最近一次成功连接时看到的工具数。
+- **stdio 启动的是本机进程，只能由用户通过这些接口配置；模型不能增删服务器。** 不要把来历不明的命令填进去。
+- 服务器配置存在本机 SQLite，表是 `mcp_servers` 和 `group_mcp`。
 
 ## 客户端环境变量
 

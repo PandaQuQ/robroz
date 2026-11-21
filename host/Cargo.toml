@@ -21,9 +21,11 @@ croner = "4.0.1"
 futures-util = { version = "0.3", default-features = false }
 robroz-runner = { path = "../runner" }
 robroz-model = { path = "../crates/robroz-model" }
+robroz-mcp = { path = "../crates/robroz-mcp" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 http-body-util = "0.1"
+robroz-mcp = { path = "../crates/robroz-mcp", features = ["fixture"] }
