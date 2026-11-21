@@ -166,10 +166,11 @@ Linux 上运行需要系统里有 `libxkbcommon-x11`（X11）或 Wayland 运行�
 
 状态卡和交付卡都有一个冻结后新增的可选字段 `failure`，表示任务算 `done` 了，但活没做成。只有这种情况才带这个键，正常结果不带，所以旧 JSON 一点不变。
 
-- 有三种情况会填 `failure`：
+- 有四种情况会填 `failure`：
   - 模型调用失败：值是「模型没回：原因」。任务照样会走到 `done`，并且会出一张交付卡，状态卡和交付卡上带的是同一个 `failure`。
   - 审批被拒绝：值是「你拒绝了：要做的事」，其中「要做的事」取 prompt 里第一行普通内容，最多 60 个字。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见「审批卡」一节里的「任务自动发的审批卡」。
   - 出网超额或用了非 GET：值是「出网超额：已用 N 次，上限 M」或「出网只允许 GET：用了 POST」。任务直接变成 `done`，没有交付卡，只有状态卡带 `failure`。见上面权限三级里的「计数」。
+  - 工具调用超过 8 轮：值是「工具调用超过 8 轮」。任务照样 `done`，结果里也写这句。见「接模型」。
 - 状态卡只在 `done` 时带 `failure`。任务再次开跑时会清掉它，不会沿用上一次的。
 - 客户端只要看到 `failure`，就把卡显示成灰色的「没做成：原因」，不显示绿色的完成，也没有按钮。
 
@@ -321,6 +322,41 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 - 设置接口：`GET` / `PUT /api/settings/search`，以及 `POST /api/settings/search/test` 用来试连。`GET` 返回 `provider`（`brave`、`searxng` 或 `null`）、`url`、`hasKey` 和 `keyLast4`，绝不回显密钥。`PUT` 时 `key` 不传表示不改，传 `null` 表示清除；不合法的值返回 400。`POST …/test` 会真的发一次查询，返回 `{ok}` 或 `{ok: false, error}`，超时 10 秒。设置接口里的值优先于环境变量。密钥存在本机 SQLite 的 `settings` 表，不进日志，也不进报错。
 - 也可以用环境变量：`ROBROZ_SEARCH_PROVIDER`（`brave` 或 `searxng`）、`ROBROZ_BRAVE_KEY`（Brave 的订阅密钥）、`ROBROZ_SEARXNG_URL`（SearXNG 实例地址，要以 `http://` 或 `https://` 开头）。
 - 还没设置时，`web_search` 仍可以调用，会返回「还没设置联网搜索」。这句话会原样出现在交付里，交付事件带可选字段 `needsSetup: "search"`，客户端按这个字段显示「去设置」，不要靠匹配文字。
+
+### 怎么填搜索服务
+
+两种方式选一种。设置接口里填的优先于环境变量，改了不用重启宿主机。
+
+**用设置接口**（宿主机设了令牌时加上 `-H "Authorization: Bearer $ROBROZ_TOKEN"`）：
+
+```sh
+# Brave：在 Brave Search API 后台拿订阅密钥
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"brave","key":"<你的 Brave 密钥>"}'
+
+# SearXNG：填实例地址，不用密钥
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"searxng","url":"https://searx.example.com"}'
+
+# 试连：返回 {"ok":true}，或者 {"ok":false,"error":"原因"}
+curl -X POST http://127.0.0.1:8790/api/settings/search/test
+
+# 只换密钥就只传 key；清除密钥传 null
+curl -X PUT http://127.0.0.1:8790/api/settings/search \
+  -H 'Content-Type: application/json' -d '{"key":null}'
+```
+
+PUT 成功后返回的就是 `GET` 的内容，只有 `hasKey` 和 `keyLast4`，看不到密钥本身。
+
+**用环境变量**：启动宿主机前设 `ROBROZ_SEARCH_PROVIDER=brave` 加 `ROBROZ_BRAVE_KEY`，或者 `ROBROZ_SEARCH_PROVIDER=searxng` 加 `ROBROZ_SEARXNG_URL`。
+
+注意：
+
+- 密钥只放在宿主机本机，不要提交进仓库，也不要发到群里。
+- 宿主机会请求 SearXNG 的 `/search?format=json`（地址末尾写不写 `/search` 都行），实例要在 `settings.yml` 的 `search.formats` 里打开 `json`，否则试连会失败。
+- 搜索和 `web_fetch` 都算在每个任务的出网次数里，上限见 `ROBROZ_GET_LIMIT`。
 
 ## 客户端环境变量
 
