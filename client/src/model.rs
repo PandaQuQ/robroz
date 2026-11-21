@@ -452,6 +452,7 @@ mod tests {
             briefing,
             created_at: "2026-10-07T19:00:00.000Z".into(),
             failure: None,
+            needs_setup: None,
         }
     }
 

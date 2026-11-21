@@ -727,6 +727,26 @@ pub struct ErrorBody {
     pub error: String,
 }
 
+/// `GET /api/settings/search`. `provider` is `null` when search is not set up.
+/// The key is never returned; only `hasKey` and `keyLast4`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSettings {
+    pub provider: Option<String>,
+    pub url: Option<String>,
+    pub has_key: bool,
+    pub key_last4: Option<String>,
+}
+
+/// `POST /api/settings/search/test`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTestResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Internally tagged on `type` so message, status, and delivery round-trip
 /// with the JSON already returned by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,6 +796,10 @@ pub enum Event {
         /// model call failed). Absent on a normal result, so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<String>,
+        /// Added after the freeze: the delivery needs a settings page. `"search"`
+        /// means the user has not set up web search. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        needs_setup: Option<String>,
     },
     /// Added after the node-1 freeze; the three types above are unchanged.
     /// `choice` and `answeredAt` are always present and `null` until answered.
@@ -1220,6 +1244,7 @@ mod tests {
             briefing: false,
             created_at: "2026-10-03T19:00:02.000Z".into(),
             failure: Some("模型没回：模型服务返回 500".into()),
+            needs_setup: None,
         };
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["failure"], "模型没回：模型服务返回 500");
@@ -1228,8 +1253,25 @@ mod tests {
             "type": "delivery", "id": "d1", "summary": "草图", "path": "out/sketch.png",
             "briefing": false, "createdAt": "2026-10-03T19:00:02.000Z"
         });
-        let Event::Delivery { failure, .. } = serde_json::from_value(old).unwrap() else { panic!() };
+        let Event::Delivery { failure, needs_setup, .. } = serde_json::from_value(old).unwrap() else { panic!() };
         assert_eq!(failure, None, "old JSON without the field still parses");
+        assert_eq!(needs_setup, None);
+    }
+
+    #[test]
+    fn delivery_needs_setup_is_optional() {
+        let event = Event::Delivery {
+            id: "d3".into(),
+            summary: "已写入结果".into(),
+            path: "tasks/t1/result.txt".into(),
+            briefing: false,
+            created_at: "2026-10-03T19:00:02.000Z".into(),
+            failure: None,
+            needs_setup: Some("search".into()),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["needsSetup"], "search");
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
     }
 
     #[test]
@@ -1242,6 +1284,7 @@ mod tests {
                 briefing: true,
                 created_at: "2026-10-03T19:00:02.000Z".into(),
                 failure: None,
+                needs_setup: None,
             },
             serde_json::json!({
                 "type": "delivery",

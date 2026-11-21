@@ -309,6 +309,17 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 - 模型调用失败时任务照样完成，结果写「模型没回：原因」。工具调用超过 8 轮时同样完成，结果和 `failure` 都写「工具调用超过 8 轮」。
 - 真跑模型时，密钥由 Panda 在私聊里交给后端，不要发到群里，也不要提交进仓库。
 
+## 联网搜索
+
+宿主机提供两个工具给模型：`web_search`（搜索公开网页）和 `web_fetch`（用 GET 读一个页面，转成纯文本）。都在宿主机上调用，沙箱仍然不联网。权限归 Metered 那一级，和现有出网一样按任务计次，超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。`web_fetch` 只允许 http / https，并拒绝内网、回环和链路本地地址。
+
+服务由 robroz 用户自己选、自己填，不必把密钥交给别人：
+
+- 可以选 [Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
+- 设置接口：`GET` / `PUT /api/settings/search`，以及 `POST /api/settings/search/test` 用来试连。`GET` 返回 `provider`（`brave`、`searxng` 或 `null`）、`url`、`hasKey` 和 `keyLast4`，绝不回显密钥。`PUT` 时 `key` 不传表示不改，传 `null` 表示清除；不合法的值返回 400。`POST …/test` 会真的发一次查询，返回 `{ok}` 或 `{ok: false, error}`，超时 10 秒。设置接口里的值优先于环境变量。密钥存在本机 SQLite 的 `settings` 表，不进日志，也不进报错。
+- 也可以用环境变量：`ROBROZ_SEARCH_PROVIDER`（`brave` 或 `searxng`）、`ROBROZ_BRAVE_KEY`（Brave 的订阅密钥）、`ROBROZ_SEARXNG_URL`（SearXNG 实例地址，要以 `http://` 或 `https://` 开头）。
+- 还没设置时，`web_search` 仍可以调用，会返回「还没设置联网搜索」。这句话会原样出现在交付里，交付事件带可选字段 `needsSetup: "search"`，客户端按这个字段显示「去设置」，不要靠匹配文字。
+
 ## 客户端环境变量
 
 - `ROBROZ_USER_NAME`：这台客户端的名字。答审批卡和选项卡时作为 `answeredBy` 发出去，卡片回来时如果和它一样就显示「我」。不设就用电脑的主机名，主机名也拿不到时用 `robroz`。只取第一行非空的内容，最多 40 个字。两台设备不要用同一个名字，否则会互相把对方的回答显示成「我」。
@@ -328,3 +339,6 @@ bro 用的是任意 OpenAI 兼容服务的 `POST {ROBROZ_MODEL_BASE_URL}/chat/co
 - `ROBROZ_MODEL`：模型名，比如 `gpt-4o-mini`。设了密钥就必须设
 - `ROBROZ_MODEL_KEY`：模型密钥。不设就不接模型，bro 原样回显
 - `ROBROZ_MODEL_KEY_FILE`：从这个文件读模型密钥，和 `ROBROZ_MODEL_KEY` 只能设一个
+- `ROBROZ_SEARCH_PROVIDER`：联网搜索用哪家，`brave` 或 `searxng`。不设、也没在设置接口里填，就是还没设置联网搜索
+- `ROBROZ_BRAVE_KEY`：Brave Search 的订阅密钥。只存在本机，接口不回显
+- `ROBROZ_SEARXNG_URL`：SearXNG 实例地址，要以 `http://` 或 `https://` 开头

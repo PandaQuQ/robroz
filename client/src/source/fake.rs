@@ -371,6 +371,7 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
             briefing,
             created_at: at("03"),
             failure: None,
+            needs_setup: None,
         },
     }
 }
