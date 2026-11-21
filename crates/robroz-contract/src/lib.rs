@@ -606,7 +606,7 @@ pub struct Skill {
     pub confirm_id: Option<String>,
 }
 
-/// `GET /api/skills`, newest `updatedAt` first.
+/// `GET /api/skills` or `GET /api/groups/{id}/skills`, newest `updatedAt` first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Skills {
     pub skills: Vec<Skill>,
