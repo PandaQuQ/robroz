@@ -16,6 +16,7 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::memories::{self, Book};
 use crate::cards::routines::{self, Routines};
+use crate::cards::skills::{self, Book as SkillBook};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
 use crate::conversations::{self, Conversation, Conversations};
@@ -124,6 +125,54 @@ pub enum Action {
     /// 「还有 N 条待确认」: show every pending confirm card of this task.
     UnfoldConfirms {
         task: String,
+    },
+    /// 技能 page: open or close the 加一项 form.
+    SkillAddOpen,
+    SkillAddClose,
+    SkillAddSlug {
+        text: String,
+    },
+    SkillAddTitle {
+        text: String,
+    },
+    SkillAddInstruction {
+        text: String,
+    },
+    SkillAddScope {
+        scope: String,
+    },
+    SkillAddSave,
+    /// 改: edit this skill's title and instruction in place.
+    SkillEdit {
+        slug: String,
+    },
+    SkillEditTitle {
+        text: String,
+    },
+    SkillEditInstruction {
+        text: String,
+    },
+    SkillEditSave,
+    SkillEditCancel,
+    /// 删除 once asks; the second 删除 forgets the skill.
+    SkillDeleteAsk {
+        slug: String,
+    },
+    SkillDeleteConfirm,
+    SkillDeleteCancel,
+    /// 技能 page, pending entry: 保存 (`keep`) or 不用, through its confirm card.
+    SkillDecide {
+        slug: String,
+        keep: bool,
+    },
+    /// Open or close a long instruction on the 技能 page.
+    SkillToggleInstruction {
+        slug: String,
+    },
+    /// Enable or disable a kept skill in this group.
+    SkillToggleGroup {
+        slug: String,
+        group: String,
     },
 }
 
@@ -668,14 +717,14 @@ pub fn confirm_card<'a>(
                 .spacing(t.controls.button_gap)
                 .align_y(Alignment::Center),
             );
-            if let Some(scope) = &card.scope_line {
-                col = col.push(gap(t.metrics.head_gap)).push(
-                    text(scope.as_str())
-                        .size(t.type_.foot)
-                        .color(color(t.palette.text2)),
-                );
-            }
         }
+    }
+    if let Some(scope) = &card.scope_line {
+        col = col.push(gap(t.metrics.head_gap)).push(
+            text(scope.as_str())
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
     }
     if let Some(enabled) = confirm::confirm_actions(card, ui) {
         let id = &card.id;
@@ -1487,6 +1536,453 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
                 col = col.push(divider(t, m.row_pad_h));
             }
             col = col.push(entry(mem, false));
+        }
+    }
+
+    let tt = *t;
+    container(col)
+        .width(Fill)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(color(tt.palette.surface).into()),
+            text_color: Some(color(tt.palette.text)),
+            border: Border::default()
+                .width(tt.stroke.card)
+                .color(color(tt.palette.border))
+                .rounded(tt.radii.panel),
+            shadow: shadow(&tt),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+// ---------- 技能 page ----------
+
+/// The 技能 page: same grouping as the 记忆 page, plus a 3-line
+/// instruction, edit of title and instruction, a confirm before 删除,
+/// and a per-group enable toggle on kept entries.
+pub fn skills_panel<'a>(
+    t: &Skin,
+    book: &'a SkillBook,
+    now: i64,
+    width: f32,
+) -> Element<'a, Action> {
+    let m = t.metrics;
+    let busy = book.busy;
+    let mut head = row![text(skills::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if !book.skills.is_empty() {
+        head = head.push(
+            text(book.skills.len().to_string())
+                .size(t.type_.list_count)
+                .color(color(t.palette.text3)),
+        );
+    }
+    head = head.push(space::horizontal());
+    if book.adding.is_none() {
+        head = head.push(btn(
+            t,
+            skills::ADD.into(),
+            Look::Secondary,
+            Leading::None,
+            (!busy).then_some(Action::SkillAddOpen),
+        ));
+    }
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+
+    if let Some(note) = &book.note {
+        col = col.push(
+            container(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            )
+            .padding(Padding::from([8.0, m.row_pad_h])),
+        );
+    }
+
+    if let Some(new) = &book.adding {
+        let mut slug = text_input(skills::SLUG_PLACEHOLDER, &new.slug)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        let mut title = text_input(skills::TITLE_PLACEHOLDER, &new.title)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        let mut instruction = text_input(skills::INSTRUCTION_PLACEHOLDER, &new.instruction)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        if !busy {
+            slug = slug.on_input(|text| Action::SkillAddSlug { text });
+            title = title.on_input(|text| Action::SkillAddTitle { text });
+            instruction = instruction
+                .on_input(|text| Action::SkillAddInstruction { text })
+                .on_submit(Action::SkillAddSave);
+        }
+        let mut scopes = row![].spacing(t.controls.button_gap);
+        for (scope, label) in book.scope_choices() {
+            let look = if new.scope.as_deref() == Some(scope.as_str()) {
+                Look::Selected
+            } else {
+                Look::Secondary
+            };
+            scopes = scopes.push(btn(
+                t,
+                label,
+                look,
+                Leading::None,
+                Some(Action::SkillAddScope { scope }),
+            ));
+        }
+        let can_save = book.can_add();
+        let mut form = column![slug, title, instruction, scopes.wrap()].spacing(m.head_gap);
+        if let Some(hint) = book.add_scope_hint() {
+            form = form.push(text(hint).size(t.type_.foot).color(color(t.palette.text3)));
+        }
+        if let Some(note) = &book.add_note {
+            form = form.push(inline_note(t, note));
+        }
+        col = col.push(
+            container(
+                column![
+                    form,
+                    row![
+                        btn(
+                            t,
+                            skills::SAVE.into(),
+                            Look::Primary,
+                            Leading::None,
+                            can_save.then_some(Action::SkillAddSave)
+                        ),
+                        btn(
+                            t,
+                            skills::CANCEL.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::SkillAddClose)
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap),
+                ]
+                .spacing(m.head_gap),
+            )
+            .padding(pad),
+        );
+        col = col.push(divider(t, 0.0));
+    }
+
+    if book.loaded && book.is_empty() {
+        let rings = Rings {
+            color: color(t.palette.text3),
+            radius: m.empty_ring_r,
+            stroke: m.empty_ring_stroke,
+        };
+        let size = rings.size();
+        col = col.push(
+            container(
+                column![
+                    canvas(rings).width(size.width).height(size.height),
+                    gap(m.head_gap),
+                    text(skills::EMPTY_TITLE)
+                        .size(t.type_.empty_title)
+                        .font(bold())
+                        .color(color(t.palette.text2)),
+                    gap(m.dot_gap),
+                    text(skills::EMPTY_HINT)
+                        .size(t.type_.empty_hint)
+                        .color(color(t.palette.text3)),
+                ]
+                .align_x(Alignment::Center),
+            )
+            .width(Fill)
+            .height(Length::Fixed(m.empty_height))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        );
+    }
+
+    let inner = (width - 2.0 * (t.controls.card_pad_h + t.stroke.card)).max(80.0);
+    let cols = (inner / (t.type_.body * t.type_.unit_width)).max(8.0) as usize;
+
+    let entry = |skill: &'a robroz_contract::Skill, pending: bool| -> Element<'a, Action> {
+        let mut top = row![
+            text(skill.title.as_str())
+                .size(t.type_.body)
+                .font(bold())
+                .color(color(t.palette.text)),
+            mono(t, &skill.slug),
+        ]
+        .spacing(m.row_time_gap)
+        .align_y(Alignment::Center);
+        if pending {
+            top = top.push(tag(t, skills::PENDING_TAG, t.palette.accent));
+        }
+        top = top.push(space::horizontal());
+        if book.just_saved.as_deref() == Some(skill.slug.as_str()) {
+            top = top.push(
+                text(skills::SAVED)
+                    .size(t.type_.row_time)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        top = top.push(
+            text(skills::updated_text(&skill.updated_at, now))
+                .size(t.type_.row_time)
+                .color(color(t.palette.text3)),
+        );
+        let editing = book.editing.as_ref().filter(|e| e.slug == skill.slug);
+        let asking = book.confirm_delete.as_deref() == Some(skill.slug.as_str());
+        let body: Element<'a, Action> = match editing {
+            Some(edit) => {
+                let mut title = text_input(skills::TITLE_PLACEHOLDER, &edit.title)
+                    .size(t.type_.body)
+                    .padding(Padding::from([6.0, 8.0]));
+                let mut instruction =
+                    text_input(skills::INSTRUCTION_PLACEHOLDER, &edit.instruction)
+                        .size(t.type_.body)
+                        .padding(Padding::from([6.0, 8.0]));
+                if !busy {
+                    title = title.on_input(|text| Action::SkillEditTitle { text });
+                    instruction = instruction
+                        .on_input(|text| Action::SkillEditInstruction { text })
+                        .on_submit(Action::SkillEditSave);
+                }
+                column![title, instruction].spacing(m.dot_gap).into()
+            }
+            None => {
+                let cut = status::clamp_lines(&skill.instruction, cols, skills::INSTRUCTION_LINES);
+                let long = cut.ends_with('…');
+                let open = book.open.contains(&skill.slug);
+                let shown = if open || !long {
+                    skill.instruction.clone()
+                } else {
+                    cut
+                };
+                let mut body = column![text(shown)
+                    .size(t.type_.body)
+                    .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+                    .color(color(t.palette.text))
+                    .width(Fill)]
+                .spacing(m.dot_gap);
+                if long {
+                    body = body.push(btn(
+                        t,
+                        if open {
+                            confirm::SHOW_LESS
+                        } else {
+                            confirm::SHOW_ALL
+                        }
+                        .into(),
+                        Look::Secondary,
+                        Leading::None,
+                        Some(Action::SkillToggleInstruction {
+                            slug: skill.slug.clone(),
+                        }),
+                    ));
+                }
+                body.into()
+            }
+        };
+        let actions: Element<'a, Action> = if pending {
+            match &skill.confirm_id {
+                Some(_) => row![
+                    btn(
+                        t,
+                        confirm::SAVE.into(),
+                        Look::Primary,
+                        Leading::None,
+                        (!busy).then(|| Action::SkillDecide {
+                            slug: skill.slug.clone(),
+                            keep: true,
+                        })
+                    ),
+                    btn(
+                        t,
+                        confirm::DROP.into(),
+                        if busy {
+                            Look::Disabled
+                        } else {
+                            Look::Secondary
+                        },
+                        Leading::None,
+                        (!busy).then(|| Action::SkillDecide {
+                            slug: skill.slug.clone(),
+                            keep: false,
+                        })
+                    ),
+                ]
+                .spacing(t.controls.button_gap)
+                .into(),
+                None => Space::new().height(Length::Fixed(0.0)).into(),
+            }
+        } else if editing.is_some() {
+            row![
+                btn(
+                    t,
+                    skills::SAVE.into(),
+                    Look::Primary,
+                    Leading::None,
+                    book.can_save_edit().then_some(Action::SkillEditSave)
+                ),
+                btn(
+                    t,
+                    skills::CANCEL.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::SkillEditCancel)
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .into()
+        } else if asking {
+            row![
+                text(skills::DELETE_ASK)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+                space::horizontal(),
+                btn(
+                    t,
+                    skills::DELETE.into(),
+                    Look::Primary,
+                    Leading::None,
+                    (!busy).then_some(Action::SkillDeleteConfirm)
+                ),
+                btn(
+                    t,
+                    skills::CANCEL.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::SkillDeleteCancel)
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                btn(
+                    t,
+                    skills::EDIT.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::SkillEdit {
+                        slug: skill.slug.clone()
+                    })
+                ),
+                btn(
+                    t,
+                    skills::DELETE.into(),
+                    Look::Secondary,
+                    Leading::None,
+                    (!busy).then_some(Action::SkillDeleteAsk {
+                        slug: skill.slug.clone()
+                    })
+                ),
+            ]
+            .spacing(t.controls.button_gap)
+            .into()
+        };
+        let mut entry_col = column![top, body, actions].spacing(m.dot_gap + 2.0);
+        if !pending && editing.is_none() && !asking && !book.chats.is_empty() {
+            let mut toggles = row![text(skills::GROUP_ENABLE)
+                .size(t.type_.foot)
+                .color(color(t.palette.text3))]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+            for (group, name) in &book.chats {
+                let on = book.is_enabled(group, &skill.slug);
+                let toggle = hit_area(
+                    t,
+                    canvas(Toggle {
+                        on,
+                        track_on: color(t.palette.accent),
+                        track_off: color(t.palette.toggle_off),
+                        knob: color(t.palette.knob),
+                        knob_size: t.controls.knob,
+                    })
+                    .width(t.controls.switch_w)
+                    .height(t.controls.switch_h)
+                    .into(),
+                    Some(t.controls.switch_w),
+                    t.controls.switch_h,
+                    (!busy).then(|| Action::SkillToggleGroup {
+                        slug: skill.slug.clone(),
+                        group: group.clone(),
+                    }),
+                );
+                toggles = toggles.push(
+                    row![
+                        text(name.as_str())
+                            .size(t.type_.foot)
+                            .color(color(t.palette.text2)),
+                        toggle,
+                    ]
+                    .spacing(m.dot_gap)
+                    .align_y(Alignment::Center),
+                );
+            }
+            entry_col = entry_col.push(toggles.wrap());
+        }
+        if let Some(note) = book.note_for(&skill.slug) {
+            entry_col = entry_col.push(inline_note(t, note));
+        }
+        container(entry_col).padding(pad).width(Fill).into()
+    };
+
+    for (gi, group) in book.groups().into_iter().enumerate() {
+        if gi > 0 {
+            col = col.push(divider(t, 0.0));
+        }
+        col = col.push(
+            container(
+                text(group.title.clone())
+                    .size(t.type_.row_name)
+                    .font(bold())
+                    .color(color(t.palette.text)),
+            )
+            .padding(Padding::from([m.row_pad_h * 0.75, m.row_pad_h])),
+        );
+        let sub = |label: &'static str, n: usize| -> Element<'a, Action> {
+            container(
+                text(format!("{label} {n}"))
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+            )
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .into()
+        };
+        for (label, n) in group.heads() {
+            if label == skills::KEPT_HEAD {
+                if !group.pending.is_empty() {
+                    col = col.push(divider(t, m.row_pad_h));
+                    col = col.push(gap(m.dot_gap));
+                }
+                col = col.push(sub(label, n));
+                break;
+            }
+            col = col.push(sub(label, n));
+            for (i, skill) in group.pending.iter().enumerate() {
+                if i > 0 {
+                    col = col.push(divider(t, m.row_pad_h));
+                }
+                col = col.push(entry(skill, true));
+            }
+        }
+        for (i, skill) in group.kept.iter().enumerate() {
+            if i > 0 {
+                col = col.push(divider(t, m.row_pad_h));
+            }
+            col = col.push(entry(skill, false));
         }
     }
 
