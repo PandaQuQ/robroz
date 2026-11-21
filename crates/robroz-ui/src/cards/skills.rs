@@ -38,6 +38,8 @@ pub const SAVED: &str = "已保存";
 pub const GROUP_ENABLE: &str = "在这些群里用";
 /// Shown next to a switch whose state has not been loaded yet.
 pub const LOADING: &str = "读取中";
+/// Shown next to a switch whose group list could not be loaded.
+pub const LOAD_FAILED: &str = "读不到";
 /// Skill instructions show this many lines until opened.
 pub const INSTRUCTION_LINES: usize = 3;
 
@@ -46,10 +48,8 @@ pub fn failed(reason: &str) -> String {
     format!("没保存：{reason}")
 }
 
-/// Whether a skill is on in a given group. `Unknown` until the host
-/// lists that group's enabled skills; the switch stays grey and
-/// unclickable until then. `GET /api/groups/{id}/skills` is not there
-/// yet, so every switch starts as `Unknown`.
+/// Whether a skill is on in a given group. `Unknown` until that group's
+/// list has arrived; the switch stays grey and unclickable until then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EnableState {
     #[default]
@@ -75,6 +75,15 @@ impl EnableState {
             EnableState::Off
         }
     }
+}
+
+/// Whether this group's enable list has been fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupLoad {
+    #[default]
+    Loading,
+    Ready,
+    Failed,
 }
 
 /// Re-export so the page uses the same scope wording as memories.
@@ -132,11 +141,14 @@ pub struct Book {
     pub chats: Vec<(String, String)>,
     /// Per-group enable state, keyed by `(group id, slug)`.
     ///
-    /// Missing keys are [`EnableState::Unknown`]: the host cannot yet
-    /// list which skills a group has on, so the page must not invent
-    /// "off". Once `GET /api/groups/{id}/skills` exists, fill these in
-    /// with [`Book::set_enabled`].
+    /// Missing keys are [`EnableState::Unknown`]. Fill from
+    /// `GET /api/groups/{id}/skills` with [`Book::apply_group_skills`],
+    /// or [`Book::group_skills_failed`] when that call fails.
     pub enabled: HashMap<(String, String), EnableState>,
+    /// Enabled slugs the host listed for a group, or `Err` if the GET failed.
+    pub listed: HashMap<String, Result<HashSet<String>, ()>>,
+    /// Fetch status for each chat's enable list.
+    pub group_load: HashMap<String, GroupLoad>,
     /// Slugs whose instruction is fully open.
     pub open: HashSet<String>,
     pub loaded: bool,
@@ -260,6 +272,7 @@ impl Book {
         }
         self.enabled
             .retain(|(_, slug), _| self.skills.iter().any(|s| s.slug == *slug));
+        self.paint_listed_groups();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -281,6 +294,88 @@ impl Book {
             (group.to_string(), slug.to_string()),
             EnableState::from_known(on),
         );
+    }
+
+    /// This group's enable-list fetch: loading, ready, or failed.
+    pub fn group_load_state(&self, group: &str) -> GroupLoad {
+        self.group_load
+            .get(group)
+            .copied()
+            .unwrap_or(GroupLoad::Loading)
+    }
+
+    /// Mark every current chat as loading and drop its known switch
+    /// states, so the page shows 「读取中」 until the host answers.
+    pub fn begin_enable_loads(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, _) in &self.chats {
+            self.group_load.insert(id.clone(), GroupLoad::Loading);
+            self.listed.remove(id);
+            out.push(id.clone());
+        }
+        self.enabled
+            .retain(|(g, _), _| !out.iter().any(|id| id == g));
+        out
+    }
+
+    /// Chats that have not been asked yet: mark them loading and return
+    /// their ids. Already loading, ready or failed groups are left alone.
+    pub fn take_groups_to_load(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, _) in &self.chats {
+            if self.group_load.contains_key(id) {
+                continue;
+            }
+            self.group_load.insert(id.clone(), GroupLoad::Loading);
+            out.push(id.clone());
+        }
+        out
+    }
+
+    /// The host listed this group's enabled skills. Skills not in the
+    /// list are off. If the skill list has not loaded yet, the switches
+    /// stay on 「读取中」 until [`Book::load`].
+    pub fn apply_group_skills(&mut self, group: &str, enabled: &[Skill]) {
+        let slugs = enabled.iter().map(|s| s.slug.clone()).collect();
+        self.listed.insert(group.to_string(), Ok(slugs));
+        self.paint_group(group);
+    }
+
+    /// The group's enable list could not be read: switches stay disabled
+    /// with 「读不到」.
+    pub fn group_skills_failed(&mut self, group: &str) {
+        self.listed.insert(group.to_string(), Err(()));
+        self.paint_group(group);
+    }
+
+    fn paint_listed_groups(&mut self) {
+        let groups: Vec<String> = self.listed.keys().cloned().collect();
+        for group in groups {
+            self.paint_group(&group);
+        }
+    }
+
+    fn paint_group(&mut self, group: &str) {
+        match self.listed.get(group) {
+            Some(Err(())) => {
+                self.group_load.insert(group.to_string(), GroupLoad::Failed);
+                self.enabled.retain(|(g, _), _| g != group);
+            }
+            Some(Ok(on)) if self.loaded => {
+                let on = on.clone();
+                let slugs: Vec<String> = self
+                    .skills
+                    .iter()
+                    .filter(|s| s.status == MemoryStatus::Kept)
+                    .map(|s| s.slug.clone())
+                    .collect();
+                for slug in slugs {
+                    self.set_enabled(group, &slug, on.contains(&slug));
+                }
+                self.group_load.insert(group.to_string(), GroupLoad::Ready);
+            }
+            _ => {}
+        }
     }
 
     /// 「所有 bro」 first, then one group per bro in the host's bro order,
@@ -387,6 +482,7 @@ impl Book {
         self.editing = None;
         self.clear_notes();
         self.just_saved = Some(slug);
+        self.paint_listed_groups();
     }
 
     /// First click on 删除: ask once.
@@ -437,6 +533,7 @@ impl Book {
             s.status = MemoryStatus::Kept;
             s.confirm_id = None;
         }
+        self.paint_listed_groups();
     }
 
     pub fn deleted(&mut self, slug: &str) {
@@ -486,6 +583,7 @@ impl Book {
         self.adding = None;
         self.clear_notes();
         self.just_saved = Some(slug);
+        self.paint_listed_groups();
     }
 
     /// Flip the instruction open/closed for this slug.
@@ -508,6 +606,9 @@ impl Book {
         if !kept {
             return None;
         }
+        if self.group_load_state(group) != GroupLoad::Ready {
+            return None;
+        }
         let on = self.enable_state(group, slug).known()?;
         self.clear_notes();
         self.busy = true;
@@ -518,6 +619,13 @@ impl Book {
     pub fn toggled(&mut self, slug: &str, group: &str, on: bool) {
         self.busy = false;
         self.set_enabled(group, slug, on);
+        if let Some(Ok(set)) = self.listed.get_mut(group) {
+            if on {
+                set.insert(slug.to_string());
+            } else {
+                set.remove(slug);
+            }
+        }
     }
 
     pub fn add_scope_hint(&self) -> Option<String> {
@@ -768,6 +876,7 @@ mod tests {
     #[test]
     fn enable_state_stays_unknown_until_the_host_says() {
         let mut b = book();
+        assert_eq!(b.group_load_state("g-team"), GroupLoad::Loading);
         assert_eq!(b.enable_state("g-team", "shared"), EnableState::Unknown);
         assert_eq!(
             b.toggle_to_send("shared", "g-team"),
@@ -776,6 +885,9 @@ mod tests {
         );
         assert!(!b.busy, "a refused toggle must not lock the page");
         b.set_enabled("g-team", "shared", false);
+        // Known bits are not clickable until the group list is ready.
+        assert_eq!(b.toggle_to_send("shared", "g-team"), None);
+        b.group_load.insert("g-team".into(), GroupLoad::Ready);
         assert_eq!(b.enable_state("g-team", "shared"), EnableState::Off);
         assert_eq!(b.toggle_to_send("shared", "g-team"), Some(true));
         assert!(b.busy);
@@ -791,6 +903,66 @@ mod tests {
             b.enable_state("g-team", "shared"),
             EnableState::Unknown,
             "a forgotten skill drops its known state"
+        );
+    }
+
+    #[test]
+    fn group_list_sets_on_and_off_from_the_host() {
+        let mut b = book();
+        let groups = b.begin_enable_loads();
+        assert_eq!(groups, vec!["g-team", "g-ada"]);
+        assert_eq!(b.group_load_state("g-team"), GroupLoad::Loading);
+        assert_eq!(b.toggle_to_send("shared", "g-team"), None);
+
+        let shared = skill(
+            "shared",
+            "user",
+            MemoryStatus::Kept,
+            "2026-11-20T08:00:00Z",
+            None,
+        );
+        b.apply_group_skills("g-team", &[shared.clone()]);
+        assert_eq!(b.group_load_state("g-team"), GroupLoad::Ready);
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::On);
+        assert_eq!(b.enable_state("g-team", "bob-notes"), EnableState::Off);
+        assert_eq!(b.enable_state("g-team", "ada-notes"), EnableState::Off);
+        assert_eq!(b.toggle_to_send("shared", "g-team"), Some(false));
+        b.toggled("shared", "g-team", false);
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::Off);
+
+        let mut late = Book {
+            chats: vec![("g-team".into(), "作战组".into())],
+            ..Book::default()
+        };
+        late.apply_group_skills("g-team", &[shared.clone()]);
+        assert_eq!(
+            late.group_load_state("g-team"),
+            GroupLoad::Loading,
+            "wait for the skill list before painting on/off"
+        );
+        late.load(vec![shared]);
+        assert_eq!(late.group_load_state("g-team"), GroupLoad::Ready);
+        assert_eq!(late.enable_state("g-team", "shared"), EnableState::On);
+
+        let mut empty = book();
+        empty.apply_group_skills("g-team", &[]);
+        assert_eq!(empty.enable_state("g-team", "shared"), EnableState::Off);
+        assert_eq!(empty.toggle_to_send("shared", "g-team"), Some(true));
+    }
+
+    #[test]
+    fn group_list_failure_keeps_the_switch_disabled() {
+        let mut b = book();
+        b.begin_enable_loads();
+        b.group_skills_failed("g-team");
+        assert_eq!(b.group_load_state("g-team"), GroupLoad::Failed);
+        assert_eq!(b.enable_state("g-team", "shared"), EnableState::Unknown);
+        assert_eq!(b.toggle_to_send("shared", "g-team"), None);
+        assert!(!b.busy);
+        assert_eq!(
+            b.take_groups_to_load(),
+            Vec::<String>::new(),
+            "a failed group is not fetched again until the page reopens"
         );
     }
 
