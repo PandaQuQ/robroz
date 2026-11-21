@@ -32,7 +32,7 @@ cargo run -p robroz-host                                    # 默认只监听 12
 cargo run -p robroz-client                                  # 另开一个终端，打开客户端
 ```
 
-在客户端点「＋ 新 bro」，进它的私聊说一句话，就会派出第一个任务。不接模型时 bro 把你的话原样写成结果；接模型、设令牌、跨机器访问、用 curl 走一遍，见 [docs/install.md](docs/install.md)。
+在客户端会话列表「聊天」旁点「引入一个 bro」，进它的私聊说一句话，就会派出第一个任务。不接模型时 bro 把你的话原样写成结果；接模型、设令牌、跨机器访问、用 curl 走一遍，见 [docs/install.md](docs/install.md)。
 
 ## 文档
 

@@ -357,7 +357,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 ### needsSetup
 
-交付卡的可选字段。现在只有 `"search"`：任务调用了 `web_search` / `web_fetch` 但还没设置联网搜索。客户端按这个字段显示「去设置」，不要匹配文字。
+交付卡的可选字段。现在只有 `"search"`：任务调用了 `web_search` / `web_fetch` 但还没设置联网搜索。客户端应按这个字段引导用户去填搜索设置，不要匹配文字。`main` 上的客户端还没有这个入口。
 
 ---
 

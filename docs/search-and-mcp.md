@@ -13,7 +13,7 @@
 
 - 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#三级权限)。
 - 服务由 robroz 用户自己选、自己填，密钥不必交给别人：[Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
-- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」。这句话会原样出现在交付里，交付卡带可选字段 `needsSetup: "search"`，客户端按这个字段显示「去设置」，不要匹配文字。
+- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」。这句话会原样出现在交付里，交付卡带可选字段 `needsSetup: "search"`，客户端应按这个字段引导用户去填搜索设置，不要匹配文字；`main` 上的客户端还没有这个入口。
 - 设置存在本机 SQLite 的 `settings` 表。密钥不进日志、不进报错，接口只返回 `hasKey` 和 `keyLast4`。
 
 ### 设置和环境变量谁优先
