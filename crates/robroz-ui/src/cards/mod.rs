@@ -9,6 +9,7 @@ pub mod confirm;
 pub mod interact;
 pub mod memories;
 pub mod routines;
+pub mod skills;
 pub mod status;
 
 use robroz_contract::{ApprovalAction, ApprovalDecision, ChoiceOption, Event};
