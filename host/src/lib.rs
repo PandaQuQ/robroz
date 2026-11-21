@@ -23,6 +23,7 @@ mod skills;
 mod progress;
 mod proposals;
 mod pump;
+mod tools;
 mod routines;
 mod sandbox;
 mod say;
@@ -113,6 +114,7 @@ impl Host {
                 image: &self.image,
                 get_limit: self.get_limit,
                 model: self.model.as_deref(),
+                tools: crate::tools::ToolRegistry::empty(),
             },
         )
     }
@@ -3420,6 +3422,7 @@ mod tests {
                 image: "robroz-runner:local",
                 get_limit: 8,
                 model: Some(model),
+                tools: crate::tools::ToolRegistry::empty(),
             },
         )
         .unwrap();
