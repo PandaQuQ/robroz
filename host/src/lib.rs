@@ -26,6 +26,7 @@ mod pump;
 mod tools;
 mod search;
 mod mcp;
+mod mcp_tools;
 mod routines;
 mod sandbox;
 mod say;
@@ -54,6 +55,7 @@ pub struct Host {
     get_limit: u64,
     token: Option<auth::ApiToken>,
     model: Option<Arc<dyn robroz_model::Model>>,
+    mcp: Arc<dyn crate::mcp_tools::McpRuntime>,
 }
 
 impl Host {
@@ -73,6 +75,7 @@ impl Host {
             get_limit: get_limit_from_env(),
             token: None,
             model: None,
+            mcp: crate::mcp_tools::real_mcp(),
         })
     }
 
@@ -92,6 +95,12 @@ impl Host {
     /// Let bros think with `model`. Without it the runner echoes the prompt.
     pub fn with_model(mut self, model: Option<Arc<dyn robroz_model::Model>>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Swap the MCP connector. Tests pass a fake; production keeps the official client.
+    pub fn with_mcp(mut self, mcp: Arc<dyn crate::mcp_tools::McpRuntime>) -> Self {
+        self.mcp = mcp;
         self
     }
 
@@ -119,6 +128,7 @@ impl Host {
                 get_limit: self.get_limit,
                 model: self.model.as_deref(),
                 tools: &tools,
+                mcp: Some(self.mcp.clone()),
             },
         )
     }
@@ -319,6 +329,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
     crate::search::migrate(conn)?;
     crate::mcp::migrate(conn)?;
+    for column in ["mcp_server", "mcp_tool"] {
+        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+    }
     Ok(())
 }
 
@@ -3447,6 +3460,7 @@ mod tests {
                 get_limit: 8,
                 model: Some(model),
                 tools: crate::tools::ToolRegistry::empty(),
+                mcp: None,
             },
         )
         .unwrap();

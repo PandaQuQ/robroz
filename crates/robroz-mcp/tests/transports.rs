@@ -50,3 +50,30 @@ async fn lists_tools_over_stdio() {
         .unwrap();
     expect_fixture_tools(&tools);
 }
+
+fn http_cfg(url: &str) -> ConnectConfig {
+    ConnectConfig {
+        transport: TransportKind::Http,
+        command: None,
+        args: vec![],
+        url: Some(url.to_string()),
+        env: vec![],
+        headers: vec![],
+    }
+}
+
+#[tokio::test]
+async fn calls_tools_over_http() {
+    let server = fixture::serve_http().await.unwrap();
+    let cfg = http_cfg(&server.url);
+    let ping = RmcpConnector
+        .call_tool(&cfg, fixture::READ_ONLY_TOOL, &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(ping, "pong");
+    let written = RmcpConnector
+        .call_tool(&cfg, fixture::WRITE_TOOL, &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(written, "written");
+}

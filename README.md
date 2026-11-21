@@ -370,11 +370,14 @@ PUT 成功后返回的就是 `GET` 的内容，只有 `hasKey` 和 `keyLast4`，
 
 ## MCP
 
-宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。本阶段只做配置和列出工具，还不会把 MCP 工具交给模型调用。
+宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。任务开始时，宿主机把「该群已启用、并且服务器本身也是 enabled」的工具注册进模型循环；某台服务器连接失败就跳过它，任务照常进行。
 
 - 端点：`GET` / `POST /api/mcp/servers`，`PATCH` / `DELETE /api/mcp/servers/{id}`，`GET /api/mcp/servers/{id}/tools`（实时连一次，列出工具），`POST /api/mcp/servers/{id}/test`（试连，返回 `{ok, error?, toolCount?}`）。按群启用：`GET /api/groups/{id}/mcp` 列出已启用的服务器，`PUT` / `DELETE /api/groups/{id}/mcp/{serverId}` 打开或关掉。
 - 每台服务器有唯一的名字，以及 `stdio`（填启动命令和参数）或 `http`（填地址）两种传输方式。可以存多条密钥：stdio 用环境变量，HTTP 用请求头。接口只返回 `{name, in, hasKey, keyLast4}`，绝不回显密钥。`PATCH` 时 `key` 不传表示不改，传 `null` 表示清除。密钥不进日志，也不进报错。
 - `GET …/tools` 每一项带 `name`、`description` 和 `needsApproval`：工具标注了 `readOnlyHint: true` 时为 `false`，否则为 `true`。列表项可带 `toolCount`，是最近一次成功连接时看到的工具数。
+- 交给模型的工具名是 `{safe_server}__{safe_tool}`（只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希）。进度行和审批卡仍用原来的 `{server}.{tool}`，例如「在用 notes.write_note」。
+- 权限跟 `robroz-policy` 对齐：`readOnlyHint: true` 的工具是 Metered（按一次出网 GET 计次），直接调用；其余要先出审批卡（`action` 为 `call`），卡上带 `mcpServer`、`mcpTool` 和参数摘要，并带 `taskId`。批准、拒绝走现有的 `POST /api/approvals/{id}/approve` 和 `/deny`，答过一次再答是 409。等待期间任务是 `blocked`，不加新状态。批准后执行并把结果交回模型继续；拒绝则不执行，任务 `done`，交付卡带 `failure`（「你拒绝了：{server}.{tool}」），不是成功交付。
+- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
 - **stdio 启动的是本机进程，只能由用户通过这些接口配置；模型不能增删服务器。** 不要把来历不明的命令填进去。
 - 服务器配置存在本机 SQLite，表是 `mcp_servers` 和 `group_mcp`。
 
