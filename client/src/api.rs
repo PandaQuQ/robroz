@@ -251,6 +251,9 @@ pub mod search_body {
     /// Missing `key` leaves it; `null` clears it.
     pub fn put(p: &Put) -> String {
         let mut m = serde_json::Map::new();
+        if p.clear {
+            return serde_json::json!({"provider": null, "url": null, "key": null}).to_string();
+        }
         m.insert("provider".into(), p.provider.as_str().into());
         if let Some(u) = &p.url {
             m.insert("url".into(), u.clone().into());
@@ -809,6 +812,10 @@ impl CardApi for FakeApi {
 
     fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError> {
         let mut cur = self.search.lock().expect("fake search lock");
+        if put.clear {
+            *cur = search::Current::default();
+            return Ok(cur.clone());
+        }
         cur.provider = Some(put.provider);
         if put.url.is_some() {
             cur.url = put.url.clone();
@@ -923,6 +930,7 @@ mod tests {
                 provider: Provider::Brave,
                 url: None,
                 key,
+                clear: false,
             })
         };
         assert_eq!(p(None), r#"{"provider":"brave"}"#);
@@ -935,8 +943,13 @@ mod tests {
             provider: Provider::Searxng,
             url: Some("http://s".into()),
             key: None,
+            clear: false,
         });
         assert_eq!(sx, r#"{"provider":"searxng","url":"http://s"}"#);
+        assert_eq!(
+            search_body::put(&Put::clear()),
+            r#"{"key":null,"provider":null,"url":null}"#
+        );
     }
 
     #[test]

@@ -147,6 +147,7 @@ enum Message {
     OpenSearch,
     SearchLoaded(Result<SearchCurrent, ApiError>),
     SearchSaved(Result<SearchCurrent, ApiError>),
+    SearchCleared(Result<SearchCurrent, ApiError>),
     SearchTested(Result<(bool, Option<String>), ApiError>),
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     SkillsLoaded(Result<Vec<Skill>, ApiError>),
@@ -902,7 +903,19 @@ impl App {
             Action::SearchUrl { text } => page.url = text,
             Action::SearchKey { text } => page.key = text,
             Action::SearchReplaceKey => page.replace_key(),
-            Action::SearchClearKey => page.clear_key(),
+            Action::SearchClearKey => {
+                if page.busy {
+                    return Task::none();
+                }
+                page.clear_key();
+                page.busy = true;
+                page.test = None;
+                let put = search_page::Put::clear();
+                return Task::perform(
+                    call(&self.api, move |api| api.put_search(&put)),
+                    Message::SearchCleared,
+                );
+            }
             Action::SearchCancelKey => page.cancel_key(),
             Action::SearchSave => {
                 if page.busy {
@@ -1134,6 +1147,15 @@ impl App {
                         call(&self.api, |api| api.test_search()),
                         Message::SearchTested,
                     );
+                }
+                Err(err) => self.search.save_failed(&err.reason()),
+            },
+            Message::SearchCleared(result) => match result {
+                Ok(cur) => {
+                    self.search.busy = false;
+                    self.search.load(cur);
+                    self.search.test = None;
+                    self.search.note = None;
                 }
                 Err(err) => self.search.save_failed(&err.reason()),
             },

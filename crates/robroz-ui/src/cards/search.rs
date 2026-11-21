@@ -33,15 +33,21 @@ pub fn key_filled(last4: Option<&str>) -> String {
     }
 }
 
-pub fn cannot_connect(reason: &str) -> String {
-    // The test endpoint often already starts with 「连不上：」.
-    if reason.starts_with("连不上") {
-        reason.to_string()
-    } else {
-        format!("连不上：{reason}")
-    }
+/// Drop a leading 「连不上：」 so a later prefix is not doubled.
+pub fn strip_connect_prefix(reason: &str) -> &str {
+    reason.strip_prefix("连不上：").unwrap_or(reason)
 }
 
+pub fn cannot_connect(reason: &str) -> String {
+    format!("连不上：{}", strip_connect_prefix(reason))
+}
+
+/// PUT succeeded, then the test failed.
+pub fn saved_but_unreachable(reason: &str) -> String {
+    format!("已保存，但连不上：{}", strip_connect_prefix(reason))
+}
+
+/// The save itself failed. Keep a host 「连不上：」 rather than doubling it.
 pub fn failed(reason: &str) -> String {
     format!("没保存：{reason}")
 }
@@ -116,6 +122,19 @@ pub struct Put {
     pub provider: Provider,
     pub url: Option<String>,
     pub key: Option<Option<String>>,
+    /// Wipe provider, url and key so the page falls back to env or empty.
+    pub clear: bool,
+}
+
+impl Put {
+    pub fn clear() -> Self {
+        Self {
+            provider: Provider::Brave,
+            url: None,
+            key: Some(None),
+            clear: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,7 +146,7 @@ pub struct Page {
     /// Typed key (masked). Only used while `replacing` or no key is stored.
     pub key: String,
     pub replacing: bool,
-    /// 清除 pressed: send `key: null` on save.
+    /// 清除 pressed: next send wipes provider, url and key.
     pub clearing: bool,
     pub busy: bool,
     pub note: Option<String>,
@@ -186,13 +205,15 @@ impl Page {
         let Some(provider) = self.provider else {
             return None;
         };
+        if self.clearing {
+            self.note = None;
+            return Some(Put::clear());
+        }
         let key = self.key.trim().to_string();
         let put = match provider {
             Provider::Brave => {
                 let stored = self.current.as_ref().is_some_and(|c| c.has_key);
-                let key = if self.clearing {
-                    Some(None)
-                } else if !key.is_empty() {
+                let key = if !key.is_empty() {
                     Some(Some(key))
                 } else if stored {
                     None
@@ -204,6 +225,7 @@ impl Page {
                     provider,
                     url: None,
                     key,
+                    clear: false,
                 }
             }
             Provider::Searxng => {
@@ -216,6 +238,7 @@ impl Page {
                     provider,
                     url: Some(url),
                     key: None,
+                    clear: false,
                 }
             }
         };
@@ -248,7 +271,7 @@ impl Page {
         self.test.as_ref().map(|t| match t {
             Test::Running => TESTING.to_string(),
             Test::Ok => WORKS.to_string(),
-            Test::Failed(r) => cannot_connect(r),
+            Test::Failed(r) => saved_but_unreachable(r),
         })
     }
 
@@ -309,11 +332,31 @@ mod tests {
         p.tested(true, None);
         assert_eq!(p.test_line().as_deref(), Some(WORKS));
         p.tested(false, Some("超时".into()));
-        assert_eq!(p.test_line().as_deref(), Some("连不上：超时"));
+        assert_eq!(p.test_line().as_deref(), Some("已保存，但连不上：超时"));
+    }
+
+    #[test]
+    fn connect_copy_says_whether_it_was_saved() {
         assert_eq!(
-            cannot_connect("连不上：io: Connection refused"),
-            "连不上：io: Connection refused"
+            strip_connect_prefix("连不上：io: Connection refused"),
+            "io: Connection refused"
         );
+        assert_eq!(strip_connect_prefix("超时"), "超时");
+        assert_eq!(
+            saved_but_unreachable("连不上：io: Connection refused (os error 111)"),
+            "已保存，但连不上：io: Connection refused (os error 111)"
+        );
+        assert_eq!(saved_but_unreachable("超时"), "已保存，但连不上：超时");
+        assert_eq!(
+            failed("连不上：io: Connection refused (os error 111)"),
+            "没保存：连不上：io: Connection refused (os error 111)"
+        );
+        assert_eq!(
+            failed("连不上宿主机 http://127.0.0.1:1: io"),
+            "没保存：连不上宿主机 http://127.0.0.1:1: io"
+        );
+        assert_eq!(failed("请求体无效"), "没保存：请求体无效");
+        assert_eq!(cannot_connect("连不上：io: refused"), "连不上：io: refused");
         assert_eq!(cannot_connect("超时"), "连不上：超时");
     }
 
@@ -330,7 +373,7 @@ mod tests {
         assert_eq!(p.to_send().unwrap().key, None, "stored key: leave as-is");
         p.clear_key();
         assert!(!p.shows_stored_key());
-        assert_eq!(p.to_send().unwrap().key, Some(None));
+        assert!(p.to_send().unwrap().clear);
         p.cancel_key();
         p.replace_key();
         p.key = "newkey99".into();
