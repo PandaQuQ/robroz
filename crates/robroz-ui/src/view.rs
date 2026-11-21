@@ -1900,8 +1900,15 @@ pub fn skills_panel<'a>(
             .spacing(t.controls.button_gap)
             .align_y(Alignment::Center);
             for (group, name) in &book.chats {
-                let state = book.enable_state(group, &skill.slug);
-                let known = state.known();
+                let load = book.group_load_state(group);
+                let known = (load == skills::GroupLoad::Ready)
+                    .then(|| book.enable_state(group, &skill.slug).known())
+                    .flatten();
+                let hint = match load {
+                    skills::GroupLoad::Failed => Some(skills::LOAD_FAILED),
+                    skills::GroupLoad::Ready if known.is_some() => None,
+                    _ => Some(skills::LOADING),
+                };
                 let (track_on, track_off, knob) = if known.is_some() {
                     (
                         color(t.palette.accent),
@@ -1941,12 +1948,8 @@ pub fn skills_panel<'a>(
                 ]
                 .spacing(m.dot_gap)
                 .align_y(Alignment::Center);
-                if known.is_none() {
-                    cell = cell.push(
-                        text(skills::LOADING)
-                            .size(t.type_.foot)
-                            .color(color(t.palette.text3)),
-                    );
+                if let Some(hint) = hint {
+                    cell = cell.push(text(hint).size(t.type_.foot).color(color(t.palette.text3)));
                 }
                 toggles = toggles.push(cell);
             }
