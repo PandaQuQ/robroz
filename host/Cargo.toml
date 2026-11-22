@@ -16,7 +16,7 @@ url = "2"
 robroz-contract = { path = "../crates/robroz-contract" }
 robroz-policy = { path = "../crates/robroz-policy" }
 robroz-card = { path = "../crates/robroz-card" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "=1.11.0", features = ["v4"] }
 croner = "4.0.1"
