@@ -44,7 +44,7 @@ cargo run -p robroz-client                                  # 另开一个终端
 
 ## 配置
 
-宿主机和客户端都用环境变量配置（监听地址、令牌、数据库、模型、搜索、runner 镜像）。完整列表和默认值见 [docs/configuration.md](docs/configuration.md)。密钥和令牌放在仓库外的文件里（`*_FILE` 变量），不要提交进仓库。
+宿主机和客户端都用环境变量配置（监听地址、令牌、数据库、模型、搜索、runner 镜像）。完整列表和默认值见 [docs/configuration.md](docs/configuration.md)。联网搜索也可以在客户端的「联网搜索」页里填，那里保存的值逐项优先于环境变量。密钥和令牌放在仓库外的文件里（`*_FILE` 变量），不要提交进仓库。
 
 ## 文档
 

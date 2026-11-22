@@ -44,7 +44,7 @@ To connect a model, set a token, reach the host from another machine, or walk th
 
 ## Configuration
 
-Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
+Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). Web search can also be set from the client's 「联网搜索」 (*Web search*) page; values saved there take precedence over the environment variables, field by field. Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
 
 ## Documentation
 

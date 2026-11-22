@@ -359,7 +359,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 ### needsSetup
 
-交付卡的可选字段。现在只有 `"search"`：任务调用了 `web_search` / `web_fetch` 但还没设置联网搜索。客户端应按这个字段引导用户去填搜索设置，不要匹配文字。`main` 上的客户端还没有这个入口。
+交付卡的可选字段。现在只有 `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。和 `failure` 互不依赖：一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。客户端应按这个字段引导用户去填搜索设置，不要匹配文字。客户端的做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)。
 
 ---
 

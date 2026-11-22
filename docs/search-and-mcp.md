@@ -13,7 +13,7 @@
 
 - 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#三级权限)。
 - 服务由 robroz 用户自己选、自己填，密钥不必交给别人：[Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
-- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」。这句话会原样出现在交付里，交付卡带可选字段 `needsSetup: "search"`，客户端应按这个字段引导用户去填搜索设置，不要匹配文字；`main` 上的客户端还没有这个入口。
+- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」（`host/src/search.rs:NOT_CONFIGURED`），并给任务记上 `needsSetup: "search"`。这句话会加在结果文件开头，交付卡带可选字段 `needsSetup: "search"`。`web_fetch` 不用搜索服务，不会记这个字段。客户端按这个字段给出「去设置」，不匹配文字；目前只在带 `failure` 的交付卡上显示，见 [client.md 的「联网搜索页」](client.md#联网搜索页)。
 - 设置存在本机 SQLite 的 `settings` 表。密钥不进日志、不进报错，接口只返回 `hasKey` 和 `keyLast4`。
 
 ### 设置和环境变量谁优先
@@ -22,7 +22,7 @@
 
 ### 怎么填搜索服务
 
-两种方式选一种。
+三种方式选一种：客户端的「联网搜索」页（见 [client.md](client.md#联网搜索页)，背后就是下面的设置接口）、设置接口、环境变量。
 
 **用设置接口**（宿主机设了令牌时加 `-H "Authorization: Bearer <你的令牌>"`）：
 
