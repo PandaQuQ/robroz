@@ -77,6 +77,7 @@ export const zh: Messages = {
       body: '有些步骤得由人来，比如验证码。卡住时会停下来等人接管。',
     },
     sandbox: {
+      title: '沙箱',
       body: '每个任务都在没有网络的 Docker 容器里跑。搜索和读网页由宿主机替 bro 去做，同样算进每个任务的出网次数。你的搜索密钥只留在本机。',
     },
     demo: {

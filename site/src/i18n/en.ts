@@ -75,6 +75,7 @@ export const en = {
       body: 'Some steps need a person, such as a captcha. When a task gets stuck, it stops and waits for someone to take over.',
     },
     sandbox: {
+      title: 'Sandbox',
       body: "Every task runs in a Docker container with no network. Web search and page reads are made by the host on the bro's behalf and count towards the same per-task limit. Your search key stays on your machine.",
     },
     demo: {

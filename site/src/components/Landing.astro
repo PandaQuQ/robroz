@@ -47,11 +47,26 @@ const msg = t(Astro.currentLocale);
       <h3>{msg.control.approval.title}</h3>
       <p><RichText text={msg.control.approval.body} /></p>
     </article>
+    <div class="takeover-cell">
+      <article class="card">
+        <h3>{msg.control.takeover.title}</h3>
+        <p><RichText text={msg.control.takeover.body} /></p>
+      </article>
+      <div class="demo-item stuck-demo">
+        <article class="status-card" data-state="blocked">
+          <p class="status-card__line">
+            <strong>{msg.hero.demo.bro}</strong>
+            <span aria-hidden="true"> · </span>
+            <span>{msg.control.demo.stuck}</span>
+          </p>
+        </article>
+        {msg.control.demo.stuckGloss ? (
+          <p class="gloss">{msg.control.demo.stuckGloss}</p>
+        ) : null}
+      </div>
+    </div>
     <article class="card">
-      <h3>{msg.control.takeover.title}</h3>
-      <p><RichText text={msg.control.takeover.body} /></p>
-    </article>
-    <article class="card">
+      <h3>{msg.control.sandbox.title}</h3>
       <p><RichText text={msg.control.sandbox.body} /></p>
     </article>
   </div>

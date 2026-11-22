@@ -10,7 +10,7 @@ const { msg } = Astro.props;
 const { demo } = msg.hero;
 ---
 
-<figure class="chat">
+<figure class="chat" data-demo="hero">
   <div class="demo-item demo-item--you">
     <article class="bubble bubble--you">
       <span class="bubble__who">{demo.you}</span>
@@ -62,11 +62,12 @@ const { demo } = msg.hero;
   const steps: Step[] = ['queued', 'running1', 'running2', 'done'];
 
   for (const item of document.querySelectorAll<HTMLElement>('.status-demo')) {
+    const root = item.closest<HTMLElement>('.chat');
     const card = item.querySelector<HTMLElement>('.status-card');
     const label = item.querySelector<HTMLElement>('.status-card__label');
     const progress = item.querySelector<HTMLElement>('.status-card__progress');
     const gloss = item.querySelector<HTMLElement>('.status-card-gloss');
-    const delivery = item.closest('.chat')?.querySelector<HTMLElement>('.delivery-item');
+    const delivery = root?.querySelector<HTMLElement>('.delivery-item');
     if (!card || !label || !progress) continue;
 
     const apply = (step: Step) => {
@@ -101,7 +102,11 @@ const { demo } = msg.hero;
         gloss.textContent = glossText;
       }
 
-      if (delivery) delivery.hidden = step !== 'done';
+      if (delivery) {
+        const show = step === 'done';
+        delivery.hidden = !show;
+        delivery.classList.toggle('is-visible', show);
+      }
     };
 
     if (reduceMotion) {
@@ -111,9 +116,17 @@ const { demo } = msg.hero;
 
     let index = 0;
     apply(steps[index]);
-    window.setInterval(() => {
+    const timer = window.setInterval(() => {
       index = (index + 1) % steps.length;
       apply(steps[index]);
     }, 2000);
+
+    root?.addEventListener('demo-step', ((event: Event) => {
+      const step = (event as CustomEvent).detail as Step;
+      if (!steps.includes(step)) return;
+      window.clearInterval(timer);
+      index = steps.indexOf(step);
+      apply(step);
+    }) as EventListener);
   }
 </script>
