@@ -103,6 +103,7 @@ CI 在 PR 上只构建 Linux 客户端；合到 `main` 后和每天定时会构�
 ### 规则
 
 - 一个 PR 只做一件事。
+- 每位贡献者都要签一次[贡献者许可协议](CLA.md)：把 `CLA.md` 里那行声明加到 PR 描述里（PR 模板里有 CLA 勾选项的话，勾上即可）。没有签署的 PR 不会合并。
 - 提交信息、PR 标题和正文都用英文，按 [Conventional Commits](https://www.conventionalcommits.org/) 写：`feat(host): ...`、`fix(client): ...`、`docs: ...`。PR 用 squash merge 合并，PR 标题就是合并后的提交信息。
 - 契约只增不改：可以新增卡片类型、接口和可选字段；已有字段、任务状态（`queued` / `running` / `blocked` / `done`）和 `botId` / `botName` 都冻住不改。
 - 不 force-push。分支落后时把 `main` merge 进来。
@@ -113,4 +114,10 @@ CI 在 PR 上只构建 Linux 客户端；合到 `main` 后和每天定时会构�
 
 ## 许可证
 
-许可证待定。
+SPDX-License-Identifier: `AGPL-3.0-only`
+
+robroz 采用 [GNU Affero 通用公共许可证 v3.0 only](LICENSE)。修改了 robroz 并通过网络给别人用的，必须向这些用户提供改过的源码（AGPL 第 13 条）。
+
+闭源或专有用途可以另外取得商业授权，见 [COMMERCIAL.md](COMMERCIAL.md)。商业授权请[联系作者](https://github.com/PandaQuQ)。
+
+贡献按[贡献者许可协议](CLA.md)接收。
