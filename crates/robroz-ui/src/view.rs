@@ -553,6 +553,23 @@ fn mono_wrap<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
         .into()
 }
 
+fn field_label<'a, M: 'a>(t: &Skin, label: &'static str) -> Element<'a, M> {
+    text(label)
+        .size(t.type_.foot)
+        .color(color(t.palette.text3))
+        .into()
+}
+
+fn labelled<'a>(
+    t: &Skin,
+    label: &'static str,
+    field: impl Into<Element<'a, Action>>,
+) -> Element<'a, Action> {
+    column![field_label(t, label), field.into()]
+        .spacing(2.0)
+        .into()
+}
+
 #[derive(Clone, Copy)]
 enum Leading {
     None,
@@ -2255,7 +2272,7 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
             Some(Action::McpFormTransport { http }),
         ));
     }
-    let mut fields = column![name, transports].spacing(m.head_gap);
+    let mut fields = column![labelled(t, mcp::LABEL_NAME, name), transports].spacing(m.head_gap);
     match form.transport {
         mcp::Transport::Stdio => {
             let mut command = text_input(mcp::COMMAND_PLACEHOLDER, &form.command)
@@ -2268,7 +2285,9 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
                 command = command.on_input(|text| Action::McpFormCommand { text });
                 args = args.on_input(|text| Action::McpFormArgs { text });
             }
-            fields = fields.push(command).push(args);
+            fields = fields
+                .push(labelled(t, mcp::LABEL_COMMAND, command))
+                .push(labelled(t, mcp::LABEL_ARGS, args));
         }
         mcp::Transport::Http => {
             let mut url = text_input(mcp::URL_PLACEHOLDER, &form.url)
@@ -2277,7 +2296,7 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
             if !busy {
                 url = url.on_input(|text| Action::McpFormUrl { text });
             }
-            fields = fields.push(url);
+            fields = fields.push(labelled(t, mcp::LABEL_URL, url));
         }
     }
     for (index, secret) in form.secrets.iter().enumerate() {
@@ -2416,9 +2435,13 @@ fn mcp_secret_row<'a>(
         }
         row.into()
     };
-    column![name, place, key_row]
-        .spacing(t.metrics.head_gap)
-        .into()
+    column![
+        labelled(t, mcp::LABEL_SECRET_NAME, name),
+        place,
+        labelled(t, mcp::LABEL_SECRET_KEY, key_row),
+    ]
+    .spacing(t.metrics.head_gap)
+    .into()
 }
 
 /// A switch drawn with containers, not `canvas(Toggle)`. Iced's canvas
@@ -2487,13 +2510,11 @@ fn mcp_row<'a>(
         name = name.push(tag(t, mcp::COMMAND_UNAPPROVED, t.palette.accent));
     }
     let mut title = column![name].spacing(2.0);
-    if !unapproved {
-        title = title.push(
-            text(mcp::tool_count_text(server.tool_count))
-                .size(t.type_.foot)
-                .color(color(t.palette.text3)),
-        );
-    }
+    title = title.push(
+        text(mcp::row_subtitle(server))
+            .size(t.type_.foot)
+            .color(color(t.palette.text3)),
+    );
     let top = row![
         button(title)
             .padding(0)
@@ -2591,13 +2612,19 @@ fn mcp_command_prompt<'a>(
     busy: bool,
 ) -> Element<'a, Action> {
     let prompt = book.command_prompt_for(&server.id).expect("prompt");
-    let mut lines = column![mono_wrap(t, prompt.command.as_str())].spacing(2.0);
+    let command_block = column![
+        field_label(t, mcp::LABEL_PROMPT_COMMAND),
+        mono_wrap(t, prompt.command.as_str()),
+    ]
+    .spacing(2.0);
+    let mut args_block = column![field_label(t, mcp::LABEL_PROMPT_ARGS)].spacing(2.0);
     for arg in &prompt.args {
-        lines = lines.push(mono_wrap(t, arg.as_str()));
+        args_block = args_block.push(mono_wrap(t, arg.as_str()));
     }
     let id = server.id.clone();
     column![
-        lines,
+        command_block,
+        args_block,
         text(mcp::COMMAND_RUNS_LOCAL)
             .size(t.type_.foot)
             .color(color(t.palette.text3)),

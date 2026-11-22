@@ -33,6 +33,16 @@ pub const ARGS_PLACEHOLDER: &str = "参数，用空格分开";
 pub const URL_PLACEHOLDER: &str = "地址，如 http://127.0.0.1:3000";
 pub const SECRET_NAME_PLACEHOLDER: &str = "密钥名称";
 pub const SECRET_KEY_PLACEHOLDER: &str = "密钥";
+/// Small labels above form fields, so a filled box is still identifiable.
+pub const LABEL_NAME: &str = "名称";
+pub const LABEL_COMMAND: &str = "命令";
+pub const LABEL_ARGS: &str = "参数（用空格分开）";
+pub const LABEL_URL: &str = "地址";
+pub const LABEL_SECRET_NAME: &str = "密钥名称";
+pub const LABEL_SECRET_KEY: &str = "密钥";
+/// Shorter labels in the 409 command-approval block.
+pub const LABEL_PROMPT_COMMAND: &str = "命令";
+pub const LABEL_PROMPT_ARGS: &str = "参数";
 pub const ENV: &str = "环境变量";
 pub const HEADER: &str = "请求头";
 pub const EMPTY_NAME: &str = "请填写名称";
@@ -60,6 +70,15 @@ pub fn tool_count_text(n: Option<u32>) -> String {
     match n {
         Some(n) => format!("{n} 个工具"),
         None => "还没数过".into(),
+    }
+}
+
+/// Second line on a collapsed server row.
+pub fn row_subtitle(s: &McpServer) -> String {
+    if command_unapproved(s) {
+        TOOLS_NEED_APPROVAL.into()
+    } else {
+        tool_count_text(s.tool_count)
     }
 }
 
@@ -964,5 +983,19 @@ mod tests {
         ));
         assert_eq!(b.open.as_deref(), Some("s4"));
         assert!(matches!(b.test_for("s4"), Some(TestState::Running)));
+    }
+
+    #[test]
+    fn unapproved_row_subtitle_explains_why_there_is_no_tool_count() {
+        let s = unapproved("s5", "回声");
+        assert_eq!(row_subtitle(&s), TOOLS_NEED_APPROVAL);
+        let mut ready = unapproved("s6", "夹具");
+        ready.command_approved = Some(true);
+        ready.tool_count = Some(2);
+        assert_eq!(row_subtitle(&ready), "2 个工具");
+        assert_eq!(LABEL_NAME, "名称");
+        assert_eq!(LABEL_ARGS, "参数（用空格分开）");
+        assert_eq!(LABEL_URL, "地址");
+        assert_eq!(LABEL_PROMPT_ARGS, "参数");
     }
 }
