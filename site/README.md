@@ -14,20 +14,14 @@ npm ci
 npm run dev
 ```
 
-The dev server defaults to base path `/robroz`, matching the GitHub Pages preview at `https://pandaquq.github.io/robroz/`. Open `http://localhost:4321/robroz/`.
+The dev server defaults to base path `/`, matching https://robroz.dev. Open `http://localhost:4321/`.
 
 ```sh
 npm run build    # writes to dist/
 npm run preview  # serves dist/ with the same base path
 ```
 
-To build as if the custom domain were already live:
-
-```sh
-SITE_URL=https://robroz.dev BASE_PATH=/ npm run build
-```
-
-Do not add a `CNAME` file until DNS for robroz.dev is in place.
+`site/public/CNAME` is `robroz.dev`, so a deploy from `main` publishes the custom domain to GitHub Pages. Do not merge this until DNS is ready.
 
 ## Deploy
 
