@@ -18,13 +18,13 @@
 ## 宿主机
 
 - HTTP：axum，路由在 `host/src/lib.rs:router_from`，外面套一层令牌校验 `host/src/auth.rs:require_token`。
-- 存储：SQLite，路径 `ROBROZ_DB`。主要的表：`groups`、`bots`、`memberships`、`messages`、`tasks`、`deliveries`、`schedules`（`host/src/lib.rs`），`choices`、`approvals`（审批卡和确认卡同一张表），`group_reads`（已读位置），`memories`，`skills`、`group_skills`，`settings`（搜索设置），`mcp_servers`、`group_mcp`。旧库启动时自动补新加的列，原有数据不动。`tenant_id` 固定 `local`。
+- 存储：SQLite，路径 `ROBROZ_DB`。主要的表：`groups`、`bots`、`memberships`、`messages`、`tasks`、`deliveries`、`schedules`（`host/src/lib.rs`），`choices`、`approvals`（审批卡和确认卡同一张表），`group_reads`（已读位置），`memories`，`skills`、`group_skills`，`settings`（搜索和模型设置），`mcp_servers`、`group_mcp`。旧库启动时自动补新加的列，原有数据不动。`tenant_id` 固定 `local`。
 - 主循环：`host/src/main.rs:main` 每秒调一次 `tick`（例行任务）和 `pump`（任务）。实现在 `host/src/pump.rs`。
 
 ### pump
 
 1. 在数据库锁里取一个 `queued` 任务，改成 `running`（同一个任务不会被取两次），然后放锁。
-2. 接了模型时先调模型，把回答写进 `ROBROZ_CONTROL/{taskId}/reply.txt`。每次运行前先删掉旧的回答，重试拿不到上一次的。
+2. 接了模型时先调模型，把回答写进 `ROBROZ_CONTROL/{taskId}/reply.txt`；没设置模型时写「还没设置模型」并给任务记 `needsSetup:"model"`。每次运行前先删掉旧的回答，重试拿不到上一次的。
 3. 放锁后 `docker run` / `inspect` / `rm`，最后重新加锁写结果。慢容器不会卡住 HTTP。`docker run` 失败时任务改回 `queued`，没有交付卡。
 4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失保持 `running` 且 `containerUp` false。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
 5. 成功完成的任务读 `proposals.jsonl`，发确认卡（见 [memory-and-skills.md](memory-and-skills.md)）。
@@ -53,7 +53,8 @@
 ### 模型
 
 - `crates/robroz-model` 调 `POST {ROBROZ_MODEL_BASE_URL}/chat/completions`，单次最长等 120 秒。
-- 地址、模型名、密钥没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
+- 没有默认模型。模型由部署的人在部署时用 `ROBROZ_MODEL_*` 环境变量选，或者启动后用 `PUT /api/settings/model` 填；设置接口优先于环境变量，逐项比较。pump 每轮都重新读设置和环境变量（`host/src/model_settings.rs:live_model`），改完不用重启。见 [configuration.md 的「模型」](configuration.md#模型)。
+- 地址、模型名、密钥没有配齐（或地址格式不对）时不调模型：pump 把「还没设置模型」写进 `reply.txt`，任务照常跑完，结果文件就是这句，交付卡带 `needsSetup:"model"`（`host/src/pump.rs`）。只有测试开关 `ROBROZ_MODEL=echo`（CI 和 `scripts/e2e.sh` 会设）打开时才不写 `reply.txt`，runner 回显 prompt。
 - system 提示 = 固定开场白（`robroz_model::SYSTEM_PROMPT`）+ 记忆段 + 技能段（`host/src/pump.rs:system_extra`）。任务的 prompt 还是用户那一条，不改。
 - 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#模型)。
 - 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#模型的工具调用)。

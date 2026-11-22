@@ -38,9 +38,11 @@ cargo run -p robroz-host                                    # 只监听 127.0.0.
 cargo run -p robroz-client                                  # 另开一个终端
 ```
 
-在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。没设置模型时，bro 会交付「还没设置模型」，并提示去设置。测试和 CI 会设 `ROBROZ_MODEL=echo`，这时仍把你的话原样写成结果。
+在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。
 
-接模型、设令牌、从别的机器访问宿主机、用 `curl` 走一遍接口，见 [docs/install.md](docs/install.md)。
+robroz 没有默认模型，用哪个由你在部署宿主机时选。任何 OpenAI 兼容的 `/chat/completions` 服务都可以。启动宿主机前设好 `ROBROZ_MODEL_BASE_URL`、`ROBROZ_MODEL` 和 `ROBROZ_MODEL_KEY_FILE`（存放密钥的文件），或者之后用 `PUT /api/settings/model` 补上，不用重启。选好模型之前，任务照样会做完，但结果是「还没设置模型」，交付卡带 `needsSetup: "model"`。
+
+选模型、设令牌、从别的机器访问宿主机、用 `curl` 走一遍接口，见 [docs/install.md](docs/install.md)。
 
 ## 配置
 

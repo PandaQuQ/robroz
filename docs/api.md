@@ -366,9 +366,9 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 交付卡的可选字段。现在有两种值，和 `failure` 互不依赖：
 
 - `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。
-- `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。结果文件是「还没设置模型」，不把 prompt 原样写成结果。
+- `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。任务仍以 `done` 结束，交付卡的 `summary` 照常是「已写入结果」，没有 `failure`；结果文件是「还没设置模型」，不把 prompt 原样写成结果。怎么选模型见 [模型设置](#模型设置)。
 
-客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型设置页还在后面做。
+客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)。客户端目前只对 `"search"` 显示「去设置」，还不处理 `"model"`。
 
 ---
 
@@ -807,13 +807,21 @@ curl -s -X POST $B/api/settings/search/test
 
 ## 模型设置
 
-模型和搜索一样，可以用环境变量，也可以用设置接口。设置接口优先，逐个字段比较。只支持 OpenAI 兼容的 `/chat/completions`，后端不维护服务商列表。密钥只以 `hasKey` 和后 4 位返回，永不回显。改完立即生效，不用重启宿主机。详见 [configuration.md 的「模型」](configuration.md#模型)。
+robroz 没有默认模型，由部署的人在部署时用环境变量选，或者启动后用下面的接口填，见 [configuration.md 的「部署时选模型」](configuration.md#部署时选模型)。模型和搜索一样，设置接口优先于环境变量，逐个字段比较。只支持 OpenAI 兼容的 `/chat/completions`，后端不维护服务商列表。密钥只以 `hasKey` 和后 4 位返回，永不回显。改完立即生效，不用重启宿主机。详见 [configuration.md 的「模型」](configuration.md#模型)。
 
 ### GET /api/settings/model
 
 读当前生效的模型配置。`host/src/model_settings.rs:get_model`
 
-没配的字段是 `null`。`source` 在设置接口填过任意一项时是 `"settings"`，三项都没填、全部来自环境变量时是 `"env"`，什么都没配时不出现这个字段。
+返回 200 和 `{baseUrl, model, hasKey, keyLast4, source?}`。没配的字段是 `null`，`hasKey` 是 `false`。`keyLast4` 是密钥的后 4 个字符，密钥本身永不返回。`source` 在设置接口填过任意一项时是 `"settings"`，三项都没填、全部来自环境变量时是 `"env"`，什么都没配时不出现这个字段。
+
+环境变量里的密钥读不出来时（比如启动后 `ROBROZ_MODEL_KEY_FILE` 指的文件被删了或清空了）返回 400，`error` 是对应的原因，例如「ROBROZ_MODEL_KEY_FILE 是空的」。
+
+没配模型时：
+
+```json
+{"baseUrl":null,"model":null,"hasKey":false,"keyLast4":null}
+```
 
 ```sh
 curl -s $B/api/settings/model
@@ -827,7 +835,19 @@ curl -s $B/api/settings/model
 
 改设置接口里的模型配置。`host/src/model_settings.rs:put_model`
 
-请求体是 JSON 对象：`{baseUrl?, model?, key?}`。某个字段不传表示不改；传 `null` 表示清除该项，之后退回环境变量。`baseUrl` 必须以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。成功时返回和 `GET` 相同的对象。非法的 `baseUrl` 或空值返回 400。
+请求体是 JSON 对象：`{baseUrl?, model?, key?}`。某个字段不传表示不改；传 `null` 表示清除该项，之后退回环境变量。`baseUrl` 和 `model` 去掉首尾空白，`baseUrl` 末尾的 `/` 会去掉。成功时返回 200 和 `GET` 相同的对象。
+
+| 情况 | 状态码 | `error` |
+| --- | --- | --- |
+| 请求体不是 JSON（或没带 `content-type: application/json`） | 400 | 「请求体不是 JSON」 |
+| 是 JSON 但字段类型不对（比如不是对象、值不是字符串或 `null`） | 400 | 「请求体无效」 |
+| `baseUrl` 是空字符串或只有空白 | 400 | 「请填写地址」 |
+| `baseUrl` 不以 `http://` 或 `https://` 开头 | 400 | 「地址要以 http:// 或 https:// 开头」 |
+| `model` 是空字符串或只有空白 | 400 | 「请填写模型名」 |
+| `key` 是空字符串或只有空白 | 400 | 「密钥不能为空」 |
+| `key` 中间有空白 | 400 | 「密钥里不能有空白」 |
+
+要清掉一项用 `null`，不要传空字符串。任何一项不合法时整个请求都不写入。
 
 ```sh
 curl -s -X PUT $B/api/settings/model -H 'content-type: application/json' \
@@ -836,11 +856,16 @@ curl -s -X PUT $B/api/settings/model -H 'content-type: application/json' \
 
 ### POST /api/settings/model/test
 
-用当前生效的配置发一条最短的 `/chat/completions` 请求试连。无请求体。总是 200。超时 10 秒。`host/src/model_settings.rs:test_model`
+用当前生效的配置发一条最短的 `/chat/completions` 请求试连（内容 `ping`，`max_tokens` 为 1）。无请求体。超时 10 秒（`MODEL_TEST_TIMEOUT`）。只看对方返回的状态码是不是 2xx，不检查回答内容。`host/src/model_settings.rs:test_model`
+
+返回 200 和 `{ok, error?}`：
 
 - `{"ok":true}`。
 - `{"ok":false,"error":"还没设置模型"}`：地址、模型名、密钥没有配齐。
-- `{"ok":false,"error":"连不上：<原因>"}`：原因里的密钥会被替换成 `***`。
+- `{"ok":false,"error":"地址要以 http:// 或 https:// 开头"}`：三项齐了，但生效的地址（比如来自 `ROBROZ_MODEL_BASE_URL`）格式不对。
+- `{"ok":false,"error":"连不上：<原因>"}`：原因是「连不上模型服务：…」（连接失败或超时）、「模型服务返回 <状态码>」或「读模型返回失败：…」。原因里的密钥会被替换成 `***`。
+
+和 `GET` 一样，环境变量里的密钥读不出来时返回 400。
 
 ```sh
 curl -s -X POST $B/api/settings/model/test

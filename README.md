@@ -38,9 +38,11 @@ cargo run -p robroz-host                                    # listens on 127.0.0
 cargo run -p robroz-client                                  # in a second terminal
 ```
 
-In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the delivery is 「还没设置模型」 (*the model isn't set up yet*) and the card asks you to go to settings. Tests and CI set `ROBROZ_MODEL=echo` to keep echoing the prompt instead.
+In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task.
 
-To connect a model, set a token, reach the host from another machine, or walk through the API with `curl`, see [docs/install.md](docs/install.md).
+robroz has no default model: you choose one when you deploy the host. Any OpenAI-compatible `/chat/completions` service works. Set `ROBROZ_MODEL_BASE_URL`, `ROBROZ_MODEL` and `ROBROZ_MODEL_KEY_FILE` (a file holding the key) before starting the host, or fill them in later with `PUT /api/settings/model`, no restart needed. Until a model is chosen, tasks still finish, but the result reads 「还没设置模型」 (*the model isn't set up yet*) and the delivery card carries `needsSetup: "model"`.
+
+To choose a model, set a token, reach the host from another machine, or walk through the API with `curl`, see [docs/install.md](docs/install.md).
 
 ## Configuration
 

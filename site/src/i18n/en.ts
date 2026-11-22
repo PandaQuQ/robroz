@@ -104,8 +104,8 @@ docker build -f runner/Dockerfile -t robroz-runner:local .
 cargo run -p robroz-host
 # in a second terminal
 cargo run -p robroz-client`,
-    next: 'In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.',
-    more: 'To connect an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide.',
+    next: 'In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. robroz has no default model: you choose one when you deploy the host. Until you do, the result reads 「还没设置模型」 (*the model isn\'t set up yet*).',
+    more: 'To choose an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide.',
     moreLink: {
       label: 'Install guide',
       href: 'https://github.com/PandaQuQ/robroz/blob/main/docs/install.md',

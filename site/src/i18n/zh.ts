@@ -106,8 +106,8 @@ docker build -f runner/Dockerfile -t robroz-runner:local .
 cargo run -p robroz-host
 # 另开一个终端
 cargo run -p robroz-client`,
-    next: '在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。没接模型时，bro 会把你的话原样写成结果。',
-    more: '接 OpenAI 兼容模型、设置联网搜索、设令牌、从别的机器访问宿主机，见安装文档。',
+    next: '在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。robroz 没有默认模型，用哪个由你在部署宿主机时选。选好之前，结果会是「还没设置模型」。',
+    more: '选 OpenAI 兼容模型、设置联网搜索、设令牌、从别的机器访问宿主机，见安装文档。',
     moreLink: {
       label: '安装文档',
       href: 'https://github.com/PandaQuQ/robroz/blob/main/docs/install.md',

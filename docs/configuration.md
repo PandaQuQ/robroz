@@ -34,24 +34,48 @@ robroz 只用环境变量配置，没有配置文件。模型和联网搜索例�
 | 变量 | 读取位置 | 默认值 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
 | `ROBROZ_MODEL_KEY` | `host/src/model_settings.rs:effective_config` | 不设，未设置模型 | 模型密钥。密钥里不能有空白。不设（`ROBROZ_MODEL_KEY_FILE` 也不设）且设置接口也没有密钥时，等于没设置模型。 | `<你的密钥>` |
-| `ROBROZ_MODEL_KEY_FILE` | `host/src/model_settings.rs:effective_config` | 不设 | 从这个文件读模型密钥，首尾空白会去掉；文件是空的就拒绝启动。和 `ROBROZ_MODEL_KEY` 只能设一个。推荐用文件。 | `/etc/robroz/model-key` |
-| `ROBROZ_MODEL_BASE_URL` | `host/src/model_settings.rs:effective_config` | 无 | OpenAI 兼容服务的地址，宿主机请求 `{地址}/chat/completions`。要以 `http://` 或 `https://` 开头；末尾的 `/` 会去掉。通过环境变量给的不完整配置不会阻止启动，缺的项可以在设置接口里补。 | `https://api.openai.com/v1` |
+| `ROBROZ_MODEL_KEY_FILE` | `host/src/model_settings.rs:effective_config` | 不设 | 从这个文件读模型密钥，首尾空白会去掉；文件读不出来或是空的就拒绝启动。和 `ROBROZ_MODEL_KEY` 只能设一个。推荐用文件。 | `/etc/robroz/model-key` |
+| `ROBROZ_MODEL_BASE_URL` | `host/src/model_settings.rs:effective_config` | 无 | OpenAI 兼容服务的地址，宿主机请求 `{地址}/chat/completions`。要以 `http://` 或 `https://` 开头；末尾的 `/` 会去掉。启动时不检查格式：格式不对时等于没设置模型，试连接口会返回「地址要以 http:// 或 https:// 开头」。通过环境变量给的不完整配置不会阻止启动，缺的项可以在设置接口里补。 | `https://api.openai.com/v1` |
 | `ROBROZ_MODEL` | `host/src/model_settings.rs:effective_config` | 无 | 模型名。设成 `echo`（不分大小写）是**测试开关**：见下面说明。 | `gpt-4o-mini` |
 
-只支持 OpenAI 兼容的 `/chat/completions`。后端不维护服务商列表，预设地址由客户端的下拉提供。
+只支持 OpenAI 兼容的 `/chat/completions`。后端不维护服务商列表。
+
+#### 部署时选模型
+
+robroz 没有默认模型。用哪个服务、哪个模型，由部署的人在部署时选，有两种做法：
+
+1. **部署时设环境变量（推荐）。** 在启动宿主机的命令、systemd 单元或容器配置里设 `ROBROZ_MODEL_BASE_URL`、`ROBROZ_MODEL` 和 `ROBROZ_MODEL_KEY_FILE`。密钥放在仓库外、只有运行宿主机的用户能读的文件里，用 `_FILE` 变量指过去，不要用 `ROBROZ_MODEL_KEY` 把密钥直接写进命令或配置。
+2. **启动后用设置接口。** `PUT /api/settings/model` 填 `baseUrl`、`model`、`key`，再用 `POST /api/settings/model/test` 试连。存在 SQLite 里，不用重启。
+
+```sh
+# 做法 1：部署时
+ROBROZ_MODEL_BASE_URL='<服务地址>' \
+ROBROZ_MODEL='<模型名>' \
+ROBROZ_MODEL_KEY_FILE=/etc/robroz/model-key \
+robroz-host
+
+# 做法 2：启动后
+curl -s -X PUT http://127.0.0.1:8790/api/settings/model -H 'content-type: application/json' \
+  -d '{"baseUrl":"<服务地址>","model":"<模型名>","key":"<你的密钥>"}'
+curl -s -X POST http://127.0.0.1:8790/api/settings/model/test
+```
+
+两种可以混用，规则见下面的优先级。完整步骤见 [install.md 的「选模型」](install.md#选模型)。
+
+#### 优先级和行为
 
 **优先级：设置接口优先于环境变量，逐个字段比较。** 宿主机分别看地址、模型名、密钥三项：设置接口（存在 SQLite 的 `settings` 表里）填了的项用设置接口的值，没填的项退回对应的环境变量。三项都齐了才算设置好模型。改设置不用重启宿主机，之后的新任务立刻用新配置。
 
 - `GET` / `PUT /api/settings/model` 的返回体在已生效时带可选字段 `source`：设置接口里填过任意一项就是 `"settings"`，三项都没填、全部来自环境变量时是 `"env"`。完全没配时没有这个字段。所以 `source:"settings"` 也可能是「模型名来自设置接口、密钥来自环境变量」的混合情况。
 - `PUT` 时某个字段传 `null` 表示清掉设置接口里的那一项，之后退回环境变量；不传表示不改。`baseUrl` 必须以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。
 - 接口只返回 `hasKey` 和 `keyLast4`，不回显密钥。
-- `POST /api/settings/model/test` 用一条最短的请求试连，超时 10 秒，返回 `{ok, error?}`。
+- `POST /api/settings/model/test` 用当前生效的配置发一条最短的请求试连（`max_tokens` 为 1），超时 10 秒，返回 `{ok, error?}`。错误文字见 [api.md 的「模型设置」](api.md#模型设置)。
 
-没设置模型时（地址、模型名、密钥没有配齐，也没有打开测试开关），任务交付「还没设置模型」，交付卡带可选字段 `needsSetup:"model"`，不再把 prompt 原样写成结果。
+没设置模型时（地址、模型名、密钥没有配齐，或者配齐了但地址格式不对，也没有打开测试开关），任务仍以 `done` 结束，结果文件是「还没设置模型」，交付卡带可选字段 `needsSetup:"model"`，没有 `failure`。不再把 prompt 原样写成结果，没有默认模型。
 
-`ROBROZ_MODEL=echo` 是测试用开关，正式部署不要设。打开时，只要没有配齐一套可用的模型（设置接口优先），bro 就仍把 prompt 原样写成结果；不需要同时设密钥或地址。CI 和 `scripts/e2e.sh` 会显式打开它。设置接口或环境变量配齐了一套模型时，以那套为准，这个开关不生效。只在设置接口里把模型名写成 `echo`、却没有地址和密钥，不会打开回显。
+`ROBROZ_MODEL=echo` 是测试用开关，正式部署不要设。打开时，只要没有配齐一套可用的模型（设置接口优先），bro 就仍把 prompt 原样写成结果；不需要同时设密钥或地址。CI 和 `scripts/e2e.sh` 会显式打开它。设置接口或环境变量配齐了一套模型时，以那套为准，这个开关不生效；注意此时如果模型名本身就取自 `ROBROZ_MODEL=echo`，宿主机会把 `echo` 当成模型名发给模型服务。只在设置接口里把模型名写成 `echo`、却没有地址和密钥，不会打开回显。
 
-两个密钥变量都设、密钥文件是空的、或密钥里有空白时，宿主机拒绝启动。报错只写变量名，不写值。只配了部分环境变量时照常启动，剩下的可以在设置接口里补。
+两个密钥变量都设、密钥文件读不出来或是空的、或密钥里有空白时，宿主机拒绝启动。报错只写变量名，不写值。只配了部分环境变量时照常启动，剩下的可以在设置接口里补。
 
 ### 搜索
 
