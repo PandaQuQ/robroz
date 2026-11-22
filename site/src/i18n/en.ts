@@ -132,7 +132,7 @@ cargo run -p robroz-client`,
     },
   },
   footer: {
-    license: 'License: to be decided.',
+    license: 'License: AGPL-3.0',
     repo: 'robroz on GitHub',
   },
 };
