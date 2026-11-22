@@ -81,7 +81,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 - 密钥：`hasKey` 为 true 的每条密钥在列工具和调用时都会带上（stdio 作环境变量，HTTP 作请求头）；没填值的那条不带。`keyLast4` 只用于显示，不影响调用。
 - 调用出错不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。
 - `needsApproval`（`GET …/tools` 的返回）和调用时的分级用的是同一条规则：没标 `readOnlyHint: true` 就要批准。
-- 客户端里的 MCP 页（增删改、试连、工具列表、按群启用、批准 stdio 命令）见 [client.md 的「MCP 页」](client.md#mcp-页)。`call` 审批卡还没有专门显示，和其他审批卡一样只显示「调用」标签和 `summary`，见 [client.md](client.md#消息流里的卡)。
+- 客户端里的 MCP 页（增删改、试连、工具列表、按群启用、批准 stdio 命令）见 [client.md 的「MCP 页」](client.md#mcp-页)。对 `call` 审批卡的专门显示还没合入 `main`。
 
 安全：
 

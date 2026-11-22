@@ -23,7 +23,7 @@
 | 状态卡 | 一个任务一张，按 `taskId` 原地更新。左边 bro 名，右边状态那句话。规则见下。 |
 | 交付卡 | 摘要加一行等宽的群目录相对路径，只显示，不能点。`briefing` 为 true 时角上加「简报」（`robroz_card::briefing_badge`）。带 `needsSetup: "search"` 时右边加「去设置」，路径下面再加一行灰字「这次没联网搜索：还没设置」，见下面「联网搜索页」。带 `failure` 时整张换成灰色「没做成：原因」，没有路径和那行灰字；这时如果还带 `needsSetup: "search"`，右边仍加「去设置」。 |
 | 选项卡 | 按 `id` 原地更新。可以作答（`POST /api/choices/{id}/answer`），只能答一次，处理人规则见下。 |
-| 审批卡 | 「批准」「拒绝」，只能答一次。答完换成「我 批准 · HH:MM」「X 拒绝 · HH:MM」（`answeredBy` 是自己时写「我」，是别人时写名字）；`answeredBy` 为 `null` 时写「已批准 · HH:MM」或「已拒绝 · HH:MM」。按钮上方是动作标签（「删除」「发送」「付款」「调用」）加宿主机给的 `summary` 原文，有 `path` 时再加一行等宽路径。MCP 的 `call` 卡没有专门显示：`mcpServer`、`mcpTool` 不单独画，只显示「调用」标签和 `summary`。 |
+| 审批卡 | 「批准」「拒绝」，只能答一次。答完换成「我 批准 · HH:MM」「X 拒绝 · HH:MM」（`answeredBy` 是自己时写「我」，是别人时写名字）；`answeredBy` 为 `null` 时写「已批准 · HH:MM」或「已拒绝 · HH:MM」。 |
 | 确认卡 | 见下面「确认卡」。 |
 
 不认识的事件类型跳过，不影响其他卡。
