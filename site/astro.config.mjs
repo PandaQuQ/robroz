@@ -1,9 +1,9 @@
 import { defineConfig } from 'astro/config';
 
-// Preview at https://pandaquq.github.io/robroz/ uses base `/robroz`.
-// For robroz.dev, set SITE_URL=https://robroz.dev and BASE_PATH=/.
-const site = process.env.SITE_URL || 'https://pandaquq.github.io';
-const base = process.env.BASE_PATH ?? '/robroz';
+// Production is https://robroz.dev with base `/`.
+// Override with SITE_URL / BASE_PATH if needed.
+const site = process.env.SITE_URL || 'https://robroz.dev';
+const base = process.env.BASE_PATH ?? '/';
 
 export default defineConfig({
   site,
