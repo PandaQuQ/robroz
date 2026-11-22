@@ -134,7 +134,7 @@ cargo run -p robroz-client`,
     },
   },
   footer: {
-    license: '许可证：待定。',
+    license: '许可证：AGPL-3.0',
     repo: 'robroz 的 GitHub 仓库',
   },
 };
