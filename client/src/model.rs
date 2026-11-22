@@ -30,6 +30,8 @@ pub struct DeliveryCard {
     pub badge: Option<&'static str>,
     /// Why the task did not get done. Drawn grey like 「没写出结果」, no buttons.
     pub failure: Option<String>,
+    /// `needsSetup: "search"` (robroz#76): offer 「去设置」 on the card.
+    pub needs_search_setup: bool,
 }
 
 /// Status line while the task waits on an approval card (`waitingFor:
@@ -308,6 +310,7 @@ fn to_row(event: &Event) -> (Key, Row) {
             path,
             briefing,
             failure,
+            needs_setup,
             ..
         } => {
             let card = DeliveryCard {
@@ -315,6 +318,7 @@ fn to_row(event: &Event) -> (Key, Row) {
                 path: path.clone(),
                 badge: briefing.then(robroz_card::briefing_badge),
                 failure: failure.clone(),
+                needs_search_setup: needs_setup.as_deref() == Some("search"),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
         }
@@ -694,6 +698,49 @@ mod tests {
             Some(Row::Delivery(DeliveryCard { failure: None, .. }))
         ));
         assert_eq!(preview(&old), "已写入结果");
+
+        let mut setup = ev.clone();
+        if let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = &mut setup
+        {
+            *failure = Some("还没设置联网搜索".into());
+            *needs_setup = Some("search".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&setup);
+        assert!(matches!(
+            feed.rows().next(),
+            Some(Row::Delivery(DeliveryCard {
+                needs_search_setup: true,
+                ..
+            }))
+        ));
+        let mut text_only = ev;
+        if let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = &mut text_only
+        {
+            *failure = Some("还没设置联网搜索".into());
+            *needs_setup = None;
+        }
+        let mut feed = Feed::default();
+        feed.apply(&text_only);
+        assert!(
+            matches!(
+                feed.rows().next(),
+                Some(Row::Delivery(DeliveryCard {
+                    needs_search_setup: false,
+                    ..
+                }))
+            ),
+            "no 去设置 without needsSetup"
+        );
+
         let old_status: Event = serde_json::from_value(serde_json::json!({
             "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
             "state": "done", "label": "完成", "createdAt": "2026-10-07T19:00:00.000Z",
