@@ -25,6 +25,8 @@ mod proposals;
 mod pump;
 mod tools;
 mod search;
+mod settings;
+mod model_settings;
 mod mcp;
 mod mcp_tools;
 mod routines;
@@ -45,6 +47,12 @@ use sandbox::Sandbox;
 pub const DEFAULT_CONTROL_ROOT: &str = "./data/control";
 
 const TENANT_ID: &str = "local";
+
+/// Check the process environment for a conflicting or invalid model key.
+/// Incomplete model env (missing URL or name) is not an error.
+pub fn validate_model_env() -> Result<(), String> {
+    model_settings::env_key_conflict()
+}
 
 #[derive(Clone)]
 pub struct Host {
@@ -92,7 +100,8 @@ impl Host {
         self
     }
 
-    /// Let bros think with `model`. Without it the runner echoes the prompt.
+    /// Let bros think with `model`. Tests pass a fake this way. Production
+    /// leaves this unset so each pump reads the latest settings and env.
     pub fn with_model(mut self, model: Option<Arc<dyn robroz_model::Model>>) -> Self {
         self.model = model;
         self
@@ -118,6 +127,36 @@ impl Host {
     pub fn pump_once(&self, sandbox: &mut dyn Sandbox) -> rusqlite::Result<()> {
         let mut tools = crate::tools::ToolRegistry::new();
         crate::search::register_tools(&mut tools, self.db.clone());
+        enum Slot {
+            Override,
+            Live(robroz_model::OpenAiCompat),
+            Echo,
+            Missing,
+        }
+        let slot = if self.model.is_some() {
+            Slot::Override
+        } else {
+            let conn = self.db.lock().expect("sqlite connection lock poisoned");
+            match crate::model_settings::live_model(&conn) {
+                Ok(Some(cfg)) => Slot::Live(robroz_model::OpenAiCompat::new(cfg)),
+                Ok(None) if crate::model_settings::echo_mode(&conn) => Slot::Echo,
+                Ok(None) => Slot::Missing,
+                Err(err) => {
+                    eprintln!("pump: model config: {err}");
+                    if crate::model_settings::echo_mode(&conn) {
+                        Slot::Echo
+                    } else {
+                        Slot::Missing
+                    }
+                }
+            }
+        };
+        let model = match &slot {
+            Slot::Override => self.model.as_deref(),
+            Slot::Live(model) => Some(model as &dyn robroz_model::Model),
+            Slot::Echo | Slot::Missing => None,
+        };
+        let echo_prompt = matches!(slot, Slot::Echo);
         pump_with(
             &*self.db,
             sandbox,
@@ -126,7 +165,8 @@ impl Host {
                 control_root: &self.control_root,
                 image: &self.image,
                 get_limit: self.get_limit,
-                model: self.model.as_deref(),
+                model,
+                echo_prompt,
                 tools: &tools,
                 mcp: Some(self.mcp.clone()),
             },
@@ -202,6 +242,11 @@ fn router_from(state: AppState) -> Router {
         )
         .route("/api/settings/search", get(search::get_search).put(search::put_search))
         .route("/api/settings/search/test", post(search::test_search))
+        .route(
+            "/api/settings/model",
+            get(model_settings::get_model).put(model_settings::put_model),
+        )
+        .route("/api/settings/model/test", post(model_settings::test_model))
         .route("/api/mcp/servers", get(mcp::list_servers).post(mcp::create_server))
         .route(
             "/api/mcp/servers/{id}",
@@ -331,6 +376,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(skills::SCHEMA)?;
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN needs_setup TEXT", []);
     let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
+    crate::settings::migrate(conn)?;
     crate::search::migrate(conn)?;
     crate::mcp::migrate(conn)?;
     for column in ["mcp_server", "mcp_tool"] {
@@ -3473,6 +3519,7 @@ mod tests {
                 image: "robroz-runner:local",
                 get_limit: 8,
                 model: Some(model),
+                echo_prompt: false,
                 tools: crate::tools::ToolRegistry::empty(),
                 mcp: None,
             },
