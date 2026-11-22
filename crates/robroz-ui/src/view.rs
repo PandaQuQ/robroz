@@ -513,15 +513,10 @@ fn call_args_cols(t: &Skin, inner: f32, prefix: &str, tool: &str) -> usize {
             .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
             .sum()
     };
-    let tag = unit(status::action_kind_label(crate::cards::ActionKind::Call))
-        * t.type_.tag
-        * t.type_.unit_width
-        + 2.0 * t.metrics.tag_pad_h
-        + 2.0 * t.stroke.tag
-        + t.controls.button_gap;
+    // No action tag on call cards, so the summary can use the full width.
     let prefix_w = unit(prefix) * t.type_.body * t.type_.unit_width;
     let tool_w = tool.chars().count() as f32 * t.type_.mono * MONO_ADVANCE;
-    let room = inner - tag - prefix_w - tool_w;
+    let room = inner - prefix_w - tool_w;
     (room / (t.type_.body * t.type_.unit_width)).max(4.0) as usize
 }
 
@@ -1052,14 +1047,21 @@ pub fn approval<'a>(
                 }),
             ));
     } else {
-        col = col.push(
+        // A call card's host summary already starts with 「调用」, so the
+        // action tag would repeat it. Other kinds keep the tag.
+        let summary = container(approval_summary(t, card, inner)).width(Fill);
+        let line: Element<'a, Action> = if card.kind == crate::cards::ActionKind::Call {
+            summary.into()
+        } else {
             row![
                 tag(t, status::action_kind_label(card.kind), t.palette.text2),
-                container(approval_summary(t, card, inner)).width(Fill),
+                summary,
             ]
             .spacing(t.controls.button_gap)
-            .align_y(Alignment::Center),
-        );
+            .align_y(Alignment::Center)
+            .into()
+        };
+        col = col.push(line);
         if let Some(path) = &card.path {
             col = col
                 .push(gap(t.metrics.head_gap))
