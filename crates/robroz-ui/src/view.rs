@@ -16,6 +16,7 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::memories::{self, Book};
 use crate::cards::routines::{self, Routines};
+use crate::cards::search;
 use crate::cards::skills::{self, Book as SkillBook};
 use crate::cards::status::{self, Dot};
 use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
@@ -174,6 +175,20 @@ pub enum Action {
         slug: String,
         group: String,
     },
+    /// 联网搜索 page.
+    SearchPick {
+        provider: search::Provider,
+    },
+    SearchUrl {
+        text: String,
+    },
+    SearchKey {
+        text: String,
+    },
+    SearchReplaceKey,
+    SearchClearKey,
+    SearchCancelKey,
+    SearchSave,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -2431,4 +2446,160 @@ pub fn composer<'a>(
         .width(Fill)
         .padding(Padding::from([8.0, t.metrics.stream_padding]))
         .into()
+}
+
+// ---------- 联网搜索 page ----------
+
+/// The 联网搜索 page: provider, key or address, one test after each save.
+pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action> {
+    use search::Provider;
+    let m = t.metrics;
+    let busy = page.busy;
+    let mut head = row![text(search::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if page.from_env() {
+        head = head.push(
+            container(
+                text(search::FROM_ENV)
+                    .size(t.type_.tag)
+                    .color(color(t.palette.text2)),
+            )
+            .padding(Padding::from([2.0, m.tag_pad_h]))
+            .style(card_style(*t)),
+        );
+    }
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+    let mut body = column![].spacing(10);
+    if page.current.as_ref().is_some_and(|c| c.provider.is_none()) && page.provider.is_none() {
+        body = body.push(text(search::NOT_SET).color(color(t.palette.text2)));
+    }
+    let mut picks = row![].spacing(t.controls.button_gap);
+    for p in [Provider::Brave, Provider::Searxng] {
+        let look = if page.provider == Some(p) {
+            Look::Selected
+        } else {
+            Look::Secondary
+        };
+        picks = picks.push(btn(
+            t,
+            p.label().into(),
+            look,
+            Leading::None,
+            (!busy).then_some(Action::SearchPick { provider: p }),
+        ));
+    }
+    body = body.push(picks);
+    match page.provider {
+        Some(Provider::Brave) => {
+            if page.shows_stored_key() {
+                let last4 = page.current.as_ref().and_then(|c| c.key_last4.as_deref());
+                body = body.push(
+                    row![
+                        text(search::key_filled(last4)).color(color(t.palette.text)),
+                        space::horizontal(),
+                        btn(
+                            t,
+                            search::REPLACE.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::SearchReplaceKey)
+                        ),
+                        btn(
+                            t,
+                            search::CLEAR.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::SearchClearKey)
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap)
+                    .align_y(Alignment::Center),
+                );
+            } else if page.clearing {
+                body = body.push(
+                    row![
+                        text("保存后清除 key").color(color(t.palette.text2)),
+                        space::horizontal(),
+                        btn(
+                            t,
+                            search::CANCEL.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::SearchCancelKey)
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap)
+                    .align_y(Alignment::Center),
+                );
+            } else {
+                let mut input = text_input(search::KEY_PLACEHOLDER, &page.key)
+                    .secure(true)
+                    .size(t.type_.body)
+                    .padding(Padding::from([8.0, 10.0]));
+                if !busy {
+                    input = input
+                        .on_input(|text| Action::SearchKey { text })
+                        .on_submit(Action::SearchSave);
+                }
+                let mut r = row![input]
+                    .spacing(t.controls.button_gap)
+                    .align_y(Alignment::Center);
+                if page.replacing {
+                    r = r.push(btn(
+                        t,
+                        search::CANCEL.into(),
+                        Look::Secondary,
+                        Leading::None,
+                        (!busy).then_some(Action::SearchCancelKey),
+                    ));
+                }
+                body = body.push(r);
+            }
+        }
+        Some(Provider::Searxng) => {
+            let mut input = text_input(search::URL_PLACEHOLDER, &page.url)
+                .size(t.type_.body)
+                .padding(Padding::from([8.0, 10.0]));
+            if !busy {
+                input = input
+                    .on_input(|text| Action::SearchUrl { text })
+                    .on_submit(Action::SearchSave);
+            }
+            body = body.push(input);
+        }
+        None => {}
+    }
+    let mut foot = row![btn(
+        t,
+        search::SAVE.into(),
+        Look::Primary,
+        Leading::None,
+        page.can_save().then_some(Action::SearchSave),
+    )]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if let Some(line) = page.test_line() {
+        let c = match page.test {
+            Some(search::Test::Failed(_)) => t.palette.accent,
+            _ => t.palette.text2,
+        };
+        foot = foot.push(text(line).size(t.type_.foot).color(color(c)));
+    }
+    body = body.push(foot);
+    if let Some(note) = &page.note {
+        body = body.push(inline_note(t, note));
+    }
+    col = col.push(container(body).padding(pad));
+    container(col).width(Fill).style(card_style(*t)).into()
 }
