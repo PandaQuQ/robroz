@@ -255,6 +255,7 @@ curl -s -X POST $B/api/groups/<groupId>/tasks -H 'content-type: application/json
 - 200 `{"id":"<taskId>","state":"queued"}`：把库里记下的阻塞行哈希追加到 `ROBROZ_CONTROL/{taskId}/takeover`，清掉卡住记录，任务回到 `queued`。之后由 pump 在原来的群目录上重新起容器，跳过这一行。如果这一行还有一张没回答的任务审批卡，它同时被记成 `approved`。
 - 404「任务不存在」。
 - 409「这次不能恢复」：任务不是 `blocked`（包括 `done` 和「没写出结果」的 `running`）。
+- 409「请先回答审批卡」：任务是因为 MCP 工具调用而 `blocked`。这种卡住只能用下面的审批卡批准或拒绝，不能 `resume`。
 - 500「恢复失败，找不到卡住记录」：库里没有阻塞行记录。任务保持 `blocked`。
 - 500「恢复失败，无法写入接管标记」：写控制目录失败。任务保持 `blocked`。
 
@@ -267,7 +268,7 @@ curl -s -X POST $B/api/tasks/<taskId>/resume
 pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:main` → `Host::tick_once` 和 `Host::pump_once`，实现在 `host/src/pump.rs`）。任务的状态变化都由它写回，客户端通过事件看到。
 
 1. `tick`：到点的例行任务新建一个 `queued` 任务（`briefing` 为 true）。上一次还在排队或在跑就跳过这一次，不补跑。
-2. 取一个 `queued` 任务改成 `running`。接了模型时先调模型（带记忆和已启用技能、可用工具），把回答写进 `/control/reply.txt`。
+2. 取一个 `queued` 任务改成 `running`。接了模型时先调模型（带记忆和已启用技能、可用工具，以及该群已启用且 `enabled` 的 MCP 工具），把回答写进 `/control/reply.txt`。模型要调用需要批准的 MCP 工具时先变成 `blocked`，发出 `action` 为 `call` 的审批卡，这一步先不写 `reply.txt`、也不起容器；批准后再从暂停处继续。
 3. `docker run`，容器 `--network none`，只挂群目录 `/workspace` 和只读的 `/control`。起不来就改回 `queued`。
 4. 容器退出后：
    - 写出 `result.txt`：`done`，发一张 delivery。
@@ -311,9 +312,9 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | --- | --- | --- | --- |
 | `message` | `id` `kind` `body` `createdAt` | — | `/say` 或 `/messages` 存的消息。 |
 | `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` | 每个任务恰好一张，`id` 等于 `taskId`。 |
-| `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` | 任务写出结果时一张。`summary` 现在固定是「已写入结果」，`path` 是群目录里的相对路径 `tasks/{taskId}/result.txt`。`briefing` 为 true 表示例行任务的结果（简报）。 |
+| `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` | 任务写出结果时一张。`summary` 通常是「已写入结果」；MCP 工具审批被拒绝时是「未执行」。`path` 是群目录里的相对路径 `tasks/{taskId}/result.txt`。`briefing` 为 true 表示例行任务的结果（简报）。 |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | 选项卡。`options` 是 `[{"id","label","primary"}]`。`choice` 未回答时 `null`，回答后是选中的 `id` 数组。 |
-| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` | 审批卡。`action` 是 `delete` / `send` / `spend`；`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。 |
+| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。 |
 | `confirm` | `id` `botId` `botName` `subject` `taskId` `decision` `createdAt` `answeredAt` `answeredBy` | 记忆：`memoryId` `kind` `text` `scope`；技能：`slug` `title` `instruction` `scope` | 确认卡，`subject` 是 `memory` 或 `skill`。显示的内容是这条记忆 / 技能**现在**的样子。 |
 
 ### 任务状态和标签
@@ -336,6 +337,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | --- | --- | --- | --- |
 | 模型调用失败 | 「模型没回：<原因>」 | 有，交付卡也带同样的 `failure` | `host/src/pump.rs:write_reply`、`host/src/tools.rs` |
 | 任务审批卡被拒绝 | 「你拒绝了：<prompt 第一行普通内容，最多 60 字>」 | 没有 | `host/src/approvals.rs:settle_task` |
+| MCP 工具审批卡被拒绝 | 「你拒绝了：{server}.{tool}」 | 有，`summary` 为「未执行」，交付卡带同一个 `failure` | `host/src/mcp_tools.rs:finish_denied` |
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 | `crates/robroz-policy/src/lib.rs`（`OverQuota::failure`） |
 | 出网用了非 GET | 「出网只允许 GET：用了 <方法>」 | 没有 | 同上 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」 | 有，交付卡也带同样的 `failure`，结果里也写这句 | `host/src/tools.rs:ROUND_LIMIT_FAILURE` |
@@ -344,14 +346,14 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 只在 `blocked` 时带：
 
-- `approval`：这个任务有一张**没回答**、且对应它当前阻塞行的审批卡（`robroz-action:external`）。回答那张卡即可：同意后重新排队，拒绝后变成带 `failure` 的 `done`。
-- `takeover`：没有这样的审批卡（例如 `robroz-action:captcha`），要人接管后调 `POST /api/tasks/{id}/resume`。
+- `approval`：这个任务有一张**没回答**、且对应它当前阻塞行的审批卡（`robroz-action:external`，或 MCP 写工具的 `call` 卡）。回答那张卡即可：同意后重新排队并继续，拒绝后变成带 `failure` 的 `done`。
+- `takeover`：没有这样的审批卡（例如 `robroz-action:captcha`），要人接管后调 `POST /api/tasks/{id}/resume`。MCP 写工具不能靠 `resume` 放行。
 
 ### progress
 
-只在 `running` 且 `containerUp` 为 true 时带，原地更新在状态卡上（`host/src/progress.rs`）：
+只在 `running` 且 `containerUp` 为 true 时带，或任务因 MCP 审批而 `blocked` 且库里还存着进度行时带，原地更新在状态卡上（`host/src/progress.rs`）：
 
-- 宿主机自己报：开跑时「开始干活」（接了模型时是「在想怎么回」），容器起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。
+- 宿主机自己报：开跑时「开始干活」（接了模型时是「在想怎么回」），容器起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。MCP 工具用展示名 `{server}.{tool}`。等审批时这行仍显示。
 - bro 报：prompt 或模型回复里一行 `robroz-progress:<文字>`，取最后一行。
 - 规范成一行：连续空白变一个空格，去掉首尾空白，最多 60 个字符（超了截到 59 个加「…」）。文字没变不更新 `updatedAt`。
 
@@ -470,7 +472,7 @@ bro 在删除、发送或花钱之前问人。`host/src/approvals.rs:create_appr
 | 请求字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `botId` | string | 是 | 必须是群成员。 |
-| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 别的值 axum 返回 422 纯文本。 |
+| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 别的值 axum 返回 422 纯文本。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
 | `summary` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字。 |
 | `path` | string | 否 | 只用来展示，去掉空白后为空当没填。 |
 
@@ -491,6 +493,15 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 拒绝：任务变成 `done`，`failure`「你拒绝了：…」，没有交付卡。
 - 任务已经通过 `/resume` 被接管走了：回答只记下，不再动任务。
 
+### MCP 工具审批卡
+
+模型要调用未标 `readOnlyHint: true` 的 MCP 工具时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_mcp_task`）：`action` 为 `call`，`summary` 为「调用 {server}.{tool}」加上参数摘要（超过 `APPROVAL_SUMMARY_MAX` 会截断），带 `taskId`、`mcpServer`、`mcpTool`，状态卡 `waitingFor` 为 `approval`，进度行是「在用 {server}.{tool}」。
+
+- 同意：执行这次调用，把结果交回模型继续。写继续标记失败时 500「批准失败，无法写入继续标记」，卡保持未回答。
+- 拒绝：不执行，任务变成 `done`，交付卡 `summary` 为「未执行」，`failure` 为「你拒绝了：{server}.{tool}」。
+- 不要用 `POST /api/tasks/{id}/resume` 代替答卡（409「请先回答审批卡」）。
+- 只读 MCP 工具不出卡。行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
+
 ### POST /api/approvals/{id}/approve 和 /deny
 
 回答审批卡，也用来回答确认卡（见「确认卡」）。`host/src/approvals.rs:approve`、`deny`，共同逻辑在 `decide`。
@@ -505,6 +516,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 400「answeredBy 只能一行，最多 40 个字」。
 - 422「请求格式不正确」（自定义）：请求体不是合法 JSON。
 - 500「批准失败，无法写入接管标记」：同意任务审批卡时写控制目录失败，卡保持未回答。
+- 500「批准失败，无法写入继续标记」：同意 MCP 工具审批卡时写继续标记失败，卡保持未回答。
 
 ```sh
 curl -s -X POST $B/api/approvals/<approvalId>/approve
@@ -786,7 +798,7 @@ curl -s -X POST $B/api/settings/search/test
 
 ## MCP 服务器配置
 
-宿主机作为 MCP 客户端，支持 stdio（本机进程）和 Streamable HTTP。**`main` 上目前只有配置和列工具，bro 还不会调用 MCP 工具。** 代码在 `host/src/mcp.rs`，连接在 `crates/robroz-mcp`，连接超时 10 秒。
+宿主机作为 MCP 客户端，支持 stdio（本机进程）和 Streamable HTTP。配置在 `host/src/mcp.rs`，连接在 `crates/robroz-mcp`，连接超时 10 秒。任务开始时，会把该群已启用且 `enabled` 的服务器上的工具注册进模型循环（`host/src/mcp_tools.rs`），见下面的「MCP 工具调用」。
 
 stdio 服务器会在宿主机上以宿主机用户身份启动 `command`。只填可信的命令；`/test` 和 `/tools` 会真的启动它。
 
@@ -880,3 +892,15 @@ curl -s -X POST $B/api/mcp/servers -H 'content-type: application/json' \
 ```sh
 curl -s -X PUT $B/api/groups/<groupId>/mcp/<serverId>
 ```
+
+### MCP 工具调用
+
+任务开始时，宿主机把该群已启用、并且服务器本身也是 `enabled` 的 MCP 工具注册进这一次模型循环（`host/src/mcp_tools.rs:register_tools`）。某台服务器连接失败就跳过，任务照常进行。群里没启用或服务器被关掉的，不注册。
+
+- 交给模型的名字是 `{safe_server}__{safe_tool}`（只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希）。进度行和审批卡仍用 `{server}.{tool}`。
+- `readOnlyHint: true`：按一次出网 GET 计次，直接调用，不出审批卡。
+- 其余：先出上面的 MCP 工具审批卡；批准后执行并把结果交回模型；拒绝则不执行。
+- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
+- 契约只加了可选字段和新类型：`ApprovalAction::Call`（JSON `"call"`），以及 `Event::Approval` 上可选的 `mcpServer`、`mcpTool`。现有字段和任务状态不变。
+
+行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用) 和 [permissions.md](permissions.md#mcp-工具)。
