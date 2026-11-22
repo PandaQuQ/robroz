@@ -718,6 +718,31 @@ mod tests {
                 ..
             }))
         ));
+
+        let mut setup_ok = ev.clone();
+        if let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = &mut setup_ok
+        {
+            *failure = None;
+            *needs_setup = Some("search".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&setup_ok);
+        assert!(
+            matches!(
+                feed.rows().next(),
+                Some(Row::Delivery(DeliveryCard {
+                    needs_search_setup: true,
+                    failure: None,
+                    ..
+                }))
+            ),
+            "去设置 when needsSetup is set, even without failure"
+        );
+
         let mut text_only = ev;
         if let Event::Delivery {
             failure,

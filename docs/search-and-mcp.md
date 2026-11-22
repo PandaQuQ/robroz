@@ -61,7 +61,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 
 - 每台服务器名字唯一，传输方式是 `stdio`（填 `command` 和 `args`）或 `http`（填 `url`）。
 - 可以存多条密钥：stdio 作为环境变量传给进程，HTTP 作为请求头。接口只返回 `{name, in, hasKey, keyLast4}`，不回显密钥。`PATCH` 时某条密钥的 `key` 不传表示不改，传 `null` 表示**删掉这一整条密钥**（连名字一起）。密钥不进日志、不进报错。
-- `GET /api/mcp/servers/{id}/tools` 实时连一次，每项带 `name`、`description`、`needsApproval`：工具标了 `readOnlyHint: true` 时为 false，否则为 true。服务器列表项可带 `toolCount`，是最近一次成功连接看到的工具数。
+- `GET /api/mcp/servers/{id}/tools` 实时连一次，每项带 `name`、`description`、`needsApproval`：工具标了 `readOnlyHint: true` 时为 false，否则为 true。stdio 服务器必须先经 `POST /api/mcp/servers/{id}/approve-command` 批准当前的 `command` 和 `args`，否则不启动进程，返回 409 `{"error":"command_not_approved","command","args"}`；`POST …/test` 同样。服务器列表项可带 `toolCount`（最近一次成功连接看到的工具数）和 `commandApproved`（stdio 才有）。
 - 按群启用：`PUT` / `DELETE /api/groups/{id}/mcp/{serverId}`，`GET /api/groups/{id}/mcp` 列出这个群启用的服务器。
 - 配置存在本机 SQLite 的 `mcp_servers` 和 `group_mcp` 表。
 
