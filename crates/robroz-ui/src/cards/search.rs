@@ -8,13 +8,14 @@
 //! `source` is optional on the host: 「来自环境变量」 shows only when it is
 //! `env`. When it is absent nothing is shown and nothing is guessed.
 
+use super::secret::{self, MaskedKey};
+
 pub const TITLE: &str = "联网搜索";
 pub const BRAVE: &str = "Brave";
 pub const SEARXNG: &str = "SearXNG";
 pub const KEY_PLACEHOLDER: &str = "API 密钥";
 pub const URL_PLACEHOLDER: &str = "SearXNG 地址，如 http://127.0.0.1:8888";
-pub const REPLACE: &str = "换一个";
-pub const CLEAR: &str = "清除";
+pub use secret::{CLEAR, REPLACE};
 pub const SAVE: &str = "保存";
 pub const CANCEL: &str = "取消";
 pub const FROM_ENV: &str = "来自环境变量";
@@ -29,10 +30,7 @@ pub const GO_SETUP: &str = "去设置";
 pub const NEEDS_SETUP_HINT: &str = "这次没联网搜索：还没设置";
 
 pub fn key_filled(last4: Option<&str>) -> String {
-    match last4 {
-        Some(l) => format!("已填 · {l}"),
-        None => "已填".into(),
-    }
+    secret::filled(last4)
 }
 
 /// Drop a leading 「连不上：」 so a later prefix is not doubled.
@@ -145,11 +143,9 @@ pub struct Page {
     /// Form state.
     pub provider: Option<Provider>,
     pub url: String,
-    /// Typed key (masked). Only used while `replacing` or no key is stored.
-    pub key: String,
-    pub replacing: bool,
-    /// 清除 pressed: next send wipes provider, url and key.
-    pub clearing: bool,
+    /// Masked key shared with the MCP secret row. 清除 still wipes the
+    /// whole search settings (provider, url and key), not only the key.
+    pub key: MaskedKey,
     pub busy: bool,
     pub note: Option<String>,
     pub test: Option<Test>,
@@ -160,9 +156,7 @@ impl Page {
     pub fn load(&mut self, cur: Current) {
         self.provider = cur.provider;
         self.url = cur.url.clone().unwrap_or_default();
-        self.key.clear();
-        self.replacing = false;
-        self.clearing = false;
+        self.key = MaskedKey::from_stored(cur.has_key, cur.key_last4.clone());
         self.current = Some(cur);
     }
 
@@ -173,10 +167,7 @@ impl Page {
 
     /// A stored key is shown as 「已填 · 末4位」 (unless being replaced or cleared).
     pub fn shows_stored_key(&self) -> bool {
-        !self.replacing
-            && !self.clearing
-            && self.current.as_ref().is_some_and(|c| c.has_key)
-            && self.provider == Some(Provider::Brave)
+        self.key.shows_stored() && self.provider == Some(Provider::Brave)
     }
 
     pub fn pick(&mut self, p: Provider) {
@@ -185,43 +176,34 @@ impl Page {
     }
 
     pub fn replace_key(&mut self) {
-        self.replacing = true;
-        self.clearing = false;
-        self.key.clear();
+        self.key.replace();
     }
 
     pub fn clear_key(&mut self) {
-        self.clearing = true;
-        self.replacing = false;
         self.key.clear();
     }
 
     pub fn cancel_key(&mut self) {
-        self.replacing = false;
-        self.clearing = false;
-        self.key.clear();
+        self.key.cancel();
     }
 
     /// Validate and build the PUT, or set an inline note.
     pub fn to_send(&mut self) -> Option<Put> {
-        let Some(provider) = self.provider else {
-            return None;
-        };
-        if self.clearing {
+        let provider = self.provider?;
+        if self.key.clearing {
             self.note = None;
             return Some(Put::clear());
         }
-        let key = self.key.trim().to_string();
         let put = match provider {
             Provider::Brave => {
-                let stored = self.current.as_ref().is_some_and(|c| c.has_key);
-                let key = if !key.is_empty() {
-                    Some(Some(key))
-                } else if stored {
-                    None
-                } else {
-                    self.note = Some(NEED_KEY.into());
-                    return None;
+                let key = match self.key.to_send() {
+                    Some(Some(k)) => Some(Some(k)),
+                    None if self.key.has_key => None,
+                    Some(None) => Some(None),
+                    None => {
+                        self.note = Some(NEED_KEY.into());
+                        return None;
+                    }
                 };
                 Put {
                     provider,
@@ -368,7 +350,7 @@ mod tests {
         p.pick(Provider::Brave);
         assert!(p.to_send().is_none());
         assert_eq!(p.note.as_deref(), Some(NEED_KEY));
-        p.key = "abcd1234".into();
+        p.key.draft = "abcd1234".into();
         assert_eq!(p.to_send().unwrap().key, Some(Some("abcd1234".into())));
 
         p.load(env_brave());
@@ -378,7 +360,7 @@ mod tests {
         assert!(p.to_send().unwrap().clear);
         p.cancel_key();
         p.replace_key();
-        p.key = "newkey99".into();
+        p.key.draft = "newkey99".into();
         assert_eq!(p.to_send().unwrap().key, Some(Some("newkey99".into())));
     }
 
