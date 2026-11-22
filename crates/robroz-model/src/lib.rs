@@ -5,8 +5,10 @@
 //! - `ROBROZ_MODEL`, e.g. `gpt-4o-mini`
 //! - `ROBROZ_MODEL_KEY` or `ROBROZ_MODEL_KEY_FILE` (not both)
 //!
-//! No key means no model: bros keep echoing the prompt, which is what CI and
-//! e2e use. The key never appears in `Debug`, errors or logs.
+//! No complete config (base URL, model name, and key) means no model. The
+//! host then either asks the user to set one up, or, when `ROBROZ_MODEL=echo`,
+//! keeps echoing the prompt for CI and e2e. The key never appears in `Debug`,
+//! errors or logs.
 
 mod chat;
 
@@ -74,6 +76,43 @@ pub struct ModelConfig {
     pub base_url: String,
     pub model: String,
     pub key: ModelKey,
+}
+
+impl ModelConfig {
+    /// Trim a trailing slash on `base_url`. The key must be non-empty and
+    /// contain no whitespace.
+    pub fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<Self, String> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err("密钥不能为空".into());
+        }
+        if key.chars().any(char::is_whitespace) {
+            return Err("模型密钥里不能有空白".into());
+        }
+        let base_url = base_url.into().trim().trim_end_matches('/').to_string();
+        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+            return Err("地址要以 http:// 或 https:// 开头".into());
+        }
+        let model = model.into().trim().to_string();
+        if model.is_empty() {
+            return Err("请填写模型名".into());
+        }
+        Ok(Self {
+            base_url,
+            model,
+            key: ModelKey(key),
+        })
+    }
+
+    pub fn last4(&self) -> String {
+        let key = self.key.expose();
+        let n = key.chars().count();
+        key.chars().skip(n.saturating_sub(4)).collect()
+    }
 }
 
 /// Read the config with `get` (env lookup) and `read_file` (for the key file).
@@ -159,12 +198,28 @@ pub struct OpenAiCompat {
 
 impl OpenAiCompat {
     pub fn new(config: ModelConfig) -> Self {
+        Self::with_timeout(config, Duration::from_secs(120))
+    }
+
+    pub fn with_timeout(config: ModelConfig, timeout: Duration) -> Self {
         let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(120)))
+            .timeout_global(Some(timeout))
             .http_status_as_error(false)
             .build()
             .new_agent();
         Self { config, agent }
+    }
+
+    /// Shortest `/chat/completions` request, for `POST /api/settings/model/test`.
+    pub fn test_connection(config: &ModelConfig, timeout: Duration) -> Result<(), ModelError> {
+        let client = Self::with_timeout(config.clone(), timeout);
+        let body = serde_json::json!({
+            "model": config.model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1
+        });
+        let _ = client.post(body)?;
+        Ok(())
     }
 
     pub fn config(&self) -> &ModelConfig {

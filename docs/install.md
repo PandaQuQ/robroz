@@ -61,7 +61,7 @@ docker build -f runner/Dockerfile -t robroz-runner:local .
 启动成功时 stderr 会打两行：
 
 ```text
-robroz-host: 没配模型密钥，bro 原样回显
+robroz-host: 还没设置模型，任务会提示去设置
 robroz-host listening on 127.0.0.1:8790（仅本机，无令牌）
 ```
 
@@ -83,7 +83,9 @@ ROBROZ_ADDR=0.0.0.0:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target
 
 ## 接模型
 
-不接模型时 bro 把 prompt 原样写成结果，CI 和 e2e 就是这样跑的。接任意 OpenAI 兼容的 `/chat/completions` 服务要设三个变量：
+没设置模型时，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。也可以在启动后用设置接口补齐（`GET` / `PUT /api/settings/model`），不用重启。CI 和 e2e 会显式设 `ROBROZ_MODEL=echo`，这时仍把 prompt 原样写成结果，这是测试开关，正式部署不要设。
+
+接任意 OpenAI 兼容的 `/chat/completions` 服务，可以设这三个环境变量，也可以之后在设置接口里填：
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
