@@ -200,6 +200,15 @@ cargo test -p robroz-client -p robroz-ui -p robroz-tokens
 
 `cargo test -p robroz-client` 会在进程里起一份真实的宿主机路由，不需要单独起宿主机。只改了宿主机时，`cargo test -p robroz-host` 就够了。
 
+CI 还有一个 `cargo-deny` 任务，检查依赖许可证是否与 AGPL-3.0 兼容，并挡住未知来源。仓库根目录跑：
+
+```sh
+cargo deny check licenses bans sources
+```
+
+需要先安装 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)。新依赖必须使用与 AGPL-3.0 兼容的许可证，允许的许可证写在根目录的 `deny.toml`。不要把不兼容的许可证加进白名单。CI 也会跑 `cargo deny check advisories`，但这一项目前不挡住合并。
+
+
 ### 端到端：`scripts/e2e.sh`
 
 用真实的宿主机二进制和真实的 Docker 跑一遍完整流程，CI 的 `e2e` 任务就是它。需要 `docker`、`curl`、`jq`，在仓库根目录跑：
