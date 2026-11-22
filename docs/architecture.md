@@ -53,7 +53,7 @@
 ### 模型
 
 - `crates/robroz-model` 调 `POST {ROBROZ_MODEL_BASE_URL}/chat/completions`，单次最长等 120 秒。
-- 没设密钥就不接模型，bro 把 prompt 原样写进结果。CI 和 e2e 都走这条路。
+- 地址、模型名、密钥没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
 - system 提示 = 固定开场白（`robroz_model::SYSTEM_PROMPT`）+ 记忆段 + 技能段（`host/src/pump.rs:system_extra`）。任务的 prompt 还是用户那一条，不改。
 - 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#模型)。
 - 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#模型的工具调用)。
