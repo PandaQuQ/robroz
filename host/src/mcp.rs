@@ -1,6 +1,7 @@
-//! MCP server configuration. The host is the MCP client; this module only
-//! stores servers and lists their tools. Registering tools into the model
-//! loop is a later PR.
+//! MCP server configuration. The host is the MCP client; this module stores
+//! servers and lists their tools. Stdio servers must have their command
+//! approved before `/test`, `/tools`, or a later model-loop registration
+//! starts the process.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, State};
@@ -8,8 +9,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    CreateMcpServer, McpSecretIn, McpSecretInput, McpSecretPublic, McpServer, McpServers,
-    McpTestResult, McpTool, McpTools, UpdateMcpServer,
+    CreateMcpServer, McpCommandNotApproved, McpSecretIn, McpSecretInput, McpSecretPublic,
+    McpServer, McpServers, McpTestResult, McpTool, McpTools, UpdateMcpServer,
 };
 use robroz_mcp::{ConnectConfig, McpConnector, RmcpConnector, TransportKind};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -46,7 +47,24 @@ pub(crate) const SCHEMA: &str = "
 ";
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA)
+    conn.execute_batch(SCHEMA)?;
+    // Existing rows get NULL in both columns and are treated as unapproved.
+    for column in ["command_fingerprint", "command_approved_at"] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE mcp_servers ADD COLUMN {column} TEXT"),
+            [],
+        );
+    }
+    Ok(())
+}
+
+fn command_fingerprint(command: &str, args: &[String]) -> String {
+    let payload = serde_json::to_string(&(command, args)).expect("fingerprint json");
+    robroz_policy::action_hash(&payload)
+}
+
+fn current_fingerprint(command: Option<&str>, args: &[String]) -> Option<String> {
+    command.map(|command| command_fingerprint(command, args))
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +106,8 @@ struct Row {
     tool_count: Option<u32>,
     created_at: String,
     updated_at: String,
+    command_fingerprint: Option<String>,
+    command_approved_at: Option<String>,
 }
 
 impl Row {
@@ -108,7 +128,28 @@ impl Row {
             tool_count: self.tool_count,
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
+            command_approved: if self.transport == "stdio" {
+                Some(self.command_is_approved())
+            } else {
+                None
+            },
+            command_approved_at: if self.transport == "stdio" && self.command_is_approved() {
+                self.command_approved_at.clone()
+            } else {
+                None
+            },
         }
+    }
+
+    fn command_is_approved(&self) -> bool {
+        if self.transport != "stdio" {
+            return true;
+        }
+        let Some(command) = self.command.as_deref() else {
+            return false;
+        };
+        self.command_fingerprint.as_deref()
+            == Some(command_fingerprint(command, &self.args).as_str())
     }
 
     fn connect_config(&self) -> Result<ConnectConfig, String> {
@@ -142,6 +183,22 @@ impl Row {
             .filter(|v| !v.is_empty())
             .collect()
     }
+}
+
+/// Returns a 409 body when this stdio server would start an unapproved command.
+/// HTTP servers are never blocked by command approval.
+fn unapproved_stdio_command(row: &Row) -> Option<McpCommandNotApproved> {
+    if row.transport != "stdio" || row.command_is_approved() {
+        return None;
+    }
+    Some(McpCommandNotApproved::new(
+        row.command.clone().unwrap_or_default(),
+        row.args.clone(),
+    ))
+}
+
+fn command_not_approved_response(row: &Row) -> Option<Response> {
+    unapproved_stdio_command(row).map(|denied| (StatusCode::CONFLICT, Json(denied)).into_response())
 }
 
 fn parse_transport(raw: &str) -> Option<TransportKind> {
@@ -290,10 +347,12 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
         tool_count: tool_count.map(|n| n as u32),
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        command_fingerprint: row.get(11)?,
+        command_approved_at: row.get(12)?,
     })
 }
 
-const SELECT: &str = "SELECT id, name, transport, command, args, url, secrets, enabled, tool_count, created_at, updated_at
+const SELECT: &str = "SELECT id, name, transport, command, args, url, secrets, enabled, tool_count, created_at, updated_at, command_fingerprint, command_approved_at
      FROM mcp_servers";
 
 fn load_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Row>> {
@@ -311,7 +370,8 @@ fn list_enabled_for_group(conn: &Connection, group_id: &str) -> rusqlite::Result
     let mut stmt = conn.prepare(
         "SELECT mcp_servers.id, mcp_servers.name, mcp_servers.transport, mcp_servers.command, mcp_servers.args,
                 mcp_servers.url, mcp_servers.secrets, mcp_servers.enabled, mcp_servers.tool_count,
-                mcp_servers.created_at, mcp_servers.updated_at
+                mcp_servers.created_at, mcp_servers.updated_at, mcp_servers.command_fingerprint,
+                mcp_servers.command_approved_at
          FROM mcp_servers
          JOIN group_mcp g ON g.server_id = mcp_servers.id
          WHERE g.group_id = ?1
@@ -338,6 +398,10 @@ pub(crate) fn ready_servers_for_group(
         if !row.enabled {
             continue;
         }
+        if unapproved_stdio_command(&row).is_some() {
+            eprintln!("mcp: skip server {} (command not approved)", row.id);
+            continue;
+        }
         match row.connect_config() {
             Ok(config) => out.push(ReadyServer {
                 id: row.id,
@@ -354,8 +418,8 @@ pub(crate) fn ready_servers_for_group(
 
 fn insert_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO mcp_servers (id, name, transport, command, args, url, secrets, enabled, tool_count, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO mcp_servers (id, name, transport, command, args, url, secrets, enabled, tool_count, created_at, updated_at, command_fingerprint, command_approved_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             row.id,
             row.name,
@@ -368,6 +432,8 @@ fn insert_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
             row.tool_count.map(|n| n as i64),
             row.created_at,
             row.updated_at,
+            row.command_fingerprint,
+            row.command_approved_at,
         ],
     )?;
     Ok(())
@@ -376,8 +442,9 @@ fn insert_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
 fn update_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE mcp_servers SET name = ?1, transport = ?2, command = ?3, args = ?4, url = ?5,
-             secrets = ?6, enabled = ?7, tool_count = ?8, updated_at = ?9
-         WHERE id = ?10",
+             secrets = ?6, enabled = ?7, tool_count = ?8, updated_at = ?9,
+             command_fingerprint = ?10, command_approved_at = ?11
+         WHERE id = ?12",
         params![
             row.name,
             row.transport,
@@ -388,6 +455,8 @@ fn update_row(conn: &Connection, row: &Row) -> rusqlite::Result<()> {
             if row.enabled { 1 } else { 0 },
             row.tool_count.map(|n| n as i64),
             row.updated_at,
+            row.command_fingerprint,
+            row.command_approved_at,
             row.id,
         ],
     )?;
@@ -465,10 +534,13 @@ fn build_create(body: CreateMcpServer) -> Result<Row, &'static str> {
         tool_count: None,
         created_at: now.clone(),
         updated_at: now,
+        command_fingerprint: None,
+        command_approved_at: None,
     })
 }
 
 fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str> {
+    let approved_fp = row.command_fingerprint.clone();
     if let Some(name) = patch.name {
         row.name = clean_name(&name)?;
     }
@@ -522,6 +594,13 @@ fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str
     }
     if let Some(enabled) = patch.enabled {
         row.enabled = enabled;
+    }
+    if row.transport != "stdio"
+        || approved_fp.as_deref()
+            != current_fingerprint(row.command.as_deref(), &row.args).as_deref()
+    {
+        row.command_fingerprint = None;
+        row.command_approved_at = None;
     }
     row.updated_at = now_rfc3339();
     Ok(())
@@ -646,6 +725,9 @@ pub(crate) async fn list_tools(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, NOT_FOUND),
         Err(err) => return db_error(err),
     };
+    if let Some(response) = command_not_approved_response(&row) {
+        return response;
+    }
     match list_tools_now(&row).await {
         Ok(tools) => {
             let count = tools.len() as u32;
@@ -688,6 +770,9 @@ pub(crate) async fn test_connection(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, NOT_FOUND),
         Err(err) => return db_error(err),
     };
+    if let Some(response) = command_not_approved_response(&row) {
+        return response;
+    }
     let result = match list_tools_now(&row).await {
         Ok(tools) => {
             let tool_count = tools.len() as u32;
@@ -711,6 +796,37 @@ pub(crate) async fn test_connection(
         },
     };
     (StatusCode::OK, Json(result)).into_response()
+}
+
+const STDIO_ONLY_APPROVE: &str = "只有 stdio 服务器需要批准启动命令";
+
+pub(crate) async fn approve_command(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let conn = lock_db(&state);
+    let result = (|| {
+        let Some(mut row) = load_by_id(&conn, &id)? else {
+            return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND)));
+        };
+        if row.transport != "stdio" {
+            return Ok(Err((StatusCode::BAD_REQUEST, STDIO_ONLY_APPROVE)));
+        }
+        let Some(command) = row.command.clone() else {
+            return Ok(Err((StatusCode::BAD_REQUEST, "请填写启动命令")));
+        };
+        row.command_fingerprint = Some(command_fingerprint(&command, &row.args));
+        row.command_approved_at = Some(now_rfc3339());
+        row.updated_at = now_rfc3339();
+        update_row(&conn, &row)?;
+        Ok::<_, rusqlite::Error>(Ok(row.public()))
+    })();
+    drop(conn);
+    match result {
+        Ok(Ok(server)) => (StatusCode::OK, Json(server)).into_response(),
+        Ok(Err((status, msg))) => error_response(status, msg),
+        Err(err) => db_error(err),
+    }
 }
 
 pub(crate) async fn list_group_mcp(
@@ -875,6 +991,38 @@ mod tests {
             .unwrap()
     }
 
+    async fn approve(app: &Router, id: &str) -> (StatusCode, Value) {
+        http(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/mcp/servers/{id}/approve-command"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    fn spy_stdio_command() -> (PathBuf, PathBuf) {
+        let dir = temp_path("robroz-mcp-spy");
+        let marker = dir.join("started");
+        let script = dir.join("cmd.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ntouch {}\nexec /bin/sleep 30\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (script, marker)
+    }
+
     async fn create_stdio(
         app: &Router,
         name: &str,
@@ -947,6 +1095,9 @@ mod tests {
         assert_eq!(body["secrets"][0]["in"], "env");
         assert_eq!(body["secrets"][0]["hasKey"], true);
         assert_eq!(body["secrets"][0]["keyLast4"], "WXYZ");
+        assert_eq!(body["commandApproved"], false, "{body}");
+        assert!(body.get("commandApprovedAt").is_none(), "{body}");
+        assert!(body.get("commandFingerprint").is_none(), "{body}");
         let raw = body.to_string();
         assert!(!raw.contains(key), "must not echo the key: {raw}");
         assert!(body["secrets"][0].get("key").is_none(), "{body}");
@@ -1094,6 +1245,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert!(body.get("commandApproved").is_none(), "{body}");
+        assert!(body.get("commandApprovedAt").is_none(), "{body}");
         let id = body["id"].as_str().unwrap().to_string();
 
         let (status, body) = http(&app, get(&format!("/api/mcp/servers/{id}/tools"))).await;
@@ -1141,7 +1294,17 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["commandApproved"], false, "{body}");
         let id = body["id"].as_str().unwrap().to_string();
+
+        let (status, body) = approve(&app, &id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["commandApproved"], true, "{body}");
+        assert!(
+            !body["commandApprovedAt"].as_str().unwrap().is_empty(),
+            "{body}"
+        );
+
         let (status, body) = http(&app, get(&format!("/api/mcp/servers/{id}/tools"))).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let tools = body["tools"].as_array().unwrap();
@@ -1170,6 +1333,154 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["toolCount"], 2);
+    }
+
+    #[tokio::test]
+    async fn unapproved_stdio_test_and_tools_return_409_and_do_not_start() {
+        let (script, marker) = spy_stdio_command();
+        let (_db, app) = app();
+        let (status, body) = create_stdio(&app, "spy", &script.to_string_lossy(), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().unwrap().to_string();
+        assert_eq!(body["commandApproved"], false);
+
+        let (status, body) = http(&app, get(&format!("/api/mcp/servers/{id}/tools"))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "command_not_approved");
+        assert_eq!(body["command"], script.to_string_lossy().as_ref());
+        assert_eq!(body["args"], json!(["--ok"]));
+        assert!(!marker.exists(), "tools must not start the stdio command");
+
+        let (status, body) = http(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/mcp/servers/{id}/test"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "command_not_approved");
+        assert_eq!(body["command"], script.to_string_lossy().as_ref());
+        assert_eq!(body["args"], json!(["--ok"]));
+        assert!(!marker.exists(), "test must not start the stdio command");
+    }
+
+    #[tokio::test]
+    async fn patch_args_revokes_command_approval() {
+        let bin = fixture_bin();
+        let (_db, app) = app();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "POST",
+                "/api/mcp/servers",
+                json!({
+                    "name": "stdio-revoke",
+                    "transport": "stdio",
+                    "command": bin.to_string_lossy(),
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().unwrap().to_string();
+
+        let (status, body) = approve(&app, &id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["commandApproved"], true);
+
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PATCH",
+                &format!("/api/mcp/servers/{id}"),
+                json!({ "args": ["--changed"] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["commandApproved"], false, "{body}");
+        assert!(body.get("commandApprovedAt").is_none(), "{body}");
+
+        let (status, body) = http(&app, get(&format!("/api/mcp/servers/{id}/tools"))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "command_not_approved");
+        assert_eq!(body["args"], json!(["--changed"]));
+    }
+
+    #[tokio::test]
+    async fn approve_command_on_http_is_bad_request() {
+        let (_db, app) = app();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "POST",
+                "/api/mcp/servers",
+                json!({ "name": "http-ok", "transport": "http", "url": "https://example.invalid/mcp" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().unwrap().to_string();
+        let (status, body) = approve(&app, &id).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "只有 stdio 服务器需要批准启动命令");
+    }
+
+    #[tokio::test]
+    async fn existing_stdio_servers_are_unapproved_after_migrate() {
+        let db =
+            std::env::temp_dir().join(format!("robroz-mcp-legacy-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE mcp_servers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    transport TEXT NOT NULL,
+                    command TEXT,
+                    args TEXT,
+                    url TEXT,
+                    secrets TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    tool_count INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO mcp_servers (id, name, transport, command, args, secrets, enabled, created_at, updated_at)
+                VALUES ('old1', 'legacy', 'stdio', '/bin/true', '[\"--ok\"]', '[]', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z');
+                ",
+            )
+            .unwrap();
+        }
+        let volumes = temp_path("robroz-mcp-legacy-vol");
+        let host = crate::Host::open(&db, &volumes, "robroz-runner:local").unwrap();
+        let app = host.router();
+        let (status, body) = http(&app, get("/api/mcp/servers")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["servers"][0]["id"], "old1");
+        assert_eq!(body["servers"][0]["commandApproved"], false, "{body}");
+        assert!(
+            body["servers"][0].get("commandApprovedAt").is_none(),
+            "{body}"
+        );
+
+        let (status, body) = http(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/mcp/servers/old1/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "command_not_approved");
+        assert_eq!(body["command"], "/bin/true");
+        assert_eq!(body["args"], json!(["--ok"]));
     }
 
     #[tokio::test]

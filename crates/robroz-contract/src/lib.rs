@@ -828,6 +828,13 @@ pub struct McpServer {
     pub tool_count: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
+    /// For stdio servers: whether the current command and args have been approved.
+    /// Omitted for HTTP servers. New stdio servers start as `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_approved: Option<bool>,
+    /// When the current command and args were approved. Omitted when not approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_approved_at: Option<String>,
 }
 
 /// `GET /api/mcp/servers` or `GET /api/groups/{id}/mcp`.
@@ -918,6 +925,28 @@ pub struct McpTestResult {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_count: Option<u32>,
+}
+
+/// Error code returned when a stdio MCP command has not been approved yet.
+pub const MCP_COMMAND_NOT_APPROVED: &str = "command_not_approved";
+
+/// `409` from `/test` or `/tools` (and any other path that would start an
+/// unapproved stdio command).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpCommandNotApproved {
+    pub error: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+impl McpCommandNotApproved {
+    pub fn new(command: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            error: MCP_COMMAND_NOT_APPROVED.to_string(),
+            command: command.into(),
+            args,
+        }
+    }
 }
 
 /// Internally tagged on `type` so message, status, and delivery round-trip
@@ -1694,5 +1723,52 @@ mod tests {
         assert_eq!(serde_json::to_string(&TaskState::Running).unwrap(), "\"running\"");
         assert_eq!(serde_json::to_string(&TaskState::Blocked).unwrap(), "\"blocked\"");
         assert_eq!(serde_json::to_string(&TaskState::Done).unwrap(), "\"done\"");
+    }
+
+    #[test]
+    fn mcp_command_approval_fields_are_optional() {
+        let json = serde_json::json!({
+            "id": "s1",
+            "name": "git",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "pkg"],
+            "secrets": [],
+            "enabled": true,
+            "createdAt": "t0",
+            "updatedAt": "t0"
+        });
+        let server: McpServer = serde_json::from_value(json).unwrap();
+        assert_eq!(server.command_approved, None);
+        assert_eq!(server.command_approved_at, None);
+
+        let with_flag = McpServer {
+            id: "s1".into(),
+            name: "git".into(),
+            transport: "stdio".into(),
+            command: Some("npx".into()),
+            args: Some(vec!["-y".into()]),
+            url: None,
+            secrets: vec![],
+            enabled: true,
+            tool_count: None,
+            created_at: "t0".into(),
+            updated_at: "t0".into(),
+            command_approved: Some(false),
+            command_approved_at: None,
+        };
+        let value = serde_json::to_value(&with_flag).unwrap();
+        assert_eq!(value["commandApproved"], false);
+        assert!(value.get("commandApprovedAt").is_none());
+
+        let denied = McpCommandNotApproved::new("npx", vec!["-y".into(), "pkg".into()]);
+        assert_eq!(
+            serde_json::to_value(&denied).unwrap(),
+            serde_json::json!({
+                "error": "command_not_approved",
+                "command": "npx",
+                "args": ["-y", "pkg"]
+            })
+        );
     }
 }

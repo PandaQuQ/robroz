@@ -1086,4 +1086,53 @@ mod tests {
             "{delivery}"
         );
     }
+
+    #[tokio::test]
+    async fn unapproved_stdio_server_is_skipped_in_the_model_loop() {
+        let h = setup(vec![AssistantTurn::Text("好".into())], false, false).await;
+        h.fake_mcp.set_tools(
+            "/tmp/unapproved-mcp",
+            vec![listed("ping", true), listed("write_note", false)],
+        );
+        let (status, server) = http(
+            &h.app,
+            json_req(
+                "POST",
+                "/api/mcp/servers",
+                json!({
+                    "name": "shell",
+                    "transport": "stdio",
+                    "command": "/tmp/unapproved-mcp",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{server}");
+        assert_eq!(server["commandApproved"], false, "{server}");
+        let server_id = server["id"].as_str().unwrap().to_string();
+        let (status, body) = http(
+            &h.app,
+            json_req(
+                "PUT",
+                &format!("/api/groups/{}/mcp/{server_id}", h.group_id),
+                json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let _ = post_task(&h, "ping").await;
+        let mut sandbox = crate::sandbox::FakeSandbox::new();
+        h.host.pump_once(&mut sandbox).unwrap();
+        let offered = h.model.seen_tools();
+        assert_eq!(offered.len(), 1, "{offered:?}");
+        assert!(
+            !offered[0].iter().any(|n| n.starts_with("shell__")),
+            "unapproved stdio server must not be registered: {offered:?}"
+        );
+        assert_eq!(h.fake_mcp.calls().len(), 0);
+        finish(&h, &mut sandbox);
+        let ev = events(&h).await;
+        assert_eq!(status_of(&ev)["state"], "done", "{ev}");
+    }
 }
