@@ -60,10 +60,11 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 
 - `action` 是 `call`，`summary` 是「调用 {server}.{tool}」加上参数摘要，带可选字段 `mcpServer`、`mcpTool` 和 `taskId`。
 - 发卡时任务是 `blocked`，`waitingFor` 为 `approval`，进度行是「在用 {server}.{tool}」。
-- 同意：执行这次调用，把结果交回模型继续。
+- 同意：任务回到 `queued`，由 pump 接着跑：执行这次调用，把结果交回模型继续。这次调用同样计一次出网 GET，和只读工具共用 `ROBROZ_GET_LIMIT`。
 - 拒绝：不执行，任务 `done`，交付卡 `summary` 为「未执行」，带 `failure`「你拒绝了：{server}.{tool}」。
 - 答过一次再答是 409。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。
 - 只读 MCP 工具不出卡，直接调用，按一次出网 GET 计次。
+- 调用出错（连不上、超时、服务器报错）不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。
 
 详见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
 
