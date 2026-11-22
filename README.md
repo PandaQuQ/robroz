@@ -103,6 +103,7 @@ CI builds the client on Linux for pull requests, and on Windows, Linux and macOS
 ### Rules
 
 - One PR per change.
+- Every contributor must sign the [Contributor License Agreement](CLA.md) once: add the CLA line from `CLA.md` to your PR description (or tick the CLA box if the PR template has one). PRs without it are not merged.
 - Commit messages and PR titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): ...`, `fix(client): ...`, `docs: ...`. PRs are squash-merged with the PR title as the commit message.
 - The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states (`queued` / `running` / `blocked` / `done`) and `botId` / `botName` are frozen.
 - No force-push. If your branch is behind, merge `main` into it.
@@ -113,4 +114,10 @@ The full rules for agents and contributors are in [AGENTS.md](AGENTS.md).
 
 ## License
 
-To be decided.
+SPDX-License-Identifier: `AGPL-3.0-only`
+
+robroz is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). If you modify robroz and let others use it over a network, you must offer them your modified source code (AGPL section 13).
+
+robroz is also available under a commercial licence for closed-source or proprietary use; see [COMMERCIAL.md](COMMERCIAL.md). For commercial licensing, [contact the author](https://github.com/PandaQuQ).
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md).
