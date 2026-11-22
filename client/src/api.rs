@@ -19,10 +19,11 @@ use std::sync::Mutex;
 
 use robroz_contract::{
     next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro,
-    CreateMemory, CreateSkill, ErrorBody, Event, McpServer, McpServers, McpTestResult, McpTool,
-    McpTools, Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind,
-    RenameBro, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task, TaskState, Unread,
-    Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
+    CreateMemory, CreateSkill, ErrorBody, Event, McpCommandNotApproved, McpServer, McpServers,
+    McpTestResult, McpTool, McpTools, Memories, Memory, MemoryKind, MemorySource, MemoryStatus,
+    Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
+    TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
+    MCP_COMMAND_NOT_APPROVED,
 };
 use robroz_contract::{SearchSettings, SearchTestResult};
 use robroz_ui::cards::interact::Note;
@@ -63,6 +64,9 @@ pub mod paths {
     }
     pub fn mcp_test(id: &str) -> String {
         format!("/api/mcp/servers/{id}/test")
+    }
+    pub fn mcp_approve_command(id: &str) -> String {
+        format!("/api/mcp/servers/{id}/approve-command")
     }
     /// robroz#81: MCP servers enabled in this group.
     pub fn group_mcp(group_id: &str) -> String {
@@ -164,6 +168,8 @@ pub mod bodies {
 pub enum ApiError {
     /// 409, e.g. the choice was already answered.
     Conflict(String),
+    /// 409 `command_not_approved` from MCP `/test` or `/tools`.
+    CommandNotApproved(McpCommandNotApproved),
     /// 400, e.g. an option that is not on the card.
     BadRequest(String),
     NotFound(String),
@@ -178,6 +184,7 @@ impl ApiError {
     pub fn reason(&self) -> String {
         match self {
             ApiError::Transport(_) => "连不上主机".into(),
+            ApiError::CommandNotApproved(_) => "命令未批准".into(),
             ApiError::Conflict(msg)
             | ApiError::BadRequest(msg)
             | ApiError::NotFound(msg)
@@ -190,11 +197,19 @@ impl ApiError {
     pub fn note(&self) -> Note {
         match self {
             ApiError::Conflict(_) => Note::AlreadyAnswered,
+            ApiError::CommandNotApproved(_) => Note::Failed("命令未批准".into()),
             ApiError::BadRequest(msg) => Note::Rejected(msg.clone()),
             ApiError::Transport(_) => Note::Retry,
             ApiError::NotFound(msg) | ApiError::Status(_, msg) | ApiError::Decode(msg) => {
                 Note::Failed(msg.clone())
             }
+        }
+    }
+
+    pub fn command_not_approved(&self) -> Option<&McpCommandNotApproved> {
+        match self {
+            ApiError::CommandNotApproved(denied) => Some(denied),
+            _ => None,
         }
     }
 }
@@ -253,6 +268,7 @@ pub trait CardApi: Send + Sync {
     fn delete_mcp_server(&self, id: &str) -> Result<(), ApiError>;
     fn mcp_tools(&self, id: &str) -> Result<Vec<McpTool>, ApiError>;
     fn test_mcp_server(&self, id: &str) -> Result<McpTestResult, ApiError>;
+    fn approve_mcp_command(&self, id: &str) -> Result<McpServer, ApiError>;
     fn set_mcp_enabled(&self, id: &str, on: bool) -> Result<McpServer, ApiError>;
     fn group_mcp(&self, group_id: &str) -> Result<Vec<McpServer>, ApiError>;
     fn set_group_mcp(&self, group_id: &str, server_id: &str, on: bool) -> Result<(), ApiError>;
@@ -331,6 +347,13 @@ impl HttpApi {
             .map_err(|e| ApiError::Transport(format!("读 {url} 失败: {e}")))?;
         if (200..300).contains(&status) {
             return Ok(body);
+        }
+        if status == 409 {
+            if let Ok(denied) = serde_json::from_str::<McpCommandNotApproved>(&body) {
+                if denied.error == MCP_COMMAND_NOT_APPROVED {
+                    return Err(ApiError::CommandNotApproved(denied));
+                }
+            }
         }
         let msg = serde_json::from_str::<ErrorBody>(&body)
             .map(|e| e.error)
@@ -600,6 +623,10 @@ impl CardApi for HttpApi {
 
     fn test_mcp_server(&self, id: &str) -> Result<McpTestResult, ApiError> {
         decode(&self.post(&paths::mcp_test(id), None)?)
+    }
+
+    fn approve_mcp_command(&self, id: &str) -> Result<McpServer, ApiError> {
+        decode(&self.post(&paths::mcp_approve_command(id), None)?)
     }
 
     fn set_mcp_enabled(&self, id: &str, on: bool) -> Result<McpServer, ApiError> {
@@ -966,8 +993,16 @@ impl CardApi for FakeApi {
         }
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let mut server = fake_mcp_from_save(save, id.to_string(), now);
-        server.created_at = all[pos].created_at.clone();
-        server.enabled = all[pos].enabled;
+        let prev = &all[pos];
+        server.created_at = prev.created_at.clone();
+        server.enabled = prev.enabled;
+        let command_changed = server.transport != prev.transport
+            || server.command != prev.command
+            || server.args != prev.args;
+        if server.transport.eq_ignore_ascii_case("stdio") && !command_changed {
+            server.command_approved = prev.command_approved;
+            server.command_approved_at = prev.command_approved_at.clone();
+        }
         // merge secrets: omitted keys keep last4
         let prev = all[pos].secrets.clone();
         for (i, put) in save.secrets.iter().enumerate() {
@@ -1009,6 +1044,9 @@ impl CardApi for FakeApi {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| ApiError::NotFound("MCP 服务器不存在".into()))?;
+        if let Some(err) = fake_mcp_unapproved(s) {
+            return Err(err);
+        }
         if s.command.as_deref() == Some("/fail") {
             return Err(ApiError::Status(502, "连不上这台服务器".into()));
         }
@@ -1021,6 +1059,9 @@ impl CardApi for FakeApi {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| ApiError::NotFound("MCP 服务器不存在".into()))?;
+        if let Some(err) = fake_mcp_unapproved(s) {
+            return Err(err);
+        }
         if s.command.as_deref() == Some("/fail") {
             return Ok(McpTestResult {
                 ok: false,
@@ -1033,6 +1074,31 @@ impl CardApi for FakeApi {
             error: None,
             tool_count: Some(2),
         })
+    }
+
+    fn approve_mcp_command(&self, id: &str) -> Result<McpServer, ApiError> {
+        let mut all = self.mcp_servers.lock().expect("fake mcp lock");
+        let s = all
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| ApiError::NotFound("MCP 服务器不存在".into()))?;
+        if !s.transport.eq_ignore_ascii_case("stdio") {
+            return Err(ApiError::BadRequest(
+                "只有 stdio 服务器需要批准启动命令".into(),
+            ));
+        }
+        if s.command
+            .as_ref()
+            .map(|c| c.trim().is_empty())
+            .unwrap_or(true)
+        {
+            return Err(ApiError::BadRequest("请填写启动命令".into()));
+        }
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        s.command_approved = Some(true);
+        s.command_approved_at = Some(now.clone());
+        s.updated_at = now;
+        Ok(s.clone())
     }
 
     fn set_mcp_enabled(&self, id: &str, on: bool) -> Result<McpServer, ApiError> {
@@ -1067,7 +1133,6 @@ impl CardApi for FakeApi {
         }
         Ok(())
     }
-
 
     fn search_settings(&self) -> Result<search::Current, ApiError> {
         Ok(self.search.lock().expect("fake search lock").clone())
@@ -1173,6 +1238,17 @@ fn fake_mcp_from_save(save: &McpSave, id: String, now: String) -> McpServer {
     }
 }
 
+fn fake_mcp_unapproved(s: &McpServer) -> Option<ApiError> {
+    if s.transport.eq_ignore_ascii_case("stdio") && s.command_approved != Some(true) {
+        Some(ApiError::CommandNotApproved(McpCommandNotApproved::new(
+            s.command.clone().unwrap_or_default(),
+            s.args.clone().unwrap_or_default(),
+        )))
+    } else {
+        None
+    }
+}
+
 fn last4(value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
@@ -1220,6 +1296,10 @@ mod tests {
         assert_eq!(paths::mcp_server("s1"), "/api/mcp/servers/s1");
         assert_eq!(paths::mcp_tools("s1"), "/api/mcp/servers/s1/tools");
         assert_eq!(paths::mcp_test("s1"), "/api/mcp/servers/s1/test");
+        assert_eq!(
+            paths::mcp_approve_command("s1"),
+            "/api/mcp/servers/s1/approve-command"
+        );
         assert_eq!(paths::group_mcp("g1"), "/api/groups/g1/mcp");
         assert_eq!(paths::group_mcp_server("g1", "s1"), "/api/groups/g1/mcp/s1");
         assert_eq!(paths::UNREAD, "/api/unread");
@@ -1537,6 +1617,7 @@ mod tests {
             let created = api.create_mcp_server(&save).unwrap();
             assert_eq!(created.name, "文档");
             assert!(created.enabled);
+            assert_eq!(created.command_approved, Some(false));
             assert!(created.secrets[0].has_key);
             assert_eq!(created.secrets[0].key_last4.as_deref(), Some("WXYZ"));
             let raw = serde_json::to_string(&created).unwrap();
@@ -1563,9 +1644,30 @@ mod tests {
                 Err(ApiError::NotFound(_))
             ));
 
+            match api.test_mcp_server(&id) {
+                Err(ApiError::CommandNotApproved(denied)) => {
+                    assert_eq!(denied.command, "/bin/true");
+                    assert_eq!(denied.args, vec!["--ok"]);
+                }
+                other => panic!("expected command_not_approved, got {other:?}"),
+            }
+            let approved = api.approve_mcp_command(&id).unwrap();
+            assert_eq!(approved.command_approved, Some(true));
+            assert!(approved.command_approved_at.is_some());
+
             let test = api.test_mcp_server(&id).unwrap();
             assert!(!test.ok, " /bin/true is not an MCP server");
             assert!(test.error.as_ref().is_some());
+
+            let mut changed = patch.clone();
+            changed.args = Some(vec!["--ok".into(), "--again".into()]);
+            let after = api.update_mcp_server(&changed).unwrap();
+            assert_eq!(after.command_approved, Some(false));
+            assert!(matches!(
+                api.test_mcp_server(&id),
+                Err(ApiError::CommandNotApproved(_))
+            ));
+            api.approve_mcp_command(&id).unwrap();
 
             assert!(!api.set_mcp_enabled(&id, false).unwrap().enabled);
             api.delete_mcp_server(&id).unwrap();

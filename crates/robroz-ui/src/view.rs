@@ -243,6 +243,13 @@ pub enum Action {
         id: String,
         group: String,
     },
+    /// Confirm the stdio command after 409 `command_not_approved`.
+    McpApproveCommand {
+        id: String,
+    },
+    McpCancelCommand {
+        id: String,
+    },
     /// 联网搜索 page.
     SearchPick {
         provider: search::Provider,
@@ -533,6 +540,16 @@ fn mono<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
         .font(Font::MONOSPACE)
         .size(t.type_.mono)
         .color(color(t.palette.text2))
+        .into()
+}
+
+/// Command or arg: monospace, wraps instead of truncating.
+fn mono_wrap<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
+    text(s)
+        .font(Font::MONOSPACE)
+        .size(t.type_.mono)
+        .wrapping(Wrapping::WordOrGlyph)
+        .color(color(t.palette.text))
         .into()
 }
 
@@ -2451,6 +2468,7 @@ fn mcp_row<'a>(
     let id = server.id.clone();
     let open = book.open.as_deref() == Some(server.id.as_str());
     let asking = book.confirm_delete.as_deref() == Some(server.id.as_str());
+    let unapproved = mcp::command_unapproved(server);
     let toggle = switch_control(
         t,
         server.enabled,
@@ -2459,25 +2477,31 @@ fn mcp_row<'a>(
         color(t.palette.knob),
         (!busy).then(|| Action::McpToggleEnabled { id: id.clone() }),
     );
+    let mut name = row![text(server.name.as_str())
+        .size(t.type_.row_name)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if unapproved {
+        name = name.push(tag(t, mcp::COMMAND_UNAPPROVED, t.palette.accent));
+    }
+    let mut title = column![name].spacing(2.0);
+    if !unapproved {
+        title = title.push(
+            text(mcp::tool_count_text(server.tool_count))
+                .size(t.type_.foot)
+                .color(color(t.palette.text3)),
+        );
+    }
     let top = row![
-        button(
-            column![
-                text(server.name.as_str())
-                    .size(t.type_.row_name)
-                    .font(bold())
-                    .color(color(t.palette.text)),
-                text(mcp::tool_count_text(server.tool_count))
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text3)),
-            ]
-            .spacing(2.0)
-        )
-        .padding(0)
-        .style(|_, _| button::Style {
-            background: None,
-            ..button::Style::default()
-        })
-        .on_press(Action::McpOpen { id: id.clone() }),
+        button(title)
+            .padding(0)
+            .style(|_, _| button::Style {
+                background: None,
+                ..button::Style::default()
+            })
+            .on_press(Action::McpOpen { id: id.clone() }),
         space::horizontal(),
         toggle,
     ]
@@ -2498,7 +2522,11 @@ fn mcp_row<'a>(
         );
     }
     if open {
-        col = col.push(mcp_tools(t, book, &server.id));
+        if book.command_prompt_for(&server.id).is_some() {
+            col = col.push(mcp_command_prompt(t, book, server, busy));
+        } else {
+            col = col.push(mcp_tools(t, book, server));
+        }
         if !book.chats.is_empty() {
             col = col.push(mcp_group_toggles(t, book, &server.id, busy));
         }
@@ -2556,8 +2584,53 @@ fn mcp_row<'a>(
     col.into()
 }
 
-fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, id: &str) -> Element<'a, Action> {
-    match book.tools.get(id) {
+fn mcp_command_prompt<'a>(
+    t: &Skin,
+    book: &'a McpBook,
+    server: &'a McpServer,
+    busy: bool,
+) -> Element<'a, Action> {
+    let prompt = book.command_prompt_for(&server.id).expect("prompt");
+    let mut lines = column![mono_wrap(t, prompt.command.as_str())].spacing(2.0);
+    for arg in &prompt.args {
+        lines = lines.push(mono_wrap(t, arg.as_str()));
+    }
+    let id = server.id.clone();
+    column![
+        lines,
+        text(mcp::COMMAND_RUNS_LOCAL)
+            .size(t.type_.foot)
+            .color(color(t.palette.text3)),
+        row![
+            btn(
+                t,
+                mcp::APPROVE_RUN.into(),
+                Look::Primary,
+                Leading::None,
+                (!busy).then_some(Action::McpApproveCommand { id: id.clone() }),
+            ),
+            btn(
+                t,
+                mcp::CANCEL.into(),
+                Look::Secondary,
+                Leading::None,
+                Some(Action::McpCancelCommand { id }),
+            ),
+        ]
+        .spacing(t.controls.button_gap),
+    ]
+    .spacing(t.metrics.dot_gap)
+    .into()
+}
+
+fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, server: &'a McpServer) -> Element<'a, Action> {
+    if mcp::command_unapproved(server) && book.command_prompt_for(&server.id).is_none() {
+        return text(mcp::TOOLS_NEED_APPROVAL)
+            .size(t.type_.foot)
+            .color(color(t.palette.text3))
+            .into();
+    }
+    match book.tools.get(&server.id) {
         None => text(mcp::LOADING)
             .size(t.type_.foot)
             .color(color(t.palette.text3))
@@ -3143,7 +3216,7 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
                     .spacing(t.controls.button_gap)
                     .align_y(Alignment::Center),
                 );
-            } else if page.clearing {
+            } else if page.key.clearing {
                 body = body.push(
                     row![
                         text("保存后清除 key").color(color(t.palette.text2)),
@@ -3160,7 +3233,7 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
                     .align_y(Alignment::Center),
                 );
             } else {
-                let mut input = text_input(search::KEY_PLACEHOLDER, &page.key)
+                let mut input = text_input(search::KEY_PLACEHOLDER, &page.key.draft)
                     .secure(true)
                     .size(t.type_.body)
                     .padding(Padding::from([8.0, 10.0]));
@@ -3172,7 +3245,7 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
                 let mut r = row![input]
                     .spacing(t.controls.button_gap)
                     .align_y(Alignment::Center);
-                if page.replacing {
+                if page.key.replacing {
                     r = r.push(btn(
                         t,
                         search::CANCEL.into(),

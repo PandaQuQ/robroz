@@ -1,8 +1,7 @@
 //! Masked secret input. The host never sends the value back: after a save
 //! the field only shows 「已填 · 末4位」, with 「换一个」 and 「清除」.
 //!
-//! Written here because the 联网搜索 settings page (which wants the same
-//! control) is not on main yet. The two can be unified once that lands.
+//! Shared by the 联网搜索 settings page and MCP secret rows.
 
 /// Shown next to a stored key, with the last four characters when known.
 pub fn filled(last4: Option<&str>) -> String {

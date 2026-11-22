@@ -43,6 +43,10 @@ pub const BAD_URL: &str = "地址要以 http:// 或 https:// 开头";
 pub const EMPTY_SECRET_NAME: &str = "请填写密钥名称";
 pub const BAD_SECRET_NAME: &str = "密钥名称里不能有空白";
 pub const NEED_SECRET_KEY: &str = "新增密钥时请填写值";
+pub const COMMAND_UNAPPROVED: &str = "命令未批准";
+pub const TOOLS_NEED_APPROVAL: &str = "批准命令后才能读取工具";
+pub const COMMAND_RUNS_LOCAL: &str = "这条命令会在你的电脑上运行";
+pub const APPROVE_RUN: &str = "批准运行";
 
 pub fn cannot_connect(reason: &str) -> String {
     format!("连不上：{reason}")
@@ -64,6 +68,18 @@ pub fn works_text(count: Option<u32>) -> String {
         Some(n) => format!("{WORKS} · {n} 个工具"),
         None => WORKS.into(),
     }
+}
+
+/// Stdio server whose current command and args have not been approved.
+pub fn command_unapproved(s: &McpServer) -> bool {
+    s.transport.eq_ignore_ascii_case("stdio") && s.command_approved != Some(true)
+}
+
+/// Command shown in the 409 approval block. Args stay complete, one per line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPrompt {
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -313,6 +329,8 @@ pub struct Book {
     pub form: Option<Form>,
     pub confirm_delete: Option<String>,
     pub tests: HashMap<String, TestState>,
+    /// 409 `command_not_approved`: expand the command under this server row.
+    pub command_prompt: HashMap<String, CommandPrompt>,
     pub loaded: bool,
     pub busy: bool,
     pub note: Option<String>,
@@ -476,6 +494,8 @@ impl Book {
         self.form = None;
         self.form_note = None;
         self.entry_note = None;
+        self.command_prompt.remove(&id);
+        self.tools.remove(&id);
         self.open = Some(id.clone());
         self.tests.insert(id, TestState::Running);
         self.paint_listed_groups();
@@ -544,6 +564,7 @@ impl Book {
         self.servers.retain(|s| s.id != id);
         self.tools.remove(id);
         self.tests.remove(id);
+        self.command_prompt.remove(id);
         self.enabled.retain(|(_, s), _| s != id);
         for set in self.listed.values_mut().flatten() {
             set.remove(id);
@@ -623,6 +644,48 @@ impl Book {
     pub fn test_for(&self, id: &str) -> Option<&TestState> {
         self.tests.get(id)
     }
+
+    pub fn command_prompt_for(&self, id: &str) -> Option<&CommandPrompt> {
+        self.command_prompt.get(id)
+    }
+
+    /// `/test` or `/tools` returned 409 `command_not_approved`.
+    pub fn show_command_prompt(&mut self, id: &str, command: String, args: Vec<String>) {
+        self.tests.remove(id);
+        self.tools.remove(id);
+        self.open = Some(id.to_string());
+        self.command_prompt
+            .insert(id.to_string(), CommandPrompt { command, args });
+    }
+
+    pub fn cancel_command_prompt(&mut self, id: &str) {
+        self.command_prompt.remove(id);
+    }
+
+    /// Host approved the current command. Caller then re-runs the test.
+    pub fn command_approved(&mut self, server: McpServer) {
+        let id = server.id.clone();
+        self.command_prompt.remove(&id);
+        if let Some(slot) = self.servers.iter_mut().find(|s| s.id == id) {
+            *slot = server;
+        }
+        self.busy = false;
+        self.tests.insert(id, TestState::Running);
+    }
+
+    pub fn approve_command_to_send(&mut self, id: &str) -> Option<String> {
+        if self.busy {
+            return None;
+        }
+        self.command_prompt.get(id)?;
+        self.busy = true;
+        Some(id.to_string())
+    }
+
+    pub fn approve_command_failed(&mut self, id: &str, reason: &str) {
+        self.busy = false;
+        self.entry_note = Some((id.to_string(), failed(reason)));
+    }
 }
 
 #[cfg(test)]
@@ -648,7 +711,18 @@ mod tests {
             tool_count: tools,
             created_at: "2026-11-21T01:00:00.000Z".into(),
             updated_at: "2026-11-21T01:00:00.000Z".into(),
+            command_approved: Some(true),
+            command_approved_at: Some("2026-11-21T01:00:00.000Z".into()),
         }
+    }
+
+    fn unapproved(id: &str, name: &str) -> McpServer {
+        let mut s = server(id, name, true, None);
+        s.command = Some("echo".into());
+        s.args = Some(vec!["hello".into(), "world".into()]);
+        s.command_approved = Some(false);
+        s.command_approved_at = None;
+        s
     }
 
     fn book() -> Book {
@@ -840,5 +914,55 @@ mod tests {
         assert!(!b.servers.iter().find(|s| s.id == "s1").unwrap().enabled);
         assert_eq!(tool_count_text(None), "还没数过");
         assert_eq!(tool_count_text(Some(2)), "2 个工具");
+    }
+
+    #[test]
+    fn unapproved_stdio_shows_prompt_until_approved_or_cancelled() {
+        let mut b = Book::default();
+        b.load(vec![unapproved("s3", "回声")]);
+        assert!(command_unapproved(
+            b.servers.iter().find(|s| s.id == "s3").unwrap()
+        ));
+        assert_eq!(COMMAND_UNAPPROVED, "命令未批准");
+        assert_eq!(TOOLS_NEED_APPROVAL, "批准命令后才能读取工具");
+        assert_eq!(APPROVE_RUN, "批准运行");
+
+        b.show_command_prompt("s3", "echo".into(), vec!["hello".into(), "world".into()]);
+        let prompt = b.command_prompt_for("s3").unwrap();
+        assert_eq!(prompt.command, "echo");
+        assert_eq!(prompt.args, ["hello", "world"]);
+        assert_eq!(b.open.as_deref(), Some("s3"));
+        assert!(b.test_for("s3").is_none());
+
+        b.cancel_command_prompt("s3");
+        assert!(b.command_prompt_for("s3").is_none());
+        assert!(command_unapproved(
+            b.servers.iter().find(|s| s.id == "s3").unwrap()
+        ));
+
+        b.show_command_prompt("s3", "echo".into(), vec!["hello".into()]);
+        assert_eq!(b.approve_command_to_send("s3").as_deref(), Some("s3"));
+        assert!(b.busy);
+        let mut approved = unapproved("s3", "回声");
+        approved.command_approved = Some(true);
+        approved.command_approved_at = Some("2026-11-22T00:00:00.000Z".into());
+        b.command_approved(approved);
+        assert!(b.command_prompt_for("s3").is_none());
+        assert!(!command_unapproved(
+            b.servers.iter().find(|s| s.id == "s3").unwrap()
+        ));
+        assert!(matches!(b.test_for("s3"), Some(TestState::Running)));
+        assert!(!b.busy);
+    }
+
+    #[test]
+    fn saved_stdio_server_is_unapproved_until_host_says_otherwise() {
+        let mut b = Book::default();
+        b.saved(unapproved("s4", "新的"));
+        assert!(command_unapproved(
+            b.servers.iter().find(|s| s.id == "s4").unwrap()
+        ));
+        assert_eq!(b.open.as_deref(), Some("s4"));
+        assert!(matches!(b.test_for("s4"), Some(TestState::Running)));
     }
 }

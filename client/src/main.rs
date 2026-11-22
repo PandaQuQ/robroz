@@ -227,6 +227,10 @@ enum Message {
         group: String,
         result: Result<Vec<McpServer>, ApiError>,
     },
+    McpCommandApproved {
+        id: String,
+        result: Result<McpServer, ApiError>,
+    },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
     Polled(Result<Polled, SourceError>),
@@ -929,6 +933,17 @@ impl App {
                     result,
                 });
             }
+            Action::McpApproveCommand { id } => {
+                let Some(key) = book.approve_command_to_send(&id) else {
+                    return Task::none();
+                };
+                let job = call(&self.api, move |api| api.approve_mcp_command(&key));
+                return Task::perform(job, move |result| Message::McpCommandApproved {
+                    id: id.clone(),
+                    result,
+                });
+            }
+            Action::McpCancelCommand { id } => book.cancel_command_prompt(&id),
             _ => {}
         }
         Task::none()
@@ -1131,7 +1146,7 @@ impl App {
         match action {
             Action::SearchPick { provider } => page.pick(provider),
             Action::SearchUrl { text } => page.url = text,
-            Action::SearchKey { text } => page.key = text,
+            Action::SearchKey { text } => page.key.draft = text,
             Action::SearchReplaceKey => page.replace_key(),
             Action::SearchClearKey => {
                 if page.busy {
@@ -1222,7 +1237,9 @@ impl App {
             | Action::McpDeleteConfirm
             | Action::McpDeleteCancel
             | Action::McpToggleEnabled { .. }
-            | Action::McpToggleGroup { .. } => self.on_mcp_action(action),
+            | Action::McpToggleGroup { .. }
+            | Action::McpApproveCommand { .. }
+            | Action::McpCancelCommand { .. } => self.on_mcp_action(action),
             Action::SearchPick { .. }
             | Action::SearchUrl { .. }
             | Action::SearchKey { .. }
@@ -1549,11 +1566,39 @@ impl App {
             },
             Message::McpToolsLoaded { id, result } => match result {
                 Ok(tools) => self.mcp.tools_loaded(&id, tools),
-                Err(err) => self.mcp.tools_failed(&id, &err.reason()),
+                Err(err) => {
+                    if let Some(denied) = err.command_not_approved() {
+                        self.mcp.show_command_prompt(
+                            &id,
+                            denied.command.clone(),
+                            denied.args.clone(),
+                        );
+                    } else {
+                        self.mcp.tools_failed(&id, &err.reason());
+                    }
+                }
             },
             Message::McpTested { id, result } => match result {
                 Ok(test) => self.mcp.tested(&id, &test),
-                Err(err) => self.mcp.test_failed(&id, &err.reason()),
+                Err(err) => {
+                    if let Some(denied) = err.command_not_approved() {
+                        self.mcp.show_command_prompt(
+                            &id,
+                            denied.command.clone(),
+                            denied.args.clone(),
+                        );
+                    } else {
+                        self.mcp.test_failed(&id, &err.reason());
+                    }
+                }
+            },
+            Message::McpCommandApproved { id, result } => match result {
+                Ok(server) => {
+                    let sid = server.id.clone();
+                    self.mcp.command_approved(server);
+                    return Task::batch([self.test_mcp(sid.clone()), self.fetch_mcp_tools(sid)]);
+                }
+                Err(err) => self.mcp.approve_command_failed(&id, &err.reason()),
             },
             Message::McpEnabled { id, result } => match result {
                 Ok(server) => self.mcp.set_enabled(&server.id, server.enabled),
