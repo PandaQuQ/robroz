@@ -8,7 +8,7 @@ export const en = {
   meta: {
     title: 'robroz: a self-hosted multi-agent workspace you drive through chat',
     description:
-      'Hand tasks to agents in chat. Each one works in a Docker sandbox on your machine and reports back with cards. Self-hosted, written in Rust.',
+      'Hand tasks to bros in chat. Each one works in a Docker sandbox on your machine and reports back with cards. Self-hosted, written in Rust.',
   },
   nav: {
     lang: { en: 'EN', zh: '中文' },
@@ -95,10 +95,14 @@ export const en = {
   quickstart: {
     title: 'Self-host it',
     lede: 'You need the Rust stable toolchain and Docker. From the repository root:',
-    code: `cargo build -p robroz-host -p robroz-client                # host and desktop client
-docker build -f runner/Dockerfile -t robroz-runner:local .  # runner image used for tasks
-cargo run -p robroz-host                                    # listens on 127.0.0.1:8790 only, no token needed
-cargo run -p robroz-client                                  # in a second terminal`,
+    code: `# host and desktop client
+cargo build -p robroz-host -p robroz-client
+# runner image used for tasks
+docker build -f runner/Dockerfile -t robroz-runner:local .
+# listens on 127.0.0.1:8790 only, no token needed
+cargo run -p robroz-host
+# in a second terminal
+cargo run -p robroz-client`,
     next: 'In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.',
     more: 'To connect an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide.',
     moreLink: {

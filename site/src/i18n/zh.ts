@@ -97,10 +97,14 @@ export const zh: Messages = {
   quickstart: {
     title: '自己部署',
     lede: '需要 Rust stable 工具链和 Docker。在仓库根目录：',
-    code: `cargo build -p robroz-host -p robroz-client                # 宿主机和桌面客户端
-docker build -f runner/Dockerfile -t robroz-runner:local .  # 跑任务用的 runner 镜像
-cargo run -p robroz-host                                    # 只监听 127.0.0.1:8790，不用令牌
-cargo run -p robroz-client                                  # 另开一个终端`,
+    code: `# 宿主机和桌面客户端
+cargo build -p robroz-host -p robroz-client
+# 跑任务用的 runner 镜像
+docker build -f runner/Dockerfile -t robroz-runner:local .
+# 只监听 127.0.0.1:8790，不用令牌
+cargo run -p robroz-host
+# 另开一个终端
+cargo run -p robroz-client`,
     next: '在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。没接模型时，bro 会把你的话原样写成结果。',
     more: '接 OpenAI 兼容模型、设置联网搜索、设令牌、从别的机器访问宿主机，见安装文档。',
     moreLink: {

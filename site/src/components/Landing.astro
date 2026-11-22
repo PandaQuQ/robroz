@@ -61,7 +61,9 @@ const msg = t(Astro.currentLocale);
 <section class="section quickstart" id="quickstart">
   <h2>{msg.quickstart.title}</h2>
   <p class="lede">{msg.quickstart.lede}</p>
-  <pre><code>{msg.quickstart.code}</code></pre>
+  <pre><code>{msg.quickstart.code.split('\n').map((line) => (
+    <span class="code-line">{line}</span>
+  ))}</code></pre>
   <p><RichText text={msg.quickstart.next} /></p>
   <p>
     <RichText text={msg.quickstart.more} />
