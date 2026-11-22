@@ -5,66 +5,112 @@
   </picture>
 </p>
 
-# robroz
+<p align="center"><b>English</b> | <a href="README.zh-CN.md">简体中文</a></p>
 
-robroz 是单机私有化的多智能体协同，交互是 IM，不是 IDE。你在「群」和「私聊」里给 bro（一个 agent）派任务，bro 在本机的 Docker 沙箱里干活，进度、审批和结果都以卡片回到对话里。宿主机、执行器（runner）和客户端都用 Rust 写；客户端是原生程序，Windows、Linux、macOS 各出一个包，不用 Tauri，也不套网页。
+<p align="center">
+  <a href="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml"><img src="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+</p>
 
-**第一期做的：**
+**robroz** is a self-hosted, single-machine multi-agent workspace that you drive through chat, not an IDE. You hand tasks to *bros* (agents) in groups and direct messages; each bro works in a Docker sandbox on your machine, and progress, approvals and results come back to the conversation as cards. The host, the runner and the native desktop client (Windows, Linux, macOS) are all written in Rust, with no web view.
 
-- 群和私聊，`@名字` 派任务，状态卡、交付卡、实时推送和未读数
-- 三级权限：群目录内放行，出网只许 GET 并计次，对外写入和验证码停下来等人
-- 审批卡、选项卡、例行任务（到点出简报）
-- 记忆和技能：bro 提议，你确认后才生效
-- 接任意 OpenAI 兼容模型，联网搜索（Brave 或 SearXNG），MCP 服务器配置
+<!-- Screenshots pending: one at 390 px and one at 1440 px, shared by README.md and README.zh-CN.md. -->
 
-**第一期不做的：** 文件树、终端、桌面流、Bot 详情、Webhook、E2B、多租户。
+## Features
 
-<!-- 截图待补：390 和 1440 各一张 -->
+Phase 1 (on `main` today):
 
-## 快速开始
+- **Groups and DMs.** Start a message with `@name` in a group to give that bro a task; in a DM every message is a task. Status and delivery cards, live updates, unread counts.
+- **Three permission tiers.** Reading and writing the group folder is allowed; outbound network is GET-only and counted per task; external writes and captchas stop the task and wait for a person.
+- **Cards you answer.** Approval cards, choice cards, and routines (scheduled tasks that deliver a briefing).
+- **Memory and skills.** A bro proposes a memory or a skill; it takes effect only after you confirm it.
+- **Any OpenAI-compatible model**, web search (Brave or SearXNG), and MCP server configuration on the host (bros cannot call MCP tools yet).
 
-需要 Rust stable、Docker，示例里还用到 `curl`。在仓库根目录：
+Not in phase 1: file tree, terminal, desktop streaming, bot detail pages, webhooks, E2B, multi-tenancy.
+
+## Quick start
+
+You need the Rust stable toolchain and Docker; the examples also use `curl`. From the repository root:
 
 ```sh
-cargo build -p robroz-host -p robroz-client                # 宿主机和客户端
-docker build -f runner/Dockerfile -t robroz-runner:local .  # 跑任务用的 runner 镜像
-cargo run -p robroz-host                                    # 默认只监听 127.0.0.1:8790，不用令牌
-cargo run -p robroz-client                                  # 另开一个终端，打开客户端
+cargo build -p robroz-host -p robroz-client                # host and desktop client
+docker build -f runner/Dockerfile -t robroz-runner:local .  # runner image used for tasks
+cargo run -p robroz-host                                    # listens on 127.0.0.1:8790 only, no token needed
+cargo run -p robroz-client                                  # in a second terminal
 ```
 
-在客户端会话列表「聊天」旁点「引入一个 bro」，进它的私聊说一句话，就会派出第一个任务。不接模型时 bro 把你的话原样写成结果；接模型、设令牌、跨机器访问、用 curl 走一遍，见 [docs/install.md](docs/install.md)。
+In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.
 
-## 文档
+To connect a model, set a token, reach the host from another machine, or walk through the API with `curl`, see [docs/install.md](docs/install.md).
 
-- **给人看：** [robroz wiki](https://github.com/PandaQuQ/robroz/wiki)：安装上手、日常怎么用、常见问题、路线图。
-- **给 agent 看：** [AGENTS.md](AGENTS.md) 和 [`docs/`](docs/)：仓库规矩、接口契约、字段、环境变量和代码位置。wiki 不是契约，冲突时以仓库为准。
+## Configuration
 
-| 文件 | 内容 |
+Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
+
+## Documentation
+
+- **For people:** the [robroz wiki](https://github.com/PandaQuQ/robroz/wiki) covers installation, everyday use, FAQ and roadmap.
+- **For coding agents and contributors:** [AGENTS.md](AGENTS.md) and [`docs/`](docs/) hold the repository rules, the API contract, fields, environment variables and code locations. The wiki is not the contract; when they disagree, the repository wins.
+
+| File | Contents |
 | --- | --- |
-| [docs/install.md](docs/install.md) | 构建、运行、接模型、第一个任务、测试 |
-| [docs/configuration.md](docs/configuration.md) | 全部环境变量 |
-| [docs/api.md](docs/api.md) | 全部 HTTP 接口和事件 |
-| [docs/concepts.md](docs/concepts.md) | 术语、任务状态、卡片 |
-| [docs/permissions.md](docs/permissions.md) | 三级权限、审批、接管、`failure` |
-| [docs/memory-and-skills.md](docs/memory-and-skills.md) | 记忆、技能、确认卡 |
-| [docs/search-and-mcp.md](docs/search-and-mcp.md) | 联网搜索和 MCP |
-| [docs/client.md](docs/client.md) | 客户端界面行为 |
-| [docs/architecture.md](docs/architecture.md) | 各部分分工、容器、外观层 |
+| [docs/install.md](docs/install.md) | Build, run, connect a model, first task, tests |
+| [docs/configuration.md](docs/configuration.md) | All environment variables |
+| [docs/api.md](docs/api.md) | All HTTP endpoints and events |
+| [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
+| [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
+| [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
+| [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP configuration |
+| [docs/client.md](docs/client.md) | Client UI behaviour |
+| [docs/architecture.md](docs/architecture.md) | Components, containers, theming layer |
+| [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
+| [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Phase 2 roadmap |
 
-## 术语
+"Bro" is the UI name for a bot: code, API and database still say bot (`botId` / `botName`). A DM is a group with only you and one bro.
 
-bro 就是 bot：界面上叫 bro，代码、接口和数据库里照旧叫 bot（`botId` / `botName`）。私聊是只有你和一个 bro 的群。完整术语表见 [docs/concepts.md](docs/concepts.md)。
+## Contributing
 
-## 测试
+### Layout
+
+| Path | Crate | Role |
+| --- | --- | --- |
+| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model calls, search, MCP configuration |
+| `runner/` | `robroz-runner` | Task executor inside the container |
+| `client/` | `robroz-client` | iced desktop client |
+| `crates/robroz-contract` | `robroz-contract` | API contract: request/response bodies, event (card) types, task states |
+| `crates/robroz-policy` | `robroz-policy` | Permission tiers, outbound metering, blocking lines |
+| `crates/robroz-card` | `robroz-card` | Card status text, tone and actions |
+| `crates/robroz-tokens` | `robroz-tokens` | Design tokens generated from `tokens.json` |
+| `crates/robroz-ui` | `robroz-ui` | Shared client UI layer and theme |
+| `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
+| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
+
+See [docs/architecture.md](docs/architecture.md) for how they fit together.
+
+### Build and test
+
+Run the same commands as CI before opening a PR:
 
 ```sh
+cargo test -p robroz-mcp --features fixture
 cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-card -p robroz-runner -p robroz-tokens
-cargo test -p robroz-client -p robroz-ui
-scripts/e2e.sh   # 需要 docker、curl、jq
+cargo build -p robroz-client
+cargo test -p robroz-client -p robroz-ui -p robroz-tokens
+scripts/e2e.sh   # needs docker, curl and jq
 ```
 
-CI 跑宿主机测试和 e2e，并构建客户端：PR 上只构建 Linux，合到 `main` 后和每天定时再构建 Windows 和 macOS。完整命令见 [AGENTS.md](AGENTS.md#构建和测试)。
+CI builds the client on Linux for pull requests, and on Windows, Linux and macOS after merging to `main` and nightly.
 
-## 许可证
+### Rules
 
-许可证待定。
+- One PR per change.
+- Commit messages and PR titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): ...`, `fix(client): ...`, `docs: ...`. PRs are squash-merged with the PR title as the commit message.
+- The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states (`queued` / `running` / `blocked` / `done`) and `botId` / `botName` are frozen.
+- No force-push. If your branch is behind, merge `main` into it.
+- Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens. Use placeholders in docs.
+- Keep `README.md` and `README.zh-CN.md` in sync; change both in the same PR.
+
+The full rules for agents and contributors are in [AGENTS.md](AGENTS.md).
+
+## License
+
+To be decided.
