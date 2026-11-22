@@ -23,7 +23,7 @@
 - **三级权限。** 读写群目录直接放行；出网只许 GET，并按任务计次；对外写入和验证码会停下任务，等人处理。
 - **要你回答的卡片。** 审批卡、选项卡，以及例行任务（到点执行并交付简报）。
 - **记忆和技能。** bro 提议一条记忆或一个技能，你确认后才生效。
-- **接任意 OpenAI 兼容模型**，联网搜索（Brave 或 SearXNG），宿主机上配置 MCP 服务器（bro 暂时还不能调用 MCP 工具）。
+- **接任意 OpenAI 兼容模型**，联网搜索（Brave 或 SearXNG），以及宿主机上的 MCP 工具（写工具先出审批卡再调用）。
 
 第一期不做：文件树、终端、桌面流、Bot 详情页、Webhook、E2B、多租户。
 
@@ -59,7 +59,7 @@ cargo run -p robroz-client                                  # 另开一个终端
 | [docs/concepts.md](docs/concepts.md) | 术语、任务状态、卡片 |
 | [docs/permissions.md](docs/permissions.md) | 三级权限、审批、接管、`failure` |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | 记忆、技能、确认卡 |
-| [docs/search-and-mcp.md](docs/search-and-mcp.md) | 联网搜索和 MCP 配置 |
+| [docs/search-and-mcp.md](docs/search-and-mcp.md) | 联网搜索和 MCP |
 | [docs/client.md](docs/client.md) | 客户端界面行为 |
 | [docs/architecture.md](docs/architecture.md) | 各部分分工、容器、外观层 |
 | [docs/reference-features.md](docs/reference-features.md) | 参考产品和净室规则 |
@@ -73,7 +73,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 | 路径 | crate | 作用 |
 | --- | --- | --- |
-| `host/` | `robroz-host` | HTTP 接口（axum）、SQLite、容器 pump、定时、调用模型、搜索、MCP 配置 |
+| `host/` | `robroz-host` | HTTP 接口（axum）、SQLite、容器 pump、定时、调用模型、搜索、MCP 配置和工具调用 |
 | `runner/` | `robroz-runner` | 容器里的任务执行器 |
 | `client/` | `robroz-client` | iced 桌面客户端 |
 | `crates/robroz-contract` | `robroz-contract` | 接口契约：请求体和返回体、事件（卡片）类型、任务状态 |
@@ -82,7 +82,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 | `crates/robroz-tokens` | `robroz-tokens` | 由 `tokens.json` 生成的设计 token |
 | `crates/robroz-ui` | `robroz-ui` | 客户端共用的界面层和主题 |
 | `crates/robroz-model` | `robroz-model` | OpenAI 兼容 `/chat/completions` 客户端，含工具调用 |
-| `crates/robroz-mcp` | `robroz-mcp` | MCP 客户端（stdio 和 Streamable HTTP） |
+| `crates/robroz-mcp` | `robroz-mcp` | MCP 客户端（stdio 和 Streamable HTTP）：列出并调用工具 |
 
 各部分怎么配合见 [docs/architecture.md](docs/architecture.md)。
 

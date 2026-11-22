@@ -1,6 +1,6 @@
 # 联网搜索和 MCP
 
-宿主机替 bro 访问外部的两条路：联网搜索（`web_search` / `web_fetch`）和 MCP 服务器。都在宿主机上调用，沙箱仍然不联网。接口字段和报错见 [api.md 的「搜索设置」](api.md#搜索设置)和 [「MCP 服务器配置」](api.md#mcp-服务器配置)，环境变量见 [configuration.md 的「搜索」](configuration.md#搜索)。
+宿主机替 bro 访问外部的两条路：联网搜索（`web_search` / `web_fetch`）和 MCP 服务器。都在宿主机上调用，沙箱仍然不联网。接口字段和报错见 [api.md 的「搜索设置」](api.md#搜索设置)、[「MCP 服务器配置」](api.md#mcp-服务器配置)和 [「MCP 工具调用」](api.md#mcp-工具调用)，环境变量见 [configuration.md 的「搜索」](configuration.md#搜索)。
 
 ## 联网搜索
 
@@ -57,15 +57,26 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 
 ## MCP
 
-宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。代码：配置在 `host/src/mcp.rs`，连接在 `crates/robroz-mcp`，连接超时 10 秒。
-
-**`main` 上只做了配置和列工具，bro 还不会调用 MCP 工具。**
+宿主机作为 MCP 客户端，可以接本机用 stdio 启动的服务器，或用 Streamable HTTP 访问的服务器。沙箱不直接连这些服务器。代码：配置在 `host/src/mcp.rs`，连接在 `crates/robroz-mcp`，连接超时 10 秒；把工具接进模型循环在 `host/src/mcp_tools.rs`、`host/src/tools.rs` 和 `host/src/pump.rs`。
 
 - 每台服务器名字唯一，传输方式是 `stdio`（填 `command` 和 `args`）或 `http`（填 `url`）。
 - 可以存多条密钥：stdio 作为环境变量传给进程，HTTP 作为请求头。接口只返回 `{name, in, hasKey, keyLast4}`，不回显密钥。`PATCH` 时某条密钥的 `key` 不传表示不改，传 `null` 表示**删掉这一整条密钥**（连名字一起）。密钥不进日志、不进报错。
 - `GET /api/mcp/servers/{id}/tools` 实时连一次，每项带 `name`、`description`、`needsApproval`：工具标了 `readOnlyHint: true` 时为 false，否则为 true。服务器列表项可带 `toolCount`，是最近一次成功连接看到的工具数。
 - 按群启用：`PUT` / `DELETE /api/groups/{id}/mcp/{serverId}`，`GET /api/groups/{id}/mcp` 列出这个群启用的服务器。
 - 配置存在本机 SQLite 的 `mcp_servers` 和 `group_mcp` 表。
+
+### 模型怎么调用
+
+任务开始时，宿主机把「该群已启用、并且服务器本身也是 `enabled`」的工具注册进这一次的 `ToolRegistry`。某台服务器连接失败就跳过它，任务照常进行。群里没启用、或服务器被关掉（`enabled` 为 false）的，不会注册。
+
+交给模型的名字是 `{safe_server}__{safe_tool}`：只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希。进度行和审批卡仍用原来的 `{server}.{tool}`，例如「在用 notes.write_note」。映射写在 `host/src/mcp_tools.rs`。
+
+权限跟 [permissions.md](permissions.md#三级权限) 对齐：
+
+- `readOnlyHint: true`：计数（Metered），按一次出网 GET 计次，直接调用，不出审批卡。
+- 其余：接管（Takeover），先出审批卡（`action` 为 `call`），卡上带可选字段 `mcpServer`、`mcpTool` 和参数摘要，以及 `taskId`。批准、拒绝走现有的 `POST /api/approvals/{id}/approve` 和 `/deny`，答过一次再答是 409。等待期间任务是 `blocked`（`waitingFor` 为 `approval`），不加新状态。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。
+- 批准后执行这次调用，把结果交回模型继续；拒绝则不执行，任务 `done`，交付卡 `summary` 为「未执行」，带 `failure`「你拒绝了：{server}.{tool}」，不是成功交付。
+- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
 
 安全：
 
