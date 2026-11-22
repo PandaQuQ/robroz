@@ -497,7 +497,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 
 模型要调用未标 `readOnlyHint: true` 的 MCP 工具时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_mcp_task`）：`action` 为 `call`，`summary` 为「调用 {server}.{tool}」加上参数摘要（超过 `APPROVAL_SUMMARY_MAX` 会截断），带 `taskId`、`mcpServer`、`mcpTool`，状态卡 `waitingFor` 为 `approval`，进度行是「在用 {server}.{tool}」。
 
-- 同意：执行这次调用，把结果交回模型继续。写继续标记失败时 500「批准失败，无法写入继续标记」，卡保持未回答。
+- 同意：任务回到 `queued`，由 pump 执行这次调用，把结果交回模型继续；这次调用计一次出网 GET。写继续标记失败时 500「批准失败，无法写入继续标记」，卡保持未回答。
 - 拒绝：不执行，任务变成 `done`，交付卡 `summary` 为「未执行」，`failure` 为「你拒绝了：{server}.{tool}」。
 - 不要用 `POST /api/tasks/{id}/resume` 代替答卡（409「请先回答审批卡」）。
 - 只读 MCP 工具不出卡。行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
@@ -899,7 +899,8 @@ curl -s -X PUT $B/api/groups/<groupId>/mcp/<serverId>
 
 - 交给模型的名字是 `{safe_server}__{safe_tool}`（只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希）。进度行和审批卡仍用 `{server}.{tool}`。
 - `readOnlyHint: true`：按一次出网 GET 计次，直接调用，不出审批卡。
-- 其余：先出上面的 MCP 工具审批卡；批准后执行并把结果交回模型；拒绝则不执行。
+- 其余：先出上面的 MCP 工具审批卡；批准后执行（同样计一次出网 GET）并把结果交回模型；拒绝则不执行。
+- 调用出错时模型拿到「调用失败：{原因}」，任务不因此失败。
 - 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
 - 契约只加了可选字段和新类型：`ApprovalAction::Call`（JSON `"call"`），以及 `Event::Approval` 上可选的 `mcpServer`、`mcpTool`。现有字段和任务状态不变。
 
