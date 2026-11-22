@@ -62,6 +62,7 @@
 | DELETE | `/api/mcp/servers/{id}` | 删 MCP 服务器 | `host/src/mcp.rs:delete_server` |
 | GET | `/api/mcp/servers/{id}/tools` | 实时列工具 | `host/src/mcp.rs:list_tools` |
 | POST | `/api/mcp/servers/{id}/test` | 试连 | `host/src/mcp.rs:test_connection` |
+| POST | `/api/mcp/servers/{id}/approve-command` | 批准 stdio 启动命令 | `host/src/mcp.rs:approve_command` |
 | GET | `/api/groups/{id}/mcp` | 群里启用的服务器 | `host/src/mcp.rs:list_group_mcp` |
 | GET | `/api/groups/{id}/mcp/{serverId}` | 群里某台服务器 | `host/src/mcp.rs:get_group_mcp` |
 | PUT | `/api/groups/{id}/mcp/{serverId}` | 在群里启用 | `host/src/mcp.rs:enable_group_mcp` |
@@ -800,7 +801,7 @@ curl -s -X POST $B/api/settings/search/test
 
 宿主机作为 MCP 客户端，支持 stdio（本机进程）和 Streamable HTTP。配置在 `host/src/mcp.rs`，连接在 `crates/robroz-mcp`，连接超时 10 秒。任务开始时，会把该群已启用且 `enabled` 的服务器上的工具注册进模型循环（`host/src/mcp_tools.rs`），见下面的「MCP 工具调用」。
 
-stdio 服务器会在宿主机上以宿主机用户身份启动 `command`。只填可信的命令；`/test` 和 `/tools` 会真的启动它。
+stdio 服务器会在宿主机上以宿主机用户身份启动 `command`。只填可信的命令。未批准前，`/test`、`/tools` 以及模型循环里的注册都不会启动进程；先调用 `POST /api/mcp/servers/{id}/approve-command` 批准当前的 `command` 和 `args`。http 服务器不需要这项批准。
 
 `McpServer`：
 
@@ -816,6 +817,8 @@ stdio 服务器会在宿主机上以宿主机用户身份启动 `command`。只�
 | `enabled` | bool | |
 | `toolCount` | number | 可选，最近一次成功连接看到的工具数。 |
 | `createdAt` / `updatedAt` | string | |
+| `commandApproved` | bool | 可选，stdio 才有。当前 `command` 和 `args` 是否已批准。新建和迁移后的已有服务器都是 `false`。http 服务器不返回这个字段。 |
+| `commandApprovedAt` | string | 可选，已批准时才有，是批准时间。 |
 
 密钥输入 `McpSecretInput`：`{"name","in"?,"key"?}`。`name` 非空、无空白、最多 64 个字符；`in` 不给时 stdio 默认 `env`、http 默认 `header`；`key` 不传表示不改（只在 `PATCH` 里有意义），`null` 表示删掉这条密钥，字符串表示设置。
 
@@ -849,7 +852,7 @@ curl -s -X POST $B/api/mcp/servers -H 'content-type: application/json' \
 
 ### PATCH /api/mcp/servers/{id}
 
-字段同 `POST`，都可选，只改给了的。改 `transport` 会清掉另一种传输的字段；`command`、`url` 可传 `null`。改完后 stdio 必须有 `command`、http 必须有 `url`。
+字段同 `POST`，都可选，只改给了的。改 `transport` 会清掉另一种传输的字段；`command`、`url` 可传 `null`。改完后 stdio 必须有 `command`、http 必须有 `url`。如果改完后的 `command` 或 `args` 和批准时记下的不一致（包括改成另一种传输），`commandApproved` 自动变回 `false`，需要再批一次。
 
 - 200 `McpServer`。
 - 404「MCP 服务器不存在」；409「这个名字已经有了」；400 同 `POST`。
@@ -861,16 +864,30 @@ curl -s -X POST $B/api/mcp/servers -H 'content-type: application/json' \
 
 ### GET /api/mcp/servers/{id}/tools
 
-实时连一次，列出工具，成功时更新 `toolCount`。
+实时连一次，列出工具，成功时更新 `toolCount`。stdio 服务器必须先批准启动命令，否则不启动进程。
 
 - 200 `{"tools":[{"name","description"?,"needsApproval"}]}`。`needsApproval` 只有工具标注了 `readOnlyHint: true` 时为 false，否则 true。
 - 404「MCP 服务器不存在」。
+- 409 `{"error":"command_not_approved","command","args"}`：stdio 命令尚未批准。`command` 和 `args` 是当前配置。
 - 502 `{"error":"<原因>"}`：连不上，例如「连不上 MCP 服务器：…」。原因里的密钥会被替换成 `***`。
 
 ### POST /api/mcp/servers/{id}/test
 
 - 200 `{"ok":true,"toolCount":N}` 或 `{"ok":false,"error":"<原因>"}`。
 - 404「MCP 服务器不存在」。
+- 409 `{"error":"command_not_approved","command","args"}`：与 `GET …/tools` 相同，未批准时不启动进程。
+
+### POST /api/mcp/servers/{id}/approve-command
+
+把这台 stdio 服务器当前的 `command` 和 `args` 标为已批准，并记下批准时的指纹和 `commandApprovedAt`。无请求体。重复批准仍是 200，会更新批准时间。
+
+- 200 `McpServer`，`commandApproved` 为 true。
+- 404「MCP 服务器不存在」。
+- 400「只有 stdio 服务器需要批准启动命令」/「请填写启动命令」。
+
+```sh
+curl -s -X POST $B/api/mcp/servers/<serverId>/approve-command
+```
 
 ### GET /api/groups/{id}/mcp
 
@@ -895,7 +912,7 @@ curl -s -X PUT $B/api/groups/<groupId>/mcp/<serverId>
 
 ### MCP 工具调用
 
-任务开始时，宿主机把该群已启用、并且服务器本身也是 `enabled` 的 MCP 工具注册进这一次模型循环（`host/src/mcp_tools.rs:register_tools`）。某台服务器连接失败就跳过，任务照常进行。群里没启用或服务器被关掉的，不注册。
+任务开始时，宿主机把该群已启用、并且服务器本身也是 `enabled` 的 MCP 工具注册进这一次模型循环（`host/src/mcp_tools.rs:register_tools`）。某台服务器连接失败就跳过，任务照常进行。stdio 服务器还没批准启动命令的，同样跳过，不会启动进程。群里没启用或服务器被关掉的，不注册。
 
 - 交给模型的名字是 `{safe_server}__{safe_tool}`（只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希）。进度行和审批卡仍用 `{server}.{tool}`。
 - `readOnlyHint: true`：按一次出网 GET 计次，直接调用，不出审批卡。
