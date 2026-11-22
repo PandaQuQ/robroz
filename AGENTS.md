@@ -35,6 +35,8 @@ robroz 是单机私有化的多智能体协同，交互是 IM：人在「群」�
 7. **不提交密钥。** 不提交 `.env`、`.pem`、`.dev.vars`，也不把任何密钥、令牌写进代码、测试、文档或提交信息。文档里一律用 `<你的密钥>`、`<你的令牌>` 这类占位符。
 8. **密钥只有两个去处：** 宿主机的环境变量（或 `*_FILE` 指向的文件），或用户自己在设置接口里填。不要发到群里，也不要写进仓库。
 9. **净室：** 参考产品只看它们的 README、公开文档、LICENSE 和公开截图，不看、不抄、不翻译源码。参考清单和规则见 [`docs/reference-features.md`](docs/reference-features.md)。
+10. **提交信息和 PR 一律用英文，按 [Conventional Commits](https://www.conventionalcommits.org/) 写。** 提交信息、PR 标题和 PR 正文都用英文，格式是 `type(scope): summary`，比如 `feat(host): ...`、`fix(client): ...`、`docs: ...`。顶级GitHub哥用 squash merge 合并，PR 标题直接成为 `main` 上的提交信息，所以标题要写规范。
+11. **README 中英两份同步。** `README.md`（英文，默认）和 `README.zh-CN.md`（简体中文）内容保持一致，改一份就在同一个 PR 里改另一份。客户端界面上的中文叫法（如「引入一个 bro」「聊天」）两份都保留原文，英文版在后面加英文注释。
 
 ## 构建和测试
 
@@ -70,4 +72,4 @@ scripts/e2e.sh   # 需要 docker、curl、jq
 | [`docs/client.md`](docs/client.md) | 客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、例行任务。 |
 | [`docs/architecture.md`](docs/architecture.md) | 宿主机、pump、容器、runner、模型、例行任务、实时推送、卡片和外观层（Skin）、客户端事件来源。 |
 
-`README.md` 只放简介、快速开始和文档入口，不写规则和接口。新功能的说明写进上面对应的 `docs/` 文件；没有合适的文件就新建一个并加进这张表。
+`README.md` 和 `README.zh-CN.md` 只放简介、功能、快速开始、文档入口和参与开发的要点，不写接口细节。新功能的说明写进上面对应的 `docs/` 文件；没有合适的文件就新建一个并加进这张表。
