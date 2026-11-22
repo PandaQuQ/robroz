@@ -77,7 +77,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 - 其余：接管（Takeover），先出审批卡（`action` 为 `call`），卡上带可选字段 `mcpServer`、`mcpTool` 和参数摘要，以及 `taskId`。批准、拒绝走现有的 `POST /api/approvals/{id}/approve` 和 `/deny`，答过一次再答是 409。等待期间任务是 `blocked`（`waitingFor` 为 `approval`），不加新状态。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。
 - 批准后任务回到 `queued`，接着执行这次调用，把结果交回模型继续；这次调用也计一次出网 GET。拒绝则不执行，任务 `done`，交付卡 `summary` 为「未执行」，带 `failure`「你拒绝了：{server}.{tool}」，不是成功交付。
 - 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
-- 每次列工具和每次调用都单独连一次服务器，超时 10 秒（`robroz_mcp::MCP_TIMEOUT`）。stdio 服务器每次都会重新启动一次命令：群里启用了它，这个群的每个接了模型的任务开始时都会启动一次。
+- 每次列工具和每次调用都单独连一次服务器，超时 10 秒（`robroz_mcp::MCP_TIMEOUT`）。已批准的 stdio 服务器每次都会重新启动一次命令：群里启用了它，这个群的每个接了模型的任务开始时都会启动一次。还没批准启动命令的服务器在注册时跳过，不会启动进程。
 - 密钥：`hasKey` 为 true 的每条密钥在列工具和调用时都会带上（stdio 作环境变量，HTTP 作请求头）；没填值的那条不带。`keyLast4` 只用于显示，不影响调用。
 - 调用出错不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。
 - `needsApproval`（`GET …/tools` 的返回）和调用时的分级用的是同一条规则：没标 `readOnlyHint: true` 就要批准。
