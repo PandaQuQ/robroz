@@ -10,6 +10,7 @@ pub mod interact;
 pub mod mcp;
 pub mod memories;
 pub mod routines;
+pub mod search;
 pub mod secret;
 pub mod skills;
 pub mod status;
@@ -133,6 +134,7 @@ pub enum ActionKind {
     Delete,
     Send,
     Spend,
+    Call,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +211,7 @@ impl ApprovalCard {
             ApprovalAction::Delete => ActionKind::Delete,
             ApprovalAction::Send => ActionKind::Send,
             ApprovalAction::Spend => ActionKind::Spend,
+            ApprovalAction::Call => ActionKind::Call,
         };
         Some(Self {
             id: id.clone(),
@@ -273,6 +276,8 @@ mod tests {
             answered_at: Some("2026-11-20T08:48:00Z".into()),
             answered_by: by.map(Into::into),
             task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";

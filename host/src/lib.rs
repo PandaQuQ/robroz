@@ -26,6 +26,7 @@ mod pump;
 mod tools;
 mod search;
 mod mcp;
+mod mcp_tools;
 mod routines;
 mod sandbox;
 mod say;
@@ -54,6 +55,7 @@ pub struct Host {
     get_limit: u64,
     token: Option<auth::ApiToken>,
     model: Option<Arc<dyn robroz_model::Model>>,
+    mcp: Arc<dyn crate::mcp_tools::McpRuntime>,
 }
 
 impl Host {
@@ -73,6 +75,7 @@ impl Host {
             get_limit: get_limit_from_env(),
             token: None,
             model: None,
+            mcp: crate::mcp_tools::real_mcp(),
         })
     }
 
@@ -92,6 +95,12 @@ impl Host {
     /// Let bros think with `model`. Without it the runner echoes the prompt.
     pub fn with_model(mut self, model: Option<Arc<dyn robroz_model::Model>>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Swap the MCP connector. Tests pass a fake; production keeps the official client.
+    pub fn with_mcp(mut self, mcp: Arc<dyn crate::mcp_tools::McpRuntime>) -> Self {
+        self.mcp = mcp;
         self
     }
 
@@ -119,6 +128,7 @@ impl Host {
                 get_limit: self.get_limit,
                 model: self.model.as_deref(),
                 tools: &tools,
+                mcp: Some(self.mcp.clone()),
             },
         )
     }
@@ -199,6 +209,10 @@ fn router_from(state: AppState) -> Router {
         )
         .route("/api/mcp/servers/{id}/tools", get(mcp::list_tools))
         .route("/api/mcp/servers/{id}/test", post(mcp::test_connection))
+        .route(
+            "/api/mcp/servers/{id}/approve-command",
+            post(mcp::approve_command),
+        )
         .route("/api/groups/{id}/mcp", get(mcp::list_group_mcp))
         .route(
             "/api/groups/{id}/mcp/{serverId}",
@@ -319,6 +333,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
     crate::search::migrate(conn)?;
     crate::mcp::migrate(conn)?;
+    for column in ["mcp_server", "mcp_tool"] {
+        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+    }
     Ok(())
 }
 
@@ -586,6 +603,7 @@ async fn create_task(
 
 const RESUME_NO_INTENT: &str = "恢复失败，找不到卡住记录";
 const RESUME_MARKER_FAILED: &str = "恢复失败，无法写入接管标记";
+const RESUME_NEEDS_APPROVAL: &str = "请先回答审批卡";
 
 /// Resume a blocked task. Never reads the group volume.
 ///
@@ -605,11 +623,17 @@ async fn resume_task(
 ) -> Response {
     let conn = lock_db(&state);
     let found = conn.query_row(
-        "SELECT state, intent_hash FROM tasks WHERE id = ?1",
+        "SELECT state, intent_hash, intent_kind FROM tasks WHERE id = ?1",
         [&task_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
     );
-    let (task_state, intent_hash) = match found {
+    let (task_state, intent_hash, intent_kind) = match found {
         Ok(row) => row,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return error_response(StatusCode::NOT_FOUND, "任务不存在");
@@ -618,6 +642,9 @@ async fn resume_task(
     };
     if task_state != TaskState::Blocked.as_str() {
         return error_response(StatusCode::CONFLICT, "这次不能恢复");
+    }
+    if intent_kind.as_deref() == Some("mcp") {
+        return error_response(StatusCode::CONFLICT, RESUME_NEEDS_APPROVAL);
     }
     let Some(hash) = intent_hash else {
         eprintln!("resume {task_id}: no stored intent");
@@ -3447,6 +3474,7 @@ mod tests {
                 get_limit: 8,
                 model: Some(model),
                 tools: crate::tools::ToolRegistry::empty(),
+                mcp: None,
             },
         )
         .unwrap();

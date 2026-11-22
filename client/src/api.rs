@@ -24,8 +24,10 @@ use robroz_contract::{
     RenameBro, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task, TaskState, Unread,
     Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
 };
+use robroz_contract::{SearchSettings, SearchTestResult};
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
+use robroz_ui::cards::search;
 
 use crate::conn::Conn;
 
@@ -102,6 +104,10 @@ pub mod paths {
         let verb = if approve { "approve" } else { "deny" };
         format!("/api/approvals/{id}/{verb}")
     }
+    /// robroz#76: read (GET) or change (PUT) the search config.
+    pub const SEARCH_SETTINGS: &str = "/api/settings/search";
+    /// robroz#76: try the effective config once.
+    pub const SEARCH_TEST: &str = "/api/settings/search/test";
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn send_draft(id: &str) -> String {
         format!("/api/cards/{id}/send")
@@ -250,6 +256,47 @@ pub trait CardApi: Send + Sync {
     fn set_mcp_enabled(&self, id: &str, on: bool) -> Result<McpServer, ApiError>;
     fn group_mcp(&self, group_id: &str) -> Result<Vec<McpServer>, ApiError>;
     fn set_group_mcp(&self, group_id: &str, server_id: &str, on: bool) -> Result<(), ApiError>;
+    /// 联网搜索 page: what is in effect; never the key (robroz#76).
+    fn search_settings(&self) -> Result<search::Current, ApiError>;
+    fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError>;
+    /// `{ok, error?}`: 「能用了」 or 「连不上：原因」.
+    fn test_search(&self) -> Result<(bool, Option<String>), ApiError>;
+}
+
+/// `GET`/`PUT /api/settings/search` body. `source` is read only when the
+/// host sends it; absent or unknown stays `None` (no label, no guess).
+pub fn decode_search(body: &str) -> Result<search::Current, ApiError> {
+    let s: SearchSettings = decode(body)?;
+    let raw: serde_json::Value = decode(body)?;
+    Ok(search::Current {
+        provider: s.provider.as_deref().and_then(search::Provider::parse),
+        url: s.url,
+        has_key: s.has_key,
+        key_last4: s.key_last4,
+        source: search::Source::parse(raw.get("source").and_then(|v| v.as_str())),
+    })
+}
+
+pub mod search_body {
+    use super::search::Put;
+    /// Missing `key` leaves it; `null` clears it.
+    pub fn put(p: &Put) -> String {
+        let mut m = serde_json::Map::new();
+        if p.clear {
+            return serde_json::json!({"provider": null, "url": null, "key": null}).to_string();
+        }
+        m.insert("provider".into(), p.provider.as_str().into());
+        if let Some(u) = &p.url {
+            m.insert("url".into(), u.clone().into());
+        }
+        if let Some(k) = &p.key {
+            m.insert(
+                "key".into(),
+                k.clone().map_or(serde_json::Value::Null, Into::into),
+            );
+        }
+        serde_json::Value::Object(m).to_string()
+    }
 }
 
 pub struct HttpApi {
@@ -319,6 +366,16 @@ impl HttpApi {
     fn put(&self, path: &str) -> Result<String, ApiError> {
         let url = self.conn.url(path);
         let result = self.conn.put(path).send_empty();
+        self.finish("PUT", &url, result)
+    }
+
+    fn put_json(&self, path: &str, body: String) -> Result<String, ApiError> {
+        let url = self.conn.url(path);
+        let result = self
+            .conn
+            .put(path)
+            .header("content-type", "application/json")
+            .send(body);
         self.finish("PUT", &url, result)
     }
 
@@ -561,6 +618,19 @@ impl CardApi for HttpApi {
             self.delete(&path).map(|_| ())
         }
     }
+
+    fn search_settings(&self) -> Result<search::Current, ApiError> {
+        decode_search(&self.get(paths::SEARCH_SETTINGS)?)
+    }
+
+    fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError> {
+        decode_search(&self.put_json(paths::SEARCH_SETTINGS, search_body::put(put))?)
+    }
+
+    fn test_search(&self) -> Result<(bool, Option<String>), ApiError> {
+        let r: SearchTestResult = decode(&self.post(paths::SEARCH_TEST, None)?)?;
+        Ok((r.ok, r.error))
+    }
 }
 
 /// Offline API for `--fake` and the gallery: accepts everything and keeps
@@ -571,6 +641,7 @@ pub struct FakeApi {
     skill_enabled: Mutex<std::collections::HashSet<(String, String)>>,
     mcp_servers: Mutex<Vec<McpServer>>,
     mcp_group: Mutex<std::collections::HashSet<(String, String)>>,
+    search: Mutex<search::Current>,
     schedules: Mutex<Vec<ScheduleEntry>>,
     unread: Mutex<Vec<Unread>>,
     bros: Mutex<Vec<Bro>>,
@@ -584,6 +655,7 @@ impl FakeApi {
             skill_enabled: Mutex::new(std::collections::HashSet::new()),
             mcp_servers: Mutex::new(Vec::new()),
             mcp_group: Mutex::new(std::collections::HashSet::new()),
+            search: Mutex::new(search::Current::default()),
             schedules: Mutex::new(schedules),
             unread: Mutex::new(Vec::new()),
             bros: Mutex::new(Vec::new()),
@@ -995,6 +1067,53 @@ impl CardApi for FakeApi {
         }
         Ok(())
     }
+
+
+    fn search_settings(&self) -> Result<search::Current, ApiError> {
+        Ok(self.search.lock().expect("fake search lock").clone())
+    }
+
+    fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError> {
+        let mut cur = self.search.lock().expect("fake search lock");
+        if put.clear {
+            *cur = search::Current::default();
+            return Ok(cur.clone());
+        }
+        cur.provider = Some(put.provider);
+        if put.url.is_some() {
+            cur.url = put.url.clone();
+        }
+        match &put.key {
+            Some(Some(k)) => {
+                cur.has_key = true;
+                cur.key_last4 = Some(
+                    k.chars()
+                        .rev()
+                        .take(4)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect(),
+                );
+            }
+            Some(None) => {
+                cur.has_key = false;
+                cur.key_last4 = None;
+            }
+            None => {}
+        }
+        cur.source = Some(search::Source::Settings);
+        Ok(cur.clone())
+    }
+
+    fn test_search(&self) -> Result<(bool, Option<String>), ApiError> {
+        let cur = self.search.lock().expect("fake search lock");
+        Ok(match cur.provider {
+            Some(search::Provider::Brave) if !cur.has_key => (false, Some("还没填 key".into())),
+            Some(_) => (true, None),
+            None => (false, Some(search::NOT_SET.into())),
+        })
+    }
 }
 
 fn fake_mcp_tools() -> Vec<McpTool> {
@@ -1045,6 +1164,12 @@ fn fake_mcp_from_save(save: &McpSave, id: String, now: String) -> McpServer {
         tool_count: None,
         created_at: now.clone(),
         updated_at: now,
+        command_approved: if save.transport.as_str() == "stdio" {
+            Some(false)
+        } else {
+            None
+        },
+        command_approved_at: None,
     }
 }
 
@@ -1103,6 +1228,62 @@ mod tests {
         assert_eq!(paths::say("g1"), "/api/groups/g1/say");
         assert_eq!(paths::bro("b1"), "/api/bros/b1");
         assert_eq!(bodies::rename("Ada"), r#"{"name":"Ada"}"#);
+        assert_eq!(paths::SEARCH_SETTINGS, "/api/settings/search");
+        assert_eq!(paths::SEARCH_TEST, "/api/settings/search/test");
+    }
+
+    #[test]
+    fn search_source_env_settings_or_absent() {
+        let env = decode_search(
+            r#"{"provider":"brave","url":null,"hasKey":true,"keyLast4":"XXXX","source":"env"}"#,
+        )
+        .unwrap();
+        assert_eq!(env.source, Some(search::Source::Env));
+        assert_eq!(env.provider, Some(search::Provider::Brave));
+        assert_eq!(env.key_last4.as_deref(), Some("XXXX"));
+        let saved = decode_search(
+            r#"{"provider":"searxng","url":"http://s","hasKey":false,"keyLast4":null,"source":"settings"}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.source, Some(search::Source::Settings));
+        // Today's host (#76): no `source` at all, so no label.
+        let old =
+            decode_search(r#"{"provider":"brave","url":null,"hasKey":true,"keyLast4":"XXXX"}"#)
+                .unwrap();
+        assert_eq!(old.source, None);
+        let none = decode_search(r#"{"provider":null,"url":null,"hasKey":false,"keyLast4":null}"#)
+            .unwrap();
+        assert_eq!(none, search::Current::default());
+    }
+
+    #[test]
+    fn search_put_body_key_rules() {
+        use search::{Provider, Put};
+        let p = |key| {
+            search_body::put(&Put {
+                provider: Provider::Brave,
+                url: None,
+                key,
+                clear: false,
+            })
+        };
+        assert_eq!(p(None), r#"{"provider":"brave"}"#);
+        assert_eq!(p(Some(None)), r#"{"key":null,"provider":"brave"}"#);
+        assert_eq!(
+            p(Some(Some("k1".into()))),
+            r#"{"key":"k1","provider":"brave"}"#
+        );
+        let sx = search_body::put(&Put {
+            provider: Provider::Searxng,
+            url: Some("http://s".into()),
+            key: None,
+            clear: false,
+        });
+        assert_eq!(sx, r#"{"provider":"searxng","url":"http://s"}"#);
+        assert_eq!(
+            search_body::put(&Put::clear()),
+            r#"{"key":null,"provider":null,"url":null}"#
+        );
     }
 
     #[test]
