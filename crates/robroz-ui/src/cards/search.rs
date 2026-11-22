@@ -25,6 +25,8 @@ pub const NEED_KEY: &str = "请填写 key";
 pub const NEED_URL: &str = "请填写地址";
 /// Delivery entry when a task needed search (`needsSetup: "search"`).
 pub const GO_SETUP: &str = "去设置";
+/// Shown under the delivery path when `needsSetup` is `"search"` and there is no failure.
+pub const NEEDS_SETUP_HINT: &str = "这次没联网搜索：还没设置";
 
 pub fn key_filled(last4: Option<&str>) -> String {
     match last4 {
