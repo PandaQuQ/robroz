@@ -23,7 +23,7 @@ Phase 1 (on `main` today):
 - **Three permission tiers.** Reading and writing the group folder is allowed; outbound network is GET-only and counted per task; external writes and captchas stop the task and wait for a person.
 - **Cards you answer.** Approval cards, choice cards, and routines (scheduled tasks that deliver a briefing).
 - **Memory and skills.** A bro proposes a memory or a skill; it takes effect only after you confirm it.
-- **Any OpenAI-compatible model**, web search (Brave or SearXNG), and MCP server configuration on the host (bros cannot call MCP tools yet).
+- **Any OpenAI-compatible model**, web search (Brave or SearXNG), and MCP tools on the host (write tools wait for an approval card).
 
 Not in phase 1: file tree, terminal, desktop streaming, bot detail pages, webhooks, E2B, multi-tenancy.
 
@@ -59,7 +59,7 @@ Everything is configured with environment variables on the host and the client (
 | [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
 | [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
-| [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP configuration |
+| [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
 | [docs/client.md](docs/client.md) | Client UI behaviour |
 | [docs/architecture.md](docs/architecture.md) | Components, containers, theming layer |
 | [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
@@ -73,7 +73,7 @@ Everything is configured with environment variables on the host and the client (
 
 | Path | Crate | Role |
 | --- | --- | --- |
-| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model calls, search, MCP configuration |
+| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model calls, search, MCP configuration and tool calls |
 | `runner/` | `robroz-runner` | Task executor inside the container |
 | `client/` | `robroz-client` | iced desktop client |
 | `crates/robroz-contract` | `robroz-contract` | API contract: request/response bodies, event (card) types, task states |
@@ -82,7 +82,7 @@ Everything is configured with environment variables on the host and the client (
 | `crates/robroz-tokens` | `robroz-tokens` | Design tokens generated from `tokens.json` |
 | `crates/robroz-ui` | `robroz-ui` | Shared client UI layer and theme |
 | `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
-| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
+| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP): list and call tools |
 
 See [docs/architecture.md](docs/architecture.md) for how they fit together.
 

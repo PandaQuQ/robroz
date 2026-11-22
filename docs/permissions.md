@@ -1,6 +1,6 @@
 # 权限、审批和接管
 
-bro 能做什么、什么时候停下来问人、人怎么接手。分级逻辑在 `crates/robroz-policy`，执行在 `host/src/pump.rs`、`host/src/approvals.rs`、`host/src/tools.rs`。接口细节见 [api.md](api.md)。
+bro 能做什么、什么时候停下来问人、人怎么接手。分级逻辑在 `crates/robroz-policy`，执行在 `host/src/pump.rs`、`host/src/approvals.rs`、`host/src/tools.rs`、`host/src/mcp_tools.rs`。接口细节见 [api.md](api.md)。
 
 ## 三级权限
 
@@ -9,8 +9,8 @@ bro 能做什么、什么时候停下来问人、人怎么接手。分级逻辑�
 | 级别 | 副作用 | 怎么处理 |
 | --- | --- | --- |
 | 放行 `Allow` | 读写群目录（`WorkspaceRead` / `WorkspaceWrite`） | 不通知人。成功时写 `tasks/{taskId}/result.txt`，任务完成。 |
-| 计数 `Metered` | 出网（`Outbound`），包括 `web_search` / `web_fetch` | 只允许 GET，按任务计数，上限 `ROBROZ_GET_LIMIT`（默认 8）。用满上限仍算正常；超限或用了非 GET：删掉容器，任务 `done` 并带 `failure`，没有交付卡，不改成 `blocked`。 |
-| 接管 `Takeover` | 对外写入（`ExternalWrite`）、验证码（`Captcha`） | 不代填凭据。删掉容器，任务变成 `blocked`。对外写入另发一张任务审批卡；验证码要人去私聊接管，再 `resume`。 |
+| 计数 `Metered` | 出网（`Outbound`），包括 `web_search` / `web_fetch`，以及标了 `readOnlyHint: true` 的 MCP 工具 | 只允许 GET，按任务计数，上限 `ROBROZ_GET_LIMIT`（默认 8）。MCP 只读工具每调用一次计一次出网 GET，直接执行，不出审批卡。用满上限仍算正常；超限或用了非 GET：删掉容器，任务 `done` 并带 `failure`，没有交付卡，不改成 `blocked`。 |
+| 接管 `Takeover` | 对外写入（`ExternalWrite`，包括未标 `readOnlyHint: true` 的 MCP 工具）、验证码（`Captcha`） | 不代填凭据。任务变成 `blocked`。prompt 里的对外写入另发一张任务审批卡；MCP 写工具另发一张 `action` 为 `call` 的审批卡（见下面）；验证码要人去私聊接管，再 `resume`。 |
 
 计数细节：出网次数记在群目录 `tasks/{taskId}/outbound.txt`，由 `robroz_policy::meter` 按任务计。第 N+1 次（N 是上限）任务结束，`failure` 为「出网超额：已用 N+1 次，上限 N」，例如默认上限时是「出网超额：已用 9 次，上限 8」；用了非 GET 是「出网只允许 GET：用了 POST」。
 
@@ -54,6 +54,20 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 - 任务已经通过 `/resume` 被接管走了，再回答这张卡只记下回答，不再动任务。
 - 验证码（`robroz-action:captcha`）不发审批卡，因为得有人去填，还是走「卡住，去私聊接管」。
 
+### MCP 工具
+
+模型要调用未标 `readOnlyHint: true` 的 MCP 工具时，宿主机先出一张审批卡（`host/src/mcp_tools.rs`、`host/src/approvals.rs:gate_mcp_task`），不执行这次调用：
+
+- `action` 是 `call`，`summary` 是「调用 {server}.{tool}」加上参数摘要，带可选字段 `mcpServer`、`mcpTool` 和 `taskId`。
+- 发卡时任务是 `blocked`，`waitingFor` 为 `approval`，进度行是「在用 {server}.{tool}」。
+- 同意：任务回到 `queued`，由 pump 接着跑：执行这次调用，把结果交回模型继续。这次调用同样计一次出网 GET，和只读工具共用 `ROBROZ_GET_LIMIT`。
+- 拒绝：不执行，任务 `done`，交付卡 `summary` 为「未执行」，带 `failure`「你拒绝了：{server}.{tool}」。
+- 答过一次再答是 409。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。
+- 只读 MCP 工具不出卡，直接调用，按一次出网 GET 计次。
+- 调用出错（连不上、超时、服务器报错）不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。
+
+详见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
+
 ### 处理人 answeredBy
 
 宿主机只有一个共享令牌，分不清是谁在操作。`answeredBy` 存的是客户端回答时自己报的设备名或人名，宿主机不核实。审批卡、选项卡、确认卡都有这个字段，事件里一定出现，没填是 `null`。规则见 [api.md 的 answeredBy](api.md#answeredby)，客户端怎么显示见 [client.md](client.md#处理人)。
@@ -62,8 +76,8 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 
 只在 `blocked` 时带：
 
-- `approval`：有一张没回答、且对应当前阻塞行的任务审批卡。回答它即可。
-- `takeover`：没有这样的审批卡（比如验证码），要人去私聊接管，再 `resume`。
+- `approval`：有一张没回答、且对应当前阻塞行的任务审批卡（`robroz-action:external`，或 MCP 写工具的 `call` 卡）。回答它即可。
+- `takeover`：没有这样的审批卡（比如验证码），要人去私聊接管，再 `resume`。MCP 写工具不能靠 `resume` 放行。
 
 `waitingFor` 只改这张状态卡怎么显示，不另出卡。
 
@@ -75,6 +89,7 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 | --- | --- | --- |
 | 模型调用失败 | 「模型没回：原因」，结果里也写这句 | 有 |
 | 任务审批卡被拒绝 | 「你拒绝了：…」 | 没有 |
+| MCP 工具审批卡被拒绝 | 「你拒绝了：{server}.{tool}」 | 有，`summary` 为「未执行」，交付卡带同一个 `failure` |
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 |
 | 出网用了非 GET | 「出网只允许 GET：用了 POST」 | 没有 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」，结果里也写这句 | 有 |
@@ -85,9 +100,9 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 
 宿主机调用模型时可以注册工具（`host/src/tools.rs`），工具也按上面的三级判：
 
-- 判为 `Takeover` 的工具不执行，只把「这个工具需要用户批准，目前还不能调用。」回给模型。
+- 判为 `Takeover` 的 MCP 工具先出审批卡，等批准再执行；其它仍是 `Takeover` 的宿主工具还不执行。
 - 一次任务最多向模型请求 8 次；第 8 次仍是工具调用时任务 `done`，`failure` 为「工具调用超过 8 轮」。
 - 单次工具结果最多 16000 个字符，超出截断并加「…（已截断）」。
 - 没注册任何工具时请求里不带 `tools`，行为和不接工具一样。
 
-MCP 工具的 `needsApproval` 只是标注（没有 `readOnlyHint: true` 就是 true），`main` 上 bro 还不会调用 MCP 工具。见 [search-and-mcp.md](search-and-mcp.md#mcp)。
+MCP 工具的注册、命名和审批见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。

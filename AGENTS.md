@@ -8,7 +8,7 @@ robroz 是单机私有化的多智能体协同，交互是 IM：人在「群」�
 
 | 目录 | crate | 一句话 |
 | --- | --- | --- |
-| `host/` | `robroz-host` | 宿主机：HTTP 接口（axum）、SQLite、pump 线程（起停容器）、定时、调用模型、联网搜索、MCP 配置。 |
+| `host/` | `robroz-host` | 宿主机：HTTP 接口（axum）、SQLite、pump 线程（起停容器）、定时、调用模型、联网搜索、MCP 配置和工具调用。 |
 | `runner/` | `robroz-runner` | 容器里的执行器：读 `/control/prompt.txt`，按规则处理 `robroz-action:` / `robroz-progress:` / `robroz-memory:` / `robroz-skill:` 行，写 `result.txt`。也定义宿主机和它共享的文件格式。 |
 | `client/` | `robroz-client` | iced 桌面客户端，Windows / Linux / macOS 同一套代码。 |
 | `crates/robroz-contract` | `robroz-contract` | 接口契约：请求体、返回体、事件（卡片）类型、任务状态。改这里要守下面的冻结规则。 |
@@ -17,7 +17,7 @@ robroz 是单机私有化的多智能体协同，交互是 IM：人在「群」�
 | `crates/robroz-tokens` | `robroz-tokens` | 设计 token，来源是 `tokens.json`，用 `cargo run -p robroz-tokens --bin gen` 生成代码。 |
 | `crates/robroz-ui` | `robroz-ui` | 客户端共用的界面层：卡片视图模型、主题（Skin）。 |
 | `crates/robroz-model` | `robroz-model` | 调 OpenAI 兼容的 `/chat/completions`，含工具调用。 |
-| `crates/robroz-mcp` | `robroz-mcp` | 宿主机用的 MCP 客户端（stdio 和 Streamable HTTP），列工具。 |
+| `crates/robroz-mcp` | `robroz-mcp` | 宿主机用的 MCP 客户端（stdio 和 Streamable HTTP），列出并调用工具。 |
 
 ## 硬规矩
 
@@ -68,7 +68,7 @@ scripts/e2e.sh   # 需要 docker、curl、jq
 | [`docs/concepts.md`](docs/concepts.md) | 术语表、bro 的名字、任务状态、状态卡字段、卡片类型、未读。 |
 | [`docs/permissions.md`](docs/permissions.md) | 三级权限、阻塞行和接管标记、resume、审批卡、`waitingFor`、`failure`、模型工具调用的限制。 |
 | [`docs/memory-and-skills.md`](docs/memory-and-skills.md) | 记忆和技能的规则、拼进提示（4000 / 8000 字符）、bro 怎么提议、确认卡。 |
-| [`docs/search-and-mcp.md`](docs/search-and-mcp.md) | 联网搜索（怎么填、优先级、`source`、`needsSetup`）和 MCP 配置。 |
+| [`docs/search-and-mcp.md`](docs/search-and-mcp.md) | 联网搜索（怎么填、优先级、`source`、`needsSetup`）和 MCP（配置、模型调用、审批卡）。 |
 | [`docs/client.md`](docs/client.md) | 客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、联网搜索页（含「去设置」）、例行任务。 |
 | [`docs/architecture.md`](docs/architecture.md) | 宿主机、pump、容器、runner、模型、例行任务、实时推送、卡片和外观层（Skin）、客户端事件来源。 |
 

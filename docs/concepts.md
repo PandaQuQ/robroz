@@ -39,17 +39,17 @@ bot 的名字是全局的：同一个 `botId` 在所有群里叫同一个名字�
 | `label` | 状态那句话，来自 `robroz_card::status_line(state, containerUp)`：排队、进行、没写出结果、卡住、完成。 |
 | `failure` | 可选。`done` 但没做成时的原因。 |
 | `waitingFor` | 可选。`blocked` 时等什么：`approval`（去答审批卡）或 `takeover`（去私聊接管）。 |
-| `progress` | 可选。`running` 且容器在跑时，bro 正在干什么。 |
+| `progress` | 可选。`running` 且容器在跑时，bro 正在干什么；任务因 MCP 工具等审批而 `blocked` 时，是「在用 {server}.{tool}」。 |
 
 颜色和动作也来自 `robroz-card`（`appearance`、`palette`），客户端不自己定：排队、运行失败、等批准、没做成是灰色；卡住（等接管）是琥珀色，动作「去私聊接管」。
 
 ### progress
 
-- 宿主机自己报关键节点：开跑时「开始干活」（接了模型时是「在想怎么回」），沙箱起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。
+- 宿主机自己报关键节点：开跑时「开始干活」（接了模型时是「在想怎么回」），沙箱起来后「在沙箱里跑」，调用工具时「在用 <工具名>」（MCP 工具用展示名 `{server}.{tool}`）。
 - bro 自己报：prompt 或模型回复里写一行 `robroz-progress:文字`。runner 把最后一行进度写到群目录 `tasks/{taskId}/progress`，宿主机在任务运行时读；模型回复里的进度行开跑时就用上。进度行不进 `result.txt`。
 - 规范成一行：换行和连续空白变一个空格，去掉首尾空白，最多 60 个字（超了截到 59 个字加「…」），不报错。
 - 文字没变就不改 `updatedAt`，不多推一次。
-- 任务结束、卡住、容器没了时清掉；重新开跑从头报。
+- 任务结束、卡住、容器没了时清掉；重新开跑从头报。例外：MCP 工具等审批的 `blocked` 保留「在用 {server}.{tool}」这一行，答卡后清掉。
 - 代码：`host/src/progress.rs`。
 
 ## 卡片（事件）
