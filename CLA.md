@@ -48,6 +48,8 @@ You agree to notify the Maintainer of any facts or circumstances of which You be
 
 You sign this agreement once, and it covers all of Your present and future Contributions to the Project.
 
+The copyright holder, Bin Ma (PandaQuQ), and commits authored under the PandaQuQ account are not required to sign this agreement.
+
 1. Open your pull request against <https://github.com/PandaQuQ/robroz>.
 2. Add this line to the pull request description, using your GitHub username:
 
@@ -72,5 +74,6 @@ If you contribute on behalf of a company, or your employer owns what you write, 
 - 你保证有权提交这些内容（如果你的雇主对你的作品有权利，需先得到许可），并且是你本人的原创；第三方的代码要单独标明来源和许可证。
 - 贡献按「原样」提供，你不需要提供支持或担保。
 - 签署方式：在 PR 描述里加上上面那行英文声明（或勾选 PR 模板里的 CLA 选项）。签一次，对以后的所有贡献都有效。没有签署的 PR 不会被合并。
+- 著作权人 Bin Ma（PandaQuQ）本人，以及以 PandaQuQ 账号署名的提交，不需要签署本协议。
 
 本协议改编自 Apache 软件基金会的个人贡献者许可协议（ICLA v2.2），未经 Apache 软件基金会认可。
