@@ -50,7 +50,14 @@ assert.equal(
 
 assert.equal(shouldSkipClaCheck({ login: 'dependabot[bot]', type: 'Bot' }), true);
 assert.equal(shouldSkipClaCheck({ login: 'github-actions[bot]', type: 'Bot' }), true);
-assert.equal(shouldSkipClaCheck({ login: 'PandaQuQ', type: 'User' }), false);
 assert.equal(shouldSkipClaCheck({ login: 'dependabot', type: 'User' }), true);
+assert.equal(shouldSkipClaCheck({ login: 'PandaQuQ', type: 'User' }), true, 'copyright holder is exempt');
+assert.equal(shouldSkipClaCheck({ login: 'pandaquq', type: 'User' }), true, 'login match is case-insensitive');
+assert.equal(shouldSkipClaCheck({ login: 'someone-else', type: 'User' }), false);
+assert.equal(
+  shouldSkipClaCheck({ login: 'someone-else', type: 'User' }) || claCheckboxTicked(''),
+  false,
+  'external author with empty body must fail',
+);
 
 console.log('cla-checkbox tests passed');

@@ -3,12 +3,19 @@
 /**
  * Shared CLA checkbox helpers used by .github/workflows/cla.yml
  * and .github/scripts/cla-checkbox.test.js.
+ *
+ * The copyright holder and PRs opened from the PandaQuQ account do not
+ * need to sign; bot PRs are also skipped. External contributors must
+ * tick the CLA checkbox.
  */
+
+const COPYRIGHT_HOLDER_LOGINS = new Set(['pandaquq']);
 
 function shouldSkipClaCheck(user) {
   if (!user) return false;
   const login = String(user.login || '');
   const type = String(user.type || '');
+  if (COPYRIGHT_HOLDER_LOGINS.has(login.toLowerCase())) return true;
   if (type.toLowerCase() === 'bot') return true;
   return /\[bot\]$/i.test(login) || login.toLowerCase() === 'dependabot';
 }
@@ -25,4 +32,4 @@ function claCheckboxTicked(body) {
   );
 }
 
-module.exports = { shouldSkipClaCheck, claCheckboxTicked };
+module.exports = { shouldSkipClaCheck, claCheckboxTicked, COPYRIGHT_HOLDER_LOGINS };

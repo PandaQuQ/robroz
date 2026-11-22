@@ -24,7 +24,7 @@ jobs:
               return;
             }
             if (shouldSkipClaCheck(pr.user)) {
-              core.info(`Skipping CLA check for bot ${pr.user.login}.`);
+              core.info(`Skipping CLA check for ${pr.user.login} (copyright holder or bot).`);
               return;
             }
             if (!claCheckboxTicked(pr.body || '')) {
