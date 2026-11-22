@@ -105,3 +105,7 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 - 没注册任何工具时请求里不带 `tools`，行为和不接工具一样。
 
 MCP 工具的注册、命名和审批见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
+
+## MCP stdio 命令批准
+
+stdio 服务器的 `command` 和 `args` 必须先经 `POST /api/mcp/servers/{id}/approve-command` 批准，`/test`、`/tools` 和模型循环里的注册才会启动该进程。未批准时接口返回 409 `{"error":"command_not_approved","command","args"}`，模型循环跳过这台服务器。http 服务器不需要这项批准。改了命令或参数后批准失效，需要再批一次。见 [search-and-mcp.md](search-and-mcp.md#mcp) 和 [api.md](api.md)。

@@ -67,7 +67,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 
 ### 模型怎么调用
 
-任务开始时，宿主机把「该群已启用、并且服务器本身也是 `enabled`」的工具注册进这一次的 `ToolRegistry`。某台服务器连接失败就跳过它，任务照常进行。群里没启用、或服务器被关掉（`enabled` 为 false）的，不会注册。
+任务开始时，宿主机把「该群已启用、并且服务器本身也是 `enabled`」的工具注册进这一次的 `ToolRegistry`。某台服务器连接失败就跳过它，任务照常进行。stdio 服务器还没批准启动命令的，同样跳过，不会启动进程。群里没启用、或服务器被关掉（`enabled` 为 false）的，不会注册。
 
 交给模型的名字是 `{safe_server}__{safe_tool}`：只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希。进度行和审批卡仍用原来的 `{server}.{tool}`，例如「在用 notes.write_note」。映射写在 `host/src/mcp_tools.rs`。
 
@@ -81,4 +81,5 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 安全：
 
 - **stdio 启动的是宿主机上的本机进程**，以宿主机用户身份运行。只能由用户通过这些接口配置，模型不能增删服务器。不要填来历不明的命令。
-- `POST …/test` 和 `GET …/tools` 会**真的启动** stdio 命令（例如 `npx -y <包名>` 会去下载并运行这个包）。试之前先确认命令可信。
+- stdio 的 `command` 和 `args` 必须先经 `POST /api/mcp/servers/{id}/approve-command` 批准，才会启动进程。新建和迁移后的已有服务器都是未批准。`PATCH` 改了 `command` 或 `args`（或改成另一种传输）后自动变回未批准，需要再批一次。http 服务器不需要这项批准。
+- 未批准时，`POST …/test`、`GET …/tools` 都不启动进程，返回 409 `{"error":"command_not_approved","command","args"}`。模型循环注册工具时跳过未批准的 stdio 服务器。批准之后这些路径才会真正启动命令（例如已批准的 `npx -y <包名>` 仍会下载并运行这个包），所以只批准可信的命令。

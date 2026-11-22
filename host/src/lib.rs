@@ -209,6 +209,10 @@ fn router_from(state: AppState) -> Router {
         )
         .route("/api/mcp/servers/{id}/tools", get(mcp::list_tools))
         .route("/api/mcp/servers/{id}/test", post(mcp::test_connection))
+        .route(
+            "/api/mcp/servers/{id}/approve-command",
+            post(mcp::approve_command),
+        )
         .route("/api/groups/{id}/mcp", get(mcp::list_group_mcp))
         .route(
             "/api/groups/{id}/mcp/{serverId}",
