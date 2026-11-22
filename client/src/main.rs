@@ -2138,6 +2138,13 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
                 .style(view::card_style(*t)),
         );
     }
+    if card.needs_search_setup {
+        head = head.push(
+            button(text(search_page::GO_SETUP).size(t.type_.button))
+                .style(view::nav_button_style(*t, false))
+                .on_press(Message::OpenSearch),
+        );
+    }
     container(
         column![
             head,
