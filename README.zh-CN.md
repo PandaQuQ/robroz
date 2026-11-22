@@ -100,6 +100,17 @@ scripts/e2e.sh   # 需要 docker、curl、jq
 
 CI 在 PR 上只构建 Linux 客户端；合到 `main` 后和每天定时会构建 Windows、Linux、macOS 三个平台。
 
+### 依赖许可证
+
+CI 还有一个 `cargo-deny` 任务：依赖的许可证和 AGPL-3.0 不兼容，或者 crate 来自未知的 registry 或 git 源时，这项检查失败；CI 不全绿的 PR 不合并。新加的依赖必须使用和 AGPL 兼容的许可证。允许的许可证列在 [`deny.toml`](deny.toml) 的 `[licenses] allow` 白名单里；不要为了让检查通过把不兼容的许可证加进去。本地跑同样的检查（先装 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)，例如 `cargo install --locked cargo-deny`）：
+
+```sh
+cargo deny check licenses bans sources
+cargo deny check advisories   # 安全公告：只报告，不挡合并
+```
+
+安全公告检查在同一个任务里单独跑一步，不挡合并。
+
 ### 规则
 
 - 一个 PR 只做一件事。
@@ -108,6 +119,7 @@ CI 在 PR 上只构建 Linux 客户端；合到 `main` 后和每天定时会构�
 - 契约只增不改：可以新增卡片类型、接口和可选字段；已有字段、任务状态（`queued` / `running` / `blocked` / `done`）和 `botId` / `botName` 都冻住不改。
 - 不 force-push。分支落后时把 `main` merge 进来。
 - 不提交 `.env`、`.pem`、`.dev.vars`、密钥或令牌。文档里用占位符。
+- 新依赖必须使用和 AGPL-3.0 兼容的许可证，并通过 `cargo deny check licenses bans sources`。
 - `README.md` 和 `README.zh-CN.md` 保持一致，在同一个 PR 里一起改。
 
 给 agent 和贡献者的完整规则见 [AGENTS.md](AGENTS.md)。

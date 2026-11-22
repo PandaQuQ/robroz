@@ -100,6 +100,17 @@ scripts/e2e.sh   # needs docker, curl and jq
 
 CI builds the client on Linux for pull requests, and on Windows, Linux and macOS after merging to `main` and nightly.
 
+### Dependency licences
+
+CI also runs a `cargo-deny` job. It fails when a dependency's licence is not compatible with AGPL-3.0 or a crate comes from an unknown registry or git source, and PRs are only merged with green CI. Every new dependency must use an AGPL-compatible licence. The allowed licences are listed in the `[licenses] allow` list in [`deny.toml`](deny.toml); do not add an incompatible licence there to make the check pass. Run the same check locally (install [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) first, e.g. `cargo install --locked cargo-deny`):
+
+```sh
+cargo deny check licenses bans sources
+cargo deny check advisories   # security advisories: reported, does not block merging
+```
+
+The advisories check runs as a separate, non-blocking step in the same job.
+
 ### Rules
 
 - One PR per change.
@@ -108,6 +119,7 @@ CI builds the client on Linux for pull requests, and on Windows, Linux and macOS
 - The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states (`queued` / `running` / `blocked` / `done`) and `botId` / `botName` are frozen.
 - No force-push. If your branch is behind, merge `main` into it.
 - Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens. Use placeholders in docs.
+- New dependencies must use an AGPL-3.0-compatible licence and pass `cargo deny check licenses bans sources`.
 - Keep `README.md` and `README.zh-CN.md` in sync; change both in the same PR.
 
 The full rules for agents and contributors are in [AGENTS.md](AGENTS.md).
