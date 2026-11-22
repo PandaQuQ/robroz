@@ -2145,22 +2145,25 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
                 .on_press(Message::OpenSearch),
         );
     }
-    container(
-        column![
-            head,
-            // Display only: plain text, not a link or button.
-            text(path)
-                .wrapping(iced::widget::text::Wrapping::None)
-                .font(Font::MONOSPACE)
-                .size(t.type_.mono)
+    // Display only: plain text, not a link or button.
+    let path_line = text(path)
+        .wrapping(iced::widget::text::Wrapping::None)
+        .font(Font::MONOSPACE)
+        .size(t.type_.mono)
+        .color(color(t.palette.text2));
+    let mut body = column![head, path_line].spacing(6);
+    if card.needs_search_setup {
+        body = body.push(
+            text(search_page::NEEDS_SETUP_HINT)
+                .size(t.type_.foot)
                 .color(color(t.palette.text2)),
-        ]
-        .spacing(6),
-    )
-    .padding(view::card_padding(t))
-    .width(Fill)
-    .style(view::card_style(*t))
-    .into()
+        );
+    }
+    container(body)
+        .padding(view::card_padding(t))
+        .width(Fill)
+        .style(view::card_style(*t))
+        .into()
 }
 
 #[cfg(test)]
