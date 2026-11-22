@@ -1,8 +1,7 @@
 # cargo-deny configuration.
 # New dependencies must use a licence compatible with AGPL-3.0.
-# Workspace crates are unpublished (`publish = false`) and ignored here
-# so this check does not depend on their `license` field; the project
-# licence itself is set in a separate change.
+# Workspace crates are unpublished (`publish = false`) and ignored here;
+# they inherit `license = "AGPL-3.0-only"` via `license.workspace = true`.
 
 [graph]
 # Check dependencies for the platforms the client and host actually build on.
@@ -51,8 +50,8 @@ allow = [
     "AGPL-3.0-or-later",
 ]
 
-# Ignore unpublished workspace crates. They are not on crates.io; the
-# project licence is applied in their package metadata separately.
+# Ignore unpublished workspace crates. They are not on crates.io and
+# inherit `license = "AGPL-3.0-only"` via `license.workspace = true`.
 [licenses.private]
 ignore = true
 
