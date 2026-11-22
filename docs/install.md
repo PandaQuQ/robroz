@@ -61,7 +61,7 @@ docker build -f runner/Dockerfile -t robroz-runner:local .
 启动成功时 stderr 会打两行：
 
 ```text
-robroz-host: 没配模型密钥，bro 原样回显
+robroz-host: 还没设置模型，任务会提示去设置
 robroz-host listening on 127.0.0.1:8790（仅本机，无令牌）
 ```
 
@@ -83,7 +83,9 @@ ROBROZ_ADDR=0.0.0.0:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target
 
 ## 接模型
 
-不接模型时 bro 把 prompt 原样写成结果，CI 和 e2e 就是这样跑的。接任意 OpenAI 兼容的 `/chat/completions` 服务要设三个变量：
+没设置模型时，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。也可以在启动后用设置接口补齐（`GET` / `PUT /api/settings/model`），不用重启。CI 和 e2e 会显式设 `ROBROZ_MODEL=echo`，这时仍把 prompt 原样写成结果，这是测试开关，正式部署不要设。
+
+接任意 OpenAI 兼容的 `/chat/completions` 服务，可以设这三个环境变量，也可以之后在设置接口里填：
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
@@ -199,6 +201,15 @@ cargo test -p robroz-client -p robroz-ui -p robroz-tokens
 ```
 
 `cargo test -p robroz-client` 会在进程里起一份真实的宿主机路由，不需要单独起宿主机。只改了宿主机时，`cargo test -p robroz-host` 就够了。
+
+CI 还有一个 `cargo-deny` 任务，检查依赖许可证是否与 AGPL-3.0 兼容，并挡住未知来源。仓库根目录跑：
+
+```sh
+cargo deny check licenses bans sources
+```
+
+需要先安装 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)。新依赖必须使用与 AGPL-3.0 兼容的许可证，允许的许可证写在根目录的 `deny.toml`。不要把不兼容的许可证加进白名单。CI 也会跑 `cargo deny check advisories`，但这一项目前不挡住合并。
+
 
 ### 端到端：`scripts/e2e.sh`
 

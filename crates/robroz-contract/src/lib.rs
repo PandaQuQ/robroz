@@ -772,6 +772,49 @@ pub struct SearchTestResult {
     pub error: Option<String>,
 }
 
+/// Where the effective model config comes from. Settings win over
+/// environment variables. Absent when the model is not set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelSettingsSource {
+    Env,
+    Settings,
+}
+
+impl ModelSettingsSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelSettingsSource::Env => "env",
+            ModelSettingsSource::Settings => "settings",
+        }
+    }
+}
+
+/// `GET /api/settings/model` and the `PUT` response. Unset fields are
+/// `null`. The key is never returned; only `hasKey` and `keyLast4`.
+/// `source` is omitted when nothing is configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettings {
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub has_key: bool,
+    pub key_last4: Option<String>,
+    /// `settings` if any model setting is saved, otherwise `env`.
+    /// Absent when the model is not set up, so old JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ModelSettingsSource>,
+}
+
+/// `POST /api/settings/model/test`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTestResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Where an MCP secret is applied: a child-process environment variable, or an HTTP header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

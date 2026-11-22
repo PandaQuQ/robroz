@@ -42,4 +42,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: End-to-end (task, sandbox, approval, restart, resume, no replay)
+        env:
+          ROBROZ_MODEL: echo
         run: scripts/e2e.sh
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check licences, bans and sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
+      # Advisories are non-blocking: see the PR body for the current findings
+      # (tokio unsound, rusqlite bundled SQLite CVE, chrono unmaintained).
+      - name: Check advisories
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

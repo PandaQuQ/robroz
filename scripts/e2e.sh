@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Node 7 end-to-end run against a real host binary and real docker.
-# The runner image is the fake model: it applies the prompt deterministically.
+# ROBROZ_MODEL=echo keeps the runner echoing the prompt (no live model).
+# The runner image then applies that prompt deterministically.
 # Flow: create task -> sandbox blocks on approval -> host restarts -> approve
 # (resume) -> blocks on the next line only -> restart -> approve -> done once.
 # Then restart again and check nothing is replayed.
@@ -14,7 +15,8 @@ BASE="http://127.0.0.1:${PORT}"
 WORK="$(mktemp -d)"
 HOST_PID=""
 export ROBROZ_ADDR="127.0.0.1:${PORT}" ROBROZ_DB="$WORK/robroz.db" \
-  ROBROZ_VOLUMES="$WORK/groups" ROBROZ_CONTROL="$WORK/control" ROBROZ_IMAGE="$IMAGE"
+  ROBROZ_VOLUMES="$WORK/groups" ROBROZ_CONTROL="$WORK/control" ROBROZ_IMAGE="$IMAGE" \
+  ROBROZ_MODEL=echo
 
 log() { printf '[e2e] %s\n' "$*"; }
 fail() { printf '[e2e] FAIL: %s\n' "$*" >&2; [ -f "$WORK/host.log" ] && tail -n 40 "$WORK/host.log" >&2; exit 1; }

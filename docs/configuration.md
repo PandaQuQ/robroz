@@ -1,6 +1,6 @@
 # 配置参考
 
-robroz 只用环境变量配置，没有配置文件。联网搜索例外：它也可以用设置接口或客户端的「联网搜索」页填（见 [client.md](client.md#联网搜索页)），见下面的[搜索](#搜索)。
+robroz 只用环境变量配置，没有配置文件。模型和联网搜索例外：它们也可以用设置接口填（搜索还可以在客户端的「联网搜索」页填，见 [client.md](client.md#联网搜索页)），见下面的[模型](#模型)和[搜索](#搜索)。
 
 下表的「读取位置」是 `文件:函数`，以 `main` 分支为准。值为空字符串或只有空白时，多数变量按没设处理，表里单独说明的除外。
 
@@ -33,12 +33,25 @@ robroz 只用环境变量配置，没有配置文件。联网搜索例外：它�
 
 | 变量 | 读取位置 | 默认值 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
-| `ROBROZ_MODEL_KEY` | `crates/robroz-model/src/lib.rs:config_from_env` | 不设，不接模型 | 模型密钥。不设（`ROBROZ_MODEL_KEY_FILE` 也不设）时 bro 把 prompt 原样写成结果。密钥里不能有空白。 | `<你的密钥>` |
-| `ROBROZ_MODEL_KEY_FILE` | `crates/robroz-model/src/lib.rs:config_from_env` | 不设 | 从这个文件读模型密钥，首尾空白会去掉；文件是空的就拒绝启动。和 `ROBROZ_MODEL_KEY` 只能设一个。推荐用文件。 | `/etc/robroz/model-key` |
-| `ROBROZ_MODEL_BASE_URL` | `crates/robroz-model/src/lib.rs:config_from_env` | 无 | OpenAI 兼容服务的地址，宿主机请求 `{地址}/chat/completions`。设了密钥就必须设；要以 `http://` 或 `https://` 开头；末尾的 `/` 会去掉。 | `https://api.openai.com/v1` |
-| `ROBROZ_MODEL` | `crates/robroz-model/src/lib.rs:config_from_env` | 无 | 模型名。设了密钥就必须设。 | `gpt-4o-mini` |
+| `ROBROZ_MODEL_KEY` | `host/src/model_settings.rs:effective_config` | 不设，未设置模型 | 模型密钥。密钥里不能有空白。不设（`ROBROZ_MODEL_KEY_FILE` 也不设）且设置接口也没有密钥时，等于没设置模型。 | `<你的密钥>` |
+| `ROBROZ_MODEL_KEY_FILE` | `host/src/model_settings.rs:effective_config` | 不设 | 从这个文件读模型密钥，首尾空白会去掉；文件是空的就拒绝启动。和 `ROBROZ_MODEL_KEY` 只能设一个。推荐用文件。 | `/etc/robroz/model-key` |
+| `ROBROZ_MODEL_BASE_URL` | `host/src/model_settings.rs:effective_config` | 无 | OpenAI 兼容服务的地址，宿主机请求 `{地址}/chat/completions`。要以 `http://` 或 `https://` 开头；末尾的 `/` 会去掉。通过环境变量给的不完整配置不会阻止启动，缺的项可以在设置接口里补。 | `https://api.openai.com/v1` |
+| `ROBROZ_MODEL` | `host/src/model_settings.rs:effective_config` | 无 | 模型名。设成 `echo`（不分大小写）是**测试开关**：见下面说明。 | `gpt-4o-mini` |
 
-没设密钥时，另外两个变量即使设了也不生效。配置有错时宿主机拒绝启动，报错只写变量名，不写值。
+只支持 OpenAI 兼容的 `/chat/completions`。后端不维护服务商列表，预设地址由客户端的下拉提供。
+
+**优先级：设置接口优先于环境变量，逐个字段比较。** 宿主机分别看地址、模型名、密钥三项：设置接口（存在 SQLite 的 `settings` 表里）填了的项用设置接口的值，没填的项退回对应的环境变量。三项都齐了才算设置好模型。改设置不用重启宿主机，之后的新任务立刻用新配置。
+
+- `GET` / `PUT /api/settings/model` 的返回体在已生效时带可选字段 `source`：设置接口里填过任意一项就是 `"settings"`，三项都没填、全部来自环境变量时是 `"env"`。完全没配时没有这个字段。所以 `source:"settings"` 也可能是「模型名来自设置接口、密钥来自环境变量」的混合情况。
+- `PUT` 时某个字段传 `null` 表示清掉设置接口里的那一项，之后退回环境变量；不传表示不改。`baseUrl` 必须以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。
+- 接口只返回 `hasKey` 和 `keyLast4`，不回显密钥。
+- `POST /api/settings/model/test` 用一条最短的请求试连，超时 10 秒，返回 `{ok, error?}`。
+
+没设置模型时（地址、模型名、密钥没有配齐，也没有打开测试开关），任务交付「还没设置模型」，交付卡带可选字段 `needsSetup:"model"`，不再把 prompt 原样写成结果。
+
+`ROBROZ_MODEL=echo` 是测试用开关，正式部署不要设。打开时，只要没有配齐一套可用的模型（设置接口优先），bro 就仍把 prompt 原样写成结果；不需要同时设密钥或地址。CI 和 `scripts/e2e.sh` 会显式打开它。设置接口或环境变量配齐了一套模型时，以那套为准，这个开关不生效。只在设置接口里把模型名写成 `echo`、却没有地址和密钥，不会打开回显。
+
+两个密钥变量都设、密钥文件是空的、或密钥里有空白时，宿主机拒绝启动。报错只写变量名，不写值。只配了部分环境变量时照常启动，剩下的可以在设置接口里补。
 
 ### 搜索
 
@@ -91,6 +104,7 @@ prompt 不走环境变量。宿主机把它写进 `ROBROZ_CONTROL/{taskId}/promp
 | `ROBROZ_RENAME` | `client/src/main.rs:App::update` | 不设 | 只在假数据模式下生效：选中的是私聊时，打开改名框并填入这个值。 | `新名字` |
 | `ROBROZ_RENAME_SAVE` | `client/src/main.rs:App::update` | 关 | 和 `ROBROZ_RENAME` 一起用，设为 `1` 时顺便按下「保存」。 | `1` |
 | `ROBROZ_IMAGE`（e2e） | `scripts/e2e.sh` | `robroz-runner:e2e` | e2e 构建和使用的 runner 镜像标签。 | `robroz-runner:e2e` |
+| `ROBROZ_MODEL=echo` | `host/src/model_settings.rs:echo_mode`、`scripts/e2e.sh` | 不设 | 测试开关：没有配齐模型时仍把 prompt 原样写成结果。CI 和 e2e 会显式打开。正式部署不要设。详见[模型](#模型)。 | `echo` |
 | `E2E_PORT` | `scripts/e2e.sh` | `18790` | e2e 里宿主机的端口。不带 `ROBROZ_` 前缀。 | `18800` |
 
-`scripts/e2e.sh` 会自己设 `ROBROZ_ADDR`、`ROBROZ_DB`、`ROBROZ_VOLUMES`、`ROBROZ_CONTROL`、`ROBROZ_IMAGE` 并传给宿主机，前四个指向临时目录，覆盖你环境里已有的值。
+`scripts/e2e.sh` 会自己设 `ROBROZ_ADDR`、`ROBROZ_DB`、`ROBROZ_VOLUMES`、`ROBROZ_CONTROL`、`ROBROZ_IMAGE`、`ROBROZ_MODEL=echo` 并传给宿主机，前四个指向临时目录，覆盖你环境里已有的值。`ROBROZ_MODEL=echo` 是测试开关，见上面的[模型](#模型)。
