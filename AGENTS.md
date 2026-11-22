@@ -69,7 +69,7 @@ scripts/e2e.sh   # 需要 docker、curl、jq
 | [`docs/permissions.md`](docs/permissions.md) | 三级权限、阻塞行和接管标记、resume、审批卡、`waitingFor`、`failure`、模型工具调用的限制。 |
 | [`docs/memory-and-skills.md`](docs/memory-and-skills.md) | 记忆和技能的规则、拼进提示（4000 / 8000 字符）、bro 怎么提议、确认卡。 |
 | [`docs/search-and-mcp.md`](docs/search-and-mcp.md) | 联网搜索（怎么填、优先级、`source`、`needsSetup`）和 MCP 配置。 |
-| [`docs/client.md`](docs/client.md) | 客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、例行任务。 |
+| [`docs/client.md`](docs/client.md) | 客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、联网搜索页（含「去设置」）、例行任务。 |
 | [`docs/architecture.md`](docs/architecture.md) | 宿主机、pump、容器、runner、模型、例行任务、实时推送、卡片和外观层（Skin）、客户端事件来源。 |
 
 `README.md` 和 `README.zh-CN.md` 只放简介、功能、快速开始、文档入口和参与开发的要点，不写接口细节。新功能的说明写进上面对应的 `docs/` 文件；没有合适的文件就新建一个并加进这张表。
