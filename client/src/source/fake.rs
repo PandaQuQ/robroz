@@ -140,6 +140,8 @@ impl FakeSource {
                         summary: "清理 12 个旧日志文件".into(),
                         path: Some("logs/2026-10/".into()),
                         state: ApprovalState::Pending,
+                        mcp_server: None,
+                        mcp_tool: None,
                     }),
                 },
             ),

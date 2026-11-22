@@ -204,9 +204,7 @@ impl Page {
 
     /// Validate and build the PUT, or set an inline note.
     pub fn to_send(&mut self) -> Option<Put> {
-        let Some(provider) = self.provider else {
-            return None;
-        };
+        let provider = self.provider?;
         if self.clearing {
             self.note = None;
             return Some(Put::clear());

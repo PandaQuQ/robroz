@@ -1046,6 +1046,8 @@ mod tests {
                 summary: "清理 12 个旧日志文件".into(),
                 path: Some("logs/2026-10/".into()),
                 state,
+                mcp_server: None,
+                mcp_tool: None,
             })
         };
         let mut feed = Feed::default();

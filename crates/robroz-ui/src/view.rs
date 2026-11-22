@@ -19,7 +19,7 @@ use crate::cards::routines::{self, Routines};
 use crate::cards::search;
 use crate::cards::skills::{self, Book as SkillBook};
 use crate::cards::status::{self, Dot};
-use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
+use crate::cards::{split_call_summary, ApprovalCard, Card, ChoiceCard, DraftCard};
 use crate::conversations::{self, Conversation, Conversations};
 use crate::theme::{Rgb, Skin};
 use crate::widgets::{Check, CheckBox, Rings, Toggle};
@@ -393,6 +393,61 @@ fn body<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
         .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
         .color(color(t.palette.text))
         .into()
+}
+
+/// Host `call` summary shown verbatim: `{server}.{tool}` in monospace,
+/// argument tail clipped to one line with "…". Other actions stay as
+/// ordinary body text.
+fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element<'a, Action> {
+    let Some(parts) = split_call_summary(
+        &card.summary,
+        card.mcp_server.as_deref(),
+        card.mcp_tool.as_deref(),
+    ) else {
+        return body(t, &card.summary);
+    };
+    let mut line = row![
+        text(parts.prefix)
+            .size(t.type_.body)
+            .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+            .color(color(t.palette.text)),
+        text(parts.tool)
+            .font(Font::MONOSPACE)
+            .size(t.type_.mono)
+            .color(color(t.palette.text)),
+    ]
+    .spacing(0)
+    .align_y(Alignment::Center);
+    if let Some(args) = parts.args {
+        let cols = call_args_cols(t, inner, parts.prefix, parts.tool);
+        let clipped = status::clamp_lines(args, cols, 1);
+        line = line.push(
+            text(clipped)
+                .size(t.type_.body)
+                .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+                .wrapping(Wrapping::None)
+                .color(color(t.palette.text)),
+        );
+    }
+    line.into()
+}
+
+fn call_args_cols(t: &Skin, inner: f32, prefix: &str, tool: &str) -> usize {
+    let unit = |s: &str| -> f32 {
+        s.chars()
+            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+            .sum()
+    };
+    let tag = unit(status::action_kind_label(crate::cards::ActionKind::Call))
+        * t.type_.tag
+        * t.type_.unit_width
+        + 2.0 * t.metrics.tag_pad_h
+        + 2.0 * t.stroke.tag
+        + t.controls.button_gap;
+    let prefix_w = unit(prefix) * t.type_.body * t.type_.unit_width;
+    let tool_w = tool.chars().count() as f32 * t.type_.mono * MONO_ADVANCE;
+    let room = inner - tag - prefix_w - tool_w;
+    (room / (t.type_.body * t.type_.unit_width)).max(4.0) as usize
 }
 
 fn footnote<'a, M: 'a>(t: &Skin, s: String) -> Element<'a, M> {
@@ -898,7 +953,7 @@ pub fn approval<'a>(
         col = col.push(
             row![
                 tag(t, status::action_kind_label(card.kind), t.palette.text2),
-                container(body(t, &card.summary)).width(Fill),
+                container(approval_summary(t, card, inner)).width(Fill),
             ]
             .spacing(t.controls.button_gap)
             .align_y(Alignment::Center),
