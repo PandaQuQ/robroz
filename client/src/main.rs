@@ -27,10 +27,12 @@ use std::time::Duration;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
 use robroz_contract::{
-    ApprovalDecision, Bro, ConfirmSubject, Event, Memory, Said, ScheduleEntry, Skill, Unread,
+    ApprovalDecision, Bro, ConfirmSubject, Event, McpServer, McpTestResult, McpTool, Memory, Said,
+    ScheduleEntry, Skill, Unread,
 };
 use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
+use robroz_ui::cards::mcp::{self, Book as McpBook};
 use robroz_ui::cards::memories::Book;
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
@@ -135,6 +137,7 @@ enum Page {
     Routines,
     Memories,
     Skills,
+    Mcp,
     Search,
 }
 
@@ -192,6 +195,41 @@ enum Message {
     GroupSkillsLoaded {
         group: String,
         result: Result<Vec<Skill>, ApiError>,
+    },
+    OpenMcp,
+    McpLoaded(Result<Vec<McpServer>, ApiError>),
+    McpSaved {
+        result: Result<McpServer, ApiError>,
+    },
+    McpDeleted {
+        id: String,
+        result: Result<(), ApiError>,
+    },
+    McpToolsLoaded {
+        id: String,
+        result: Result<Vec<McpTool>, ApiError>,
+    },
+    McpTested {
+        id: String,
+        result: Result<McpTestResult, ApiError>,
+    },
+    McpEnabled {
+        id: String,
+        result: Result<McpServer, ApiError>,
+    },
+    McpGroupToggled {
+        id: String,
+        group: String,
+        on: bool,
+        result: Result<(), ApiError>,
+    },
+    GroupMcpLoaded {
+        group: String,
+        result: Result<Vec<McpServer>, ApiError>,
+    },
+    McpCommandApproved {
+        id: String,
+        result: Result<McpServer, ApiError>,
     },
     Tick,
     Loaded(Result<Vec<GroupTab>, SourceError>),
@@ -288,6 +326,8 @@ struct App {
     memories: Book,
     /// 技能 page (robroz#71).
     skills: SkillBook,
+    /// MCP page (robroz#81).
+    mcp: McpBook,
     /// 联网搜索 page (robroz#76).
     search: SearchPage,
     mode: Mode,
@@ -385,6 +425,7 @@ impl App {
             routines: Routines::default(),
             memories: Book::default(),
             skills: SkillBook::default(),
+            mcp: McpBook::default(),
             search: SearchPage::default(),
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
@@ -704,6 +745,210 @@ impl App {
             .collect();
     }
 
+    fn load_mcp(&mut self) -> Task<Message> {
+        self.sync_mcp_context();
+        let groups = self.mcp.begin_enable_loads();
+        let mut tasks = vec![Task::perform(
+            call(&self.api, |api| api.mcp_servers()),
+            Message::McpLoaded,
+        )];
+        tasks.extend(groups.into_iter().map(|g| self.fetch_group_mcp(g)));
+        Task::batch(tasks)
+    }
+
+    fn fetch_group_mcp(&self, group: String) -> Task<Message> {
+        let key = group.clone();
+        let job = call(&self.api, move |api| api.group_mcp(&key));
+        Task::perform(job, move |result| Message::GroupMcpLoaded { group, result })
+    }
+
+    fn ensure_group_mcp_fetches(&mut self) -> Task<Message> {
+        self.sync_mcp_context();
+        let groups = self.mcp.take_groups_to_load();
+        Task::batch(groups.into_iter().map(|g| self.fetch_group_mcp(g)))
+    }
+
+    fn sync_mcp_context(&mut self) {
+        self.mcp.chats = self
+            .convs
+            .rows()
+            .iter()
+            .map(|c| (c.group_id.clone(), c.name.clone()))
+            .collect();
+    }
+
+    fn fetch_mcp_tools(&self, id: String) -> Task<Message> {
+        let key = id.clone();
+        let job = call(&self.api, move |api| api.mcp_tools(&key));
+        Task::perform(job, move |result| Message::McpToolsLoaded { id, result })
+    }
+
+    fn test_mcp(&self, id: String) -> Task<Message> {
+        let key = id.clone();
+        let job = call(&self.api, move |api| api.test_mcp_server(&key));
+        Task::perform(job, move |result| Message::McpTested { id, result })
+    }
+
+    fn on_mcp_action(&mut self, action: Action) -> Task<Message> {
+        let book = &mut self.mcp;
+        match action {
+            Action::McpAddOpen => book.open_add(),
+            Action::McpFormClose => book.close_form(),
+            Action::McpFormName { text } => {
+                if let Some(f) = book.form_mut() {
+                    f.name = text;
+                }
+            }
+            Action::McpFormTransport { http } => {
+                if let Some(f) = book.form_mut() {
+                    f.transport = if http {
+                        mcp::Transport::Http
+                    } else {
+                        mcp::Transport::Stdio
+                    };
+                }
+            }
+            Action::McpFormCommand { text } => {
+                if let Some(f) = book.form_mut() {
+                    f.command = text;
+                }
+            }
+            Action::McpFormArgs { text } => {
+                if let Some(f) = book.form_mut() {
+                    f.args = text;
+                }
+            }
+            Action::McpFormUrl { text } => {
+                if let Some(f) = book.form_mut() {
+                    f.url = text;
+                }
+            }
+            Action::McpSecretName { index, text } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.name = text;
+                    }
+                }
+            }
+            Action::McpSecretPlacement { index, header } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.placement = if header {
+                            robroz_contract::McpSecretIn::Header
+                        } else {
+                            robroz_contract::McpSecretIn::Env
+                        };
+                    }
+                }
+            }
+            Action::McpSecretKey { index, text } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.key.draft = text;
+                    }
+                }
+            }
+            Action::McpSecretReplace { index } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.key.replace();
+                    }
+                }
+            }
+            Action::McpSecretClear { index } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.key.clear();
+                    }
+                }
+            }
+            Action::McpSecretCancel { index } => {
+                if let Some(f) = book.form_mut() {
+                    if let Some(s) = f.secrets.get_mut(index) {
+                        s.key.cancel();
+                    }
+                }
+            }
+            Action::McpSecretAdd => book.add_secret(),
+            Action::McpSecretRemove { index } => {
+                if let Some(f) = book.form_mut() {
+                    if index < f.secrets.len() {
+                        f.secrets.remove(index);
+                    }
+                }
+            }
+            Action::McpSave => {
+                let Some(save) = book.save_to_send() else {
+                    return Task::none();
+                };
+                let job = call(&self.api, move |api| {
+                    if save.id.is_some() {
+                        api.update_mcp_server(&save)
+                    } else {
+                        api.create_mcp_server(&save)
+                    }
+                });
+                return Task::perform(job, move |result| Message::McpSaved { result });
+            }
+            Action::McpEdit { id } => book.start_edit(&id),
+            Action::McpOpen { id } => {
+                if book.open_server(&id) {
+                    return self.fetch_mcp_tools(id);
+                }
+            }
+            Action::McpDeleteAsk { id } => book.ask_delete(&id),
+            Action::McpDeleteCancel => book.cancel_delete(),
+            Action::McpDeleteConfirm => {
+                let Some(id) = book.delete_to_send() else {
+                    return Task::none();
+                };
+                let key = id.clone();
+                let job = call(&self.api, move |api| api.delete_mcp_server(&key));
+                return Task::perform(job, move |result| Message::McpDeleted {
+                    id: id.clone(),
+                    result,
+                });
+            }
+            Action::McpToggleEnabled { id } => {
+                let Some(on) = book.toggle_enabled_to_send(&id) else {
+                    return Task::none();
+                };
+                let key = id.clone();
+                let job = call(&self.api, move |api| api.set_mcp_enabled(&key, on));
+                return Task::perform(job, move |result| Message::McpEnabled {
+                    id: id.clone(),
+                    result,
+                });
+            }
+            Action::McpToggleGroup { id, group } => {
+                let Some(on) = book.toggle_group_to_send(&id, &group) else {
+                    return Task::none();
+                };
+                let (sid, gid) = (id.clone(), group.clone());
+                let job = call(&self.api, move |api| api.set_group_mcp(&gid, &sid, on));
+                return Task::perform(job, move |result| Message::McpGroupToggled {
+                    id: id.clone(),
+                    group: group.clone(),
+                    on,
+                    result,
+                });
+            }
+            Action::McpApproveCommand { id } => {
+                let Some(key) = book.approve_command_to_send(&id) else {
+                    return Task::none();
+                };
+                let job = call(&self.api, move |api| api.approve_mcp_command(&key));
+                return Task::perform(job, move |result| Message::McpCommandApproved {
+                    id: id.clone(),
+                    result,
+                });
+            }
+            Action::McpCancelCommand { id } => book.cancel_command_prompt(&id),
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_memory_action(&mut self, action: Action) -> Task<Message> {
         let book = &mut self.memories;
         match action {
@@ -901,7 +1146,7 @@ impl App {
         match action {
             Action::SearchPick { provider } => page.pick(provider),
             Action::SearchUrl { text } => page.url = text,
-            Action::SearchKey { text } => page.key = text,
+            Action::SearchKey { text } => page.key.draft = text,
             Action::SearchReplaceKey => page.replace_key(),
             Action::SearchClearKey => {
                 if page.busy {
@@ -970,6 +1215,31 @@ impl App {
             | Action::SkillDecide { .. }
             | Action::SkillToggleInstruction { .. }
             | Action::SkillToggleGroup { .. } => self.on_skill_action(action),
+            Action::McpAddOpen
+            | Action::McpFormClose
+            | Action::McpFormName { .. }
+            | Action::McpFormTransport { .. }
+            | Action::McpFormCommand { .. }
+            | Action::McpFormArgs { .. }
+            | Action::McpFormUrl { .. }
+            | Action::McpSecretName { .. }
+            | Action::McpSecretPlacement { .. }
+            | Action::McpSecretKey { .. }
+            | Action::McpSecretReplace { .. }
+            | Action::McpSecretClear { .. }
+            | Action::McpSecretCancel { .. }
+            | Action::McpSecretAdd
+            | Action::McpSecretRemove { .. }
+            | Action::McpSave
+            | Action::McpEdit { .. }
+            | Action::McpOpen { .. }
+            | Action::McpDeleteAsk { .. }
+            | Action::McpDeleteConfirm
+            | Action::McpDeleteCancel
+            | Action::McpToggleEnabled { .. }
+            | Action::McpToggleGroup { .. }
+            | Action::McpApproveCommand { .. }
+            | Action::McpCancelCommand { .. } => self.on_mcp_action(action),
             Action::SearchPick { .. }
             | Action::SearchUrl { .. }
             | Action::SearchKey { .. }
@@ -1168,6 +1438,11 @@ impl App {
                 self.narrow_open = true;
                 return self.load_skills();
             }
+            Message::OpenMcp => {
+                self.page = Page::Mcp;
+                self.narrow_open = true;
+                return self.load_mcp();
+            }
             Message::MemoriesLoaded(result) => match result {
                 Ok(list) => {
                     self.memories.load(list);
@@ -1266,6 +1541,82 @@ impl App {
                 Ok(list) => self.skills.apply_group_skills(&group, &list),
                 Err(_) => self.skills.group_skills_failed(&group),
             },
+            Message::McpLoaded(result) => {
+                self.sync_mcp_context();
+                match result {
+                    Ok(list) => {
+                        self.mcp.load(list);
+                        self.mcp.note = None;
+                    }
+                    Err(err) => self.mcp.note = Some(err.reason()),
+                }
+                return self.ensure_group_mcp_fetches();
+            }
+            Message::McpSaved { result } => match result {
+                Ok(server) => {
+                    let id = server.id.clone();
+                    self.mcp.saved(server);
+                    return Task::batch([self.test_mcp(id.clone()), self.fetch_mcp_tools(id)]);
+                }
+                Err(err) => self.mcp.save_failed(&err.reason()),
+            },
+            Message::McpDeleted { id, result } => match result {
+                Ok(()) | Err(ApiError::NotFound(_)) => self.mcp.deleted(&id),
+                Err(err) => self.mcp.delete_failed(&id, &err.reason()),
+            },
+            Message::McpToolsLoaded { id, result } => match result {
+                Ok(tools) => self.mcp.tools_loaded(&id, tools),
+                Err(err) => {
+                    if let Some(denied) = err.command_not_approved() {
+                        self.mcp.show_command_prompt(
+                            &id,
+                            denied.command.clone(),
+                            denied.args.clone(),
+                        );
+                    } else {
+                        self.mcp.tools_failed(&id, &err.reason());
+                    }
+                }
+            },
+            Message::McpTested { id, result } => match result {
+                Ok(test) => self.mcp.tested(&id, &test),
+                Err(err) => {
+                    if let Some(denied) = err.command_not_approved() {
+                        self.mcp.show_command_prompt(
+                            &id,
+                            denied.command.clone(),
+                            denied.args.clone(),
+                        );
+                    } else {
+                        self.mcp.test_failed(&id, &err.reason());
+                    }
+                }
+            },
+            Message::McpCommandApproved { id, result } => match result {
+                Ok(server) => {
+                    let sid = server.id.clone();
+                    self.mcp.command_approved(server);
+                    return Task::batch([self.test_mcp(sid.clone()), self.fetch_mcp_tools(sid)]);
+                }
+                Err(err) => self.mcp.approve_command_failed(&id, &err.reason()),
+            },
+            Message::McpEnabled { id, result } => match result {
+                Ok(server) => self.mcp.set_enabled(&server.id, server.enabled),
+                Err(err) => self.mcp.entry_failed(&id, &err.reason()),
+            },
+            Message::McpGroupToggled {
+                id,
+                group,
+                on,
+                result,
+            } => match result {
+                Ok(()) => self.mcp.group_toggled(&id, &group, on),
+                Err(err) => self.mcp.entry_failed(&id, &err.reason()),
+            },
+            Message::GroupMcpLoaded { group, result } => match result {
+                Ok(list) => self.mcp.apply_group_mcp(&group, &list),
+                Err(_) => self.mcp.group_mcp_failed(&group),
+            },
             Message::Back => self.narrow_open = false,
             Message::UnreadTick => return self.load_unread(),
             Message::UnreadLoaded(result) => match result {
@@ -1301,6 +1652,9 @@ impl App {
                     }
                     if self.page == Page::Skills {
                         tasks.push(self.ensure_group_skill_fetches());
+                    }
+                    if self.page == Page::Mcp {
+                        tasks.push(self.ensure_group_mcp_fetches());
                     }
                     return Task::batch(tasks);
                 }
@@ -1776,13 +2130,22 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Search))
             .on_press(Message::OpenSearch);
+        let mcp = button(text(robroz_ui::cards::mcp::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::Mcp))
+            .on_press(Message::OpenMcp);
         container(
             column![
                 scrollable(list).height(Fill),
                 routines,
                 memories,
                 skills,
-                search
+                search,
+                mcp
             ]
             .spacing(4),
         )
@@ -1817,6 +2180,19 @@ impl App {
             return scrollable(
                 container(
                     view::skills_panel(t, &self.skills, now_unix(), self.content_width(t))
+                        .map(Message::Ui),
+                )
+                .padding(t.metrics.stream_padding)
+                .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
+        if self.page == Page::Mcp {
+            return scrollable(
+                container(
+                    view::mcp_panel(t, &self.mcp, now_unix(), self.content_width(t))
                         .map(Message::Ui),
                 )
                 .padding(t.metrics.stream_padding)
