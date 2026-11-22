@@ -1,81 +1,135 @@
 export const en = {
   htmlLang: 'en',
   locale: 'en',
-  title: 'robroz',
-  description:
-    'A self-hosted, single-machine multi-agent workspace that you drive through chat, not an IDE.',
-  skipToContent: 'Skip to content',
-  lang: {
-    en: 'EN',
-    zh: '中文',
-    switchLabel: 'Language',
+  a11y: {
+    skip: 'Skip to content',
+    langSwitch: 'Language',
   },
-  intro: {
-    headline:
-      'A self-hosted, single-machine multi-agent workspace that you drive through chat, not an IDE.',
+  meta: {
+    title: 'robroz: a self-hosted multi-agent workspace you drive through chat',
+    description:
+      'Hand tasks to agents in chat. Each one works in a Docker sandbox on your machine and reports back with cards. Self-hosted, written in Rust.',
   },
-  chat: {
-    ariaLabel: 'Sample conversation',
-    you: 'You',
-    bro: 'bro',
-    userMessage:
-      '@docs Rewrite the landing-page copy and propose a memory for the tone of voice.',
-    broMessage:
-      'Draft is in the delivery card. I also proposed a memory for the tone of voice — confirm it when you are ready.',
-    statusTitle: 'Rewrite landing-page copy',
-    status: {
-      queued: 'Queued',
-      running: 'Running',
-      done: 'Done',
+  nav: {
+    lang: { en: 'EN', zh: '中文' },
+    github: 'GitHub',
+    wiki: 'Wiki',
+  },
+  hero: {
+    title: 'Hand tasks to bros in chat. They work on your machine.',
+    lede: 'robroz is a self-hosted, single-machine multi-agent workspace that you drive through chat, not an IDE. Each bro (agent) works in a Docker sandbox on your computer, and progress, approvals and results come back to the conversation as cards.',
+    cta: {
+      primary: 'Quick start',
+      secondary: 'View on GitHub',
+    },
+    demo: {
+      you: 'You',
+      bro: 'Ada',
+      user: '查一下 Rust 最近一个版本的新功能，写成三点',
+      userGloss: "Look up what's new in the latest Rust release, in three points",
+      status: {
+        queued: '排队',
+        queuedGloss: 'Queued',
+        running: '进行',
+        running1Progress: '在想怎么回',
+        running1Gloss: 'Running · Thinking',
+        running2Progress: '在用 web_search',
+        running2Gloss: 'Running · Using web_search',
+        done: '完成',
+        doneGloss: 'Done',
+      },
+      delivery: '已写入结果',
+      deliveryPath: 'tasks/<taskId>/result.txt',
+      deliveryGloss: 'Result written',
+      caption: 'One status card per task, updated in place. The result is a file in the group\'s folder.',
     },
   },
-  capabilities: {
-    title: 'Three capabilities',
-    taskCards: {
+  features: {
+    title: 'What a bro can do today',
+    tasks: {
       title: 'Task cards',
-      body: 'Status and delivery cards come back in the conversation as a task moves from queued to running to done.',
+      body: 'In a group, start a message with `@name` to give that bro a task; in a DM every message is a task. Each task gets one status card that moves from queued to running to done, with a short progress line while it runs. The result arrives as a delivery card. Scheduled routines deliver a briefing the same way.',
     },
     memory: {
       title: 'Memory',
-      body: 'A bro can propose something to remember. It takes effect only after you confirm it.',
+      body: 'A bro can propose something to remember about you: who you are, how you work, or a project note. It only counts after you press 「记下」 (*Keep*) on the confirm card. You can also add, edit and forget memories yourself on the Memory page. A basic version: memories are added to the bro\'s prompt, and grant no permissions.',
     },
     skills: {
       title: 'Skills',
-      body: 'Reusable know-how is added the same way: the bro proposes a skill, and you decide whether to keep it.',
+      body: 'A skill is a named set of instructions, such as how you like a weekly report written. A bro can propose one; you save it from the confirm card, then switch it on for the groups that should use it. A basic version: skills are prompt text only, and grant no permissions.',
     },
   },
   control: {
     title: "You're in control",
-    lead: 'External writes, captchas and other sensitive steps stop and wait for a person. Nothing important goes through on its own.',
+    lede: "Bros read and write their group's folder freely. Anything that reaches outside stops and waits for you.",
+    tiers: {
+      title: 'Three permission tiers',
+      body: 'Reading and writing the group folder is allowed. Outbound network is GET-only and counted per task (8 by default). External writes and captchas stop the task and wait for a person.',
+    },
     approval: {
       title: 'Approval cards',
-      body: 'When a bro needs a decision, an approval or choice card lands in the chat. The task waits until you answer.',
+      body: 'When a task reaches an external write, it pauses and the host posts an approval card. The status card reads 「等你批准」 (*Waiting for your approval*). Press 「批准」 (*Approve*) and the task queues again and finishes; press 「拒绝」 (*Deny*) and it ends without doing that step. The card then shows who answered and when, for example 「我 批准 · 14:02」 (*I approved · 14:02*).',
     },
     takeover: {
       title: 'Takeover',
-      body: 'If a task is blocked, you can take it over in a direct message, finish the step yourself, and let the bro continue.',
+      body: 'Some steps need a person, such as a captcha. When a task gets stuck, it stops and waits for someone to take over.',
+    },
+    sandbox: {
+      body: "Every task runs in a Docker container with no network. Web search and page reads are made by the host on the bro's behalf and count towards the same per-task limit. Your search key stays on your machine.",
+    },
+    demo: {
+      status: '等你批准',
+      statusGloss: 'Waiting for your approval',
+      approval: '要对外写入：…',
+      approvalGloss: 'External write: …',
+      approve: '批准',
+      approveGloss: 'Approve',
+      deny: '拒绝',
+      denyGloss: 'Deny',
+      answered: '我 批准 · 14:02',
+      answeredGloss: 'I approved · 14:02',
+      stuck: '卡住',
+      stuckGloss: 'Stuck',
     },
   },
-  quickStart: {
-    title: 'Self-host, quickly',
-    lead: 'You need the Rust stable toolchain and Docker. From the repository root:',
-    after:
-      'In the client, add a bro, open its DM and send a message: that is your first task.',
-    code: `cargo build -p robroz-host -p robroz-client
-docker build -f runner/Dockerfile -t robroz-runner:local .
-cargo run -p robroz-host
-cargo run -p robroz-client`,
+  quickstart: {
+    title: 'Self-host it',
+    lede: 'You need the Rust stable toolchain and Docker. From the repository root:',
+    code: `cargo build -p robroz-host -p robroz-client                # host and desktop client
+docker build -f runner/Dockerfile -t robroz-runner:local .  # runner image used for tasks
+cargo run -p robroz-host                                    # listens on 127.0.0.1:8790 only, no token needed
+cargo run -p robroz-client                                  # in a second terminal`,
+    next: 'In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.',
+    more: 'To connect an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide.',
+    moreLink: {
+      label: 'Install guide',
+      href: 'https://github.com/PandaQuQ/robroz/blob/main/docs/install.md',
+    },
+    platforms:
+      'The host, the runner and the desktop client are written in Rust. The client is native on Windows, Linux and macOS, with no web view.',
   },
   links: {
-    title: 'Source and docs',
-    github: { label: 'GitHub', href: 'https://github.com/PandaQuQ/robroz' },
-    wiki: { label: 'Wiki', href: 'https://github.com/PandaQuQ/robroz/wiki' },
+    title: 'Read more',
+    github: {
+      label: 'GitHub',
+      body: 'Source code, issues and pull requests.',
+      url: 'https://github.com/PandaQuQ/robroz',
+    },
+    wiki: {
+      label: 'Wiki',
+      body: 'For people: installing, everyday use, configuration, FAQ and roadmap.',
+      url: 'https://github.com/PandaQuQ/robroz/wiki',
+    },
     agents: {
       label: 'AGENTS.md',
-      href: 'https://github.com/PandaQuQ/robroz/blob/main/AGENTS.md',
+      body: 'For coding agents and contributors: repository rules, the API contract and where the code lives.',
+      url: 'https://github.com/PandaQuQ/robroz/blob/main/AGENTS.md',
     },
   },
-  footer: 'Placeholder copy. Final wording will match the README.',
+  footer: {
+    license: 'License: to be decided.',
+    repo: 'robroz on GitHub',
+  },
 };
 
 export type Messages = typeof en;

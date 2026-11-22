@@ -2,7 +2,7 @@
 
 Static landing page for [robroz](https://github.com/PandaQuQ/robroz), built with [Astro](https://astro.build). English is the default at `/`; Simplified Chinese lives at `/zh/`. The language switch does not follow the browser locale.
 
-Copy lives in `src/i18n/en.ts` and `src/i18n/zh.ts`. Treat it as a placeholder until the docs PR lands; drop final wording into those files without changing page structure.
+Copy lives in `src/i18n/en.ts` and `src/i18n/zh.ts`, keyed the same way as the docs draft (`hero.title`, `features.memory.body`, and so on). English is the default; keep the two files aligned. On the English page, UI strings inside demo cards stay in Chinese; the English gloss is a single grey line under the card (hover on desktop, always visible on mobile).
 
 ## Local development
 

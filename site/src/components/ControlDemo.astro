@@ -1,0 +1,50 @@
+---
+import type { Messages } from '../i18n';
+import Gloss from './Gloss.astro';
+
+interface Props {
+  msg: Messages;
+}
+
+const { msg } = Astro.props;
+const { demo } = msg.control;
+const bro = msg.hero.demo.bro;
+const approvalGloss = [demo.approvalGloss, demo.approveGloss && demo.denyGloss ? `${demo.approveGloss} / ${demo.denyGloss}` : '']
+  .filter(Boolean)
+  .join(' · ');
+---
+
+<div class="control-demo">
+  <div class="demo-item">
+    <article class="status-card" data-state="queued">
+      <p class="status-card__line">
+        <strong>{bro}</strong>
+        <span aria-hidden="true"> · </span>
+        <span>{demo.status}</span>
+      </p>
+    </article>
+    <Gloss text={demo.statusGloss} />
+  </div>
+
+  <div class="demo-item">
+    <article class="approval-card">
+      <p>{demo.approval}</p>
+      <div class="approval-card__actions">
+        <span class="approval-btn approval-btn--yes">{demo.approve}</span>
+        <span class="approval-btn">{demo.deny}</span>
+      </div>
+    </article>
+    <Gloss text={approvalGloss} />
+  </div>
+
+  <div class="demo-item">
+    <article class="status-card" data-state="blocked">
+      <p class="status-card__line">
+        <strong>{bro}</strong>
+        <span aria-hidden="true"> · </span>
+        <span>{demo.stuck}</span>
+      </p>
+    </article>
+    <Gloss text={demo.stuckGloss} />
+  </div>
+</div>
