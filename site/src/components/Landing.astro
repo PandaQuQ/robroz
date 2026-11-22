@@ -1,0 +1,60 @@
+---
+import { t } from '../i18n';
+import ChatDemo from './ChatDemo.astro';
+
+const msg = t(Astro.currentLocale);
+---
+
+<section class="section" id="intro">
+  <h1>{msg.intro.headline}</h1>
+  <ChatDemo msg={msg} />
+</section>
+
+<section class="section" id="capabilities">
+  <h2>{msg.capabilities.title}</h2>
+  <div class="grid grid--3">
+    <article class="card">
+      <h3>{msg.capabilities.taskCards.title}</h3>
+      <p>{msg.capabilities.taskCards.body}</p>
+    </article>
+    <article class="card">
+      <h3>{msg.capabilities.memory.title}</h3>
+      <p>{msg.capabilities.memory.body}</p>
+    </article>
+    <article class="card">
+      <h3>{msg.capabilities.skills.title}</h3>
+      <p>{msg.capabilities.skills.body}</p>
+    </article>
+  </div>
+</section>
+
+<section class="section" id="control">
+  <h2>{msg.control.title}</h2>
+  <p class="lead">{msg.control.lead}</p>
+  <div class="grid grid--2">
+    <article class="card">
+      <h3>{msg.control.approval.title}</h3>
+      <p>{msg.control.approval.body}</p>
+    </article>
+    <article class="card card--amber">
+      <h3>{msg.control.takeover.title}</h3>
+      <p>{msg.control.takeover.body}</p>
+    </article>
+  </div>
+</section>
+
+<section class="section quickstart" id="quick-start">
+  <h2>{msg.quickStart.title}</h2>
+  <p class="lead">{msg.quickStart.lead}</p>
+  <pre><code>{msg.quickStart.code}</code></pre>
+  <p>{msg.quickStart.after}</p>
+</section>
+
+<section class="section" id="links">
+  <h2>{msg.links.title}</h2>
+  <ul class="links">
+    <li><a href={msg.links.github.href}>{msg.links.github.label}</a></li>
+    <li><a href={msg.links.wiki.href}>{msg.links.wiki.label}</a></li>
+    <li><a href={msg.links.agents.href}>{msg.links.agents.label}</a></li>
+  </ul>
+</section>

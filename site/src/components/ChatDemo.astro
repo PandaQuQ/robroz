@@ -1,0 +1,67 @@
+---
+import type { Messages } from '../i18n';
+
+interface Props {
+  msg: Messages;
+}
+
+const { msg } = Astro.props;
+const { chat } = msg;
+---
+
+<section class="chat" aria-label={chat.ariaLabel}>
+  <article class="bubble bubble--you">
+    <span class="bubble__who">{chat.you}</span>
+    <p>{chat.userMessage}</p>
+  </article>
+
+  <article
+    class="status-card"
+    data-state="queued"
+    aria-live="polite"
+  >
+    <h3 class="status-card__title">{chat.statusTitle}</h3>
+    <p
+      class="status-card__label"
+      data-queued={chat.status.queued}
+      data-running={chat.status.running}
+      data-done={chat.status.done}
+    >
+      {chat.status.queued}
+    </p>
+  </article>
+
+  <article class="bubble">
+    <span class="bubble__who">{chat.bro}</span>
+    <p>{chat.broMessage}</p>
+  </article>
+</section>
+
+<script>
+  const states = ['queued', 'running', 'done'] as const;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  for (const card of document.querySelectorAll<HTMLElement>('.status-card')) {
+    const label = card.querySelector<HTMLElement>('.status-card__label');
+    if (!label) continue;
+
+    const apply = (index: number) => {
+      const state = states[index];
+      card.dataset.state = state;
+      const text = label.dataset[state];
+      if (text) label.textContent = text;
+    };
+
+    if (reduceMotion) {
+      apply(2);
+      continue;
+    }
+
+    let index = 0;
+    apply(index);
+    window.setInterval(() => {
+      index = (index + 1) % states.length;
+      apply(index);
+    }, 2000);
+  }
+</script>
