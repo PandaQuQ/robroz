@@ -11,7 +11,7 @@ You accept and agree to the following terms for Your present and future Contribu
 ## 1. Definitions
 
 - **"You" (or "Your")** means the individual copyright owner, or the legal entity authorised by the copyright owner, that is making this agreement with the Maintainer.
-- **"Maintainer"** means Bin Ma (PandaQuQ), the copyright holder and maintainer of the Project, and his successors and assigns.
+- **"Maintainer"** means PandaQuQ, the copyright holder and maintainer of the Project, and his successors and assigns.
 - **"Contribution"** means any original work of authorship, including any modifications or additions to an existing work, that You intentionally submit to the Maintainer for inclusion in, or documentation of, the Project. "Submit" means any form of electronic, verbal or written communication sent to the Maintainer or the Project, including pull requests, patches, issues and comments on the Project's repository at <https://github.com/PandaQuQ/robroz>, but excluding communication that You conspicuously mark in writing as "Not a Contribution".
 
 ## 2. Grant of copyright licence
@@ -48,7 +48,7 @@ You agree to notify the Maintainer of any facts or circumstances of which You be
 
 You sign this agreement once, and it covers all of Your present and future Contributions to the Project.
 
-The copyright holder, Bin Ma (PandaQuQ), and commits authored under the PandaQuQ account are not required to sign this agreement.
+The copyright holder, PandaQuQ, and commits authored under the PandaQuQ account are not required to sign this agreement.
 
 1. Open your pull request against <https://github.com/PandaQuQ/robroz>.
 2. Add this line to the pull request description, using your GitHub username:
@@ -69,11 +69,11 @@ If you contribute on behalf of a company, or your employer owns what you write, 
 以下摘要仅供理解，以上方英文条款为准。
 
 - 你保留自己贡献内容的著作权。
-- 你授予 Bin Ma（PandaQuQ）及其分发的软件的接收方一项永久、全球、不可撤销、免版税的许可，可以使用、修改、再许可和重新许可你的贡献，包括以闭源 / 商业条款授权，robroz 才能做到「AGPL 开源 + 商业授权」的双许可。
+- 你授予 PandaQuQ及其分发的软件的接收方一项永久、全球、不可撤销、免版税的许可，可以使用、修改、再许可和重新许可你的贡献，包括以闭源 / 商业条款授权，robroz 才能做到「AGPL 开源 + 商业授权」的双许可。
 - 你同时授予相应的专利许可；谁就你的贡献或 robroz 提起专利诉讼，授予他的专利许可即终止。
 - 你保证有权提交这些内容（如果你的雇主对你的作品有权利，需先得到许可），并且是你本人的原创；第三方的代码要单独标明来源和许可证。
 - 贡献按「原样」提供，你不需要提供支持或担保。
 - 签署方式：在 PR 描述里加上上面那行英文声明（或勾选 PR 模板里的 CLA 选项）。签一次，对以后的所有贡献都有效。没有签署的 PR 不会被合并。
-- 著作权人 Bin Ma（PandaQuQ）本人，以及以 PandaQuQ 账号署名的提交，不需要签署本协议。
+- 著作权人 PandaQuQ本人，以及以 PandaQuQ 账号署名的提交，不需要签署本协议。
 
 本协议改编自 Apache 软件基金会的个人贡献者许可协议（ICLA v2.2），未经 Apache 软件基金会认可。
