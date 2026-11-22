@@ -599,6 +599,7 @@ async fn create_task(
 
 const RESUME_NO_INTENT: &str = "恢复失败，找不到卡住记录";
 const RESUME_MARKER_FAILED: &str = "恢复失败，无法写入接管标记";
+const RESUME_NEEDS_APPROVAL: &str = "请先回答审批卡";
 
 /// Resume a blocked task. Never reads the group volume.
 ///
@@ -618,11 +619,17 @@ async fn resume_task(
 ) -> Response {
     let conn = lock_db(&state);
     let found = conn.query_row(
-        "SELECT state, intent_hash FROM tasks WHERE id = ?1",
+        "SELECT state, intent_hash, intent_kind FROM tasks WHERE id = ?1",
         [&task_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
     );
-    let (task_state, intent_hash) = match found {
+    let (task_state, intent_hash, intent_kind) = match found {
         Ok(row) => row,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return error_response(StatusCode::NOT_FOUND, "任务不存在");
@@ -631,6 +638,9 @@ async fn resume_task(
     };
     if task_state != TaskState::Blocked.as_str() {
         return error_response(StatusCode::CONFLICT, "这次不能恢复");
+    }
+    if intent_kind.as_deref() == Some("mcp") {
+        return error_response(StatusCode::CONFLICT, RESUME_NEEDS_APPROVAL);
     }
     let Some(hash) = intent_hash else {
         eprintln!("resume {task_id}: no stored intent");

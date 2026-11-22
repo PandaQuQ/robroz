@@ -170,6 +170,12 @@ pub(crate) async fn create_approval(
                 "这个 Bot 不在群里",
             )));
         }
+        if matches!(body.action, ApprovalAction::Call) {
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "这个动作只能由宿主机发出",
+            )));
+        }
         let (summary, path) = match validate(&body.summary, body.path.as_deref()) {
             Ok(clean) => clean,
             Err(message) => return Ok(Err(error_response(StatusCode::BAD_REQUEST, message))),
@@ -230,7 +236,6 @@ pub(crate) fn gate_task(
     Ok(())
 }
 
-/// What a gated card points at, if it was raised by a task.
 /// An MCP tool call waiting for approval. `action` is `call`; the card
 /// carries `mcp_server` and `mcp_tool`.
 pub(crate) fn gate_mcp_task(

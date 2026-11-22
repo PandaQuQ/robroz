@@ -889,6 +889,7 @@ mod tests {
         );
         let ev = events(&h).await;
         assert_eq!(status_of(&ev)["state"], "blocked", "{ev}");
+        assert_eq!(status_of(&ev)["waitingFor"], "approval", "{ev}");
         let card = event_of(&ev, "approval");
         assert_eq!(card["action"], "call", "{card}");
         assert_eq!(card["mcpServer"], "notes", "{card}");
@@ -986,6 +987,45 @@ mod tests {
         assert!(failure.contains("你拒绝了"), "{delivery}");
         assert!(failure.contains("notes.write_note"), "{delivery}");
         assert_eq!(delivery["summary"], "未执行", "{delivery}");
+    }
+
+    #[tokio::test]
+    async fn resume_is_rejected_while_waiting_for_an_mcp_approval() {
+        let h = setup(
+            vec![AssistantTurn::ToolCalls(vec![call(
+                "notes__write_note",
+                "c1",
+                r#"{"title":"hi"}"#,
+            )])],
+            true,
+            false,
+        )
+        .await;
+        let task_id = post_task(&h, "写笔记").await;
+        let mut sandbox = crate::sandbox::FakeSandbox::new();
+        h.host.pump_once(&mut sandbox).unwrap();
+        let ev = events(&h).await;
+        let card = event_of(&ev, "approval");
+        let id = card["id"].as_str().unwrap().to_string();
+
+        let (status, body) = http(
+            &h.app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tasks/{task_id}/resume"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "请先回答审批卡", "{body}");
+        assert!(h.fake_mcp.calls().is_empty());
+
+        let ev = events(&h).await;
+        assert_eq!(status_of(&ev)["state"], "blocked", "{ev}");
+        let card = event_of(&ev, "approval");
+        assert!(card["decision"].is_null(), "{card}");
+        assert_eq!(card["id"], id, "{card}");
     }
 
     #[tokio::test]
