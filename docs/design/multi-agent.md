@@ -481,7 +481,7 @@ merges. It is not a schedule.
 | Item | In the next phase? | Why |
 | --- | --- | --- |
 | Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
-| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done in a group (PR B) | A group `@name` to a bro with a visible `queued` / `running` / `blocked` task joins it (`host/src/follow_ups.rs`); the task's next step sees it. DMs still start a new task per `/say`. |
+| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done in a group (PR B, #130) | A group `@name` to a bro with a visible `queued` / `running` / `blocked` task joins it (`host/src/follow_ups.rs`); the task's next step sees it. DMs still start a new task per `/say`. |
 | A bro's message also wakes the other bros, with a round cap on recorded `depth` | Not yet (after PR B) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
 | Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
@@ -577,7 +577,7 @@ Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/follow_ups.rs`, 
   no `@` gives both bros a turn, and at least one of them can choose to
   stay silent (posts nothing).
 
-- Done (PR B): follow-ups in a group (`host/src/follow_ups.rs`, called
+- Done (PR B, [#130](https://github.com/PandaQuQ/robroz/pull/130)): follow-ups in a group (`host/src/follow_ups.rs`, called
   from `say.rs` and the pump). A follow-up is a person's group `/say` with
   a leading `@name` when that bro has a still-open task in the group: the
   newest one in `queued`, `running`, or `blocked` that is not a hidden turn
@@ -600,7 +600,7 @@ Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/follow_ups.rs`, 
   Not follow-ups: messages with no `@`, an `@` to another bro, and DMs
   (still one new task per `/say`).
 
-  **Done when (met in PR B):** a follow-up in the group attaches to that
+  **Done when (met in #130):** a follow-up in the group attaches to that
   bro's open task and does not start a new one.
 
 - Not yet (after PR B): a bro's message also wakes the other bros, so
