@@ -19,8 +19,8 @@ use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
 
-use crate::cards::review_rules;
 use crate::cards::model;
+use crate::cards::review_rules;
 
 use crate::cards::routines::{self, Routines};
 use crate::cards::search;
@@ -291,7 +291,6 @@ pub enum Action {
     ModelClearKey,
     ModelCancelKey,
     ModelSave,
-
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -1078,16 +1077,10 @@ pub fn approval<'a>(
         header(t, &card.id, &card.bot, ui, label, d),
         gap(t.metrics.head_gap)
     ];
-    // Group thread: only the status and 「已发到主人私聊」, no buttons.
-    if in_group && card.state == crate::cards::ApprovalState::Pending {
-        col = col.push(
-            text(review_rules::SENT_TO_OWNER)
-                .size(t.type_.foot)
-                .color(color(t.palette.text2)),
-        );
-        return frame(t, col.into());
-    }
-    if card.is_rule() {
+    // Group thread: same header and action line as a DM card, then
+    // 「已发到主人私聊」, no buttons.
+    let group_pending = in_group && card.state == crate::cards::ApprovalState::Pending;
+    if card.is_rule() && !group_pending {
         return rule_approval(t, card, ui, col);
     }
     let actions = interact::approval_actions(card, ui);
@@ -1130,11 +1123,19 @@ pub fn approval<'a>(
         if let Some(reason) = card.reason.as_deref() {
             if reason != review_rules::APPROVAL_EXPIRED_REASON {
                 col = col.push(gap(t.metrics.head_gap)).push(
-                    text(reason)
+                    text(review_rules::blocked_reason_line(reason))
                         .size(t.type_.foot)
                         .color(color(t.palette.text2)),
                 );
             }
+        }
+        if group_pending {
+            col = col.push(gap(t.metrics.head_gap)).push(
+                text(review_rules::SENT_TO_OWNER)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+            return frame(t, col.into());
         }
         if let ApprovalActions::Decide { enabled } = actions {
             let id = &card.id;
@@ -3631,24 +3632,12 @@ fn rule_approval<'a>(
     ui: &CardUi,
     mut col: iced::widget::Column<'a, Action>,
 ) -> Element<'a, Action> {
-    let title = if card.kind == crate::cards::ActionKind::RuleAdd {
-        review_rules::ADD_TITLE
-    } else {
-        review_rules::DELETE_TITLE
-    };
     let hint = if card.kind == crate::cards::ActionKind::RuleAdd {
         review_rules::ADD_HINT
     } else {
         review_rules::DELETE_HINT
     };
     col = col
-        .push(
-            text(title)
-                .size(t.type_.body)
-                .font(bold())
-                .color(color(t.palette.text)),
-        )
-        .push(gap(t.metrics.head_gap))
         .push(body(t, &card.summary))
         .push(gap(t.metrics.head_gap))
         .push(text(hint).size(t.type_.foot).color(color(t.palette.text2)));
@@ -3742,6 +3731,17 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
         .spacing(t.controls.button_gap)
         .align_y(Alignment::Center),
     );
+    if let Some(note) = &page.note {
+        if note == review_rules::PENDING_NOTE {
+            body_col = body_col.push(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        } else {
+            body_col = body_col.push(inline_note(t, note));
+        }
+    }
     match &page.rules {
         None => {
             body_col = body_col.push(
@@ -3785,9 +3785,6 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
                 );
             }
         }
-    }
-    if let Some(note) = &page.note {
-        body_col = body_col.push(inline_note(t, note));
     }
     col = col.push(container(body_col).padding(pad));
     container(col).width(Fill).style(card_style(*t)).into()

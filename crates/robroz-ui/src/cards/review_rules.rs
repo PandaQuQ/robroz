@@ -11,28 +11,32 @@ pub const ADD: &str = "添加";
 pub const DELETE: &str = "删除";
 /// Empty state, wording from 最优雅UI姐.
 pub const EMPTY: &str = "还没有放行规则。有风险的操作都会先问你。";
-/// Shown after POST/DELETE returns 202. Proposed copy; UI姐 to confirm.
+/// Shown after POST/DELETE returns 202, grey, directly under the input.
 pub const PENDING_NOTE: &str = "已发到私聊，确认后生效";
-/// Proposed placeholder; UI姐 to confirm.
-pub const PLACEHOLDER: &str = "写一条规则";
+/// Placeholder, wording from 最优雅UI姐.
+pub const PLACEHOLDER: &str = "用一句话写，比如：允许合并 CI 全绿的 PR";
 pub const NEED_TEXT: &str = "请填写规则";
 pub const LOADING: &str = "读取中";
 pub const LOAD_FAILED: &str = "读不到";
 
-/// Owner-DM confirm card (rule add), wording from the design.
-pub const ADD_TITLE: &str = "添加放行规则";
-/// Owner-DM confirm card (rule delete), wording from the design.
-pub const DELETE_TITLE: &str = "删除规则";
-/// Grey line on an add card. Proposed; UI姐 to confirm.
-pub const ADD_HINT: &str = "新增规则";
-/// Grey line on a delete card. Proposed; UI姐 to confirm.
-pub const DELETE_HINT: &str = "确认后删除";
-/// Primary button on an add card. Proposed; UI姐 to confirm.
+/// Grey line on an add confirm card, wording from 最优雅UI姐.
+pub const ADD_HINT: &str = "确认后加入放行规则";
+/// Grey line on a delete confirm card, wording from 最优雅UI姐.
+pub const DELETE_HINT: &str = "确认后删除这条规则";
+/// Primary button on an add card, wording from 最优雅UI姐.
 pub const ADD_ACTION: &str = "添加";
 /// Primary (red) button on a delete card, wording from the design.
 pub const DELETE_ACTION: &str = "删除规则";
-/// Deny button on rule confirm cards. Proposed; UI姐 to confirm.
+/// Deny button on rule confirm cards, wording from 最优雅UI姐.
 pub const DROP: &str = "不用";
+
+/// Prefix on a blocked-action DM card's reason line, wording from 最优雅UI姐.
+pub const BLOCKED_REASON_PREFIX: &str = "被拦原因：";
+
+/// Grey reason line for a blocked-action card. `reason` is the host value.
+pub fn blocked_reason_line(reason: &str) -> String {
+    format!("{BLOCKED_REASON_PREFIX}{reason}")
+}
 
 /// Group-thread line under 「等你批准」, wording from the design.
 pub const SENT_TO_OWNER: &str = "已发到主人私聊";
@@ -216,5 +220,20 @@ mod tests {
         page.proposed();
         assert_eq!(page.rules.as_ref().unwrap().len(), 1);
         assert_eq!(page.note.as_deref(), Some(PENDING_NOTE));
+    }
+
+    #[test]
+    fn blocked_reason_line_uses_the_settled_prefix() {
+        assert_eq!(
+            blocked_reason_line("这条操作会改生产数据"),
+            "被拦原因：这条操作会改生产数据"
+        );
+    }
+
+    #[test]
+    fn confirm_hints_are_the_settled_copy() {
+        assert_eq!(ADD_HINT, "确认后加入放行规则");
+        assert_eq!(DELETE_HINT, "确认后删除这条规则");
+        assert_eq!(PLACEHOLDER, "用一句话写，比如：允许合并 CI 全绿的 PR");
     }
 }

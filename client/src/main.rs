@@ -36,8 +36,8 @@ use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::mcp::{self, Book as McpBook};
 use robroz_ui::cards::memories::Book;
 
-use robroz_ui::cards::review_rules::{self, Page as ReviewRulesPage, Rule as ReviewRule};
 use robroz_ui::cards::model::{self as model_page, Current as ModelCurrent, Page as ModelPage};
+use robroz_ui::cards::review_rules::{self, Page as ReviewRulesPage, Rule as ReviewRule};
 
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
@@ -148,7 +148,6 @@ enum Page {
 
     Model,
     ReviewRules,
-
 }
 
 #[derive(Debug, Clone)]
