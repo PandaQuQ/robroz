@@ -13,23 +13,27 @@
 
 Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. Rust host + native desktop client.
 
-<!-- TODO(screenshot): main window — 最优雅UI姐 will add a real client shot in docs/images/ after the English UI lands. Do not use /workspace/shot/. Do not add an image link until the file exists. -->
+## What is robroz
+
+You chat on your own machine with a group of AI bros. You give them work in plain language; they do it in a sandbox on that machine, and they ask you before anything risky.
+
+It is for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
+
+<!-- TODO(screenshot): main window -->
 
 The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional).
 
 ## Works today
 
-Verified on `main` (`67dde00`).
+- **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
+- **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
+- **Direct messages.** Talk one-to-one with a bro.
+- **Docker sandbox.** Each job runs in a container on your machine, without network access.
+- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
+  <!-- TODO(screenshot): approval card -->
+- **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
-- **Group turns.** A person's group message gives every bro in the room one turn. The bro named by a leading `@name` goes first, on the existing direct path (status card visible at once). The rest go one at a time in join order and may stay silent (no message, no card, no unread).
-- **Follow-ups.** In a group, `@name` of a bro that still has an open task (`queued`, `running`, or `blocked`) attaches to that task instead of starting a new one. The same rule applies in a direct message, without `@`.
-- **Direct messages.** A DM is a group with you and one bro. Every message is a task for that bro, unless it attaches as a follow-up.
-- **Docker sandbox.** Each task runs in a container (`robroz-runner`) with no network. The group folder is mounted at `/workspace`; the task's control directory is mounted read-only at `/control`.
-- **Approvals and auto-review.** Outbound writes and similar actions wait for the owner. Allow rules can approve a request automatically; otherwise the card is sent to the owner's DM with the bro. Memory and skill changes also wait for a confirm card.
-  <!-- TODO(screenshot): approval card — same `docs/images/` set, after the English UI lands. -->
-- **Model settings.** Any OpenAI-compatible `/chat/completions` endpoint. A base URL and a model name are enough; the key is optional (for example a local Ollama). Configure this in the client or with environment variables; values saved in settings win, field by field.
-
-Also on `main`: three permission tiers (group-folder access, metered GET-only outbound, and anything that needs a person); web search (Brave or SearXNG); MCP tools on the host; scheduled routines; Watchdog hints on a long or stalled step (they do not cancel the work).
+You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
 
 ## Not yet
 
@@ -56,7 +60,7 @@ In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」
 
 ### Configure a model
 
-<!-- TODO(screenshot): settings page — same `docs/images/` set, after the English UI lands. -->
+<!-- TODO(screenshot): settings page -->
 
 Open 「模型」 (Model) in the client, or the 「去设置」 (Go to settings) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
@@ -71,7 +75,7 @@ cargo run -p robroz-host
 
 `ROBROZ_MODEL=echo` is a test switch (CI uses it) that echoes the prompt when no complete model is configured. Do not set it in a real deployment.
 
-Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control Watchdog hints; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
+Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control how soon a long or stalled step shows a hint on the card; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
 
 ## Architecture
 
@@ -103,7 +107,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | [docs/api.md](docs/api.md) | HTTP endpoints and events |
 | [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
 | [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
-| [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review design and allow rules |
+| [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review and allow rules |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
 | [docs/client.md](docs/client.md) | Client UI behaviour |
