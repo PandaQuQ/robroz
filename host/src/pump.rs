@@ -58,6 +58,8 @@ struct TaskRow {
     updated_at: String,
     briefing: bool,
     get_count: i64,
+    /// A group turn that has not spoken yet ([`crate::turns`]).
+    turn_hidden: bool,
 }
 
 /// What pump decided for an exited container, written back under the lock.
@@ -192,6 +194,8 @@ fn pump_inner(
         }
     }
 
+    // Group turns: start the next bro's turn once the earlier ones finished.
+    db.with(|conn| crate::turns::advance(conn, Some(cfg.volumes_root), &crate::now_rfc3339()))?;
     let queued = db.with(|conn| load_tasks(conn, "queued"))?;
     for task in queued {
         start_task(db, sandbox, cfg, offload.as_mut(), &task)?;
@@ -380,6 +384,42 @@ fn start_task(
     }
 }
 
+/// A hidden group turn decides here, after its model step, whether it speaks.
+/// Silent (the reply is [`crate::turns::SILENT_REPLY`] or empty), a failed
+/// model call, or no model at all: the task ends `done` and stays hidden.
+/// Anything else (a reply, an MCP approval, echo mode) reveals the task and
+/// it carries on. Returns whether it speaks.
+fn speak_on_turn(
+    db: &impl Db,
+    cfg: &PumpConfig<'_>,
+    task: &TaskRow,
+    claimed_at: &str,
+    reply: Option<&Reply>,
+) -> rusqlite::Result<bool> {
+    let speaks = match reply {
+        None => cfg.echo_prompt,
+        Some(r) if r.pending.is_some() => true,
+        Some(r) if r.failure.is_some() => {
+            eprintln!(
+                "pump: turn {} stays silent after a failed model step: {}",
+                task.id,
+                r.failure.as_deref().unwrap_or_default()
+            );
+            false
+        }
+        Some(r) => !r.silent,
+    };
+    let at = newer_than(claimed_at);
+    db.with(|conn| {
+        if speaks {
+            crate::turns::reveal(conn, &task.id, &at)
+        } else {
+            crate::turns::end_silent(conn, &task.id, &at).map(|_| ())
+        }
+    })?;
+    Ok(speaks)
+}
+
 /// After the model step (or right away without a model): record the reply,
 /// block or fail on it if needed, otherwise `docker run`.
 fn finish_start(
@@ -397,6 +437,9 @@ fn finish_start(
         group_dir,
     } = started;
     let (claimed_at, mcp_resume) = (claimed_at.as_str(), *mcp_resume);
+    if task.turn_hidden && !speak_on_turn(db, cfg, task, claimed_at, reply.as_ref())? {
+        return Ok(());
+    }
     let mut reply_progress = None;
     if let Some(reply) = reply {
         reply_progress = reply.progress.clone();
@@ -704,7 +747,7 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
         ""
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing, get_count FROM tasks
+        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing, get_count, turn_hidden FROM tasks
          WHERE state = ?1{live_only} ORDER BY created_at, id"
     ))?;
     let rows = stmt.query_map([state], |row| {
@@ -716,6 +759,7 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
             updated_at: row.get(4)?,
             briefing: row.get::<_, i64>(5)? != 0,
             get_count: row.get(6)?,
+            turn_hidden: row.get::<_, i64>(7)? != 0,
         })
     })?;
     rows.collect()
@@ -840,6 +884,7 @@ fn write_reply(
         }
     }
     let progress = robroz_runner::last_progress(&text).map(str::to_string);
+    let silent = pending.is_none() && crate::turns::is_silent(&text);
     if pending.is_none() {
         if let Err(err) = std::fs::write(&path, text) {
             eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
@@ -852,6 +897,7 @@ fn write_reply(
         needs_setup: ctx.needs_setup,
         over_quota,
         pending,
+        silent,
     }
 }
 
@@ -863,6 +909,8 @@ struct Reply {
     needs_setup: Option<String>,
     over_quota: bool,
     pending: Option<crate::tools::PendingApproval>,
+    /// The reply asks to stay silent on a group turn ([`crate::turns::is_silent`]).
+    silent: bool,
 }
 
 fn block_mcp_task(

@@ -198,11 +198,23 @@ curl -s -X POST $B/api/bros/<botId>/dm
 
 - 私聊：整句派给那个 bro，prompt 是整句。
 - 群：只有以 `@名字` 或 `＠名字` 开头，名字是群成员的（全局）名字，且名字后面紧跟空白或句子结束时才派。多个名字都能匹配时取最长的（`@bro 2 …` 派给 `bro 2`）。prompt 是 `@名字` 后面去掉首尾空白的部分；为空就不派。
-- 其他情况只存消息。
+- 其他情况不直接派任务，但群里照样轮次（见下）。
+
+**群轮次**（`host/src/turns.rs`）：群里（不是私聊）的每一条 `/say`，群里每个 bro 都轮一次，可以选择不说话。
+
+- 顺序：被 `@` 点名的 bro 先（就是上面那个任务，跟以前完全一样：prompt 去掉 `@名字`，状态卡马上出现，在 `Said.task` 里返回），其余成员按入群顺序。没点名时 `Said.task` 仍是 `null`，所有成员按入群顺序轮。
+- 一个接一个：前面所有轮次的任务都离开 `queued` / `running`（变成 `done` 或 `blocked`）后，宿主机才给下一个 bro 建任务。它的 prompt 里有原消息和前面 bro 交付的结果（每条最多 2000 字），并告诉它没话说就整条回复只写一行 `robroz-silent`（`robroz_host::turns::SILENT_REPLY`）。引用的内容去掉了所有以 `robroz-` 开头的行，所以别人的话不会替它触发对外写入、进度或沉默。
+- 没点名的轮次在模型回复之前是**隐藏**的：不出状态卡、不算未读、不算 `lastActivityAt`。模型回复之后：
+  - 回复是 `robroz-silent`（只有这一行，`robroz-progress:` 行不算）或空：任务直接 `done`，一直隐藏。客户端什么都看不到：没有消息、没有状态卡、没有交付卡、没有未读。
+  - 模型调用失败，或没设置模型：同样当作不说话，不出「模型没回」卡（只写日志）。
+  - 其他回复（包括要批 MCP 工具）：任务从这时起出现，状态卡的 `createdAt` 是这一刻，之后跟普通任务一样（进沙箱、交付卡、审批卡都照旧）。
+  - 测试开关 `ROBROZ_MODEL=echo` 下每个轮次都会说话（回显 prompt）。
+- 只有人用 `/say` 发的群消息才开一轮。bro 的交付、`POST /api/groups/{id}/messages`、`POST /api/groups/{id}/tasks`、例行任务都不开，所以 bro 之间不会互相触发。私聊不变。
+- 两条消息的轮次各走各的，互不等待。轮到某个 bro 时它已经不在群里，就跳过它。
 
 返回：
 
-- 201 `Said` `{"message":Message,"task":Task|null}`。
+- 201 `Said` `{"message":Message,"task":Task|null}`。`task` 只是被点名的那个任务；其余轮次的任务不在这里返回。
 - 400「请填写内容」：空白。
 - 404「群不存在」。
 
@@ -417,7 +429,7 @@ curl -s -N $B/api/groups/<groupId>/stream
 
 `Unread`：`{"groupId","readAt","unread","lastActivityAt"}`。`readAt` 从没读过时为 `null`；`lastActivityAt` 群里没有任何活动时为 `null`。
 
-`unread` 只数 `readAt` 之后 bro 发来、需要人看的东西：交付卡、选项卡、审批卡、确认卡（按 `createdAt`），以及 `updatedAt` 在之后、当前处于 `blocked` 的任务。人自己的消息和排队、进行、完成这类状态变化不算。审批卡只算出了卡的（审核中和被自动审核放行的不算），而且只在卡所在的会话算：bro 在群里发、改发到主人私聊的卡只算私聊的未读，群里列着的那张提示不算。
+`unread` 只数 `readAt` 之后 bro 发来、需要人看的东西：交付卡、选项卡、审批卡、确认卡（按 `createdAt`），以及 `updatedAt` 在之后、当前处于 `blocked` 的任务。还没说话的群轮次任务（见 `/say` 的「群轮次」）不算，也不算进 `lastActivityAt`。人自己的消息和排队、进行、完成这类状态变化不算。审批卡只算出了卡的（审核中和被自动审核放行的不算），而且只在卡所在的会话算：bro 在群里发、改发到主人私聊的卡只算私聊的未读，群里列着的那张提示不算。
 
 `lastActivityAt` 取消息、任务（`updatedAt`）、交付卡、选项卡、审批卡和确认卡（已回答按 `answeredAt`）里最新的时间。改发到私聊的 bro 卡在原来的群里也算一次活动（群里列着它），但不算未读。
 
