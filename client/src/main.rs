@@ -2542,11 +2542,16 @@ impl App {
                 .spacing(4)
                 .align_x(Alignment::Center);
                 if state.shows_language_row() {
+                    // Offline pane only: 360px centred row, 24px below the
+                    // address line. The Model page still uses the full-width
+                    // language_row as before.
                     Element::from(
-                        column![head, self.language_row(t)]
-                            .spacing(t.metrics.row_pad_h)
-                            .align_x(Alignment::Center)
-                            .width(Fill),
+                        column![
+                            head,
+                            container(self.language_row(t)).width(Length::Fixed(360.0)),
+                        ]
+                        .spacing(24)
+                        .align_x(Alignment::Center),
                     )
                 } else {
                     Element::from(head)
