@@ -593,8 +593,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientTimedOut => "Timed out",
         // 找不到主机  [approved, disconnected state]
         Key::ClientHostNotFound => "Host not found",
-        // 语言  [approved, settings row]
-        Key::SettingsLanguage => "Language",
+        // Language / 语言  [approved, settings row]
+        Key::SettingsLanguage => "Language / 语言",
         // English  [approved, settings row; native name in both files]
         Key::LocaleNameEn => "English",
         // 中文  [approved, settings row; native name in both files]
