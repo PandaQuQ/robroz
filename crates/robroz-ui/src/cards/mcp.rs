@@ -27,12 +27,6 @@ pub const TESTING: &str = "试连中…";
 pub const WORKS: &str = "能用了";
 pub const ADD_SECRET: &str = "加一项密钥";
 pub const REMOVE_SECRET: &str = "去掉";
-pub const NAME_PLACEHOLDER: &str = "名称";
-pub const COMMAND_PLACEHOLDER: &str = "启动命令";
-pub const ARGS_PLACEHOLDER: &str = "参数，用空格分开";
-pub const URL_PLACEHOLDER: &str = "地址，如 http://127.0.0.1:3000";
-pub const SECRET_NAME_PLACEHOLDER: &str = "密钥名称";
-pub const SECRET_KEY_PLACEHOLDER: &str = "密钥";
 /// Small labels above form fields, so a filled box is still identifiable.
 pub const LABEL_NAME: &str = "名称";
 pub const LABEL_COMMAND: &str = "命令";
@@ -40,6 +34,13 @@ pub const LABEL_ARGS: &str = "参数（用空格分开）";
 pub const LABEL_URL: &str = "地址";
 pub const LABEL_SECRET_NAME: &str = "密钥名称";
 pub const LABEL_SECRET_KEY: &str = "密钥";
+/// Placeholders match the field labels, so an empty box is still identifiable.
+pub const NAME_PLACEHOLDER: &str = LABEL_NAME;
+pub const COMMAND_PLACEHOLDER: &str = LABEL_COMMAND;
+pub const ARGS_PLACEHOLDER: &str = LABEL_ARGS;
+pub const URL_PLACEHOLDER: &str = LABEL_URL;
+pub const SECRET_NAME_PLACEHOLDER: &str = LABEL_SECRET_NAME;
+pub const SECRET_KEY_PLACEHOLDER: &str = LABEL_SECRET_KEY;
 /// Shorter labels in the 409 command-approval block.
 pub const LABEL_PROMPT_COMMAND: &str = "命令";
 pub const LABEL_PROMPT_ARGS: &str = "参数";
@@ -57,6 +58,10 @@ pub const COMMAND_UNAPPROVED: &str = "命令未批准";
 pub const TOOLS_NEED_APPROVAL: &str = "批准命令后才能读取工具";
 pub const COMMAND_RUNS_LOCAL: &str = "这条命令会在你的电脑上运行";
 pub const APPROVE_RUN: &str = "批准运行";
+
+pub fn approve_failed(reason: &str) -> String {
+    format!("批准失败：{reason}")
+}
 
 pub fn cannot_connect(reason: &str) -> String {
     format!("连不上：{reason}")
@@ -354,6 +359,8 @@ pub struct Book {
     pub busy: bool,
     pub note: Option<String>,
     pub entry_note: Option<(String, String)>,
+    /// Set when 「批准运行」 fails; shown in red under that button.
+    pub approve_note: Option<(String, String)>,
     pub form_note: Option<String>,
 }
 
@@ -672,6 +679,7 @@ impl Book {
     pub fn show_command_prompt(&mut self, id: &str, command: String, args: Vec<String>) {
         self.tests.remove(id);
         self.tools.remove(id);
+        self.clear_approve_note(id);
         self.open = Some(id.to_string());
         self.command_prompt
             .insert(id.to_string(), CommandPrompt { command, args });
@@ -679,12 +687,14 @@ impl Book {
 
     pub fn cancel_command_prompt(&mut self, id: &str) {
         self.command_prompt.remove(id);
+        self.clear_approve_note(id);
     }
 
     /// Host approved the current command. Caller then re-runs the test.
     pub fn command_approved(&mut self, server: McpServer) {
         let id = server.id.clone();
         self.command_prompt.remove(&id);
+        self.clear_approve_note(&id);
         if let Some(slot) = self.servers.iter_mut().find(|s| s.id == id) {
             *slot = server;
         }
@@ -697,13 +707,27 @@ impl Book {
             return None;
         }
         self.command_prompt.get(id)?;
+        self.clear_approve_note(id);
         self.busy = true;
         Some(id.to_string())
     }
 
     pub fn approve_command_failed(&mut self, id: &str, reason: &str) {
         self.busy = false;
-        self.entry_note = Some((id.to_string(), failed(reason)));
+        self.approve_note = Some((id.to_string(), approve_failed(reason)));
+    }
+
+    pub fn approve_note_for(&self, id: &str) -> Option<&str> {
+        self.approve_note
+            .as_ref()
+            .filter(|(e, _)| e == id)
+            .map(|(_, n)| n.as_str())
+    }
+
+    fn clear_approve_note(&mut self, id: &str) {
+        if self.approve_note.as_ref().is_some_and(|(e, _)| e == id) {
+            self.approve_note = None;
+        }
     }
 }
 
@@ -997,5 +1021,29 @@ mod tests {
         assert_eq!(LABEL_ARGS, "参数（用空格分开）");
         assert_eq!(LABEL_URL, "地址");
         assert_eq!(LABEL_PROMPT_ARGS, "参数");
+        assert_eq!(NAME_PLACEHOLDER, LABEL_NAME);
+        assert_eq!(COMMAND_PLACEHOLDER, LABEL_COMMAND);
+        assert_eq!(ARGS_PLACEHOLDER, LABEL_ARGS);
+        assert_eq!(URL_PLACEHOLDER, LABEL_URL);
+        assert_eq!(SECRET_NAME_PLACEHOLDER, LABEL_SECRET_NAME);
+        assert_eq!(SECRET_KEY_PLACEHOLDER, LABEL_SECRET_KEY);
+    }
+
+    #[test]
+    fn approve_failure_is_shown_under_the_button() {
+        let mut b = Book::default();
+        b.load(vec![unapproved("s3", "回声")]);
+        b.show_command_prompt("s3", "echo".into(), vec!["hello".into()]);
+        assert_eq!(b.approve_command_to_send("s3").as_deref(), Some("s3"));
+        b.approve_command_failed("s3", "宿主机忙");
+        assert_eq!(b.approve_note_for("s3"), Some("批准失败：宿主机忙"));
+        assert!(b.command_prompt_for("s3").is_some());
+        assert!(!b.busy);
+        assert_eq!(b.approve_command_to_send("s3").as_deref(), Some("s3"));
+        assert_eq!(b.approve_note_for("s3"), None);
+        b.approve_command_failed("s3", "还是不行");
+        b.cancel_command_prompt("s3");
+        assert_eq!(b.approve_note_for("s3"), None);
+        assert_eq!(approve_failed("超时"), "批准失败：超时");
     }
 }

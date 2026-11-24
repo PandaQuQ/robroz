@@ -318,20 +318,27 @@ mod tests {
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";
+        let foot = |text: &str, time: &str| status::ApprovalFootnote {
+            text: text.into(),
+            time: Some(time.into()),
+        };
         for (d, by, want) in [
-            (ApprovalDecision::Approved, None, "已批准 · 08:48"),
-            (ApprovalDecision::Denied, None, "已拒绝 · 08:48"),
-            (ApprovalDecision::Approved, Some(me), "我 批准 · 08:48"),
-            (ApprovalDecision::Denied, Some(me), "我 拒绝 · 08:48"),
+            (ApprovalDecision::Approved, None, foot("已批准", "08:48")),
+            (ApprovalDecision::Denied, None, foot("已拒绝", "08:48")),
+            (
+                ApprovalDecision::Approved,
+                Some(me),
+                foot("我已批准", "08:48"),
+            ),
+            (ApprovalDecision::Denied, Some(me), foot("我 拒绝", "08:48")),
             (
                 ApprovalDecision::Approved,
                 Some("Panda 的手机"),
-                "Panda 的手机 批准 · 08:48",
+                foot("Panda 的手机已批准", "08:48"),
             ),
         ] {
             let card = ApprovalCard::from_event(&event(d, by)).unwrap().seen_by(me);
-            let foot = status::approval_footnote(&card.state, &utc).unwrap();
-            assert_eq!(foot, want);
+            assert_eq!(status::approval_footnote(&card.state, &utc).unwrap(), want);
         }
         assert_eq!(as_me(Some(me.into()), me).as_deref(), Some(ME));
         assert_eq!(as_me(None, me), None);
