@@ -45,6 +45,34 @@ impl HostState {
     }
 }
 
+/// Short reason shown next to the host address on the disconnected pane.
+/// Maps common transport errors from ureq / `std::io`; anything else is
+/// omitted so the pane never shows `io:` or `os error`.
+pub fn connect_reason(err: &str) -> Option<Text> {
+    let s = err.to_ascii_lowercase();
+    if s.contains("connection refused") {
+        Some(Text::ClientConnectionRefused)
+    } else if s.contains("timed out") || s.contains("timed-out") || s.contains("timeout") {
+        Some(Text::ClientTimedOut)
+    } else if is_host_not_found(&s) {
+        Some(Text::ClientHostNotFound)
+    } else {
+        None
+    }
+}
+
+fn is_host_not_found(s: &str) -> bool {
+    s.contains("host not found")
+        || s.contains("failed to lookup")
+        || s.contains("name or service not known")
+        || s.contains("nodename nor servname")
+        || s.contains("temporary failure in name resolution")
+        || s.contains("no such host")
+        || s.contains("dns error")
+        || s.contains("could not resolve")
+        || s.contains("failed to resolve")
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
@@ -89,5 +117,76 @@ mod tests {
             HostState::Unreachable.notice().map(|k| k.as_str()),
             Some("Can't reach the host")
         );
+    }
+
+    #[test]
+    fn connect_reason_maps_common_io_errors() {
+        use super::connect_reason;
+
+        let refused =
+            "Can't reach the host http://127.0.0.1:1: io: Connection refused (os error 111)";
+        assert_eq!(connect_reason(refused), Some(Text::ClientConnectionRefused));
+        assert_eq!(
+            connect_reason("io: Connection refused (os error 10061)"),
+            Some(Text::ClientConnectionRefused)
+        );
+        assert_eq!(
+            text_in(Locale::En, Text::ClientConnectionRefused),
+            "Connection refused"
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ClientConnectionRefused),
+            "连接被拒绝"
+        );
+
+        assert_eq!(
+            connect_reason("io: Connection timed out (os error 110)"),
+            Some(Text::ClientTimedOut)
+        );
+        assert_eq!(
+            connect_reason("timeout: Global"),
+            Some(Text::ClientTimedOut)
+        );
+        assert_eq!(text_in(Locale::En, Text::ClientTimedOut), "Timed out");
+        assert_eq!(text_in(Locale::Zh, Text::ClientTimedOut), "超时");
+
+        assert_eq!(
+            connect_reason("host not found"),
+            Some(Text::ClientHostNotFound)
+        );
+        assert_eq!(
+            connect_reason("io: failed to lookup address information: Name or service not known"),
+            Some(Text::ClientHostNotFound)
+        );
+        assert_eq!(
+            connect_reason("nodename nor servname provided, or not known"),
+            Some(Text::ClientHostNotFound)
+        );
+        assert_eq!(
+            text_in(Locale::En, Text::ClientHostNotFound),
+            "Host not found"
+        );
+        assert_eq!(text_in(Locale::Zh, Text::ClientHostNotFound), "找不到主机");
+
+        // Unknown transport errors are omitted, never echoed raw.
+        for s in [
+            "io: UnexpectedEof (os error 0)",
+            "Can't reach the host http://127.0.0.1:1: io: Broken pipe (os error 32)",
+            "http status: 500",
+        ] {
+            assert_eq!(connect_reason(s), None);
+        }
+        for key in [
+            Text::ClientConnectionRefused,
+            Text::ClientTimedOut,
+            Text::ClientHostNotFound,
+        ] {
+            let en = text_in(Locale::En, key);
+            let zh = text_in(Locale::Zh, key);
+            assert!(!en.contains("io:"), "{en}");
+            assert!(!en.to_ascii_lowercase().contains("os error"), "{en}");
+            assert!(!zh.contains("io:"), "{zh}");
+            assert!(!zh.contains("os error"), "{zh}");
+        }
     }
 }

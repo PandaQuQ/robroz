@@ -2339,25 +2339,36 @@ impl App {
             (Some(_), true) => Text::ClientLive.as_str(),
             (Some(_), false) => Text::ClientPolling.as_str(),
         };
-        let status = match &self.error {
-            Some(err) => err.clone(),
-            None => format!("{}{live}", self.origin),
+        // While the host has never answered, the main pane already shows
+        // why; the footer keeps only the theme toggle and drops the raw
+        // "Can't reach the host … io: … (os error …)" line.
+        let status = if self.host_state() == HostState::Unreachable {
+            None
+        } else {
+            Some(match &self.error {
+                Some(err) => err.clone(),
+                None => format!("{}{live}", self.origin),
+            })
         };
-        let footer = row![
-            text(status)
-                .size(t.type_.foot)
-                .color(color(t.palette.text3)),
-            space::horizontal(),
-            button(
-                text(match self.mode {
-                    Mode::Light => Text::ClientThemeDark.as_str(),
-                    Mode::Dark => Text::ClientThemeLight.as_str(),
-                })
-                .size(t.type_.foot),
-            )
-            .style(view::nav_button_style(t, false))
-            .on_press(Message::ToggleTheme),
-        ]
+        let theme = button(
+            text(match self.mode {
+                Mode::Light => Text::ClientThemeDark.as_str(),
+                Mode::Dark => Text::ClientThemeLight.as_str(),
+            })
+            .size(t.type_.foot),
+        )
+        .style(view::nav_button_style(t, false))
+        .on_press(Message::ToggleTheme);
+        let footer = match status {
+            Some(status) => row![
+                text(status)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+                space::horizontal(),
+                theme,
+            ],
+            None => row![space::horizontal(), theme],
+        }
         .align_y(Alignment::Center);
         container(column![
             main,
@@ -2508,13 +2519,24 @@ impl App {
         let state = self.host_state();
         if !state.shows_sidebar() {
             // Before the host answers: blank while waiting, or 「连不上宿主」
-            // with the address on a lighter line below.
+            // with the address on a lighter line below, and a short reason
+            // 12px to the right when we have one.
             let notice = state.notice().map(|key| {
+                let mut detail = row![text(self.origin.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3))]
+                .spacing(12)
+                .align_y(Alignment::Center);
+                if let Some(reason) = self.error.as_deref().and_then(host_state::connect_reason) {
+                    detail = detail.push(
+                        text(reason)
+                            .size(t.type_.foot)
+                            .color(color(t.palette.text3)),
+                    );
+                }
                 column![
                     text(key).size(t.type_.body).color(color(t.palette.text)),
-                    text(self.origin.as_str())
-                        .size(t.type_.foot)
-                        .color(color(t.palette.text3)),
+                    detail,
                 ]
                 .spacing(4)
                 .align_x(Alignment::Center)

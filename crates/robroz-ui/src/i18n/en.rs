@@ -587,6 +587,12 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientPickChat => "Pick a chat",
         // 连不上宿主  [approved, disconnected state]
         Key::ClientHostUnreachable => "Can't reach the host",
+        // 连接被拒绝  [approved, disconnected state]
+        Key::ClientConnectionRefused => "Connection refused",
+        // 超时  [approved, disconnected state]
+        Key::ClientTimedOut => "Timed out",
+        // 找不到主机  [approved, disconnected state]
+        Key::ClientHostNotFound => "Host not found",
         // 语言  [approved, settings row]
         Key::SettingsLanguage => "Language",
         // English  [approved, settings row; native name in both files]
