@@ -25,7 +25,7 @@ Verified on `main` (`67dde00`).
 - **Follow-ups.** In a group, `@name` of a bro that still has an open task (`queued`, `running`, or `blocked`) attaches to that task instead of starting a new one. The same rule applies in a direct message, without `@`.
 - **Direct messages.** A DM is a group with you and one bro. Every message is a task for that bro, unless it attaches as a follow-up.
 - **Docker sandbox.** Each task runs in a container (`robroz-runner`) with no network. The group folder is mounted at `/workspace`; the task's control directory is mounted read-only at `/control`.
-- **Approvals and auto-review.** Outbound writes and similar actions wait for the owner. Allow rules can approve a request automatically; otherwise the card is sent to the owner's DM with the bro. Memory and skill changes also wait for a confirm card.
+- **Approvals and Allow rules.** Outbound writes and similar actions wait for the owner. Auto-review checks each card against your allow rules; otherwise the card is sent to the owner's DM with the bro. Memory and skill changes also wait for a confirm card.
   <!-- TODO(screenshot): approval card — same `docs/images/` set, after the English UI lands. -->
 - **Model settings.** Any OpenAI-compatible `/chat/completions` endpoint. A base URL and a model name are enough; the key is optional (for example a local Ollama). Configure this in the client or with environment variables; values saved in settings win, field by field.
 
@@ -103,7 +103,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | [docs/api.md](docs/api.md) | HTTP endpoints and events |
 | [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
 | [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
-| [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review design and allow rules |
+| [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review and allow rules |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
 | [docs/client.md](docs/client.md) | Client UI behaviour |
