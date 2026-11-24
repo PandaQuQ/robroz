@@ -2468,7 +2468,8 @@ fn masked_key_row<'a>(
         let mut input = text_input(placeholder, &key.draft)
             .secure(true)
             .size(t.type_.body)
-            .padding(Padding::from([8.0, 10.0]));
+            .padding(field_padding())
+            .style(field_input_style(*t));
         if !busy {
             input = input.on_input(on_draft);
             if let Some(submit) = on_submit {
@@ -3343,7 +3344,8 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
         Some(Provider::Searxng) => {
             let mut input = text_input(search::URL_PLACEHOLDER, &page.url)
                 .size(t.type_.body)
-                .padding(Padding::from([8.0, 10.0]));
+                .padding(field_padding())
+                .style(field_input_style(*t));
             if !busy {
                 input = input
                     .on_input(|text| Action::SearchUrl { text })
@@ -3379,11 +3381,17 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
 
 // ---------- 模型 page ----------
 
-fn model_field_padding() -> Padding {
+/// Shared fill for settings fields: the same white (or dark-theme base) as
+/// iced's default text input, not the beige card `surface`.
+fn field_fill(theme: &IcedTheme) -> Color {
+    theme.extended_palette().background.base.color
+}
+
+fn field_padding() -> Padding {
     Padding::from([8.0, 10.0])
 }
 
-fn model_field_border(t: &Skin, c: Rgb) -> Border {
+fn field_border(t: &Skin, c: Rgb) -> Border {
     Border {
         color: color(c),
         width: t.stroke.control,
@@ -3391,8 +3399,8 @@ fn model_field_border(t: &Skin, c: Rgb) -> Border {
     }
 }
 
-fn model_pick_style(t: Skin) -> impl Fn(&IcedTheme, pick_list::Status) -> pick_list::Style {
-    move |_theme, status| {
+fn field_pick_style(t: Skin) -> impl Fn(&IcedTheme, pick_list::Status) -> pick_list::Style {
+    move |theme, status| {
         let border = match status {
             pick_list::Status::Hovered | pick_list::Status::Opened { .. } => t.palette.text,
             pick_list::Status::Active => t.palette.border,
@@ -3401,16 +3409,16 @@ fn model_pick_style(t: Skin) -> impl Fn(&IcedTheme, pick_list::Status) -> pick_l
             text_color: color(t.palette.text),
             placeholder_color: color(t.palette.text3),
             handle_color: color(t.palette.text),
-            background: color(t.palette.surface).into(),
-            border: model_field_border(&t, border),
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
         }
     }
 }
 
-fn model_pick_menu_style(t: Skin) -> impl Fn(&IcedTheme) -> iced::widget::overlay::menu::Style {
-    move |_theme| iced::widget::overlay::menu::Style {
-        background: color(t.palette.surface).into(),
-        border: model_field_border(&t, t.palette.border),
+fn field_pick_menu_style(t: Skin) -> impl Fn(&IcedTheme) -> iced::widget::overlay::menu::Style {
+    move |theme| iced::widget::overlay::menu::Style {
+        background: field_fill(theme).into(),
+        border: field_border(&t, t.palette.border),
         text_color: color(t.palette.text),
         selected_text_color: color(t.palette.text),
         selected_background: color(t.palette.control_hover).into(),
@@ -3418,8 +3426,8 @@ fn model_pick_menu_style(t: Skin) -> impl Fn(&IcedTheme) -> iced::widget::overla
     }
 }
 
-fn model_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
-    move |_theme, status| {
+fn field_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
         let border = match status {
             text_input::Status::Focused { .. } => t.palette.focus,
             text_input::Status::Hovered => t.palette.text,
@@ -3427,8 +3435,8 @@ fn model_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text
         };
         let sel = t.palette.selection;
         text_input::Style {
-            background: color(t.palette.surface).into(),
-            border: model_field_border(&t, border),
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
             icon: color(t.palette.text),
             placeholder: color(t.palette.text3),
             value: color(t.palette.text),
@@ -3475,17 +3483,17 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     })
     .placeholder(model::LABEL_PRESET)
     .text_size(t.type_.body)
-    .padding(model_field_padding())
+    .padding(field_padding())
     .width(Fill)
     .handle(pick_list::Handle::Arrow { size: None })
-    .style(model_pick_style(*t))
-    .menu_style(model_pick_menu_style(*t));
+    .style(field_pick_style(*t))
+    .menu_style(field_pick_menu_style(*t));
     body = body.push(labelled(t, model::LABEL_PRESET, preset));
 
     let mut url = text_input(model::URL_PLACEHOLDER, &page.url)
         .size(t.type_.body)
-        .padding(model_field_padding())
-        .style(model_input_style(*t));
+        .padding(field_padding())
+        .style(field_input_style(*t));
     if !busy {
         url = url.on_input(|text| Action::ModelUrl { text });
     }
@@ -3493,8 +3501,8 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
 
     let mut name = text_input(page.model_placeholder(), &page.model)
         .size(t.type_.body)
-        .padding(model_field_padding())
-        .style(model_input_style(*t));
+        .padding(field_padding())
+        .style(field_input_style(*t));
     if !busy {
         name = name
             .on_input(|text| Action::ModelName { text })
