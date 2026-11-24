@@ -159,7 +159,7 @@ B=http://127.0.0.1:8790
 J='content-type: application/json'
 
 # 1. Create a group. 201 and {"id","name","tenantId"}
-GID=$(curl -s -X POST $B/api/groups -H "$J" -d '{"name":"官网"}' | jq -r .id)
+GID=$(curl -s -X POST $B/api/groups -H "$J" -d '{"name":"website"}' | jq -r .id)
 
 # 2. Add a bro: botId is the bro's id; name is what you type after @ in the group
 curl -s -X POST $B/api/groups/$GID/members -H "$J" -d '{"botId":"bot-ada","name":"ada"}'
@@ -167,14 +167,14 @@ curl -s -X POST $B/api/groups/$GID/members -H "$J" -d '{"botId":"bot-ada","name"
 # 3. Speak in the group. A leading @name gives that bro the first turn
 #    and returns its task. A message with no @ still gives every bro a turn;
 #    Said.task is then null.
-curl -s -X POST $B/api/groups/$GID/say -H "$J" -d '{"body":"@ada 写一句欢迎语"}'
+curl -s -X POST $B/api/groups/$GID/say -H "$J" -d '{"body":"@ada Write a welcome line"}'
 ```
 
 Step 3 returns 201. For a leading `@ada`, `task` is that bro's new queued task (unless it attaches as a follow-up, below):
 
 ```json
-{"message":{"id":"…","kind":"text","body":"@ada 写一句欢迎语","createdAt":"…"},
- "task":{"id":"…","assigneeBotId":"bot-ada","prompt":"写一句欢迎语","state":"queued"}}
+{"message":{"id":"…","kind":"text","body":"@ada Write a welcome line","createdAt":"…"},
+ "task":{"id":"…","assigneeBotId":"bot-ada","prompt":"Write a welcome line","state":"queued"}}
 ```
 
 What happens when you send a group message:
@@ -182,6 +182,7 @@ What happens when you send a group message:
 - Every bro in the group gets a turn. The bro named by a leading `@name` or `＠name` (full-width) speaks first, and that task is returned in `Said.task`. The rest go one at a time in join order and may stay silent (no message, no card, no unread). If no one is named, `Said.task` is `null` and every member still gets a turn.
 - The mention must be at the start of the message, followed by whitespace or the end of the line. If several member names could match, the longest wins. A leading `@name` with nothing after it does not start a direct-path task; `task` is `null`.
 - If that named bro already has an open task in the group (still in progress, waiting, or blocked), the message is a follow-up: it attaches to that task instead of starting a new one. `Said.task` is the existing task, and `Said.appendedToTaskId` is set. The same rule applies in a direct message, without `@`.
+- When a bro posts a clean reply in a group (not silence, not a failed result), the other bros get a turn to join in. The speaker is not asked again, and neither are bros still waiting in the same round. A leading `@name` in that reply moves that bro to the front. This stops after two such rounds (`MAX_BRO_DEPTH = 2`). Silence, a failed result, a DM, `POST /api/groups/{id}/tasks`, and scheduled tasks do not open a new round.
 
 In a DM you do not need `@`; the message goes to that bro, or attaches as a follow-up if the bro already has an open task there.
 
@@ -198,7 +199,7 @@ curl -s $B/api/groups/$GID/events | jq -c '.events[] | {type, state, label, path
 ```
 
 - A `status` card is the task's status, with `botId`, `botName`, `state`, `label` and `containerUp`. 「完成」 means the task is done.
-- A `delivery` card means the result was written, in the group folder: `./data/groups/<groupId>/tasks/<taskId>/result.txt`. If no model is configured and `ROBROZ_MODEL=echo` is off, the file is 「还没设置模型」 and the delivery has `needsSetup:"model"`. Only with the test switch on is the file the prompt itself, here 「写一句欢迎语」.
+- A `delivery` card means the result was written, in the group folder: `./data/groups/<groupId>/tasks/<taskId>/result.txt`. If no model is configured and `ROBROZ_MODEL=echo` is off, the file is 「还没设置模型」 and the delivery has `needsSetup:"model"`. Only with the test switch on is the file the prompt itself, here `Write a welcome line`.
 - The status card may also show a light-grey hint under the bro's name, 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). That is only a hint: the step is not cancelled and the container is not stopped. A grey 「没写出结果」 (Finished with no result) means the container exited non-zero, wrote no result, or disappeared. The task has already ended as `done`; it is not started again automatically, and `resume` is refused. It is not shown as 「没做成：没写出结果」.
 - For a live feed of cards, use `GET /api/groups/{id}/stream`. For only what changed, `GET …/events?since=<RFC3339 timestamp>`.
 
@@ -207,7 +208,7 @@ Another way to start is to create a bro; the host also opens a DM for it:
 ```sh
 curl -s -X POST $B/api/bros -H "$J" -d '{"name":"bob"}'
 # {"id":"…","name":"bob","dmGroupId":"…"}
-curl -s -X POST $B/api/groups/<dmGroupId>/say -H "$J" -d '{"body":"写一句欢迎语"}'
+curl -s -X POST $B/api/groups/<dmGroupId>/say -H "$J" -d '{"body":"Write a welcome line"}'
 ```
 
 Other endpoints (approvals, Allow rules, choice cards, scheduled routines, memory, skills, search settings, model settings, MCP servers) are in [api.md](api.md).
