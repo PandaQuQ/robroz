@@ -8,7 +8,8 @@ use robroz_host::{auth, DockerSandbox, Host, DEFAULT_CONTROL_ROOT};
 /// live outside them.
 fn ensure_control_outside_volumes(control: &std::path::Path, volumes: &std::path::Path) {
     for dir in [control, volumes] {
-        std::fs::create_dir_all(dir).unwrap_or_else(|err| panic!("无法创建 {}: {err}", dir.display()));
+        std::fs::create_dir_all(dir)
+            .unwrap_or_else(|err| panic!("无法创建 {}: {err}", dir.display()));
     }
     let control = std::fs::canonicalize(control).expect("ROBROZ_CONTROL 无法解析");
     let volumes = std::fs::canonicalize(volumes).expect("ROBROZ_VOLUMES 无法解析");
@@ -41,13 +42,22 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_CONTROL_ROOT));
     ensure_control_outside_volumes(&control, &volumes);
-    // Errors name the variable, never the key.
-    let model = robroz_model::config_from_env().unwrap_or_else(|err| fail(&err));
-    match &model {
-        Some(cfg) => eprintln!("robroz-host: 模型 {} @ {}", cfg.model, cfg.base_url),
-        None => eprintln!("robroz-host: 没配模型密钥，bro 原样回显"),
+    // Only a conflicting or invalid key stops startup. A partial env is fine:
+    // the rest can be filled in through the settings page, and takes effect
+    // on the next task without restarting. Do not freeze the env model onto
+    // the host; each pump reads the latest settings and env.
+    robroz_host::validate_model_env().unwrap_or_else(|err| fail(&err));
+    let echo = std::env::var("ROBROZ_MODEL")
+        .ok()
+        .is_some_and(|m| m.trim().eq_ignore_ascii_case("echo"));
+    match robroz_model::config_from_env().ok().flatten() {
+        Some(cfg) => eprintln!(
+            "robroz-host: 环境变量里有模型 {} @ {}，设置页保存的值优先",
+            cfg.model, cfg.base_url
+        ),
+        None if echo => eprintln!("robroz-host: 测试回显（ROBROZ_MODEL=echo）"),
+        None => eprintln!("robroz-host: 还没设置模型，任务会提示去设置"),
     }
-    let model = model.map(|cfg| std::sync::Arc::new(robroz_model::OpenAiCompat::new(cfg)) as std::sync::Arc<dyn robroz_model::Model>);
     let image = std::env::var("ROBROZ_IMAGE").unwrap_or_else(|_| "robroz-runner:local".to_string());
 
     let host = Host::open(&db_path, volumes, image)
@@ -55,8 +65,7 @@ async fn main() {
             panic!("无法打开数据库 {}: {err}", db_path.display());
         })
         .with_control_root(control)
-        .with_token(token.clone())
-        .with_model(model);
+        .with_token(token.clone());
     let app = host.router();
     let pumping = host.clone();
 
@@ -82,7 +91,11 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|err| panic!("无法监听 {addr}: {err}"));
-    let guard = if token.is_some() { "需要令牌" } else { "仅本机，无令牌" };
+    let guard = if token.is_some() {
+        "需要令牌"
+    } else {
+        "仅本机，无令牌"
+    };
     eprintln!("robroz-host listening on {addr}（{guard}）");
     axum::serve(listener, app)
         .await

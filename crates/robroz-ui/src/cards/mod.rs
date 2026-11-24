@@ -146,6 +146,10 @@ pub struct ApprovalCard {
     /// Relative path, display only (monospace, not a link).
     pub path: Option<String>,
     pub state: ApprovalState,
+    /// MCP tool on a `call` card, used to set `{server}.{tool}` in the
+    /// host summary in monospace. Absent on other actions.
+    pub mcp_server: Option<String>,
+    pub mcp_tool: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +191,8 @@ impl ApprovalCard {
             decision,
             answered_at,
             answered_by,
+            mcp_server,
+            mcp_tool,
             ..
         } = event
         else {
@@ -220,8 +226,39 @@ impl ApprovalCard {
             summary: summary.clone(),
             path: path.clone(),
             state,
+            mcp_server: mcp_server.clone(),
+            mcp_tool: mcp_tool.clone(),
         })
     }
+}
+
+/// Host `call` summary split so the view can set `{server}.{tool}` in
+/// monospace and clip the argument tail to one line. The wording is the
+/// host's; the client does not write a new sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSummaryParts<'a> {
+    pub prefix: &'a str,
+    pub tool: &'a str,
+    /// Includes the leading full-width colon when the host added args.
+    pub args: Option<&'a str>,
+}
+
+pub fn split_call_summary<'a>(
+    summary: &'a str,
+    server: Option<&str>,
+    tool: Option<&str>,
+) -> Option<CallSummaryParts<'a>> {
+    let server = server.filter(|s| !s.is_empty())?;
+    let tool = tool.filter(|t| !t.is_empty())?;
+    let needle = format!("{server}.{tool}");
+    let start = summary.find(&needle)?;
+    let end = start + needle.len();
+    let rest = &summary[end..];
+    Some(CallSummaryParts {
+        prefix: &summary[..start],
+        tool: &summary[start..end],
+        args: if rest.is_empty() { None } else { Some(rest) },
+    })
 }
 
 /// The footnote name for `answeredBy`: 「我」 when it is this client's own
@@ -281,20 +318,27 @@ mod tests {
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";
+        let foot = |text: &str, time: &str| status::ApprovalFootnote {
+            text: text.into(),
+            time: Some(time.into()),
+        };
         for (d, by, want) in [
-            (ApprovalDecision::Approved, None, "已批准 · 08:48"),
-            (ApprovalDecision::Denied, None, "已拒绝 · 08:48"),
-            (ApprovalDecision::Approved, Some(me), "我 批准 · 08:48"),
-            (ApprovalDecision::Denied, Some(me), "我 拒绝 · 08:48"),
+            (ApprovalDecision::Approved, None, foot("已批准", "08:48")),
+            (ApprovalDecision::Denied, None, foot("已拒绝", "08:48")),
+            (
+                ApprovalDecision::Approved,
+                Some(me),
+                foot("我已批准", "08:48"),
+            ),
+            (ApprovalDecision::Denied, Some(me), foot("我 拒绝", "08:48")),
             (
                 ApprovalDecision::Approved,
                 Some("Panda 的手机"),
-                "Panda 的手机 批准 · 08:48",
+                foot("Panda 的手机已批准", "08:48"),
             ),
         ] {
             let card = ApprovalCard::from_event(&event(d, by)).unwrap().seen_by(me);
-            let foot = status::approval_footnote(&card.state, &utc).unwrap();
-            assert_eq!(foot, want);
+            assert_eq!(status::approval_footnote(&card.state, &utc).unwrap(), want);
         }
         assert_eq!(as_me(Some(me.into()), me).as_deref(), Some(ME));
         assert_eq!(as_me(None, me), None);
@@ -360,5 +404,65 @@ mod tests {
             created_at: "2026-11-20T01:50:00.000Z".into(),
         };
         assert!(ChoiceCard::from_event(&msg).is_none());
+    }
+
+    fn call_event(summary: &str, server: Option<&str>, tool: Option<&str>) -> Event {
+        Event::Approval {
+            id: "a-call".into(),
+            bot_id: "bot-doc".into(),
+            bot_name: "文档哥".into(),
+            action: ApprovalAction::Call,
+            summary: summary.into(),
+            path: None,
+            decision: None,
+            created_at: "2026-11-22T01:00:00Z".into(),
+            answered_at: None,
+            answered_by: None,
+            task_id: Some("t1".into()),
+            mcp_server: server.map(Into::into),
+            mcp_tool: tool.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn call_approval_keeps_the_host_summary_and_names_the_tool() {
+        let summary = "调用 notes.write_note：{\"title\":\"hi\"}";
+        let card =
+            ApprovalCard::from_event(&call_event(summary, Some("notes"), Some("write_note")))
+                .unwrap();
+        assert_eq!(card.kind, ActionKind::Call);
+        assert_eq!(card.summary, summary);
+        assert_eq!(card.mcp_server.as_deref(), Some("notes"));
+        assert_eq!(card.mcp_tool.as_deref(), Some("write_note"));
+        assert_eq!(status::action_kind_label(card.kind), "调用");
+        assert!(!card.summary.contains("要调用"));
+        assert!(!card.summary.contains("要用"));
+        let parts = split_call_summary(
+            &card.summary,
+            card.mcp_server.as_deref(),
+            card.mcp_tool.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(parts.prefix, "调用 ");
+        assert_eq!(parts.tool, "notes.write_note");
+        assert_eq!(parts.args, Some("：{\"title\":\"hi\"}"));
+    }
+
+    #[test]
+    fn call_summary_without_args_has_no_tail() {
+        let parts = split_call_summary("调用 notes.ping", Some("notes"), Some("ping")).unwrap();
+        assert_eq!(parts.prefix, "调用 ");
+        assert_eq!(parts.tool, "notes.ping");
+        assert_eq!(parts.args, None);
+    }
+
+    #[test]
+    fn call_summary_is_left_alone_without_the_tool_fields() {
+        assert!(split_call_summary("调用 notes.write_note：{}", None, None).is_none());
+        let long = format!("：{}", "很长的参数".repeat(40));
+        let cut = status::clamp_lines(&long, 20, 1);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(!cut.contains('\n'), "{cut}");
+        assert!(cut.chars().count() < long.chars().count());
     }
 }

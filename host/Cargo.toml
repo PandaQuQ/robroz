@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 axum = "0.8"
 chrono = { version = "0.4", features = ["clock"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
@@ -16,7 +16,7 @@ url = "2"
 robroz-contract = { path = "../crates/robroz-contract" }
 robroz-policy = { path = "../crates/robroz-policy" }
 robroz-card = { path = "../crates/robroz-card" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "=1.11.0", features = ["v4"] }
 croner = "4.0.1"

@@ -21,7 +21,7 @@ use crate::cards::search;
 use crate::cards::secret;
 use crate::cards::skills::{self, Book as SkillBook};
 use crate::cards::status::{self, Dot};
-use crate::cards::{ApprovalCard, Card, ChoiceCard, DraftCard};
+use crate::cards::{split_call_summary, ApprovalCard, Card, ChoiceCard, DraftCard};
 use crate::conversations::{self, Conversation, Conversations};
 use robroz_contract::{McpSecretIn, McpServer};
 
@@ -209,9 +209,6 @@ pub enum Action {
         index: usize,
         text: String,
     },
-    McpSecretReplace {
-        index: usize,
-    },
     McpSecretClear {
         index: usize,
     },
@@ -260,7 +257,6 @@ pub enum Action {
     SearchKey {
         text: String,
     },
-    SearchReplaceKey,
     SearchClearKey,
     SearchCancelKey,
     SearchSave,
@@ -470,12 +466,70 @@ fn body<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
         .into()
 }
 
+/// Host `call` summary shown verbatim: `{server}.{tool}` in monospace,
+/// argument tail clipped to one line with "…". Other actions stay as
+/// ordinary body text.
+fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element<'a, Action> {
+    let Some(parts) = split_call_summary(
+        &card.summary,
+        card.mcp_server.as_deref(),
+        card.mcp_tool.as_deref(),
+    ) else {
+        return body(t, &card.summary);
+    };
+    let mut line = row![
+        text(parts.prefix)
+            .size(t.type_.body)
+            .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+            .color(color(t.palette.text)),
+        text(parts.tool)
+            .font(Font::MONOSPACE)
+            .size(t.type_.mono)
+            .color(color(t.palette.text)),
+    ]
+    .spacing(0)
+    .align_y(Alignment::Center);
+    if let Some(args) = parts.args {
+        let cols = call_args_cols(t, inner, parts.prefix, parts.tool);
+        let clipped = status::clamp_lines(args, cols, 1);
+        line = line.push(
+            text(clipped)
+                .size(t.type_.body)
+                .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+                .wrapping(Wrapping::None)
+                .color(color(t.palette.text)),
+        );
+    }
+    line.into()
+}
+
+fn call_args_cols(t: &Skin, inner: f32, prefix: &str, tool: &str) -> usize {
+    let unit = |s: &str| -> f32 {
+        s.chars()
+            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+            .sum()
+    };
+    // No action tag on call cards, so the summary can use the full width.
+    let prefix_w = unit(prefix) * t.type_.body * t.type_.unit_width;
+    let tool_w = tool.chars().count() as f32 * t.type_.mono * MONO_ADVANCE;
+    let room = inner - prefix_w - tool_w;
+    (room / (t.type_.body * t.type_.unit_width)).max(4.0) as usize
+}
+
 fn footnote<'a, M: 'a>(t: &Skin, s: String) -> Element<'a, M> {
     text(s)
         .size(t.type_.foot)
         .line_height(LineHeight::Absolute(Pixels(t.type_.foot_line)))
         .color(color(t.palette.text3))
         .into()
+}
+
+fn approval_footnote_view<'a, M: 'a>(t: &Skin, foot: status::ApprovalFootnote) -> Element<'a, M> {
+    let mut r = row![footnote(t, foot.text)].align_y(Alignment::Center);
+    if let Some(time) = foot.time {
+        r = r.push(footnote(t, time));
+    }
+    r.spacing(t.controls.button_gap).into()
 }
 
 fn tag<'a, M: 'a>(t: &Skin, label: &'static str, fg: Rgb) -> Element<'a, M> {
@@ -997,14 +1051,21 @@ pub fn approval<'a>(
                 }),
             ));
     } else {
-        col = col.push(
+        // A call card's host summary already starts with 「调用」, so the
+        // action tag would repeat it. Other kinds keep the tag.
+        let summary = container(approval_summary(t, card, inner)).width(Fill);
+        let line: Element<'a, Action> = if card.kind == crate::cards::ActionKind::Call {
+            summary.into()
+        } else {
             row![
                 tag(t, status::action_kind_label(card.kind), t.palette.text2),
-                container(body(t, &card.summary)).width(Fill),
+                summary,
             ]
             .spacing(t.controls.button_gap)
-            .align_y(Alignment::Center),
-        );
+            .align_y(Alignment::Center)
+            .into()
+        };
+        col = col.push(line);
         if let Some(path) = &card.path {
             col = col
                 .push(gap(t.metrics.head_gap))
@@ -1043,13 +1104,14 @@ pub fn approval<'a>(
             ));
         }
     }
-    let foot = ui
-        .note
-        .as_ref()
-        .map(|n| n.text())
-        .or_else(|| status::approval_footnote(&card.state, &Local));
-    if let Some(foot) = foot {
-        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, foot));
+    if let Some(note) = ui.note.as_ref() {
+        col = col
+            .push(gap(t.metrics.foot_gap))
+            .push(footnote(t, note.text()));
+    } else if let Some(foot) = status::approval_footnote(&card.state, &Local) {
+        col = col
+            .push(gap(t.metrics.foot_gap))
+            .push(approval_footnote_view(t, foot));
     }
     frame(t, col.into())
 }
@@ -2337,6 +2399,67 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
     .into()
 }
 
+fn masked_key_row<'a>(
+    t: &Skin,
+    key: &'a secret::MaskedKey,
+    placeholder: &'static str,
+    busy: bool,
+    on_draft: impl Fn(String) -> Action + 'a,
+    on_clear: Action,
+    on_undo: Action,
+    on_submit: Option<Action>,
+) -> Element<'a, Action> {
+    if key.shows_stored() {
+        row![
+            text(secret::filled(key.last4.as_deref()))
+                .size(t.type_.body)
+                .color(color(t.palette.text)),
+            space::horizontal(),
+            btn(
+                t,
+                secret::CLEAR.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(on_clear),
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center)
+        .width(Fill)
+        .into()
+    } else if key.clearing {
+        row![
+            text(secret::PENDING_CLEAR)
+                .size(t.type_.body)
+                .color(color(t.palette.text2)),
+            space::horizontal(),
+            btn(
+                t,
+                secret::UNDO.into(),
+                Look::Secondary,
+                Leading::None,
+                (!busy).then_some(on_undo),
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center)
+        .width(Fill)
+        .into()
+    } else {
+        let mut input = text_input(placeholder, &key.draft)
+            .secure(true)
+            .size(t.type_.body)
+            .padding(Padding::from([8.0, 10.0]));
+        if !busy {
+            input = input.on_input(on_draft);
+            if let Some(submit) = on_submit {
+                input = input.on_submit(submit);
+            }
+        }
+        input.into()
+    }
+}
+
 fn mcp_secret_row<'a>(
     t: &Skin,
     index: usize,
@@ -2390,51 +2513,16 @@ fn mcp_secret_row<'a>(
     ]
     .spacing(t.controls.button_gap)
     .align_y(Alignment::Center);
-    let key_row: Element<'a, Action> = if secret.key.shows_stored() {
-        row![
-            text(secret::filled(secret.key.last4.as_deref()))
-                .size(t.type_.body)
-                .color(color(t.palette.text2)),
-            btn(
-                t,
-                secret::REPLACE.into(),
-                Look::Secondary,
-                Leading::None,
-                (!busy).then_some(Action::McpSecretReplace { index }),
-            ),
-            btn(
-                t,
-                secret::CLEAR.into(),
-                Look::Secondary,
-                Leading::None,
-                (!busy).then_some(Action::McpSecretClear { index }),
-            ),
-        ]
-        .spacing(t.controls.button_gap)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        let mut key = text_input(mcp::SECRET_KEY_PLACEHOLDER, &secret.key.draft)
-            .secure(true)
-            .size(t.type_.body)
-            .padding(Padding::from([8.0, 10.0]));
-        if !busy {
-            key = key.on_input(move |text| Action::McpSecretKey { index, text });
-        }
-        let mut row = row![key]
-            .spacing(t.controls.button_gap)
-            .align_y(Alignment::Center);
-        if secret.key.has_key {
-            row = row.push(btn(
-                t,
-                mcp::CANCEL.into(),
-                Look::Secondary,
-                Leading::None,
-                (!busy).then_some(Action::McpSecretCancel { index }),
-            ));
-        }
-        row.into()
-    };
+    let key_row = masked_key_row(
+        t,
+        &secret.key,
+        mcp::SECRET_KEY_PLACEHOLDER,
+        busy,
+        move |text| Action::McpSecretKey { index, text },
+        Action::McpSecretClear { index },
+        Action::McpSecretCancel { index },
+        None,
+    );
     column![
         labelled(t, mcp::LABEL_SECRET_NAME, name),
         place,
@@ -2622,7 +2710,7 @@ fn mcp_command_prompt<'a>(
         args_block = args_block.push(mono_wrap(t, arg.as_str()));
     }
     let id = server.id.clone();
-    column![
+    let mut col = column![
         command_block,
         args_block,
         text(mcp::COMMAND_RUNS_LOCAL)
@@ -2646,8 +2734,11 @@ fn mcp_command_prompt<'a>(
         ]
         .spacing(t.controls.button_gap),
     ]
-    .spacing(t.metrics.dot_gap)
-    .into()
+    .spacing(t.metrics.dot_gap);
+    if let Some(err) = book.approve_note_for(&server.id) {
+        col = col.push(text(err).size(t.type_.foot).color(color(t.palette.accent)));
+    }
+    col.into()
 }
 
 fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, server: &'a McpServer) -> Element<'a, Action> {
@@ -3219,70 +3310,16 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
     body = body.push(picks);
     match page.provider {
         Some(Provider::Brave) => {
-            if page.shows_stored_key() {
-                let last4 = page.current.as_ref().and_then(|c| c.key_last4.as_deref());
-                body = body.push(
-                    row![
-                        text(search::key_filled(last4)).color(color(t.palette.text)),
-                        space::horizontal(),
-                        btn(
-                            t,
-                            search::REPLACE.into(),
-                            Look::Secondary,
-                            Leading::None,
-                            (!busy).then_some(Action::SearchReplaceKey)
-                        ),
-                        btn(
-                            t,
-                            search::CLEAR.into(),
-                            Look::Secondary,
-                            Leading::None,
-                            (!busy).then_some(Action::SearchClearKey)
-                        ),
-                    ]
-                    .spacing(t.controls.button_gap)
-                    .align_y(Alignment::Center),
-                );
-            } else if page.key.clearing {
-                body = body.push(
-                    row![
-                        text("保存后清除 key").color(color(t.palette.text2)),
-                        space::horizontal(),
-                        btn(
-                            t,
-                            search::CANCEL.into(),
-                            Look::Secondary,
-                            Leading::None,
-                            (!busy).then_some(Action::SearchCancelKey)
-                        ),
-                    ]
-                    .spacing(t.controls.button_gap)
-                    .align_y(Alignment::Center),
-                );
-            } else {
-                let mut input = text_input(search::KEY_PLACEHOLDER, &page.key.draft)
-                    .secure(true)
-                    .size(t.type_.body)
-                    .padding(Padding::from([8.0, 10.0]));
-                if !busy {
-                    input = input
-                        .on_input(|text| Action::SearchKey { text })
-                        .on_submit(Action::SearchSave);
-                }
-                let mut r = row![input]
-                    .spacing(t.controls.button_gap)
-                    .align_y(Alignment::Center);
-                if page.key.replacing {
-                    r = r.push(btn(
-                        t,
-                        search::CANCEL.into(),
-                        Look::Secondary,
-                        Leading::None,
-                        (!busy).then_some(Action::SearchCancelKey),
-                    ));
-                }
-                body = body.push(r);
-            }
+            body = body.push(masked_key_row(
+                t,
+                &page.key,
+                search::KEY_PLACEHOLDER,
+                busy,
+                |text| Action::SearchKey { text },
+                Action::SearchClearKey,
+                Action::SearchCancelKey,
+                Some(Action::SearchSave),
+            ));
         }
         Some(Provider::Searxng) => {
             let mut input = text_input(search::URL_PLACEHOLDER, &page.url)

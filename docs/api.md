@@ -56,6 +56,9 @@
 | GET | `/api/settings/search` | 读搜索设置 | `host/src/search.rs:get_search` |
 | PUT | `/api/settings/search` | 改搜索设置 | `host/src/search.rs:put_search` |
 | POST | `/api/settings/search/test` | 试连搜索 | `host/src/search.rs:test_search` |
+| GET | `/api/settings/model` | 读模型设置 | `host/src/model_settings.rs:get_model` |
+| PUT | `/api/settings/model` | 改模型设置 | `host/src/model_settings.rs:put_model` |
+| POST | `/api/settings/model/test` | 试连模型 | `host/src/model_settings.rs:test_model` |
 | GET | `/api/mcp/servers` | 列 MCP 服务器 | `host/src/mcp.rs:list_servers` |
 | POST | `/api/mcp/servers` | 加 MCP 服务器 | `host/src/mcp.rs:create_server` |
 | PATCH | `/api/mcp/servers/{id}` | 改 MCP 服务器 | `host/src/mcp.rs:patch_server` |
@@ -360,7 +363,12 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 ### needsSetup
 
-交付卡的可选字段。现在只有 `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。和 `failure` 互不依赖：一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。客户端应按这个字段引导用户去填搜索设置，不要匹配文字。客户端的做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)。
+交付卡的可选字段。现在有两种值，和 `failure` 互不依赖：
+
+- `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。
+- `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。结果文件是「还没设置模型」，不把 prompt 原样写成结果。
+
+客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型设置页还在后面做。
 
 ---
 
@@ -793,6 +801,49 @@ curl -s -X PUT $B/api/settings/search -H 'content-type: application/json' \
 
 ```sh
 curl -s -X POST $B/api/settings/search/test
+```
+
+---
+
+## 模型设置
+
+模型和搜索一样，可以用环境变量，也可以用设置接口。设置接口优先，逐个字段比较。只支持 OpenAI 兼容的 `/chat/completions`，后端不维护服务商列表。密钥只以 `hasKey` 和后 4 位返回，永不回显。改完立即生效，不用重启宿主机。详见 [configuration.md 的「模型」](configuration.md#模型)。
+
+### GET /api/settings/model
+
+读当前生效的模型配置。`host/src/model_settings.rs:get_model`
+
+没配的字段是 `null`。`source` 在设置接口填过任意一项时是 `"settings"`，三项都没填、全部来自环境变量时是 `"env"`，什么都没配时不出现这个字段。
+
+```sh
+curl -s $B/api/settings/model
+```
+
+```json
+{"baseUrl":"https://api.openai.com/v1","model":"gpt-4o-mini","hasKey":true,"keyLast4":"9f3a","source":"env"}
+```
+
+### PUT /api/settings/model
+
+改设置接口里的模型配置。`host/src/model_settings.rs:put_model`
+
+请求体是 JSON 对象：`{baseUrl?, model?, key?}`。某个字段不传表示不改；传 `null` 表示清除该项，之后退回环境变量。`baseUrl` 必须以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。成功时返回和 `GET` 相同的对象。非法的 `baseUrl` 或空值返回 400。
+
+```sh
+curl -s -X PUT $B/api/settings/model -H 'content-type: application/json' \
+  -d '{"baseUrl":"https://api.openai.com/v1","model":"gpt-4o-mini","key":"<你的密钥>"}'
+```
+
+### POST /api/settings/model/test
+
+用当前生效的配置发一条最短的 `/chat/completions` 请求试连。无请求体。总是 200。超时 10 秒。`host/src/model_settings.rs:test_model`
+
+- `{"ok":true}`。
+- `{"ok":false,"error":"还没设置模型"}`：地址、模型名、密钥没有配齐。
+- `{"ok":false,"error":"连不上：<原因>"}`：原因里的密钥会被替换成 `***`。
+
+```sh
+curl -s -X POST $B/api/settings/model/test
 ```
 
 ---

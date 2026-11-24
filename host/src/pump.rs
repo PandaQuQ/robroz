@@ -34,8 +34,12 @@ pub struct PumpConfig<'a> {
     pub control_root: &'a Path,
     pub image: &'a str,
     pub get_limit: u64,
-    /// `None`: no model, the runner echoes the prompt.
+    /// `None`: no live model. See [`Self::echo_prompt`].
     pub model: Option<&'a dyn robroz_model::Model>,
+    /// When `model` is `None`, `true` keeps the runner echoing the prompt
+    /// (`ROBROZ_MODEL=echo` and the unit-test `pump` helper). `false` writes
+    /// 「还没设置模型」and sets `needsSetup: "model"`.
+    pub echo_prompt: bool,
     /// Tools the model may call. Empty: the request has no `tools` field.
     pub tools: &'a crate::tools::ToolRegistry,
     /// MCP servers enabled for a task's group. `None` skips MCP registration.
@@ -81,6 +85,7 @@ pub fn pump(
             image,
             get_limit,
             model: None,
+            echo_prompt: true,
             tools: crate::tools::ToolRegistry::empty(),
             mcp: None,
         },
@@ -250,6 +255,18 @@ fn start_task(
             })?;
             return Ok(());
         }
+    } else if !cfg.echo_prompt {
+        let path = robroz_runner::reply_path(&control_dir);
+        let _ = std::fs::remove_file(&path);
+        if let Err(err) = std::fs::write(&path, crate::model_settings::NOT_CONFIGURED) {
+            eprintln!("pump: write needs-setup reply for {}: {err}", task.id);
+        }
+        db.with(|conn| {
+            conn.execute(
+                "UPDATE tasks SET needs_setup = ?1 WHERE id = ?2",
+                params!["model", task.id],
+            )
+        })?;
     }
 
     let name = container_name(&task.id);

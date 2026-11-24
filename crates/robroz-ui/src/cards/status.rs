@@ -130,22 +130,38 @@ where
     }
 }
 
-/// Footnote under an answered approval card, time from the host's
-/// `answeredAt`: 「X 批准 · HH:MM」 / 「X 拒绝 · HH:MM」 when the host knows
-/// who answered (「我」 for this client), else 「已批准 · HH:MM」 /
-/// 「已拒绝 · HH:MM」 (UI decision after #40).
-pub fn approval_footnote<Tz: TimeZone>(state: &ApprovalState, tz: &Tz) -> Option<String>
+/// Decision text and optional local `HH:MM` under an answered approval
+/// card. The view draws these as two separate spans; there is no `·`
+/// between them. Approved copy is 「我已批准」 / 「{name}已批准」 / 「已批准」.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalFootnote {
+    pub text: String,
+    pub time: Option<String>,
+}
+
+impl ApprovalFootnote {
+    fn new(text: String, time: String) -> Self {
+        Self {
+            text,
+            time: if time.is_empty() { None } else { Some(time) },
+        }
+    }
+}
+
+pub fn approval_footnote<Tz: TimeZone>(state: &ApprovalState, tz: &Tz) -> Option<ApprovalFootnote>
 where
     Tz::Offset: std::fmt::Display,
 {
     match state {
         ApprovalState::Approved { by, at } => {
-            let text = by.as_ref().map_or("已批准".into(), |b| format!("{b} 批准"));
-            Some(with_time(text, &clock_in(*at, tz)))
+            let text = by
+                .as_ref()
+                .map_or("已批准".into(), |b| format!("{b}已批准"));
+            Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
         ApprovalState::Denied { by, at } => {
             let text = by.as_ref().map_or("已拒绝".into(), |b| format!("{b} 拒绝"));
-            Some(with_time(text, &clock_in(*at, tz)))
+            Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
         ApprovalState::Pending | ApprovalState::NeedsOwner => None,
     }
@@ -451,18 +467,22 @@ mod tests {
     #[test]
     fn footnotes() {
         let at = dt(2026, 11, 20, 1, 52).and_utc().timestamp();
+        let foot = |text: &str, time: &str| ApprovalFootnote {
+            text: text.into(),
+            time: Some(time.into()),
+        };
         assert_eq!(
             approval_footnote(&ApprovalState::Approved { by: None, at }, &Utc),
-            Some("已批准 · 01:52".into())
+            Some(foot("已批准", "01:52"))
         );
         assert_eq!(
             approval_footnote(&ApprovalState::Denied { by: None, at }, &Utc),
-            Some("已拒绝 · 01:52".into())
+            Some(foot("已拒绝", "01:52"))
         );
         let by = |b: &str| Some(b.to_string());
         assert_eq!(
             approval_footnote(&ApprovalState::Approved { by: by("我"), at }, &Utc),
-            Some("我 批准 · 01:52".into())
+            Some(foot("我已批准", "01:52"))
         );
         assert_eq!(
             approval_footnote(
@@ -472,7 +492,7 @@ mod tests {
                 },
                 &Utc
             ),
-            Some("Panda 的手机 拒绝 · 01:52".into())
+            Some(foot("Panda 的手机 拒绝", "01:52"))
         );
         assert_eq!(approval_footnote(&ApprovalState::NeedsOwner, &Utc), None);
         assert_eq!(

@@ -15,11 +15,12 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{SearchSettings, SearchSettingsSource, SearchTestResult};
 use robroz_policy::SideEffect;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use url::Url;
 
+use crate::settings::{as_opt_opt, env_get, setting, upsert_setting};
 use crate::tools::{Tool, ToolCtx, ToolRegistry};
 use crate::{db_error, error_response, lock_db, AppState};
 
@@ -48,37 +49,7 @@ const SETTING_KEY: &str = "search.key";
 const BRAVE_DEFAULT_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );",
-    )
-}
-
-fn env_get(name: &str) -> Option<String> {
-    let raw = {
-        #[cfg(test)]
-        {
-            test_env::get(name)
-        }
-        #[cfg(not(test))]
-        {
-            std::env::var(name).ok()
-        }
-    };
-    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-}
-
-fn setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
-    let value: Option<String> = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    Ok(value
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty()))
+    crate::settings::migrate(conn)
 }
 
 /// One search hit, already cleaned for the model.
@@ -185,22 +156,6 @@ fn public_settings(conn: &Connection) -> rusqlite::Result<SearchSettings> {
             source: None,
         }),
     }
-}
-
-fn upsert_setting(conn: &Connection, key: &str, value: Option<&str>) -> rusqlite::Result<()> {
-    match value {
-        None => {
-            conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
-        }
-        Some(value) => {
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![key, value],
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// Brave Search API (`/res/v1/web/search`).
@@ -436,14 +391,6 @@ pub async fn get_search(State(state): State<AppState>) -> Response {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
         Err(err) => db_error(err),
     }
-}
-
-fn as_opt_opt<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Some(Option::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -904,59 +851,12 @@ fn clip_chars(text: String, max: usize) -> String {
     out
 }
 
-// put_search currently calls apply_put which I want to replace. I'll fix the
-// handler now by... actually put_search already calls apply_put. Let me
-// rewrite that function body via a later patch if compile fails.
-// I'll fix put_search here by providing a clean version later.
-
-#[cfg(test)]
-mod test_env {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    thread_local! {
-        static ENV: RefCell<Option<HashMap<String, String>>> = const { RefCell::new(None) };
-    }
-
-    pub fn get(name: &str) -> Option<String> {
-        ENV.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .and_then(|map| map.get(name).cloned())
-        })
-    }
-
-    pub fn with(pairs: &[(&str, &str)], f: impl FnOnce()) {
-        let _guard = set(pairs);
-        f();
-    }
-
-    pub struct Guard;
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            ENV.with(|slot| *slot.borrow_mut() = None);
-        }
-    }
-
-    pub fn set(pairs: &[(&str, &str)]) -> Guard {
-        ENV.with(|slot| {
-            *slot.borrow_mut() = Some(
-                pairs
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
-            );
-        });
-        Guard
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::settings::test_env;
     use crate::tools::ToolCtx;
     use serde_json::json;
 
@@ -1370,7 +1270,10 @@ mod tests {
 
         let (status, body) = http(&app, get_req("/api/settings/search")).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{body}");
-        assert!(body.get("source").is_none(), "unconfigured omits source: {body}");
+        assert!(
+            body.get("source").is_none(),
+            "unconfigured omits source: {body}"
+        );
 
         let env = [(ENV_PROVIDER, "brave"), (ENV_BRAVE_KEY, "envkeyXXXX")];
         let _guard = test_env::set(&env);

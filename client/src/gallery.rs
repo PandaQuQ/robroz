@@ -58,6 +58,8 @@ fn approval(state: ApprovalState, bot: &str) -> Card {
         summary: "清理 12 个旧日志文件".into(),
         path: Some("workspace/robroz/logs/2026-10/".into()),
         state,
+        mcp_server: None,
+        mcp_tool: None,
     })
 }
 
@@ -177,7 +179,7 @@ impl Gallery {
                     "approval · approved",
                     approval(
                         ApprovalState::Approved {
-                            by: None,
+                            by: Some("我".into()),
                             at: at(2),
                         },
                         "后端",

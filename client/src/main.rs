@@ -150,7 +150,6 @@ enum Message {
     OpenSearch,
     SearchLoaded(Result<SearchCurrent, ApiError>),
     SearchSaved(Result<SearchCurrent, ApiError>),
-    SearchCleared(Result<SearchCurrent, ApiError>),
     SearchTested(Result<(bool, Option<String>), ApiError>),
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     SkillsLoaded(Result<Vec<Skill>, ApiError>),
@@ -848,13 +847,6 @@ impl App {
                     }
                 }
             }
-            Action::McpSecretReplace { index } => {
-                if let Some(f) = book.form_mut() {
-                    if let Some(s) = f.secrets.get_mut(index) {
-                        s.key.replace();
-                    }
-                }
-            }
             Action::McpSecretClear { index } => {
                 if let Some(f) = book.form_mut() {
                     if let Some(s) = f.secrets.get_mut(index) {
@@ -1147,20 +1139,7 @@ impl App {
             Action::SearchPick { provider } => page.pick(provider),
             Action::SearchUrl { text } => page.url = text,
             Action::SearchKey { text } => page.key.draft = text,
-            Action::SearchReplaceKey => page.replace_key(),
-            Action::SearchClearKey => {
-                if page.busy {
-                    return Task::none();
-                }
-                page.clear_key();
-                page.busy = true;
-                page.test = None;
-                let put = search_page::Put::clear();
-                return Task::perform(
-                    call(&self.api, move |api| api.put_search(&put)),
-                    Message::SearchCleared,
-                );
-            }
+            Action::SearchClearKey => page.clear_key(),
             Action::SearchCancelKey => page.cancel_key(),
             Action::SearchSave => {
                 if page.busy {
@@ -1225,7 +1204,6 @@ impl App {
             | Action::McpSecretName { .. }
             | Action::McpSecretPlacement { .. }
             | Action::McpSecretKey { .. }
-            | Action::McpSecretReplace { .. }
             | Action::McpSecretClear { .. }
             | Action::McpSecretCancel { .. }
             | Action::McpSecretAdd
@@ -1243,7 +1221,6 @@ impl App {
             Action::SearchPick { .. }
             | Action::SearchUrl { .. }
             | Action::SearchKey { .. }
-            | Action::SearchReplaceKey
             | Action::SearchClearKey
             | Action::SearchCancelKey
             | Action::SearchSave => self.on_search_action(action),
@@ -1417,15 +1394,6 @@ impl App {
                         call(&self.api, |api| api.test_search()),
                         Message::SearchTested,
                     );
-                }
-                Err(err) => self.search.save_failed(&err.reason()),
-            },
-            Message::SearchCleared(result) => match result {
-                Ok(cur) => {
-                    self.search.busy = false;
-                    self.search.load(cur);
-                    self.search.test = None;
-                    self.search.note = None;
                 }
                 Err(err) => self.search.save_failed(&err.reason()),
             },

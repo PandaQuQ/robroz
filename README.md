@@ -38,13 +38,13 @@ cargo run -p robroz-host                                    # listens on 127.0.0
 cargo run -p robroz-client                                  # in a second terminal
 ```
 
-In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.
+In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the delivery is 「还没设置模型」 (*the model isn't set up yet*) and the card asks you to go to settings. Tests and CI set `ROBROZ_MODEL=echo` to keep echoing the prompt instead.
 
 To connect a model, set a token, reach the host from another machine, or walk through the API with `curl`, see [docs/install.md](docs/install.md).
 
 ## Configuration
 
-Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). Web search can also be set from the client's 「联网搜索」 (*Web search*) page; values saved there take precedence over the environment variables, field by field. Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
+Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). The model and web search can also be set through the settings API (web search also has a 「联网搜索」 (*Web search*) page in the client); values saved there take precedence over the environment variables, field by field. Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
 
 ## Documentation
 
@@ -64,6 +64,7 @@ Everything is configured with environment variables on the host and the client (
 | [docs/architecture.md](docs/architecture.md) | Components, containers, theming layer |
 | [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Phase 2 roadmap |
+| [docs/design/multi-agent.md](docs/design/multi-agent.md) | Draft design: Router, Thread subscriptions, async tools and Watchdog |
 
 "Bro" is the UI name for a bot: code, API and database still say bot (`botId` / `botName`). A DM is a group with only you and one bro.
 
