@@ -19,9 +19,9 @@ use std::sync::Mutex;
 
 use robroz_contract::{
     next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, ApprovalAction,
-    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, ErrorBody,
-    Event, McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools,
-    Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
+    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, Event,
+    McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools, Memories,
+    Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
     ReviewRuleCreated, ReviewRules, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
     MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
@@ -203,6 +203,23 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Map a failed request onto the connection form's two cases:
+    /// a rejected token, or a host that cannot be reached.
+    #[allow(dead_code)] // connection form, follow-up PR
+    pub fn as_conn_error(&self) -> crate::conn::ConnError {
+        use crate::conn::ConnError;
+        match self {
+            ApiError::Status(401, _) => ConnError::Unauthorized,
+            ApiError::Transport(msg)
+            | ApiError::Status(_, msg)
+            | ApiError::Conflict(msg)
+            | ApiError::BadRequest(msg)
+            | ApiError::NotFound(msg)
+            | ApiError::Decode(msg) => ConnError::classify(msg),
+            ApiError::CommandNotApproved(_) => ConnError::classify(&self.reason()),
+        }
+    }
+
     /// Plain reason for notes outside cards (send, rename, new bro):
     /// the host's message, or 「连不上主机」.
     pub fn reason(&self) -> String {
@@ -467,11 +484,10 @@ impl HttpApi {
                 }
             }
         }
-        let msg = serde_json::from_str::<ErrorBody>(&body)
-            .map(|e| e.error)
-            .unwrap_or_else(|_| Text::ClientHttpStatus.fill(&[&method, &url, &status]));
+        let msg = crate::conn::error_text(method, url, status, &body);
         Err(match status {
             400 => ApiError::BadRequest(msg),
+            401 => ApiError::Status(401, msg),
             404 => ApiError::NotFound(msg),
             409 => ApiError::Conflict(msg),
             _ => ApiError::Status(status, msg),
@@ -2069,6 +2085,21 @@ mod tests {
     }
 
     #[test]
+    fn as_conn_error_maps_401_and_transport() {
+        use crate::conn::ConnError;
+        assert_eq!(
+            ApiError::Status(401, "缺少或错误的令牌".into()).as_conn_error(),
+            ConnError::Unauthorized
+        );
+        let err =
+            ApiError::Transport("io: Connection refused (os error 111)".into()).as_conn_error();
+        assert_eq!(
+            err,
+            ConnError::Unreachable(Text::ClientConnectionRefused.to_string())
+        );
+    }
+
+    #[test]
     fn plain_reasons() {
         let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         assert_eq!(ApiError::BadRequest("名字太长".into()).reason(), "名字太长");
@@ -2658,7 +2689,16 @@ mod tests {
             let token = "client-test-token-0123456789";
             let base = crate::source::http_test_host_with_token(token);
             let without = HttpApi::new(Conn::new(&base));
-            assert!(matches!(without.unread(), Err(ApiError::Status(401, _))));
+            match without.unread() {
+                Err(ApiError::Status(401, msg)) => {
+                    assert_eq!(msg, crate::conn::unauthorized_message());
+                    assert_eq!(
+                        without.unread().unwrap_err().reason(),
+                        crate::conn::unauthorized_message()
+                    );
+                }
+                other => panic!("expected 401, got {other:?}"),
+            }
             let api = HttpApi::new(Conn::new(&base).with_token(Some(token.into())));
             let bro = api.create_bro().unwrap();
             let dm = bro.dm_group_id.unwrap();
@@ -2670,6 +2710,20 @@ mod tests {
             use crate::source::EventSource;
             assert!(source.groups().unwrap().iter().any(|g| g.id == dm));
             assert!(source.poll().is_ok());
+
+            // The live SSE stream uses the same Conn auth. Stop as soon as
+            // it is up, so we don't sit on an idle stream.
+            let mut last_id = None;
+            let stream = Conn::new(&base).with_token(Some(token.into())).streaming();
+            let up = crate::source::stream::read_once(&stream, &dm, &mut last_id, &mut |item| {
+                !matches!(item, crate::source::stream::StreamItem::Connected)
+            });
+            assert_eq!(up, Ok(true), "{up:?}");
+
+            let no_token = Conn::new(&base).streaming();
+            let down =
+                crate::source::stream::read_once(&no_token, &dm, &mut last_id, &mut |_| true);
+            assert_eq!(down, Err(crate::conn::unauthorized_message()));
         }
     }
 }
