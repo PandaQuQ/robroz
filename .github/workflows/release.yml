@@ -48,8 +48,32 @@ jobs:
             mkdir -p "${stage}"
             cp "target/release/${bin}${ext}" "${stage}/"
             cp LICENSE README.md "${stage}/"
+            if [ "${{ runner.os }}" = "macOS" ] && [ "${bin}" = "robroz-client" ]; then
+              # Wrap the client in a minimal .app bundle. The icon is added
+              # once the client icon PR lands.
+              app="${stage}/robroz.app/Contents"
+              mkdir -p "${app}/MacOS" "${app}/Resources"
+              mv "${stage}/${bin}" "${app}/MacOS/${bin}"
+              cat > "${app}/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>robroz</string>
+            <key>CFBundleDisplayName</key><string>robroz</string>
+            <key>CFBundleIdentifier</key><string>io.github.pandaquq.robroz</string>
+            <key>CFBundleExecutable</key><string>${bin}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version#v}</string>
+            <key>CFBundleVersion</key><string>${version#v}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+            fi
             if [ "${{ runner.os }}" = "Windows" ]; then
               (cd stage && 7z a -tzip "../dist/${name}.zip" "${name}" > /dev/null)
+            elif [ "${{ runner.os }}" = "macOS" ]; then
+              (cd stage && zip -qry "../dist/${name}.zip" "${name}")
             else
               tar -C stage -czf "dist/${name}.tar.gz" "${name}"
             fi
