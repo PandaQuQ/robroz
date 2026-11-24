@@ -288,11 +288,25 @@ described separately:
   (the database lock is dropped first; see the comment in `host/src/main.rs`
   and `host/src/pump.rs`).
 - Progress text exists (`host/src/progress.rs`, optional `progress` on the
-  status card) but nothing judges whether it is moving. A container that
-  disappears mid-run stays `running` with `containerUp` false, is not
-  re-queued, and `resume` returns 409 ("这次不能恢复"). That behaviour is
-  documented in [`docs/concepts.md`](../concepts.md) and implemented in
-  `collect_task`. A `docker run` that fails to start is the exception: the
+  status card) but nothing judges whether it is moving.
+- A container that exits non-zero, writes no result file, or disappears
+  mid-run is a dead run. This is the node 4 (permissions) rule already
+  frozen on `main`: the task stays `running` with `containerUp` false, the
+  status card shows the grey line 「没写出结果」, there is no fifth state,
+  the task is not re-queued, no new container is started, and `resume`
+  returns 409 ("这次不能恢复"). Verified in
+  [`docs/concepts.md`](../concepts.md) ("运行失败"),
+  [`docs/api.md`](../api.md) (the "pump 做什么" section and the status
+  `label` table), [`docs/architecture.md`](../architecture.md),
+  [`docs/client.md`](../client.md), and
+  [`docs/permissions.md`](../permissions.md) (a claimed block with no
+  remaining blocking line). The host implements it in `host/src/pump.rs`
+  as `Outcome::Dead`, which clears `container_up` but leaves `state` as
+  `running`, with a comment that a rerun must not repeat a half-changed
+  volume. The grey branch and copy live in
+  `crates/robroz-card/src/lib.rs`: `appearance(Running, false)` is
+  `Tone::Gray` with no action, and `status_line(Running, false)` is
+  「没写出结果」. A `docker run` that fails to start is the exception: the
   task is put back to `queued`.
 - `tick` only creates scheduled tasks. It skips a fire if the previous run is
   still `queued`, or `running` with `containerUp` true. It does not look for
@@ -302,7 +316,7 @@ described separately:
 
 ### How to change it
 
-Treat this as two host changes that can land in either order.
+The new timeout can land first. The dead-run state change cannot land before Panda decides.
 
 **Async tools (and a non-blocking pump):**
 
@@ -327,15 +341,24 @@ Treat this as two host changes that can land in either order.
   tool loop that has been up too long; a live container whose `progress` has
   not changed for a configured interval; and the existing "container is gone"
   case.
-- On a timeout or a confirmed stall, stop the container and the model loop.
-  The default, contract-safe outcome is to end the task as `done` with a
-  `failure` string (the same channel used today for model failure and the
-  eight-round cap), and not to invent a fifth state.
-- Re-dispatch (putting a dead or stalled run back to `queued` and starting
-  again) is a separate decision. It is useful for transient Docker or
-  provider failures, and dangerous for a worker that already wrote into the
-  group volume. It must not be the silent default, and it must not resume a
-  `blocked` task.
+- On a timeout or a confirmed stall of a live loop or container, stop that
+  work. A new timeout that surfaces as today's `done` + `failure` (for
+  example 「模型没回：…」, already used when the model call fails) does
+  not change dead-run semantics and is not a contract change; it can ship
+  first.
+- Auto-requeue (putting a dead or stalled run back to `queued` and starting
+  again) is out of scope. A Worker may already have written to the group
+  volume; `pump.rs` already refuses to rerun a missing container for that
+  reason. The Watchdog must not resume a `blocked` task either.
+- Changing a dead run (`running`, `containerUp` false, no result file) to
+  `done` + `failure` would overturn the node 4 rule above. The Project
+  Manager recommends keeping the current behaviour until Panda decides.
+  If Panda approves the change:
+  - the state transition and the `robroz-card` grey branch and copy
+    (「没写出结果」) must ship in the same PR, never alone;
+  - the write must be a compare-and-set, applied only while the task is
+    still `running`, `containerUp` is false, and no result file exists, so
+    a late result and the Watchdog cannot both write.
 
 ### Crates
 
@@ -347,9 +370,15 @@ Treat this as two host changes that can land in either order.
   `call`.
 - `robroz-policy`: optional timeout and stall rules, so they can be tested
   without HTTP or Docker.
-- `robroz-contract` and `robroz-card`: only if a new optional field or a new
-  `failure` wording must be shown. The existing grey "没做成：原因" path can
-  display a timeout without a new card type.
+- `robroz-contract` and `robroz-card`: only if a new optional field is
+  added, or if Panda approves ending a dead run as `done` + `failure`. In
+  that case `robroz-card` (the grey `Running` + `container_up == false`
+  branch and the 「没写出结果」 copy) must change in the same PR as the
+  host, never alone. A new timeout can use the existing grey
+  「没做成：原因」 path (`client/src/model.rs`,
+  [`docs/client.md`](../client.md),
+  [`docs/permissions.md`](../permissions.md)) without a new card type and
+  without touching that dead-run branch.
 - `robroz-runner`: unchanged unless the runner must watch a cancel flag.
 
 ### Contract impact
@@ -360,19 +389,26 @@ is already the documented way to say the work did not succeed.
 **Needs Panda's approval before merge if implemented:**
 
 - Ending a dead run (`running`, `containerUp` false, no result) as
-  `done` + `failure` instead of leaving it `running`. That reinterprets a
-  documented state combination.
-- Automatically re-queueing a dead or stalled run. Today those runs are not
-  re-queued, and `resume` is refused. Changing that changes existing state
-  machine behaviour.
+  `done` + `failure` instead of leaving it `running`. That overturns the
+  node 4 rule cited above and reinterprets a documented state combination.
+  The Project Manager recommends keeping the current behaviour for now. If
+  Panda approves, the host change and the `robroz-card` grey branch and
+  「没写出结果」 copy must land in the same PR, never separately, and the
+  update must be a compare-and-set as described above.
 - Any new required field, or any new meaning of `progress`, `containerUp`,
   or `waitingFor`. Optional fields may be added (for example a stall reason
   that is only present when set) without changing old JSON.
 
+Auto-requeue of a dead or stalled run would also be a contract change
+(`resume` is refused today, and dead runs are not re-queued). It is not
+proposed.
+
 **No contract change** for: moving the model loop off the pump thread;
-adding a timeout that still surfaces as today's `done` + `failure` "模型没回：…"
-on a call that already fails that way; and a Watchdog that only logs until
-the state-machine questions above are decided.
+adding a timeout that still surfaces as today's `done` + `failure`
+「模型没回：…」 on a call that already fails that way (this can be done
+first, after this document lands); and a Watchdog that only logs, or that
+stops a live loop, until the dead-run state-machine question above is
+decided.
 
 ## Next phase, and what we will not do
 
@@ -384,8 +420,10 @@ after this document is reviewed. It is not a schedule.
 | Host-native Router for cases with no `@name`, plus "Workers report, they do not all answer an unaddressed message" | Yes | This is the gap. Today's `@name` and DM paths already name an assignee and should stay as the fast path. |
 | Thread subscriptions so a follow-up can attach to an open task instead of always opening a sibling task | Yes | A DM or a second `@name` today starts a parallel task in the same group volume, with no link to the work already running. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Yes | Containers are already detached; the model-and-tool loop on the single pump thread is what serialises work. |
-| Host Watchdog for timeouts, missing containers, and stuck progress | Yes | There is no wall-clock limit and no stall check. Liveness of the container is not the same as progress. |
-| Ending or re-dispatching a dead `running` task | Only with Panda's approval | This changes documented state-machine behaviour. The Watchdog can land as logging, or as `done` + `failure` for new timeout cases, once that change is approved. |
+| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | Not a contract change (see section 3). Can ship as a small host PR after this document merges. |
+| Host Watchdog that logs missing containers and stuck progress, or that stops a live loop, without rewriting a dead run | Yes | There is no stall check today. Liveness of the container is not the same as progress. This can land without touching the node 4 rule. |
+| Ending a dead `running` task as `done` + `failure` | Only with Panda's approval | Overturns the node 4 rule. The Project Manager recommends keeping the current behaviour. If approved, it must ship in the same PR as the `robroz-card` grey branch and 「没写出结果」 copy, with a compare-and-set write, never alone. |
+| Auto-requeue of a dead or stalled run | No | The Worker may already have written to the group volume. This is why `pump` does not re-queue a missing container today. |
 | Changing `/say` so follow-ups do not always create a new task | Only with Panda's approval | Existing endpoint behaviour. Prefer an additive field if one is needed. |
 | A fifth task state | No | Frozen in `AGENTS.md` and `robroz-contract`. Use `done` + `failure`, or keep `running` / `blocked` as they are. |
 | Storage and compute split (cloud-stateless loop plus an on-device daemon, as in the writeup's section 5) | No | robroz is a single-machine host plus local Docker. That split does not match the current product and is not needed to land Router, Threads, or a Watchdog. |
@@ -435,7 +473,9 @@ robroz behaviour cited above was checked against the tree at `1acbae1` on
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/sandbox.rs`,
 `host/src/progress.rs`, `host/src/schedule.rs`,
 `crates/robroz-contract/src/lib.rs`, `crates/robroz-model/src/lib.rs`,
+`crates/robroz-card/src/lib.rs`,
 [`docs/architecture.md`](../architecture.md),
 [`docs/concepts.md`](../concepts.md),
-[`docs/permissions.md`](../permissions.md), and
+[`docs/permissions.md`](../permissions.md),
+[`docs/client.md`](../client.md), and
 [`docs/api.md`](../api.md).
