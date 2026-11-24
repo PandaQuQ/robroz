@@ -127,6 +127,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostSearchProviderUnsupported => "不支持的搜索服务：{0}",
         Key::HostStepTimeoutHint => "模型和工具还没回，已等 {0} 分钟",
         Key::HostStallHint => "{0} 分钟没有新进度",
+        Key::HostRouterStep => "{0}/{1} 步",
         Key::HostDeliveryWritten => ht::DELIVERY_WRITTEN,
         Key::HostDeliveryNotRun => ht::DELIVERY_NOT_RUN,
         Key::HostGateFallbackLine => ht::GATE_FALLBACK_LINE,

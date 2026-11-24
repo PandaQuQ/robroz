@@ -308,6 +308,15 @@ pub fn parse_router_step_progress(progress: &str) -> Option<(usize, usize)> {
 /// the older constants at the crate root that the host also writes.
 /// Lines built at run time ([`step_timeout_hint`], [`stall_hint`],
 /// [`using_tool`], [`router_step_progress`]) are functions, not listed here.
+/// Tool result when a tool call returns an error, before the error text.
+/// The host hands it to the model as the tool's result
+/// (`host/src/tools.rs`); it is listed here because a reply can carry it
+/// onto a card.
+pub const TOOL_CALL_FAILED_PREFIX: &str = "调用失败：";
+/// Tool result when an approved call still hits the approval gate
+/// (`host/src/tools.rs`).
+pub const TOOL_STILL_NEEDS_APPROVAL: &str = "调用失败：这个工具还需要批准";
+
 pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("GROUP_NOT_FOUND", GROUP_NOT_FOUND),
     ("BOT_NOT_IN_GROUP", BOT_NOT_IN_GROUP),
@@ -418,6 +427,8 @@ pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("PROGRESS_THINKING", PROGRESS_THINKING),
     ("PROGRESS_IN_SANDBOX", PROGRESS_IN_SANDBOX),
     ("PROGRESS_USING_PREFIX", PROGRESS_USING_PREFIX),
+    ("TOOL_CALL_FAILED_PREFIX", TOOL_CALL_FAILED_PREFIX),
+    ("TOOL_STILL_NEEDS_APPROVAL", TOOL_STILL_NEEDS_APPROVAL),
     ("WATCHDOG_STEP_TIMEOUT_PREFIX", WATCHDOG_STEP_TIMEOUT_PREFIX),
     ("WATCHDOG_STEP_TIMEOUT_SUFFIX", WATCHDOG_STEP_TIMEOUT_SUFFIX),
     ("WATCHDOG_STALL_SUFFIX", WATCHDOG_STALL_SUFFIX),
