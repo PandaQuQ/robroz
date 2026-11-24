@@ -3,7 +3,7 @@
 Status: **Accepted**  
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `d431948`. This document
+Existing behaviour below is taken from `main` at `81eb2c2`. This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -48,7 +48,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`d431948`). There is no Router session and no Worker pool.
+Verified on `main` (`81eb2c2`). There is no Router session and no Worker pool.
 
 - A person creates work by naming a bro. `POST /api/groups/{id}/say`
   (`host/src/say.rs`) stores the message, then maybe inserts one `queued` task.
@@ -494,7 +494,7 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `d431948` on
+robroz behaviour cited above was checked against the tree at `81eb2c2` on
 `main`, in particular `host/src/say.rs`, `host/src/pump.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
 `host/src/watchdog.rs`, `host/src/sandbox.rs`,
