@@ -187,21 +187,26 @@ robroz.example.com {
 
 ### Giving the client the address and the token
 
-On the machine that runs the client:
+The client speaks HTTPS (rustls). Point it at the proxy address, not at the host's loopback port.
+
+You can save the address and the token in the client. The address is written to a `host` file next to `lang` in the client config folder (`~/.config/robroz/host` on Linux, `~/Library/Application Support/robroz/host` on macOS, `%APPDATA%\robroz\host` on Windows). The token is stored in the OS keychain (`robroz` / `host-token`); if the keychain is unavailable, it is written to a `token` file next to `lang`, mode `0600` on Unix. The client never logs or displays the token.
+
+`ROBROZ_HOST` and `ROBROZ_TOKEN` override any saved values for this run and are never written back. The client does not read the host's `ROBROZ_TOKEN_FILE` variable.
 
 ```sh
 ROBROZ_HOST=https://robroz.example.com ROBROZ_TOKEN='<your-token>' cargo run -p robroz-client
 ```
 
-`ROBROZ_TOKEN` applies to this run only and is never written back. To keep a token, write it to `token` next to `lang` in the client config folder, mode `0600` on Unix (`~/.config/robroz/token` on Linux, `~/Library/Application Support/robroz/token` on macOS, `%APPDATA%\robroz\token` on Windows):
+To seed the fallback file by hand (only needed if you are not saving from the client, and the keychain is not used):
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
 (umask 077 && printf '%s\n' '<your-token>' > "$HOME/.config/robroz/token")
-ROBROZ_HOST=https://robroz.example.com cargo run -p robroz-client
+printf '%s\n' 'https://robroz.example.com' > "$HOME/.config/robroz/host"
+cargo run -p robroz-client
 ```
 
-If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's saved token. The client never logs or displays the token. A missing or wrong token shows "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」).
+If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's fallback file. A missing or wrong token shows "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」). A host that cannot be reached shows "Can't reach host." (「连不上宿主。」), followed by the reason.
 
 
 ## First task
