@@ -5365,7 +5365,7 @@ mod tests {
             .expect("kept memories go into the system prompt");
         assert_eq!(
             section,
-            "你记得这些：\n[project] Ada 专用新\n[profile] Ada 专用旧\n[habit] 共享习惯"
+            "You remember:\n[project] Ada 专用新\n[profile] Ada 专用旧\n[habit] 共享习惯"
         );
         assert!(
             !section.contains("Bob")
@@ -6618,7 +6618,7 @@ mod tests {
             .or_else(|| seen.last().map(|(_, s)| s.clone()))
             .flatten()
             .expect("kept enabled skills go into the system prompt");
-        assert!(section.contains("你会这些技能："), "{section}");
+        assert!(section.contains("Your skills:"), "{section}");
         assert!(
             section.contains("### 写周报 (weekly-report)\n先列三点"),
             "{section}"
@@ -6694,7 +6694,7 @@ mod tests {
 
     impl robroz_model::Model for TurnModel {
         fn reply(&self, prompt: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
-            if prompt.contains("刚在群里回复了") {
+            if prompt.contains("just posted the reply") {
                 self.bro_prompts.lock().unwrap().push(prompt.to_string());
                 let mut answers = self.bro_answers.lock().unwrap();
                 return Ok(if answers.is_empty() {
@@ -6778,7 +6778,7 @@ mod tests {
                 && prompts[0].contains(crate::turns::SILENT_REPLY)
         );
         assert!(
-            prompts[1].contains("【Ada】\n收到，我三点到。"),
+            prompts[1].contains("[Ada]\n收到，我三点到。"),
             "Bob sees Ada's reply: {}",
             prompts[1]
         );
@@ -6838,12 +6838,12 @@ mod tests {
         assert_eq!(prompts.len(), 3);
         assert_eq!(prompts[0], "看看这个报错", "Bob first, plain prompt");
         assert!(
-            prompts[1].contains("【Bob】\n是空指针。"),
+            prompts[1].contains("[Bob]\n是空指针。"),
             "Ada next: {}",
             prompts[1]
         );
         assert!(
-            prompts[2].contains("【Bob】\n是空指针。") && !prompts[2].contains("【Ada】"),
+            prompts[2].contains("[Bob]\n是空指针。") && !prompts[2].contains("[Ada]"),
             "Cara last; Ada said nothing: {}",
             prompts[2]
         );
@@ -6967,7 +6967,7 @@ mod tests {
             3,
             "Ada ran once, Bob had one turn per message: {prompts:?}"
         );
-        assert_eq!(prompts[0], "写周报\n\n追问：\n加上上周的数据");
+        assert_eq!(prompts[0], "写周报\n\nFollow-up:\n加上上周的数据");
         let events = events_of(&app, &group).await;
         let cards = statuses(&events);
         assert_eq!(cards.len(), 1, "{cards:?}");
@@ -7007,9 +7007,9 @@ mod tests {
         assert_eq!(prompts[0], "写周报", "the running step kept its prompt");
         assert!(
             prompts[1].starts_with("写周报")
-                && prompts[1].contains("你上一步的回复")
+                && prompts[1].contains("Your reply to the last step")
                 && prompts[1].contains("周报初稿。")
-                && prompts[1].ends_with("追问：\n加上上周的数据"),
+                && prompts[1].ends_with("Follow-up:\n加上上周的数据"),
             "the next step sees its reply and the follow-up: {}",
             prompts[1]
         );
@@ -7207,12 +7207,12 @@ mod tests {
         let bro = model.bro_prompts();
         assert_eq!(bro.len(), 2, "{bro:?}");
         assert!(
-            bro[0].contains("bro「Bob」") && bro[0].contains("我投 Postgres。"),
+            bro[0].contains("bro \"Bob\"") && bro[0].contains("我投 Postgres。"),
             "{}",
             bro[0]
         );
         assert!(
-            bro[1].contains("bro「Ada」") && bro[1].contains("单机够用"),
+            bro[1].contains("bro \"Ada\"") && bro[1].contains("单机够用"),
             "{}",
             bro[1]
         );

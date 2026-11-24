@@ -18,7 +18,7 @@ pub const MAX_TOOL_ROUNDS: usize = 8;
 /// Longest tool result, in characters, including the truncation marker.
 pub const MAX_TOOL_RESULT_CHARS: usize = 16_000;
 
-const TRUNCATED_MARK: &str = "\n…（已截断）";
+const TRUNCATED_MARK: &str = "\n…(truncated)";
 
 /// Why a tool-calling loop stopped without a text reply.
 pub const ROUND_LIMIT_FAILURE: &str = robroz_contract::host_text::TOOL_ROUND_LIMIT;
@@ -177,11 +177,11 @@ impl ToolRegistry {
 
     fn invoke_inner(&self, call: &ToolCall, ctx: &mut ToolCtx, approved: bool) -> InvokeOutcome {
         let Some(tool) = self.get(&call.name) else {
-            return InvokeOutcome::Text(format!("没有这个工具：{}", call.name));
+            return InvokeOutcome::Text(format!("No such tool: {}", call.name));
         };
         let args = match serde_json::from_str::<Value>(&call.arguments) {
             Ok(value) => value,
-            Err(err) => return InvokeOutcome::Text(format!("参数不是 JSON：{err}")),
+            Err(err) => return InvokeOutcome::Text(format!("Arguments are not JSON: {err}")),
         };
         if !approved && tier(tool.effect()) == Tier::Takeover {
             return InvokeOutcome::NeedsApproval {
@@ -613,7 +613,7 @@ mod tests {
             text
         };
         assert_eq!(exact.chars().count(), MAX_TOOL_RESULT_CHARS);
-        assert!(!exact.contains("已截断"), "{exact}");
+        assert!(!exact.contains("(truncated)"), "{exact}");
     }
 
     #[test]
@@ -727,7 +727,7 @@ mod tests {
         let tools = ToolRegistry::new();
         assert_eq!(
             tools.invoke(&call("nope", "c1", "{}"), &mut ToolCtx::new(8)),
-            InvokeOutcome::Text("没有这个工具：nope".into())
+            InvokeOutcome::Text("No such tool: nope".into())
         );
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "hi"));
@@ -735,7 +735,7 @@ mod tests {
         let InvokeOutcome::Text(out) = out else {
             panic!("{out:?}");
         };
-        assert!(out.starts_with("参数不是 JSON："), "{out}");
+        assert!(out.starts_with("Arguments are not JSON: "), "{out}");
         assert_eq!(
             tools.invoke(&call("echo", "c1", "{}"), &mut ToolCtx::new(8)),
             InvokeOutcome::Text("hi".into())

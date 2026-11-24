@@ -108,7 +108,7 @@ When the host calls the model it can register tools (`host/src/tools.rs`). Those
 
 - A Takeover MCP tool raises an approval card and is not executed until it is approved. The host's own tools today are Metered (`web_search` / `web_fetch`); any other Takeover tool is not executed.
 - A task may request at most 8 model rounds. If the 8th reply is still a tool call, the task ends as `done` with `failure` 「工具调用超过 8 轮」 (Stopped after 8 rounds of tool calls). An 8th reply that is plain text is accepted.
-- A single tool result is at most 16,000 characters. Longer text is cut and 「…（已截断）」 (…(truncated)) is appended, still within that 16,000-character cap.
+- A single tool result is at most 16,000 characters. Longer text is cut and `…(truncated)` is appended, still within that 16,000-character cap.
 - If no tools are registered, the request does not include a `tools` field, and the behaviour is the same as a call with no tools.
 
 How MCP tools are registered, named and approved is in [search-and-mcp.md](search-and-mcp.md#模型怎么调用).

@@ -10,6 +10,8 @@
 //!
 //! The first two only log and put a one-line hint in the task's existing
 //! `progress` text. They never change the task's state and never re-queue it.
+//! Cancelling a step past its timeout is the pump's job
+//! ([`crate::timeouts`]), with the same budget.
 //! A dead run is ended as `done` with the `failure` [`DEAD_RUN_FAILURE`], in a
 //! compare-and-set write. It is not re-queued and no container is started.
 //!

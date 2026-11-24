@@ -190,12 +190,12 @@ pub(crate) fn describe(
     tool: Option<&str>,
     line: Option<&str>,
 ) -> String {
-    let mut text = format!("动作类型：{action}\n说明：{summary}");
+    let mut text = format!("Action type: {action}\nDescription: {summary}");
     if let (Some(server), Some(tool)) = (server, tool) {
-        text.push_str(&format!("\nMCP 工具：{server}.{tool}"));
+        text.push_str(&format!("\nMCP tool: {server}.{tool}"));
     }
     if let Some(line) = line.filter(|l| !l.trim().is_empty()) {
-        text.push_str(&format!("\n阻塞行：{}", line.trim()));
+        text.push_str(&format!("\nBlocking line: {}", line.trim()));
     }
     text
 }

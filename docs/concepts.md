@@ -68,7 +68,7 @@ The client then applies two overrides (`client/src/model.rs`):
 - The text is normalized to one line: newlines and consecutive whitespace become a single space, ends are trimmed, at most 60 characters (longer text is cut to 59 characters plus 「…」). This is not an error.
 - If the text is unchanged, `updatedAt` is not moved and no extra event is pushed.
 - The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps 「在用 {server}.{tool}」; the line is cleared after the card is answered. If that card was moved to the owner's DM, the line is 「已发到主人私聊」 instead.
-- The host may also write 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). That is only a hint: the task state does not change, the step is not cancelled, and the container is not stopped. The variables are in [configuration.md](configuration.md).
+- The host may also write 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). The stall hint is only a hint. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` is cancelled: the container is stopped and the task ends as 「没写出结果」 (Finished with no result), with no delivery and no rerun. Time waiting on an approval card does not count. The variables are in [configuration.md](configuration.md).
 - Code: `host/src/progress.rs`, `host/src/watchdog.rs`.
 
 ## Cards (events)

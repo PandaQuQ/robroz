@@ -150,7 +150,7 @@ pub fn register_tools(tools: &mut ToolRegistry, servers: &[ReadyServer], mcp: Ar
                 name,
                 display: display_name(&server.name, &tool.name),
                 description: tool.description.clone().unwrap_or_else(|| {
-                    format!("MCP 工具 {}", display_name(&server.name, &tool.name))
+                    format!("MCP tool {}", display_name(&server.name, &tool.name))
                 }),
                 schema: if tool.input_schema.is_null() {
                     json!({ "type": "object", "properties": {} })

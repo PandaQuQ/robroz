@@ -224,7 +224,7 @@ curl -s -X POST $B/api/bros/<botId>/dm
 
 - 算追问的只有：私聊里那个 bro，或群里以 `@名字` 开头点名的 bro，自己在这里有没结束的任务。群里没点名的消息、点别的 bro 都不算。`done` 的任务不算没结束，这时照旧新建任务。
 - 追问的内容（去掉 `@名字` 后的部分）在这个任务的**下一步**被看到：
-  - `queued`：马上要跑的这一步的 prompt 末尾加上「追问：」和内容。
+  - `queued`：马上要跑的这一步的 prompt 末尾加上 `Follow-up:` 和内容。
   - `running`：当前这一步照原样跑完、照常交付。要是成功写出结果，同一个任务回到 `queued` 再跑一步：prompt 里加上上一步的回复（去掉 `robroz-` 开头的行）和追问。所以一张状态卡会有两张交付卡。
   - `blocked`：还是等审批卡，追问不是 `resume`。主人批了以后，下一步（或批准的 MCP 调用那一步跑完之后的那一步）会看到追问；主人拒了，任务照常结束，追问没人答。
   - 这一步失败（「没写出结果」、出网超额等）：任务照常 `done` + `failure`，不重新排队，追问没人答。
@@ -319,9 +319,14 @@ pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:
 5. 成功完成的任务，读它的 `proposals.jsonl`，每条记忆或技能提议发一张确认卡。
 6. Watchdog（`host/src/watchdog.rs`）：
    - `running` 且 `containerUp` false 的任务（旧版宿主机留下的运行失败）同样结束成 `done` + `failure`「没写出结果」，不重排队。
-   - 模型和工具调用跑过 `ROBROZ_STEP_TIMEOUT_SECS`（默认 600 秒）：打日志，`progress` 写「模型和工具还没回，已等 N 分钟」。
-   - 容器在跑但 `progress` 超过 `ROBROZ_STALL_SECS`（默认 900 秒）没变：打日志，`progress` 写「N 分钟没有新进度」，runner 写出新进度后换回新进度。
-   - 这两条只提示，不改状态、不停容器、不重排队。`blocked` 是在等人，不算卡住。
+   - 模型和工具调用跑过 `ROBROZ_STEP_TIMEOUT_SECS`（默认 600 秒）：打日志，`progress` 写「模型和工具还没回，已等 N 分钟」。同一个时限一到，下面的超时取消就会结束这一步，所以这条提示通常一闪而过。
+   - 容器在跑但 `progress` 超过 `ROBROZ_STALL_SECS`（默认 900 秒）没变：打日志，`progress` 写「N 分钟没有新进度」，runner 写出新进度后换回新进度。只提示，不改状态、不停容器、不重排队。`blocked` 是在等人，不算卡住。
+7. Step timeout (`host/src/timeouts.rs`). A step is the model phase after a claim (the model call and its tool calls), each Router step, or the container run. Each starts its own clock, stored in SQLite (`step_clocks`), so a host restart does not reset it. When a `running` task's step is past `ROBROZ_STEP_TIMEOUT_SECS` (default 600 seconds), the next pump pass cancels it:
+   - The container is stopped with `docker rm -f`. If that fails, the task stays `running` and the next pass tries again.
+   - A step still on its thread is told to stop before its next model or tool call. Whatever it returns later is dropped.
+   - The task ends as `done` + `failure` 「没写出结果」 (`robroz_card::NO_RESULT`), the same as a failed Router step: no delivery, no requeue, and the Router plan is dropped. A hidden group turn ends silent instead (no card).
+   - Time spent `blocked` on an approval card or a takeover is not step time. The claim after the card is answered starts a fresh clock.
+   - No new client-visible text: the card shows the existing 「没写出结果」.
 
 完整的权限规则见 [permissions.md](permissions.md)，容器和模型调用的细节见 [architecture.md](architecture.md)。
 
@@ -744,7 +749,7 @@ curl -s -X POST $B/api/memories -H 'content-type: application/json' \
 
 ### 注入模型
 
-接了模型时，宿主机把 `scope` 为 `user` 或 `bot:<执行者>`、`status=kept`、没忘掉的记忆拼进 system 提示：一段「你记得这些：」，每条一行 `[kind] 原文`，按 `updatedAt` 从新到旧，整段最多 4000 个字符，超了整条丢掉最旧的（`host/src/memories.rs:prompt_section`）。
+接了模型时，宿主机把 `scope` 为 `user` 或 `bot:<执行者>`、`status=kept`、没忘掉的记忆拼进 system 提示：一段 `You remember:`，每条一行 `[kind] 原文`，按 `updatedAt` 从新到旧，整段最多 4000 个字符，超了整条丢掉最旧的（`host/src/memories.rs:prompt_section`）。
 
 ---
 
@@ -817,7 +822,7 @@ curl -s -X PUT $B/api/groups/<groupId>/skills/weekly-report
 
 ### 注入模型
 
-接了模型时，执行者在这个群里能用的技能（**已在该群启用**、`scope` 为 `user` 或 `bot:<执行者>`、`status=kept`、没忘掉）拼成一段「你会这些技能：」，每条 `### 标题 (slug)` 加说明，加在记忆段后面，整段最多 8000 个字符，超了整条丢掉最旧的（`host/src/skills.rs:kept_for`、`prompt_section`）。
+接了模型时，执行者在这个群里能用的技能（**已在该群启用**、`scope` 为 `user` 或 `bot:<执行者>`、`status=kept`、没忘掉）拼成一段 `Your skills:`，每条 `### 标题 (slug)` 加说明，加在记忆段后面，整段最多 8000 个字符，超了整条丢掉最旧的（`host/src/skills.rs:kept_for`、`prompt_section`）。
 
 ---
 
@@ -1096,7 +1101,7 @@ curl -s -X PUT $B/api/groups/<groupId>/mcp/<serverId>
 - `readOnlyHint: true`：按一次出网 GET 计次，直接调用，不出审批卡。
 - 其余：先出上面的 MCP 工具审批卡；批准后执行（同样计一次出网 GET）并把结果交回模型；拒绝则不执行。
 - 调用出错时模型拿到「调用失败：{原因}」，任务不因此失败。
-- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
+- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上 `…(truncated)`。
 - 契约只加了可选字段和新类型：`ApprovalAction::Call`（JSON `"call"`），以及 `Event::Approval` 上可选的 `mcpServer`、`mcpTool`。现有字段和任务状态不变。
 
 行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用) 和 [permissions.md](permissions.md#mcp-tools)。
