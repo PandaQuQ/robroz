@@ -44,7 +44,7 @@
 
 | 行 | 处理 |
 | --- | --- |
-| `robroz-action:external` / `robroz-action:captcha` | 阻塞行，没接管过就停下写 `tasks/{taskId}/intent`。见 [permissions.md](permissions.md#阻塞行)。 |
+| `robroz-action:external` / `robroz-action:captcha` | 阻塞行，没接管过就停下写 `tasks/{taskId}/intent`。见 [permissions.md](permissions.md#blocking-lines)。 |
 | `robroz-progress:文字` | 写 `tasks/{taskId}/progress`（最后一行为准）。 |
 | `robroz-memory:{…}` / `robroz-skill:{…}` | 写 `tasks/{taskId}/proposals.jsonl`。 |
 | 其他 | 写进 `tasks/{taskId}/result.txt`。 |
@@ -57,7 +57,7 @@
 - 地址和模型名没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。密钥可选：没密钥时请求不带 `Authorization` 头。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
 - system 提示 = 固定开场白（`robroz_model::SYSTEM_PROMPT`）+ 记忆段 + 技能段（`host/src/pump.rs:system_extra`）。任务的 prompt 还是用户那一条，不改。
 - 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#模型)。
-- 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#模型的工具调用)。
+- 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#the-models-tool-calls)。
 
 ### 例行任务
 
