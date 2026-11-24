@@ -301,3 +301,29 @@ fn contract_prefixes_suffixes_and_hint_functions_map() {
         "Can't connect: key is wrong or missing"
     );
 }
+
+#[test]
+fn router_steps_and_tool_results_map_by_contract() {
+    use robroz_contract::host_text as ht;
+    assert_eq!(
+        host_text_in(Locale::En, &ht::router_step_progress(2, 3)),
+        "Step 2 of 3"
+    );
+    assert_eq!(
+        host_text_in(Locale::Zh, &ht::router_step_progress(2, 3)),
+        "2/3 步"
+    );
+    // Not a step line: left alone.
+    assert_eq!(host_text_in(Locale::En, "2/3步"), "2/3步");
+    assert_eq!(
+        host_text_in(Locale::En, ht::TOOL_STILL_NEEDS_APPROVAL),
+        "Call failed: this tool still needs approval"
+    );
+    assert_eq!(
+        host_text_in(
+            Locale::En,
+            &format!("{}disk full", ht::TOOL_CALL_FAILED_PREFIX)
+        ),
+        "Call failed: disk full"
+    );
+}

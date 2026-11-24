@@ -259,6 +259,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostStepTimeoutHint => "No reply from the model or tools for {0} min",
         // {0} 分钟没有新进度  [draft]
         Key::HostStallHint => "No new progress for {0} min",
+        // {0}/{1} 步  [approved]
+        Key::HostRouterStep => "Step {0} of {1}",
         // 已写入结果  [draft]
         Key::HostDeliveryWritten => "Result written",
         // 未执行  [draft]

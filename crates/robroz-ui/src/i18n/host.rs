@@ -180,12 +180,8 @@ pub(super) const PREFIXES: &[(&str, Key)] = &[
     (ht::PENDING_NOT_FOUND_PREFIX, Key::HostPendingNotFound),
     (ht::PENDING_CORRUPT_PREFIX, Key::HostPendingCorrupt),
     (ht::PENDING_UNKNOWN_ROLE_PREFIX, Key::HostPendingUnknownRole),
+    (ht::TOOL_CALL_FAILED_PREFIX, Key::HostCallFailed),
 ];
-
-/// Tool-call failures the host writes into a tool result shown on a card.
-/// Not in `host_text` (it is model-facing text that also reaches the card),
-/// so this one prefix is matched by its text.
-const CALL_FAILED_PREFIX: &str = "调用失败：";
 
 /// Whole strings, compared with `==`.
 fn exact(s: &str) -> Option<Key> {
@@ -240,8 +236,7 @@ fn exact(s: &str) -> Option<Key> {
     if Some(s) == robroz_card::appearance(TaskState::Blocked, false).action {
         return Some(Key::CardTakeOver);
     }
-    // host/src/tools.rs tool result (model-facing, not in `host_text`).
-    if s.strip_prefix(CALL_FAILED_PREFIX) == Some("这个工具还需要批准") {
+    if s == ht::TOOL_STILL_NEEDS_APPROVAL {
         return Some(Key::HostToolNeedsApproval);
     }
     None
@@ -281,6 +276,10 @@ pub fn host_text_in(locale: Locale, s: &str) -> Cow<'_, str> {
     if let Some((key, n)) = watchdog(s) {
         return Cow::Owned(key.fill_in(locale, &[&n]));
     }
+    // Router step: `router_step_progress(n, m)`.
+    if let Some((n, m)) = ht::parse_router_step_progress(s) {
+        return Cow::Owned(Key::HostRouterStep.fill_in(locale, &[&n, &m]));
+    }
     // An MCP summary contains user arguments. Translate only its fixed
     // prefix and separator, never an argument or tool name.
     if let Some(rest) = s.strip_prefix(ht::MCP_CALL_SUMMARY_PREFIX) {
@@ -297,10 +296,10 @@ pub fn host_text_in(locale: Locale, s: &str) -> Cow<'_, str> {
     // robroz-card `failure_line`: 「没做成：原因」 (its prefix, from the card
     // crate itself).
     let failed = robroz_card::failure_line("");
-    let prefixes = PREFIXES.iter().copied().chain([
-        (CALL_FAILED_PREFIX, Key::HostCallFailed),
-        (failed.as_str(), Key::HostFailedBecause),
-    ]);
+    let prefixes = PREFIXES
+        .iter()
+        .copied()
+        .chain([(failed.as_str(), Key::HostFailedBecause)]);
     for (prefix, key) in prefixes {
         if let Some(rest) = s.strip_prefix(prefix) {
             if rest.is_empty() {
