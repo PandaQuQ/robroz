@@ -1,77 +1,105 @@
-# 概念和术语
+# Concepts and terms
 
-robroz 里的叫法、任务状态和卡片是什么意思。接口字段的精确定义见 [api.md](api.md)；本页只讲概念，和 api.md 冲突时以 api.md 和代码为准。
+Names, task states and cards in robroz. Exact API fields are in [api.md](api.md). This page is about the ideas; if it disagrees with api.md or the code, those win.
 
-## 术语表
+The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional). Quoted UI text below is the Chinese the client shows today, with an English gloss.
 
-| 叫法 | 是什么 | 在哪里用 |
+## Glossary
+
+| Term | What it is | Where it is used |
 | --- | --- | --- |
-| bro | 一个 agent，也就是一个 bot。新建一个 agent 叫「引入一个 bro」。 | 只用在界面上。客户端现在的样子：会话列表标题是「聊天」，新建按钮是「引入一个 bro」（`crates/robroz-ui/src/conversations.rs` 的 `TITLE`、`NEW_BRO`），列表空时显示「还没有 bro，引入第一个」。点私聊顶部的名字可以改名。bro 资料页还没做，排在第二期（「把 Bot 当联系人管理」），见 [roadmap-phase2.md](roadmap-phase2.md)。 |
-| 默认名 | 新建时自动填的名字：第一个叫 `bro`，之后依次是 `bro 2`、`bro 3`，取第一个没被占用的。用户随时可以改名。 | 只在新建时填一个默认值，不新增字段。 |
-| `botId` / `botName` | 契约里冻住的字段名。 | 代码、接口和数据库里照旧用这两个名字，不改成 bro。 |
-| 群 | 一个会话，可以有多个人和多个 bro。 | 界面、代码和接口都用这个叫法。 |
-| 私聊 | 只有你和一个 bro 的群，不是另一种概念。 | 界面上叫私聊，代码里就是一个群。消息、任务、事件、实时推送和未读数都直接可用。 |
-| 群目录 | 每个群一个目录 `ROBROZ_VOLUMES/{groupId}`，挂到容器里的 `/workspace`。容器删掉后目录还在。 | 交付卡的 `path` 是相对这个目录的路径。 |
-| 控制目录 | 每个任务一个目录 `ROBROZ_CONTROL/{taskId}`，只有宿主机写，只读挂到容器的 `/control`。 | 放 `prompt.txt`、`reply.txt`、接管标记 `takeover`。见 [architecture.md](architecture.md)。 |
-| 例行任务 | 定时任务。到点由宿主机新建一个普通任务。 | 界面按钮叫「例行任务」。接口 `/api/schedules`。 |
-| 简报 | 例行任务成功后的交付卡，`briefing` 为 true。不是新卡种。 | 客户端角上标「简报」（`robroz_card::briefing_badge`）。 |
+| bro | An agent, which is a bot. Adding one is 「引入一个 bro」 (Add a bro). | UI only. The conversation list is titled 「聊天」 (Chats); the new button is 「引入一个 bro」 (`crates/robroz-ui/src/conversations.rs`, `TITLE` and `NEW_BRO`); an empty list shows 「还没有 bro，引入第一个」 (No bros yet. Add your first one.). Click the name at the top of a DM to rename. A bro profile page is not built yet; it is planned in phase 2 (“manage a bot as a contact”), see [roadmap-phase2.md](roadmap-phase2.md). |
+| Default name | The name filled in on create: the first is `bro`, then `bro 2`, `bro 3`, the first one not already taken. You can rename it at any time. | Only a default at create time; no extra field. |
+| `botId` / `botName` | Frozen field names in the contract. | Code, the API and the database keep these names; they are not renamed to bro. |
+| Group | A conversation. It can have people and more than one bro. | Code and the API use “group”. The conversation list is titled 「聊天」 (Chats); some other UI strings still say 群. |
+| DM (「私聊」) | A group with only you and one bro, not a different kind of object. | The UI tags it 「私聊」. In code it is a group. Messages, tasks, events, the live stream and unread all work on it as they do on any group. |
+| Group directory | One folder per group, `ROBROZ_VOLUMES/{groupId}`, mounted in the container at `/workspace`. The folder stays after the container is removed. | A delivery card's `path` is relative to this folder. |
+| Control directory | One folder per task, `ROBROZ_CONTROL/{taskId}`. Only the host writes it; it is mounted read-only at `/control` in the container. | Holds `prompt.txt`, `reply.txt` and the takeover marker `takeover`. See [architecture.md](architecture.md). |
+| Routine | A scheduled task. When it is due, the host creates an ordinary task. | The UI button is 「例行任务」 (Routines). The API is `/api/schedules`. |
+| Briefing | A delivery card after a successful routine, with `briefing` set to true. Not a new card type. | The client shows a corner badge 「简报」 (Briefing) (`robroz_card::briefing_badge`). |
+| Allow rules (「放行规则」) | Short sentences you write so auto-review can approve a risky action without showing you a card. | The settings page title is 「放行规则」 (Allow rules). See [api.md](api.md) and [design/auto-review.md](design/auto-review.md). |
 
-## bro 的名字
+## Bro names
 
-bot 的名字是全局的：同一个 `botId` 在所有群里叫同一个名字。`/say` 里的 `@名字` 匹配的就是这个全局名字。`POST /api/groups/{id}/members` 给已经存在的 bot 传 `name` 不会改名，改名用 `PATCH /api/bros/{id}`。
+A bot's name is global: the same `botId` has the same name in every group. `@name` in `/say` matches that global name. Passing `name` in `POST /api/groups/{id}/members` for a bot that already exists does not rename it; use `PATCH /api/bros/{id}`.
 
-## 任务状态
+## Group turns
 
-`state` 只有四种，冻住，不会加第五种：`queued`（排队）、`running`（在跑）、`blocked`（卡住，要人）、`done`（结束）。
+When a person sends a group `/say`, every bro in the group gets a turn. The bro named by a leading `@name` or `＠name` (full-width) goes first, and that task is returned in `Said.task`. The rest go one at a time in join order and may stay silent (no message, no card, no unread; `lastActivityAt` does not change). An un-mentioned turn stays hidden until that bro speaks. If no one is named, `Said.task` is `null` and every member still gets a turn.
 
-「失败」不是一种状态，用下面两种方式表达：
+If the named bro already has an open task in the group (`queued`, `running` or `blocked`), the message is a follow-up: it attaches to that task instead of starting a new one. `Said.task` is the existing task, and `Said.appendedToTaskId` is set. The same rule applies in a DM, without `@`.
 
-- **运行失败**：容器非 0 退出、没写出结果、或者容器中途消失（宿主机或 Docker 重启、容器被删）。任务结束成 `done`，`failure` 为「没写出结果」，没有交付卡。不重新排队，不再起容器，`resume` 返回 409「这次不能恢复」。不加第五种状态。
-- **没做成**：任务 `done`，但带 `failure`。见 [permissions.md 的「没做成」](permissions.md#没做成failure)。
+When a bro posts a clean reply in a group (not silence, not a failed result), the other bros get a turn to join in. The speaker is not asked again, and neither are bros still waiting in the same round. A leading `@name` in that reply moves that bro to the front. This stops after two such rounds (`MAX_BRO_DEPTH = 2`). Silence, a failed result, a DM, `POST /api/groups/{id}/tasks`, and scheduled tasks do not open a new round.
 
-## 状态卡的几个字段
+A first-task walk-through is in [install.md](install.md#first-task). The code is `host/src/turns.rs` (`open_round`, `open_bro_round`).
 
-一个任务恰好一张状态卡，`id` 等于 `taskId`，按 id 原地更新，`createdAt` 不变、`updatedAt` 跟着变化。
+## Task states
 
-| 字段 | 含义 |
+`state` has only four values, and they are frozen; a fifth will not be added: `queued`, `running`, `blocked`, `done`.
+
+Failure is not a state. It is expressed in two ways:
+
+- **A dead run:** the container exited non-zero, wrote no result, or disappeared (the host or Docker restarted, or the container was deleted). The task ends as `done`, `failure` is 「没写出结果」 (Finished with no result), and there is no delivery card. It is not queued again, a container is not started again, and `resume` returns 409 「这次不能恢复」 (this run can't be resumed). There is no fifth state.
+- **Couldn't finish:** the task is `done` but carries a `failure`. See [permissions.md, “Couldn't finish”](permissions.md#没做成failure). The client shows 「没写出结果」 as it is; any other reason is shown as 「没做成：原因」 (Couldn't finish: reason). It is not shown as 「没做成：没写出结果」.
+
+## Status card fields
+
+A task has exactly one status card. Its `id` equals `taskId`. The client updates that card in place by id: `createdAt` stays put, `updatedAt` moves.
+
+| Field | Meaning |
 | --- | --- |
-| `containerUp` | 只有容器还在跑的 `running` 是 true。排队、完成、卡住、运行失败都是 false。 |
-| `label` | 状态那句话，来自 `robroz_card::status_line(state, containerUp)`：排队、进行、没写出结果、卡住、完成。 |
-| `failure` | 可选。`done` 但没做成时的原因。 |
-| `waitingFor` | 可选。`blocked` 时等什么：`approval`（去答审批卡）或 `takeover`（去私聊接管）。 |
-| `progress` | 可选。`running` 且容器在跑时，bro 正在干什么；任务因 MCP 工具等审批而 `blocked` 时，是「在用 {server}.{tool}」。 |
+| `containerUp` | `true` only while the task is `running` and the container is still up. `false` when queued, done, blocked, or when a run has already died. |
+| `label` | The API status line from `robroz_card::status_line(state, containerUp)`: 「排队」 (Queued), 「进行」 (Running) when the container is up, 「没写出结果」 (Finished with no result) when a `running` card has no container (old dead-run data), 「卡住」 (Stuck), 「完成」 (Done). The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
+| `failure` | Optional. Why a `done` task did not finish. |
+| `waitingFor` | Optional. Why a `blocked` task is waiting: `approval` (answer an approval card) or `takeover` (take over in the DM). |
+| `progress` | Optional. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (Using {server}.{tool}). When the approval card was moved to the owner's DM, this line is 「已发到主人私聊」 (Sent to owner's DM). |
 
-颜色和动作也来自 `robroz-card`（`appearance`、`palette`），客户端不自己定：排队、运行失败、等批准、没做成是灰色；卡住（等接管）是琥珀色，动作「去私聊接管」。
+Colours and actions come from `robroz-card` (`appearance`, `palette`); the client does not pick its own palette. `appearance` by itself is: queued, grey; running with a live container, ink (dark); a dead run (`running` with no container), grey, same as queued; done, green; blocked, amber, with the action 「去私聊接管」 (Take over in DM).
+
+The client then applies two overrides (`client/src/model.rs`):
+
+- A `done` task with a `failure` is grey, with no action. The line is `failure_line`, never the green 「完成」.
+- A task blocked with `waitingFor: "approval"` is grey, with no takeover button. The line is 「等你批准」 (Needs your approval). Amber and 「去私聊接管」 stay only for a real takeover (`waitingFor: "takeover"`).
 
 ### progress
 
-- 宿主机自己报关键节点：开跑时「开始干活」（接了模型时是「在想怎么回」），沙箱起来后「在沙箱里跑」，调用工具时「在用 <工具名>」（MCP 工具用展示名 `{server}.{tool}`）。
-- bro 自己报：prompt 或模型回复里写一行 `robroz-progress:文字`。runner 把最后一行进度写到群目录 `tasks/{taskId}/progress`，宿主机在任务运行时读；模型回复里的进度行开跑时就用上。进度行不进 `result.txt`。
-- 规范成一行：换行和连续空白变一个空格，去掉首尾空白，最多 60 个字（超了截到 59 个字加「…」），不报错。
-- 文字没变就不改 `updatedAt`，不多推一次。
-- 任务结束、卡住、容器没了时清掉；重新开跑从头报。例外：MCP 工具等审批的 `blocked` 保留「在用 {server}.{tool}」这一行，答卡后清掉。
-- Watchdog 也可能把这一行写成「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改任务状态，不会取消这一步，也不会停掉容器。变量见 [configuration.md](configuration.md)。
-- 代码：`host/src/progress.rs`、`host/src/watchdog.rs`。
+- The host reports key moments itself: 「开始干活」 (Getting started) when the run begins, or 「在想怎么回」 (Thinking about a reply) when a model is attached; 「在沙箱里跑」 (Running in the sandbox) after the sandbox is up; 「在用 <工具名>」 (Using <tool name>) when a tool is called (MCP tools use the display name `{server}.{tool}`).
+- The bro can report too: a line `robroz-progress:text` in the prompt or in the model reply. The runner writes the last progress line to the group folder `tasks/{taskId}/progress`, and the host reads it while the task is running. A progress line in the model reply is applied when the sandbox comes up; it wins over 「在沙箱里跑」. Progress lines do not go into `result.txt`.
+- The text is normalized to one line: newlines and consecutive whitespace become a single space, ends are trimmed, at most 60 characters (longer text is cut to 59 characters plus 「…」). This is not an error.
+- If the text is unchanged, `updatedAt` is not moved and no extra event is pushed.
+- The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps 「在用 {server}.{tool}」; the line is cleared after the card is answered. If that card was moved to the owner's DM, the line is 「已发到主人私聊」 instead.
+- The host may also write 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). That is only a hint: the task state does not change, the step is not cancelled, and the container is not stopped. The variables are in [configuration.md](configuration.md).
+- Code: `host/src/progress.rs`, `host/src/watchdog.rs`.
 
-## 卡片（事件）
+## Cards (events)
 
-事件流里每一项是一个 `Event`，按 `type` 区分。完整字段见 [api.md 的「事件类型」](api.md#事件类型)。
+Each item in the event stream is an `Event`, distinguished by `type`. Full fields are in [api.md, event types](api.md#事件类型).
 
-| `type` | 是什么 | 谁发 |
+| `type` | What it is | Who sends it |
 | --- | --- | --- |
-| `message` | 一条消息，`kind` 是 `text`、`image` 或 `file`。只落库，不写文件。 | 人（`/say`、`/messages`） |
-| `status` | 任务状态卡，一个任务一张。 | 宿主机 |
-| `delivery` | 交付卡：摘要加群目录里的相对路径，现在是 `tasks/{taskId}/result.txt`。 | 宿主机，任务写出结果时 |
-| `choice` | 选项卡：在 2 到 4 个固定选项里选，可单选或多选，`primary` 是 bro 的推荐。 | bro，经接口 |
-| `approval` | 审批卡：删除、发送或花钱前问人。任务碰到对外写入时宿主机也会替它发一张（带 `taskId`）。 | bro 或宿主机 |
-| `confirm` | 确认卡：bro 提议记下一条记忆或收下一项技能，人决定。 | 宿主机，任务成功后 |
+| `message` | A message. `kind` is `text`, `image` or `file`. Stored in the database only, not as a file. | A person (`/say`, `/messages`) |
+| `status` | The task's status card. One per task. | The host |
+| `delivery` | A result card: a summary plus a path relative to the group folder, today `tasks/{taskId}/result.txt`. A briefing is the same type with `briefing: true`. | The host, when the task writes a result |
+| `choice` | A choice card: pick from 2 to 4 fixed options, single or multi. `primary` is the bro's recommendation (ignored when `multi`). | A bro, through the API |
+| `approval` | An approval card: ask a person before deleting, sending, spending, or calling a tool. The host also issues one when a task wants to write outside (with `taskId`). | A bro or the host |
+| `confirm` | A confirm card: a bro proposed a memory or a skill, and a person decides. | The host, after a successful task |
 
-规则：
+Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it goes to the owner's DM, with `expiresAt` set. The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows 「已发到主人私聊」 (Sent to owner's DM). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card that expires has `reason` 「审批已过期」 (Approval expired). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
 
-- 卡片再变化时用同一个 `id` 再出现，客户端按 id 原地替换。
-- 客户端碰到不认识的 `type` 要跳过，以后新增事件时旧客户端才不会出错。
-- 不同类型事件之间没有约定先后，不要依赖。
+Rules:
 
-## 已读和未读
+- When a card changes, it appears again with the same `id`. The client replaces the existing row in place.
+- The client skips an event whose `type` it does not recognise, so an older client does not break when a new type is added.
+- There is no promised order between different event types; do not depend on one.
 
-每个群一份已读位置（现在是单用户）。计入未读的只有 bro 发来、需要你看的东西：已读位置之后的交付卡、选项卡、审批卡、确认卡，以及变成卡住的任务。你自己发的消息和排队、进行、完成这类状态变化不计。规则细节见 [api.md 的「未读」](api.md#未读)。
+## Read and unread
+
+Each group has one read position (a single owner for now). Unread counts only what a bro sent that you need to see, after that position:
+
+- Delivery cards, choice cards, and confirm cards in that chat.
+- Approval cards that were actually issued (a card still in auto-review, or one that a rule already allowed, is not counted). A bro-issued card that was moved to the owner's DM is unread only in the DM; the group listing is a notice and does not count, before or after it is answered.
+- Tasks that became `blocked`, with `updatedAt` after the read position, and that are not hidden.
+
+These do not count: your own messages; status changes through queued, running and done; un-mentioned group turns that are still hidden (including a silent reply); Allow-rule cards on the settings page (`rule_add` / `rule_delete`), which are not in any chat.
+
+`lastActivityAt` is the newest change among messages, visible tasks, deliveries, choices and approvals. A bro-issued card moved to the owner's DM also counts as activity in the original group (the notice is listed there), but it is not unread there. A silent turn does not change `lastActivityAt`. Details are in [api.md, unread](api.md#未读).
