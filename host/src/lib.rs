@@ -31,6 +31,8 @@ mod mcp;
 mod mcp_tools;
 mod routines;
 mod sandbox;
+mod steps;
+pub mod watchdog;
 mod say;
 mod schedule;
 mod unread;
@@ -64,6 +66,9 @@ pub struct Host {
     token: Option<auth::ApiToken>,
     model: Option<Arc<dyn robroz_model::Model>>,
     mcp: Arc<dyn crate::mcp_tools::McpRuntime>,
+    /// Set by [`Host::with_offloaded_steps`]: model steps run off the pump
+    /// thread, and [`Host::watchdog_once`] watches them.
+    offload: Option<Arc<Mutex<pump::Offload>>>,
 }
 
 impl Host {
@@ -84,6 +89,7 @@ impl Host {
             token: None,
             model: None,
             mcp: crate::mcp_tools::real_mcp(),
+            offload: None,
         })
     }
 
@@ -111,6 +117,33 @@ impl Host {
     pub fn with_mcp(mut self, mcp: Arc<dyn crate::mcp_tools::McpRuntime>) -> Self {
         self.mcp = mcp;
         self
+    }
+
+    /// Run each task's model call and tool calls on its own thread instead of
+    /// the pump thread, and keep a [`watchdog::Watchdog`] with `cfg`. The
+    /// binary turns this on; tests leave it off so one pump pass does a whole
+    /// start.
+    pub fn with_offloaded_steps(mut self, cfg: watchdog::WatchdogConfig) -> Self {
+        self.offload = Some(Arc::new(Mutex::new(pump::Offload::new(cfg))));
+        self
+    }
+
+    /// One Watchdog pass at `now`: end dead runs as `done` + 「没写出结果」,
+    /// and log and hint slow steps and stalled containers. Without
+    /// [`Self::with_offloaded_steps`] only dead runs are ended.
+    pub fn watchdog_once(&self, now: std::time::Instant) -> rusqlite::Result<()> {
+        // Same lock order as `pump_once`: offload state first, then the DB.
+        match &self.offload {
+            Some(offload) => {
+                let mut state = offload.lock().expect("offload lock poisoned");
+                let conn = self.db.lock().expect("sqlite connection lock poisoned");
+                state.watchdog_once(&conn, now)
+            }
+            None => {
+                let conn = self.db.lock().expect("sqlite connection lock poisoned");
+                watchdog::end_dead_runs(&conn).map(|_| ())
+            }
+        }
     }
 
     pub fn router(&self) -> Router {
@@ -151,26 +184,29 @@ impl Host {
                 }
             }
         };
-        let model = match &slot {
-            Slot::Override => self.model.as_deref(),
-            Slot::Live(model) => Some(model as &dyn robroz_model::Model),
+        let echo_prompt = matches!(slot, Slot::Echo);
+        let model: Option<Arc<dyn robroz_model::Model>> = match slot {
+            Slot::Override => self.model.clone(),
+            Slot::Live(model) => Some(Arc::new(model)),
             Slot::Echo | Slot::Missing => None,
         };
-        let echo_prompt = matches!(slot, Slot::Echo);
-        pump_with(
-            &*self.db,
-            sandbox,
-            &PumpConfig {
-                volumes_root: &self.volumes_root,
-                control_root: &self.control_root,
-                image: &self.image,
-                get_limit: self.get_limit,
-                model,
-                echo_prompt,
-                tools: &tools,
-                mcp: Some(self.mcp.clone()),
-            },
-        )
+        let cfg = PumpConfig {
+            volumes_root: &self.volumes_root,
+            control_root: &self.control_root,
+            image: &self.image,
+            get_limit: self.get_limit,
+            model: model.as_deref(),
+            echo_prompt,
+            tools: &tools,
+            mcp: Some(self.mcp.clone()),
+        };
+        match &self.offload {
+            Some(offload) => {
+                let mut state = offload.lock().expect("offload lock poisoned");
+                pump::pump_offloaded(&self.db, sandbox, &cfg, model.clone(), &mut state)
+            }
+            None => pump_with(&*self.db, sandbox, &cfg),
+        }
     }
 
     /// One scheduler pass at `now`. Only creates queued tasks; pump starts containers.
@@ -1520,7 +1556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonzero_exit_removes_container_and_stays_running() {
+    async fn nonzero_exit_removes_container_and_ends_as_dead_run() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
@@ -1531,14 +1567,14 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "running");
-        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
 
     #[tokio::test]
-    async fn missing_file_removes_container_and_stays_running() {
+    async fn missing_file_removes_container_and_ends_as_dead_run() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
@@ -1549,8 +1585,8 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "running");
-        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["state"], "done");
+        assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
@@ -2245,7 +2281,8 @@ mod tests {
         assert_eq!(task_count(&path), 1, "no task was spawned from content");
     }
 
-    /// A run whose container vanished (host or docker restart) is never re-queued.
+    /// A run whose container vanished (host or docker restart) ends as `done`
+    /// with 「没写出结果」 and is never re-queued.
     #[tokio::test]
     async fn interrupted_run_is_not_rerun() {
         let path = temp_db();
@@ -2260,9 +2297,9 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let after = events_of(&app, &group_id).await;
         let card = one_status(&after, &task_id).clone();
-        assert_eq!(card["state"], "running");
+        assert_eq!(card["state"], "done");
         assert_eq!(card["containerUp"], false);
-        assert_eq!(card["label"], "没写出结果");
+        assert_eq!(card["failure"], "没写出结果");
         assert!(deliveries(&after).is_empty());
 
         for _ in 0..3 {
@@ -2272,6 +2309,7 @@ mod tests {
         assert_eq!(events_of(&app, &group_id).await, after, "card left alone for a person");
         let (status, _) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::CONFLICT, "only a blocked task can be resumed");
+        assert_eq!(queued_count(&path), 0, "never re-queued");
         assert_eq!(task_count(&path), 1);
     }
 
@@ -2297,6 +2335,11 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap()
+    }
+
+    fn queued_count(db: &Path) -> i64 {
+        let conn = Connection::open(db).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM tasks WHERE state = 'queued'", [], |row| row.get(0)).unwrap()
     }
 
     fn task_count(db: &Path) -> i64 {
@@ -2928,13 +2971,13 @@ mod tests {
         fake.finish_without_output(0);
         pump_db(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
-        assert_eq!(statuses(&events)[0]["label"], robroz_card::status_line(robroz_contract::TaskState::Running, false));
+        assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
         assert!(deliveries(&events).is_empty());
 
         let report = tick_db(&path, due + ChronoDuration::minutes(1));
-        assert_eq!(report.created.len(), 1, "containerUp false is not a live run");
+        assert_eq!(report.created.len(), 1, "a dead run is not a live run");
     }
 
     #[tokio::test]
@@ -3232,9 +3275,9 @@ mod tests {
         assert!(fake.names().is_empty());
         let events = events_of(&app, &group_id).await;
         let card = statuses(&events)[0];
-        assert_eq!(card["state"], "running");
+        assert_eq!(card["state"], "done");
         assert_eq!(card["containerUp"], false);
-        assert_eq!(card["label"], "没写出结果");
+        assert_eq!(card["failure"], "没写出结果");
         assert!(deliveries(&events).is_empty());
         assert_eq!(stored_intent(&path, &task_id), (None, None, None));
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
@@ -3260,9 +3303,9 @@ mod tests {
         std::fs::write(group_dir.join(format!("tasks/{task_id}/intent")), "external").unwrap();
         pump_db(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "running");
+        assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
-        assert_eq!(statuses(&events)[0]["label"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
         assert_eq!(stored_intent(&path, &task_id), (None, None, None));
     }
 
@@ -3856,6 +3899,218 @@ mod tests {
         }
     }
 
+    // ---- async steps and Watchdog ----
+
+    /// Answers at once, except for prompts containing 「慢」: those wait
+    /// until the test sends on the gate.
+    struct GatedModel {
+        gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl GatedModel {
+        fn new() -> (std::sync::Arc<Self>, std::sync::mpsc::Sender<()>) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (std::sync::Arc::new(Self { gate: std::sync::Mutex::new(rx) }), tx)
+        }
+
+        fn answer(&self, prompt: &str) -> String {
+            if prompt.contains('慢') {
+                let _ = self.gate.lock().unwrap().recv();
+            }
+            format!("好了（{prompt}）")
+        }
+    }
+
+    impl robroz_model::Model for GatedModel {
+        fn reply(&self, prompt: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
+            Ok(self.answer(prompt))
+        }
+
+        fn chat(
+            &self,
+            messages: &[robroz_model::ChatMessage],
+            _: &[robroz_model::ToolDefinition],
+        ) -> Result<robroz_model::AssistantTurn, robroz_model::ModelError> {
+            let prompt = messages
+                .iter()
+                .rev()
+                .find_map(|m| match m {
+                    robroz_model::ChatMessage::User(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            Ok(robroz_model::AssistantTurn::Text(self.answer(&prompt)))
+        }
+    }
+
+    fn offloaded_host(db: &Path, volumes: &Path, model: std::sync::Arc<dyn robroz_model::Model>) -> super::Host {
+        super::Host::open(db, volumes, "robroz-runner:local")
+            .unwrap()
+            .with_control_root(control_of(volumes))
+            .with_model(Some(model))
+            .with_offloaded_steps(crate::watchdog::WatchdogConfig::default())
+    }
+
+    /// Pump until `done` holds, at most five seconds.
+    fn pump_until(host: &super::Host, fake: &mut super::sandbox::FakeSandbox, done: impl Fn(&super::sandbox::FakeSandbox) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(fake) {
+            assert!(std::time::Instant::now() < deadline, "pump never got there");
+            host.pump_once(fake).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn progress_file(volumes: &Path, group_id: &str, task_id: &str, text: &str) {
+        let path = robroz_runner::progress_path(&volumes.join(group_id), task_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_model_step_does_not_hold_up_other_tasks() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, slow) = seed_task(&app, "异步", "慢慢写").await;
+        let (_, quick) = seed_task_in(&app, &group_id, "快写").await;
+        let (model, gate) = GatedModel::new();
+        let host = offloaded_host(&path, &volumes, model);
+        let mut fake = super::sandbox::FakeSandbox::new();
+
+        // The quick task gets its container while the slow one still waits on
+        // the model, and the pump call returns right away each time.
+        pump_until(&host, &mut fake, |f| f.names().len() == 1);
+        assert_eq!(fake.containers[0].task_id, quick);
+        let events = events_of(&app, &group_id).await;
+        let card = status_of(&events, &slow);
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], true, "a step in flight is not a dead run");
+        assert_eq!(card["progress"], "在想怎么回");
+        for _ in 0..3 {
+            host.pump_once(&mut fake).unwrap();
+        }
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &slow)["state"], "running");
+
+        gate.send(()).unwrap();
+        pump_until(&host, &mut fake, |f| f.names().len() == 2);
+        fake.finish(0);
+        host.pump_once(&mut fake).unwrap();
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(status_of(&events, &slow)["state"], "done");
+        assert_eq!(status_of(&events, &quick)["state"], "done");
+        assert_eq!(deliveries(&events).len(), 2);
+        let result = volumes.join(&group_id).join(crate::sandbox::result_rel(&slow));
+        assert_eq!(std::fs::read_to_string(result).unwrap(), "好了（慢慢写）");
+    }
+
+    #[tokio::test]
+    async fn watchdog_hints_a_slow_step_without_changing_state() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "超时", "慢慢想").await;
+        let (model, gate) = GatedModel::new();
+        let host = offloaded_host(&path, &volumes, model);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        host.pump_once(&mut fake).unwrap();
+
+        let now = std::time::Instant::now();
+        host.watchdog_once(now).unwrap();
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["progress"], "在想怎么回");
+        host.watchdog_once(now + std::time::Duration::from_secs(11 * 60)).unwrap();
+        let card = status_of(&events_of(&app, &group_id).await, &task_id).clone();
+        assert_eq!(card["state"], "running");
+        assert_eq!(card["containerUp"], true);
+        assert_eq!(card["progress"], "模型和工具还没回，已等 11 分钟");
+        assert!(card.get("failure").is_none());
+        assert_eq!(queued_count(&path), 0);
+
+        // The step still finishes normally afterwards.
+        gate.send(()).unwrap();
+        pump_until(&host, &mut fake, |f| f.names().len() == 1);
+        fake.finish(0);
+        host.pump_once(&mut fake).unwrap();
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["state"], "done");
+    }
+
+    #[tokio::test]
+    async fn watchdog_stall_hint_stays_until_new_progress() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "卡住", "写报告").await;
+        let (model, _gate) = GatedModel::new();
+        let host = offloaded_host(&path, &volumes, model);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_until(&host, &mut fake, |f| f.names().len() == 1);
+
+        progress_file(&volumes, &group_id, &task_id, "第一步");
+        host.pump_once(&mut fake).unwrap();
+        let now = std::time::Instant::now();
+        host.watchdog_once(now).unwrap();
+        host.watchdog_once(now + std::time::Duration::from_secs(16 * 60)).unwrap();
+        let progress = |events: &Value| status_of(events, &task_id)["progress"].clone();
+        assert_eq!(progress(&events_of(&app, &group_id).await), "16 分钟没有新进度");
+        // The runner's old line does not overwrite the hint.
+        host.pump_once(&mut fake).unwrap();
+        assert_eq!(progress(&events_of(&app, &group_id).await), "16 分钟没有新进度");
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["state"], "running");
+        // A new line does.
+        progress_file(&volumes, &group_id, &task_id, "第二步");
+        host.pump_once(&mut fake).unwrap();
+        assert_eq!(progress(&events_of(&app, &group_id).await), "第二步");
+    }
+
+    #[tokio::test]
+    async fn host_restart_mid_step_ends_as_dead_run_without_requeue() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "重启", "慢慢跑").await;
+        let (model, _gate) = GatedModel::new();
+        let host = offloaded_host(&path, &volumes, model.clone());
+        let mut fake = super::sandbox::FakeSandbox::new();
+        host.pump_once(&mut fake).unwrap();
+        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["containerUp"], true);
+
+        // A new host process has no step in flight and finds no container.
+        let restarted = offloaded_host(&path, &volumes, model);
+        restarted.pump_once(&mut fake).unwrap();
+        let card = status_of(&events_of(&app, &group_id).await, &task_id).clone();
+        assert_eq!(card["state"], "done");
+        assert_eq!(card["failure"], "没写出结果");
+        for _ in 0..3 {
+            restarted.pump_once(&mut fake).unwrap();
+            restarted.watchdog_once(std::time::Instant::now()).unwrap();
+        }
+        assert!(fake.names().is_empty(), "no container was started");
+        assert_eq!(queued_count(&path), 0, "never re-queued");
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn watchdog_ends_a_leftover_dead_run() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "旧数据", "写").await;
+        // A dead run left by an older host: running with no container.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE tasks SET state = 'running', container_up = 0 WHERE id = ?1",
+            [&task_id],
+        )
+        .unwrap();
+        let host = super::Host::open(&path, &volumes, "robroz-runner:local").unwrap();
+        host.watchdog_once(std::time::Instant::now()).unwrap();
+        let card = status_of(&events_of(&app, &group_id).await, &task_id).clone();
+        assert_eq!(card["state"], "done");
+        assert_eq!(card["failure"], "没写出结果");
+        assert!(deliveries(&events_of(&app, &group_id).await).is_empty());
+        assert_eq!(queued_count(&path), 0);
+    }
+
     fn pump_with_model(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, model: &FakeModel) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
@@ -4065,8 +4320,8 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
         let card = status_of(&events, &dead);
-        assert_eq!(card["state"], "running");
-        assert_eq!(card["containerUp"], false);
+        assert_eq!(card["state"], "done");
+        assert_eq!(card["failure"], "没写出结果");
         assert!(card.get("progress").is_none(), "dead run: {card}");
     }
 

@@ -19,15 +19,16 @@
 
 - HTTP：axum，路由在 `host/src/lib.rs:router_from`，外面套一层令牌校验 `host/src/auth.rs:require_token`。
 - 存储：SQLite，路径 `ROBROZ_DB`。主要的表：`groups`、`bots`、`memberships`、`messages`、`tasks`、`deliveries`、`schedules`（`host/src/lib.rs`），`choices`、`approvals`（审批卡和确认卡同一张表），`group_reads`（已读位置），`memories`，`skills`、`group_skills`，`settings`（搜索设置），`mcp_servers`、`group_mcp`。旧库启动时自动补新加的列，原有数据不动。`tenant_id` 固定 `local`。
-- 主循环：`host/src/main.rs:main` 每秒调一次 `tick`（例行任务）和 `pump`（任务）。实现在 `host/src/pump.rs`。
+- 主循环：`host/src/main.rs:main` 每秒调一次 `tick`（例行任务）、`pump`（任务）和 Watchdog。实现在 `host/src/pump.rs` 和 `host/src/watchdog.rs`。
 
 ### pump
 
 1. 在数据库锁里取一个 `queued` 任务，改成 `running`（同一个任务不会被取两次），然后放锁。
-2. 接了模型时先调模型，把回答写进 `ROBROZ_CONTROL/{taskId}/reply.txt`。每次运行前先删掉旧的回答，重试拿不到上一次的。
+2. 接了模型时先调模型，把回答写进 `ROBROZ_CONTROL/{taskId}/reply.txt`。每次运行前先删掉旧的回答，重试拿不到上一次的。模型调用和工具调用在这个任务自己的线程上跑（`host/src/steps.rs`，一个任务同时最多一个），pump 线程不等；回答好了下一轮 pump 再接着起容器。
 3. 放锁后 `docker run` / `inspect` / `rm`，最后重新加锁写结果。慢容器不会卡住 HTTP。`docker run` 失败时任务改回 `queued`，没有交付卡。
-4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失保持 `running` 且 `containerUp` false。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
+4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失变 `done`，`failure` 为「没写出结果」，不重排队。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
 5. 成功完成的任务读 `proposals.jsonl`，发确认卡（见 [memory-and-skills.md](memory-and-skills.md)）。
+6. Watchdog 只提示模型和工具调用太久、容器进度太久没变（写进 `progress`，打日志），不改状态、不重排队；`running` 且 `containerUp` false 的旧任务结束成 `done` + 「没写出结果」。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
 
 ### 容器
 

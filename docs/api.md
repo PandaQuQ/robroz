@@ -258,7 +258,7 @@ curl -s -X POST $B/api/groups/<groupId>/tasks -H 'content-type: application/json
 
 - 200 `{"id":"<taskId>","state":"queued"}`：把库里记下的阻塞行哈希追加到 `ROBROZ_CONTROL/{taskId}/takeover`，清掉卡住记录，任务回到 `queued`。之后由 pump 在原来的群目录上重新起容器，跳过这一行。如果这一行还有一张没回答的任务审批卡，它同时被记成 `approved`。
 - 404「任务不存在」。
-- 409「这次不能恢复」：任务不是 `blocked`（包括 `done` 和「没写出结果」的 `running`）。
+- 409「这次不能恢复」：任务不是 `blocked`（包括 `done`，以及 `failure` 为「没写出结果」的 `done`）。
 - 409「请先回答审批卡」：任务是因为 MCP 工具调用而 `blocked`。这种卡住只能用下面的审批卡批准或拒绝，不能 `resume`。
 - 500「恢复失败，找不到卡住记录」：库里没有阻塞行记录。任务保持 `blocked`。
 - 500「恢复失败，无法写入接管标记」：写控制目录失败。任务保持 `blocked`。
@@ -269,7 +269,7 @@ curl -s -X POST $B/api/tasks/<taskId>/resume
 
 ### pump 做什么
 
-pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:main` → `Host::tick_once` 和 `Host::pump_once`，实现在 `host/src/pump.rs`）。任务的状态变化都由它写回，客户端通过事件看到。
+pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:main` → `Host::tick_once`、`Host::pump_once` 和 `Host::watchdog_once`，实现在 `host/src/pump.rs` 和 `host/src/watchdog.rs`）。任务的状态变化都由它写回，客户端通过事件看到。模型调用和它发起的工具调用（包括 MCP 和联网搜索）在每个任务自己的线程上跑（`host/src/steps.rs`），pump 线程不等它们，接着起别的容器、收别的结果；回答好了，下一轮 pump 再起这个任务的容器。
 
 1. `tick`：到点的例行任务新建一个 `queued` 任务（`briefing` 为 true）。上一次还在排队或在跑就跳过这一次，不补跑。
 2. 取一个 `queued` 任务改成 `running`。接了模型时先调模型（带记忆和已启用技能、可用工具，以及该群已启用且 `enabled` 的 MCP 工具），把回答写进 `/control/reply.txt`。模型要调用需要批准的 MCP 工具时先变成 `blocked`，发出 `action` 为 `call` 的审批卡，这一步先不写 `reply.txt`、也不起容器；批准后再从暂停处继续。
@@ -279,8 +279,13 @@ pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:
    - prompt 里碰到没接管过的 `robroz-action:external`：`blocked`，宿主机发一张任务审批卡（`waitingFor:"approval"`）。
    - 碰到 `robroz-action:captcha`：`blocked`，等人接管（`waitingFor:"takeover"`）。
    - 出网超额或用了非 GET：`done` 带 `failure`，没有 delivery。
-   - 非 0 退出或没写出结果、容器中途消失：保持 `running`，`containerUp` false，标签「没写出结果」，不重排队。
+   - 非 0 退出或没写出结果、容器中途消失：`done`，`failure` 为「没写出结果」，没有 delivery，不重排队，不再起容器。写库是比较后写入（只在任务仍是 `running` 时生效）。
 5. 成功完成的任务，读它的 `proposals.jsonl`，每条记忆或技能提议发一张确认卡。
+6. Watchdog（`host/src/watchdog.rs`）：
+   - `running` 且 `containerUp` false 的任务（旧版宿主机留下的运行失败）同样结束成 `done` + `failure`「没写出结果」，不重排队。
+   - 模型和工具调用跑过 `ROBROZ_STEP_TIMEOUT_SECS`（默认 600 秒）：打日志，`progress` 写「模型和工具还没回，已等 N 分钟」。
+   - 容器在跑但 `progress` 超过 `ROBROZ_STALL_SECS`（默认 900 秒）没变：打日志，`progress` 写「N 分钟没有新进度」，runner 写出新进度后换回新进度。
+   - 这两条只提示，不改状态、不停容器、不重排队。`blocked` 是在等人，不算卡住。
 
 完整的权限规则见 [permissions.md](permissions.md)，容器和模型调用的细节见 [architecture.md](architecture.md)。
 
@@ -329,7 +334,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | --- | --- | --- |
 | `queued` | false | 排队 |
 | `running` | true | 进行 |
-| `running` | false | 没写出结果（运行失败：容器已删，不重排队，不能 resume） |
+| `running` | false | 没写出结果（只出现在旧数据里：宿主机现在把运行失败直接结束成 `done` + `failure`「没写出结果」，Watchdog 也会把剩下的这种任务这样结束） |
 | `blocked` | false | 卡住 |
 | `done` | false | 完成（带 `failure` 时客户端显示成「没做成」） |
 

@@ -65,12 +65,15 @@ async fn main() {
             panic!("无法打开数据库 {}: {err}", db_path.display());
         })
         .with_control_root(control)
-        .with_token(token.clone());
+        .with_token(token.clone())
+        .with_offloaded_steps(robroz_host::watchdog::WatchdogConfig::from_env());
     let app = host.router();
     let pumping = host.clone();
 
     // Docker CLI calls block, so the loop runs on its own OS thread, not on a
     // tokio worker. pump only takes the DB lock for SQL, so HTTP keeps serving.
+    // Model and tool calls run on per-task step threads, so one slow call does
+    // not hold up other tasks. The Watchdog runs in the same loop.
     std::thread::Builder::new()
         .name("robroz-pump".into())
         .spawn(move || {
@@ -82,6 +85,9 @@ async fn main() {
                 }
                 if let Err(err) = pumping.pump_once(&mut sandbox) {
                     eprintln!("pump: {err}");
+                }
+                if let Err(err) = pumping.watchdog_once(std::time::Instant::now()) {
+                    eprintln!("watchdog: {err}");
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }

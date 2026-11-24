@@ -28,6 +28,8 @@ robroz 只用环境变量配置，没有配置文件。模型和联网搜索例�
 | `ROBROZ_IMAGE` | `host/src/main.rs:main` | `robroz-runner:local` | 跑任务用的 runner 镜像。要先用 `docker build -f runner/Dockerfile -t <标签> .` 构建。 | `robroz-runner:local` |
 | `ROBROZ_CONTAINER_USER` | `host/src/sandbox.rs:DockerSandbox::new` | 宿主机进程的 `uid:gid`（非 unix 平台不传 `--user`，用镜像默认的 `65534:65534`） | 容器的 `--user`。空值按没设处理。 | `1000:1000` |
 | `ROBROZ_GET_LIMIT` | `host/src/lib.rs:get_limit_from_env` | `8` | 每个任务允许的出网 GET 次数（含 `web_search`、`web_fetch`）。这是允许的次数：用满 8 次仍算正常，第 9 次时任务以 `done` 结束，带 `failure`「出网超额：已用 9 次，上限 8」，不发 delivery。不是非负整数时静默用 8，不报错。 | `20` |
+| `ROBROZ_STEP_TIMEOUT_SECS` | `host/src/watchdog.rs:WatchdogConfig::from_env` | `600` | 一个任务的模型和工具调用跑过这么多秒，Watchdog 打日志并在状态卡 `progress` 写「模型和工具还没回，已等 N 分钟」。只提示，不改状态。不是正整数时用默认值。 | `300` |
+| `ROBROZ_STALL_SECS` | `host/src/watchdog.rs:WatchdogConfig::from_env` | `900` | 容器在跑但 `progress` 这么多秒没变，Watchdog 打日志并写「N 分钟没有新进度」。只提示，不改状态。不是正整数时用默认值。 | `1800` |
 
 ### 模型
 

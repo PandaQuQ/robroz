@@ -23,7 +23,7 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 1. runner 停下时在群目录写 `tasks/{taskId}/intent`。这个文件只表示「卡住了」，宿主机从不读它的内容。
 2. 容器退出后，宿主机用库里存的 prompt 和 `ROBROZ_CONTROL/{taskId}/takeover` 里的哈希，按顺序找第一行 sha256 不在 takeover 里的阻塞行（`robroz_policy::blocking_line`，runner 决定在哪停用的也是这个函数）。
 3. 算出来的类型、原文和哈希存进这个任务的 `intent_kind` / `intent_line` / `intent_hash` 三列，然后删掉群目录里的 `intent`（下次起容器前也会再清一次）。
-4. 有 `intent` 但算不出这样一行（容器说卡住了，其实没有没接管过的阻塞行）：按运行失败处理，保持 `running`，`containerUp` false，「没写出结果」，不算卡住。
+4. 有 `intent` 但算不出这样一行（容器说卡住了，其实没有没接管过的阻塞行）：按运行失败处理：`done`，`failure` 为「没写出结果」，不算卡住。
 
 接管标记 `takeover`：
 
@@ -93,6 +93,7 @@ prompt 里的 `robroz-action:external` 和 `robroz-action:captcha` 行是阻塞�
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 |
 | 出网用了非 GET | 「出网只允许 GET：用了 POST」 | 没有 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」，结果里也写这句 | 有 |
+| 运行失败（容器非 0 退出、没写出结果、中途消失） | 「没写出结果」 | 没有 |
 
 客户端看到 `failure` 就显示灰色「没做成：原因」，不显示绿色的完成，没有按钮。
 
