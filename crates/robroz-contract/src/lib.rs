@@ -114,10 +114,16 @@ pub struct Say {
 }
 
 /// `POST /api/groups/{id}/say` reply. `task` is `null` when nobody was asked.
+/// When the message is a follow-up that joined a bro's still-open task
+/// instead of starting one, `task` is that task (its current state) and
+/// `appendedToTaskId` is its id. Absent otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Said {
     pub message: Message,
     pub task: Option<Task>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appended_to_task_id: Option<String>,
 }
 
 /// `@名字 rest` → `(member id, rest)`. `members` is `(id, name)`. The longest
