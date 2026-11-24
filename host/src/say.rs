@@ -13,7 +13,11 @@ use rusqlite::{params, Connection};
 use crate::{bros, db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState};
 
 /// Who should act on `body` in `group_id`, and on what prompt.
-fn assignee(conn: &Connection, group_id: &str, body: &str) -> rusqlite::Result<Option<(String, String)>> {
+fn assignee(
+    conn: &Connection,
+    group_id: &str,
+    body: &str,
+) -> rusqlite::Result<Option<(String, String)>> {
     if let Some(bot) = bros::dm_owner(conn, group_id)? {
         return Ok(Some((bot, body.to_string())));
     }
@@ -23,7 +27,12 @@ fn assignee(conn: &Connection, group_id: &str, body: &str) -> rusqlite::Result<O
     let members: Vec<(String, String)> = stmt
         .query_map([group_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(route_mention(body, members.iter().map(|(id, name)| (id.as_str(), name.as_str()))))
+    Ok(route_mention(
+        body,
+        members
+            .iter()
+            .map(|(id, name)| (id.as_str(), name.as_str())),
+    ))
 }
 
 pub(crate) async fn say(
@@ -42,7 +51,12 @@ pub(crate) async fn say(
             return Ok(None);
         }
         let now = now_rfc3339();
-        let message = Message { id: new_id(), kind: MessageKind::Text, body: text.clone(), created_at: now.clone() };
+        let message = Message {
+            id: new_id(),
+            kind: MessageKind::Text,
+            body: text.clone(),
+            created_at: now.clone(),
+        };
         tx.execute(
             "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![message.id, group_id, message.kind.as_str(), message.body, now],
@@ -50,7 +64,12 @@ pub(crate) async fn say(
         let task = match assignee(&tx, &group_id, &text)? {
             None => None,
             Some((bot, prompt)) => {
-                let task = Task { id: new_id(), assignee_bot_id: bot, prompt, state: TaskState::Queued };
+                let task = Task {
+                    id: new_id(),
+                    assignee_bot_id: bot,
+                    prompt,
+                    state: TaskState::Queued,
+                };
                 tx.execute(
                     "INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",

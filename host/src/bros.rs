@@ -29,7 +29,11 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 /// `Some(bot)` when `group_id` is a DM.
 pub(crate) fn dm_owner(conn: &Connection, group_id: &str) -> rusqlite::Result<Option<String>> {
     Ok(conn
-        .query_row("SELECT dm_bot_id FROM groups WHERE id = ?1", [group_id], |r| r.get::<_, Option<String>>(0))
+        .query_row(
+            "SELECT dm_bot_id FROM groups WHERE id = ?1",
+            [group_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
         .optional()?
         .flatten())
 }
@@ -38,14 +42,20 @@ pub(crate) fn dm_owner(conn: &Connection, group_id: &str) -> rusqlite::Result<Op
 /// straight into a group by `botId` have no DM). `None` if the bot is unknown.
 pub(crate) fn owner_dm_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Option<String>> {
     let Some(name) = conn
-        .query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |r| r.get::<_, String>(0))
+        .query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |r| {
+            r.get::<_, String>(0)
+        })
         .optional()?
     else {
         return Ok(None);
     };
     ensure_dm(conn, bot_id, &name)?;
-    conn.query_row("SELECT id FROM groups WHERE dm_bot_id = ?1", [bot_id], |r| r.get(0))
-        .optional()
+    conn.query_row(
+        "SELECT id FROM groups WHERE dm_bot_id = ?1",
+        [bot_id],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 fn clean_name(raw: &str) -> Result<String, &'static str> {
@@ -70,7 +80,11 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Bro>> {
 
 fn ensure_dm(conn: &Connection, bot_id: &str, name: &str) -> rusqlite::Result<bool> {
     if conn
-        .query_row("SELECT 1 FROM groups WHERE dm_bot_id = ?1", [bot_id], |_| Ok(()))
+        .query_row(
+            "SELECT 1 FROM groups WHERE dm_bot_id = ?1",
+            [bot_id],
+            |_| Ok(()),
+        )
         .optional()?
         .is_some()
     {
@@ -81,11 +95,17 @@ fn ensure_dm(conn: &Connection, bot_id: &str, name: &str) -> rusqlite::Result<bo
         "INSERT INTO groups (id, tenant_id, name, created_at, dm_bot_id) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![group_id, TENANT_ID, name, now_rfc3339(), bot_id],
     )?;
-    conn.execute("INSERT INTO memberships (group_id, bot_id) VALUES (?1, ?2)", params![group_id, bot_id])?;
+    conn.execute(
+        "INSERT INTO memberships (group_id, bot_id) VALUES (?1, ?2)",
+        params![group_id, bot_id],
+    )?;
     Ok(true)
 }
 
-pub(crate) async fn create_bro(State(state): State<AppState>, body: Option<Json<CreateBro>>) -> Response {
+pub(crate) async fn create_bro(
+    State(state): State<AppState>,
+    body: Option<Json<CreateBro>>,
+) -> Response {
     let requested = body.and_then(|Json(b)| b.name);
     let requested = match requested.as_deref().map(clean_name) {
         None => None,
@@ -99,12 +119,17 @@ pub(crate) async fn create_bro(State(state): State<AppState>, body: Option<Json<
             Some(name) => name,
             None => {
                 let mut stmt = tx.prepare("SELECT name FROM bots WHERE tenant_id = ?1")?;
-                let taken = stmt.query_map([TENANT_ID], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let taken = stmt
+                    .query_map([TENANT_ID], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 next_bro_name(taken.iter().map(String::as_str))
             }
         };
         let id = new_id();
-        tx.execute("INSERT INTO bots (id, tenant_id, name) VALUES (?1, ?2, ?3)", params![id, TENANT_ID, name])?;
+        tx.execute(
+            "INSERT INTO bots (id, tenant_id, name) VALUES (?1, ?2, ?3)",
+            params![id, TENANT_ID, name],
+        )?;
         ensure_dm(&tx, &id, &name)?;
         let bro = load(&tx, &id)?.expect("just inserted");
         tx.commit()?;
@@ -125,7 +150,13 @@ pub(crate) async fn list_bros(State(state): State<AppState>) -> Response {
              WHERE b.tenant_id = ?1 ORDER BY b.rowid",
         )?;
         let bros = stmt
-            .query_map([TENANT_ID], |r| Ok(Bro { id: r.get(0)?, name: r.get(1)?, dm_group_id: r.get(2)? }))?
+            .query_map([TENANT_ID], |r| {
+                Ok(Bro {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    dm_group_id: r.get(2)?,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok::<_, rusqlite::Error>(Bros { bros })
     })();
@@ -151,7 +182,10 @@ pub(crate) async fn rename_bro(
         if tx.execute("UPDATE bots SET name = ?2 WHERE id = ?1", params![id, name])? == 0 {
             return Ok(None);
         }
-        tx.execute("UPDATE groups SET name = ?2 WHERE dm_bot_id = ?1", params![id, name])?;
+        tx.execute(
+            "UPDATE groups SET name = ?2 WHERE dm_bot_id = ?1",
+            params![id, name],
+        )?;
         let bro = load(&tx, &id)?;
         tx.commit()?;
         Ok::<_, rusqlite::Error>(bro)
@@ -164,11 +198,16 @@ pub(crate) async fn rename_bro(
     }
 }
 
-pub(crate) async fn open_dm(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+pub(crate) async fn open_dm(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
         let tx = conn.unchecked_transaction()?;
-        let Some(bro) = load(&tx, &id)? else { return Ok(None) };
+        let Some(bro) = load(&tx, &id)? else {
+            return Ok(None);
+        };
         let created = ensure_dm(&tx, &bro.id, &bro.name)?;
         let bro = load(&tx, &id)?.expect("exists");
         tx.commit()?;
@@ -177,9 +216,15 @@ pub(crate) async fn open_dm(State(state): State<AppState>, AxumPath(id): AxumPat
     drop(conn);
     match result {
         Ok(None) => error_response(StatusCode::NOT_FOUND, "bro 不存在"),
-        Ok(Some((created, bro))) => {
-            (if created { StatusCode::CREATED } else { StatusCode::OK }, Json(bro)).into_response()
-        }
+        Ok(Some((created, bro))) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(bro),
+        )
+            .into_response(),
         Err(err) => db_error(err),
     }
 }

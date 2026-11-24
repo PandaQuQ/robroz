@@ -123,12 +123,17 @@ pub struct Said {
 /// `@名字 rest` → `(member id, rest)`. `members` is `(id, name)`. The longest
 /// matching name wins (`@bro 2` beats `@bro`), the name must end at a space or
 /// the end, full-width `＠` works, and an empty `rest` means no task.
-pub fn route_mention<'a>(body: &str, members: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<(String, String)> {
+pub fn route_mention<'a>(
+    body: &str,
+    members: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<(String, String)> {
     let body = body.trim();
     let after = body.strip_prefix('@').or_else(|| body.strip_prefix('＠'))?;
     let mut best: Option<(&str, &str, &str)> = None;
     for (id, name) in members {
-        let Some(rest) = after.strip_prefix(name) else { continue };
+        let Some(rest) = after.strip_prefix(name) else {
+            continue;
+        };
         let boundary = rest.is_empty() || rest.starts_with(char::is_whitespace);
         if !name.is_empty() && boundary && best.is_none_or(|(_, prev, _)| name.len() > prev.len()) {
             best = Some((id, name, rest));
@@ -251,7 +256,11 @@ pub struct CreateChoice {
 pub struct AnswerChoice {
     pub choice: Vec<String>,
     /// Who answered, as the client names itself (device or person). Optional.
-    #[serde(default, rename = "answeredBy", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "answeredBy",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub answered_by: Option<String>,
 }
 
@@ -269,7 +278,9 @@ pub const ANSWERED_BY_MAX: usize = 40;
 /// `answeredBy` as stored: trimmed, empty is `None`, one line, at most
 /// [`ANSWERED_BY_MAX`] characters.
 pub fn clean_answered_by(raw: Option<&str>) -> Result<Option<String>, &'static str> {
-    let Some(text) = raw.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
+    let Some(text) = raw.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
     if text.contains(['\n', '\r']) || text.chars().count() > ANSWERED_BY_MAX {
         return Err("answeredBy 只能一行，最多 40 个字");
     }
@@ -518,7 +529,11 @@ pub enum MemoryStatus {
 }
 
 impl MemoryStatus {
-    pub const ALL: [MemoryStatus; 3] = [MemoryStatus::Pending, MemoryStatus::Kept, MemoryStatus::Rejected];
+    pub const ALL: [MemoryStatus; 3] = [
+        MemoryStatus::Pending,
+        MemoryStatus::Kept,
+        MemoryStatus::Rejected,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -721,7 +736,9 @@ impl ConfirmSubject {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        [ConfirmSubject::Memory, ConfirmSubject::Skill].into_iter().find(|s| s.as_str() == value)
+        [ConfirmSubject::Memory, ConfirmSubject::Skill]
+            .into_iter()
+            .find(|s| s.as_str() == value)
     }
 }
 
@@ -772,7 +789,8 @@ impl Proposal {
     /// object with `"type":"memory"` set. `None` when the payload is not a JSON
     /// object. Fields are not checked here; the host checks when it reads.
     pub fn memory_line(payload: &str) -> Option<String> {
-        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()? else {
+        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()?
+        else {
             return None;
         };
         fields.insert("type".into(), serde_json::Value::String("memory".into()));
@@ -782,7 +800,8 @@ impl Proposal {
     /// The `proposals.jsonl` line for a `robroz-skill:` payload, with
     /// `"type":"skill"` set. `None` when the payload is not a JSON object.
     pub fn skill_line(payload: &str) -> Option<String> {
-        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()? else {
+        let serde_json::Value::Object(mut fields) = serde_json::from_str(payload.trim()).ok()?
+        else {
             return None;
         };
         fields.insert("type".into(), serde_json::Value::String("skill".into()));
@@ -1218,7 +1237,10 @@ mod tests {
     fn memory_scope_and_enums_round_trip() {
         use super::{CreateMemory, MemoryKind, MemoryScope, MemoryStatus};
         assert_eq!(MemoryScope::parse(" user "), Some(MemoryScope::User));
-        assert_eq!(MemoryScope::parse("bot:b1"), Some(MemoryScope::Bot("b1".into())));
+        assert_eq!(
+            MemoryScope::parse("bot:b1"),
+            Some(MemoryScope::Bot("b1".into()))
+        );
         for bad in ["", "users", "bot:", "bot: x", "group:g1", "User", "bot"] {
             assert_eq!(MemoryScope::parse(bad), None, "{bad:?}");
         }
@@ -1226,28 +1248,57 @@ mod tests {
         assert_eq!(MemoryScope::User.to_string(), "user");
         for k in MemoryKind::ALL {
             assert_eq!(MemoryKind::parse(k.as_str()), Some(k));
-            assert_eq!(serde_json::to_value(k).unwrap(), serde_json::json!(k.as_str()));
+            assert_eq!(
+                serde_json::to_value(k).unwrap(),
+                serde_json::json!(k.as_str())
+            );
         }
         for s in MemoryStatus::ALL {
             assert_eq!(MemoryStatus::parse(s.as_str()), Some(s));
         }
-        let body: CreateMemory =
-            serde_json::from_value(serde_json::json!({ "scope": "user", "kind": "habit", "text": "x" })).unwrap();
+        let body: CreateMemory = serde_json::from_value(
+            serde_json::json!({ "scope": "user", "kind": "habit", "text": "x" }),
+        )
+        .unwrap();
         assert_eq!(body.kind, MemoryKind::Habit);
-        assert!(serde_json::from_value::<CreateMemory>(serde_json::json!({ "scope": "user", "kind": "mood", "text": "x" })).is_err());
+        assert!(serde_json::from_value::<CreateMemory>(
+            serde_json::json!({ "scope": "user", "kind": "mood", "text": "x" })
+        )
+        .is_err());
     }
 
     #[test]
     fn mention_routing() {
         use super::route_mention;
         let m = [("b1", "bro"), ("b2", "bro 2"), ("b3", "Ada")];
-        assert_eq!(route_mention("@bro 2 写 README", m), Some(("b2".into(), "写 README".into())));
-        assert_eq!(route_mention("  ＠bro 看看日志 ", m), Some(("b1".into(), "看看日志".into())));
-        assert_eq!(route_mention("@Ada\t整理", m), Some(("b3".into(), "整理".into())));
-        for none in ["大家好", "@bro", "@bro   ", "@Bob 你好", "@brother 你好", "问 @Ada 一下", "@"] {
+        assert_eq!(
+            route_mention("@bro 2 写 README", m),
+            Some(("b2".into(), "写 README".into()))
+        );
+        assert_eq!(
+            route_mention("  ＠bro 看看日志 ", m),
+            Some(("b1".into(), "看看日志".into()))
+        );
+        assert_eq!(
+            route_mention("@Ada\t整理", m),
+            Some(("b3".into(), "整理".into()))
+        );
+        for none in [
+            "大家好",
+            "@bro",
+            "@bro   ",
+            "@Bob 你好",
+            "@brother 你好",
+            "问 @Ada 一下",
+            "@",
+        ] {
             assert_eq!(route_mention(none, m), None, "{none:?}");
         }
-        assert_eq!(route_mention("@ 你好", [("x", "")]), None, "empty name never matches");
+        assert_eq!(
+            route_mention("@ 你好", [("x", "")]),
+            None,
+            "empty name never matches"
+        );
     }
 
     #[test]
@@ -1256,10 +1307,26 @@ mod tests {
         assert_eq!(next_bro_name([]), "bro");
         assert_eq!(next_bro_name(["bro"]), "bro 2");
         assert_eq!(next_bro_name(["bro", "bro 2"]), "bro 3");
-        assert_eq!(next_bro_name(["bro", "bro 3"]), "bro 2", "fills the first gap");
-        assert_eq!(next_bro_name(["bro 2", "小明"]), "bro", "bro itself was renamed away");
-        let json = serde_json::to_value(super::Bro { id: "b".into(), name: "bro".into(), dm_group_id: Some("g".into()) }).unwrap();
-        assert_eq!(json, serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": "g" }));
+        assert_eq!(
+            next_bro_name(["bro", "bro 3"]),
+            "bro 2",
+            "fills the first gap"
+        );
+        assert_eq!(
+            next_bro_name(["bro 2", "小明"]),
+            "bro",
+            "bro itself was renamed away"
+        );
+        let json = serde_json::to_value(super::Bro {
+            id: "b".into(),
+            name: "bro".into(),
+            dm_group_id: Some("g".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": "g" })
+        );
     }
 
     use super::*;
@@ -1279,8 +1346,15 @@ mod tests {
             "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": null, "answeredBy": null
         });
         let old: Event = serde_json::from_value(json.clone()).unwrap();
-        assert!(matches!(old, Event::Approval { task_id: None, .. }), "old JSON parses");
-        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
+        assert!(
+            matches!(old, Event::Approval { task_id: None, .. }),
+            "old JSON parses"
+        );
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json,
+            "absent stays absent"
+        );
         json["taskId"] = "t1".into();
         assert_round_trip(&serde_json::from_value(json.clone()).unwrap(), json);
     }
@@ -1321,14 +1395,27 @@ mod tests {
             "answeredAt": "2026-11-20T08:31:00.000Z"
         }))
         .unwrap();
-        assert!(matches!(skill, Event::Confirm { subject: ConfirmSubject::Skill, answered_by: None, .. }));
+        assert!(matches!(
+            skill,
+            Event::Confirm {
+                subject: ConfirmSubject::Skill,
+                answered_by: None,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn proposal_lines_parse_or_are_skipped() {
-        let line = Proposal::memory_line(r#"{"kind":"habit","text":"周报用中文","type":"skill"}"#).unwrap();
-        let Some(Proposal::Memory(m)) = Proposal::parse_line(&line) else { panic!("{line}") };
-        assert_eq!((m.kind, m.text.as_str(), m.scope), (MemoryKind::Habit, "周报用中文", None));
+        let line = Proposal::memory_line(r#"{"kind":"habit","text":"周报用中文","type":"skill"}"#)
+            .unwrap();
+        let Some(Proposal::Memory(m)) = Proposal::parse_line(&line) else {
+            panic!("{line}")
+        };
+        assert_eq!(
+            (m.kind, m.text.as_str(), m.scope),
+            (MemoryKind::Habit, "周报用中文", None)
+        );
         assert_eq!(Proposal::memory_line("不是 json"), None);
         assert_eq!(Proposal::memory_line("[1]"), None);
         for bad in [
@@ -1341,29 +1428,67 @@ mod tests {
         ] {
             assert_eq!(Proposal::parse_line(bad), None, "{bad}");
         }
-        let scoped = Proposal::parse_line(r#"{"type":"memory","scope":"user","kind":"profile","text":"叫 Panda"}"#);
-        assert!(matches!(scoped, Some(Proposal::Memory(MemoryProposal { scope: Some(_), .. }))));
-        let skill = Proposal::skill_line(r#"{"slug":"weekly-report","title":"写周报","instruction":"先列三点","type":"memory"}"#).unwrap();
-        let Some(Proposal::Skill(s)) = Proposal::parse_line(&skill) else { panic!("{skill}") };
-        assert_eq!((s.slug.as_str(), s.title.as_str(), s.instruction.as_str(), s.scope.as_deref()), ("weekly-report", "写周报", "先列三点", None));
+        let scoped = Proposal::parse_line(
+            r#"{"type":"memory","scope":"user","kind":"profile","text":"叫 Panda"}"#,
+        );
+        assert!(matches!(
+            scoped,
+            Some(Proposal::Memory(MemoryProposal { scope: Some(_), .. }))
+        ));
+        let skill = Proposal::skill_line(
+            r#"{"slug":"weekly-report","title":"写周报","instruction":"先列三点","type":"memory"}"#,
+        )
+        .unwrap();
+        let Some(Proposal::Skill(s)) = Proposal::parse_line(&skill) else {
+            panic!("{skill}")
+        };
+        assert_eq!(
+            (
+                s.slug.as_str(),
+                s.title.as_str(),
+                s.instruction.as_str(),
+                s.scope.as_deref()
+            ),
+            ("weekly-report", "写周报", "先列三点", None)
+        );
         assert_eq!(Proposal::skill_line("不是 json"), None);
         assert_eq!(Proposal::skill_line("[1]"), None);
-        let scoped_skill = Proposal::parse_line(r#"{"type":"skill","slug":"weekly-report","title":"写周报","instruction":"先列三点","scope":"user"}"#);
-        assert!(matches!(scoped_skill, Some(Proposal::Skill(SkillProposal { scope: Some(_), .. }))));
+        let scoped_skill = Proposal::parse_line(
+            r#"{"type":"skill","slug":"weekly-report","title":"写周报","instruction":"先列三点","scope":"user"}"#,
+        );
+        assert!(matches!(
+            scoped_skill,
+            Some(Proposal::Skill(SkillProposal { scope: Some(_), .. }))
+        ));
     }
 
     #[test]
     fn skill_slug_and_confirm_id_round_trip() {
-        use super::{parse_skill_slug, CreateSkill, Skill, MemorySource, MemoryStatus, SKILL_SLUG_MAX};
+        use super::{
+            parse_skill_slug, CreateSkill, MemorySource, MemoryStatus, Skill, SKILL_SLUG_MAX,
+        };
         assert_eq!(parse_skill_slug(" weekly-report "), Some("weekly-report"));
         assert_eq!(parse_skill_slug("a"), Some("a"));
-        assert_eq!(parse_skill_slug(&"a".repeat(SKILL_SLUG_MAX)), Some(&*"a".repeat(SKILL_SLUG_MAX)));
-        for bad in ["", "Weekly", "weekly_report", "-weekly", "weekly-", "weekly--report", " weekly report ", &"a".repeat(SKILL_SLUG_MAX + 1)] {
+        assert_eq!(
+            parse_skill_slug(&"a".repeat(SKILL_SLUG_MAX)),
+            Some(&*"a".repeat(SKILL_SLUG_MAX))
+        );
+        for bad in [
+            "",
+            "Weekly",
+            "weekly_report",
+            "-weekly",
+            "weekly-",
+            "weekly--report",
+            " weekly report ",
+            &"a".repeat(SKILL_SLUG_MAX + 1),
+        ] {
             assert_eq!(parse_skill_slug(bad), None, "{bad:?}");
         }
         let body: CreateSkill = serde_json::from_value(serde_json::json!({
             "scope": "user", "slug": "weekly-report", "title": "写周报", "instruction": "先列三点"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(body.slug, "weekly-report");
         let json = serde_json::json!({
             "id": "s1", "scope": "user", "slug": "weekly-report", "title": "写周报",
@@ -1374,7 +1499,11 @@ mod tests {
         assert_eq!(old.confirm_id, None);
         assert_eq!(old.source, MemorySource::User);
         assert_eq!(old.status, MemoryStatus::Kept);
-        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json,
+            "absent stays absent"
+        );
     }
 
     #[test]
@@ -1385,7 +1514,11 @@ mod tests {
         });
         let old: Memory = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(old.confirm_id, None);
-        assert_eq!(serde_json::to_value(&old).unwrap(), json, "absent stays absent");
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json,
+            "absent stays absent"
+        );
     }
 
     #[test]
@@ -1427,7 +1560,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.path, None);
-        assert_eq!(serde_json::to_value(ApprovalDecision::Denied).unwrap(), "denied");
+        assert_eq!(
+            serde_json::to_value(ApprovalDecision::Denied).unwrap(),
+            "denied"
+        );
         assert_eq!(serde_json::to_value(ApprovalAction::Call).unwrap(), "call");
 
         assert_round_trip(
@@ -1492,13 +1628,28 @@ mod tests {
         });
         let event: Event = serde_json::from_value(old.clone()).unwrap();
         assert!(
-            matches!(event, Event::Approval { reason: None, expires_at: None, .. }),
+            matches!(
+                event,
+                Event::Approval {
+                    reason: None,
+                    expires_at: None,
+                    ..
+                }
+            ),
             "old JSON without reason/expiresAt parses"
         );
-        assert_eq!(serde_json::to_value(&event).unwrap(), old, "omitted fields stay absent");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            old,
+            "omitted fields stay absent"
+        );
         // Field order is the Event struct order, with no reason/expiresAt keys.
         let expected = r#"{"type":"approval","id":"a1","botId":"b","botName":"B","action":"send","summary":"发邮件","path":null,"decision":null,"createdAt":"2026-11-20T08:30:00.000Z","answeredAt":null,"answeredBy":null}"#;
-        assert_eq!(serde_json::to_string(&event).unwrap(), expected, "JSON without the new fields is unchanged");
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            expected,
+            "JSON without the new fields is unchanged"
+        );
 
         let with_fields: Event = serde_json::from_value(serde_json::json!({
             "type": "approval", "id": "a1", "botId": "b", "botName": "B", "action": "send",
@@ -1542,17 +1693,24 @@ mod tests {
             created_at: "2026-11-24T10:00:00.000Z".into(),
         };
         assert_eq!(
-            serde_json::to_value(ReviewRules { rules: vec![rule.clone()] }).unwrap(),
+            serde_json::to_value(ReviewRules {
+                rules: vec![rule.clone()]
+            })
+            .unwrap(),
             serde_json::json!({"rules":[{"id":"r1","text":"允许合并 CI 全绿的 PR","createdAt":"2026-11-24T10:00:00.000Z"}]})
         );
         assert_eq!(
-            serde_json::to_value(ReviewRuleCreated { approval_id: "a1".into() }).unwrap(),
+            serde_json::to_value(ReviewRuleCreated {
+                approval_id: "a1".into()
+            })
+            .unwrap(),
             serde_json::json!({"approvalId":"a1"})
         );
         assert_eq!(SETTINGS_APPROVAL_BOT_ID, "settings");
         assert_eq!(APPROVAL_SENT_TO_OWNER_DM_NOTICE, "已发到主人私聊");
         assert_eq!(SETTINGS_APPROVAL_BOT_NAME, "设置");
-        let body: CreateReviewRule = serde_json::from_value(serde_json::json!({"text":"x"})).unwrap();
+        let body: CreateReviewRule =
+            serde_json::from_value(serde_json::json!({"text":"x"})).unwrap();
         assert_eq!(body.text, "x");
     }
 
@@ -1640,7 +1798,10 @@ mod tests {
             waiting_for: Some(WaitingFor::Takeover),
             progress: None,
         };
-        assert_eq!(serde_json::to_value(&takeover).unwrap()["waitingFor"], "takeover");
+        assert_eq!(
+            serde_json::to_value(&takeover).unwrap()["waitingFor"],
+            "takeover"
+        );
         let old = serde_json::json!({
             "type": "status",
             "id": "t1",
@@ -1653,7 +1814,9 @@ mod tests {
             "updatedAt": "2026-10-03T19:00:01.000Z",
             "containerUp": false
         });
-        let Event::Status { waiting_for, .. } = serde_json::from_value(old).unwrap() else { panic!() };
+        let Event::Status { waiting_for, .. } = serde_json::from_value(old).unwrap() else {
+            panic!()
+        };
         assert_eq!(waiting_for, None, "old JSON without the field still parses");
     }
 
@@ -1691,9 +1854,17 @@ mod tests {
             "containerUp": true
         });
         let parsed: Event = serde_json::from_value(old).unwrap();
-        let Event::Status { progress, .. } = &parsed else { panic!("status") };
+        let Event::Status { progress, .. } = &parsed else {
+            panic!("status")
+        };
         assert_eq!(progress, &None, "old JSON without the field still parses");
-        assert!(serde_json::to_value(&parsed).unwrap().get("progress").is_none(), "absent stays absent");
+        assert!(
+            serde_json::to_value(&parsed)
+                .unwrap()
+                .get("progress")
+                .is_none(),
+            "absent stays absent"
+        );
     }
 
     #[test]
@@ -1714,7 +1885,14 @@ mod tests {
             "type": "delivery", "id": "d1", "summary": "草图", "path": "out/sketch.png",
             "briefing": false, "createdAt": "2026-10-03T19:00:02.000Z"
         });
-        let Event::Delivery { failure, needs_setup, .. } = serde_json::from_value(old).unwrap() else { panic!() };
+        let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = serde_json::from_value(old).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(failure, None, "old JSON without the field still parses");
         assert_eq!(needs_setup, None);
     }
@@ -1805,8 +1983,16 @@ mod tests {
     #[test]
     fn choice_event_json() {
         let options = vec![
-            ChoiceOption { id: "a".into(), label: "方案 A".into(), primary: true },
-            ChoiceOption { id: "b".into(), label: "方案 B".into(), primary: false },
+            ChoiceOption {
+                id: "a".into(),
+                label: "方案 A".into(),
+                primary: true,
+            },
+            ChoiceOption {
+                id: "b".into(),
+                label: "方案 B".into(),
+                primary: false,
+            },
         ];
         assert_round_trip(
             &Event::Choice {
@@ -1845,8 +2031,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.bot_id, "bot-ada");
-        assert!(!request.multi && !request.options[0].primary, "multi and primary default to false");
-        let answer: AnswerChoice = serde_json::from_value(serde_json::json!({ "choice": ["b"] })).unwrap();
+        assert!(
+            !request.multi && !request.options[0].primary,
+            "multi and primary default to false"
+        );
+        let answer: AnswerChoice =
+            serde_json::from_value(serde_json::json!({ "choice": ["b"] })).unwrap();
         assert_eq!(answer.choice, vec!["b".to_string()]);
         assert_eq!(answer.answered_by, None, "answeredBy is optional");
     }
@@ -1860,10 +2050,20 @@ mod tests {
             "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": "2026-11-20T08:31:00.000Z"
         }))
         .unwrap();
-        assert!(matches!(old, Event::Approval { answered_by: None, .. }));
-        let answer: Answer = serde_json::from_value(serde_json::json!({ "answeredBy": "Panda 的 Mac" })).unwrap();
+        assert!(matches!(
+            old,
+            Event::Approval {
+                answered_by: None,
+                ..
+            }
+        ));
+        let answer: Answer =
+            serde_json::from_value(serde_json::json!({ "answeredBy": "Panda 的 Mac" })).unwrap();
         assert_eq!(answer.answered_by.as_deref(), Some("Panda 的 Mac"));
-        assert_eq!(serde_json::to_value(Answer::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(
+            serde_json::to_value(Answer::default()).unwrap(),
+            serde_json::json!({})
+        );
         assert_eq!(clean_answered_by(None), Ok(None));
         assert_eq!(clean_answered_by(Some("  ")), Ok(None));
         assert_eq!(clean_answered_by(Some(" 手机 ")), Ok(Some("手机".into())));
@@ -1885,7 +2085,10 @@ mod tests {
             },
             paused: true,
         };
-        let value = serde_json::to_value(&Schedules { schedules: vec![entry.clone()] }).unwrap();
+        let value = serde_json::to_value(&Schedules {
+            schedules: vec![entry.clone()],
+        })
+        .unwrap();
         assert_eq!(
             value,
             serde_json::json!({ "schedules": [{
@@ -1901,7 +2104,8 @@ mod tests {
         );
         let back: Schedules = serde_json::from_value(value).unwrap();
         assert_eq!(back.schedules[0], entry);
-        let patch: UpdateSchedule = serde_json::from_value(serde_json::json!({ "paused": false })).unwrap();
+        let patch: UpdateSchedule =
+            serde_json::from_value(serde_json::json!({ "paused": false })).unwrap();
         assert!(!patch.paused);
     }
 
@@ -1909,8 +2113,16 @@ mod tests {
     fn groups_json() {
         let groups = Groups {
             groups: vec![
-                Group { id: "g1".into(), name: "设计群".into(), tenant_id: "local".into() },
-                Group { id: "g2".into(), name: "运营群".into(), tenant_id: "local".into() },
+                Group {
+                    id: "g1".into(),
+                    name: "设计群".into(),
+                    tenant_id: "local".into(),
+                },
+                Group {
+                    id: "g2".into(),
+                    name: "运营群".into(),
+                    tenant_id: "local".into(),
+                },
             ],
         };
         let value = serde_json::to_value(&groups).unwrap();
@@ -1927,7 +2139,10 @@ mod tests {
         assert_eq!(back, groups);
 
         let empty = Groups { groups: vec![] };
-        assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!({ "groups": [] }));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({ "groups": [] })
+        );
     }
 
     #[test]
@@ -1936,9 +2151,18 @@ mod tests {
         assert_eq!(TaskState::Running.label(), "进行");
         assert_eq!(TaskState::Blocked.label(), "卡住");
         assert_eq!(TaskState::Done.label(), "完成");
-        assert_eq!(serde_json::to_string(&TaskState::Queued).unwrap(), "\"queued\"");
-        assert_eq!(serde_json::to_string(&TaskState::Running).unwrap(), "\"running\"");
-        assert_eq!(serde_json::to_string(&TaskState::Blocked).unwrap(), "\"blocked\"");
+        assert_eq!(
+            serde_json::to_string(&TaskState::Queued).unwrap(),
+            "\"queued\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskState::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskState::Blocked).unwrap(),
+            "\"blocked\""
+        );
         assert_eq!(serde_json::to_string(&TaskState::Done).unwrap(), "\"done\"");
     }
 

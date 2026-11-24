@@ -417,9 +417,9 @@ curl -s -N $B/api/groups/<groupId>/stream
 
 `Unread`：`{"groupId","readAt","unread","lastActivityAt"}`。`readAt` 从没读过时为 `null`；`lastActivityAt` 群里没有任何活动时为 `null`。
 
-`unread` 只数 `readAt` 之后 bro 发来、需要人看的东西：交付卡、选项卡、审批卡、确认卡（按 `createdAt`），以及 `updatedAt` 在之后、当前处于 `blocked` 的任务。人自己的消息和排队、进行、完成这类状态变化不算。
+`unread` 只数 `readAt` 之后 bro 发来、需要人看的东西：交付卡、选项卡、审批卡、确认卡（按 `createdAt`），以及 `updatedAt` 在之后、当前处于 `blocked` 的任务。人自己的消息和排队、进行、完成这类状态变化不算。审批卡只算出了卡的（审核中和被自动审核放行的不算），而且只在卡所在的会话算：bro 在群里发、改发到主人私聊的卡只算私聊的未读，群里列着的那张提示不算。
 
-`lastActivityAt` 取消息、任务（`updatedAt`）、交付卡、选项卡、审批卡和确认卡（已回答按 `answeredAt`）里最新的时间。
+`lastActivityAt` 取消息、任务（`updatedAt`）、交付卡、选项卡、审批卡和确认卡（已回答按 `answeredAt`）里最新的时间。改发到私聊的 bro 卡在原来的群里也算一次活动（群里列着它），但不算未读。
 
 ### GET /api/unread
 
@@ -498,7 +498,13 @@ bro 在删除、发送或花钱之前问人。`host/src/approvals.rs:create_appr
 | `summary` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字。 |
 | `path` | string | 否 | 只用来展示，去掉空白后为空当没填。 |
 
-- 201 `approval` 事件（不带 `taskId`，带 `expiresAt`）。
+宿主机先自动审核（见「自动审核和过期」），审核在这个请求里做完才返回，所以有放行规则时可能要等审核模型几秒。201 的 body 永远是审核后的卡，形状和以前一样（不带 `taskId`）：
+
+- 没有放行规则：`decision: null`，带 `expiresAt`，不带 `reason`。卡发到主人私聊（见「审批卡发到哪」）。
+- 规则放行（allow）：`decision: "approved"`、`answeredAt` 已填、`answeredBy` 为 `null`、`reason` 是审核模型的理由，不带 `expiresAt`。不出卡（不进任何群或私聊的事件和未读），bro 可以直接做。之后 `GET /api/approvals/{id}` 能读到它，`approve` / `deny` 返回 409「已经答过了」。
+- 拦下（block，包括审核出错重试后失败、没接模型）：`decision: null`，带 `reason` 和 `expiresAt`，卡发到主人私聊。
+- bro 只看 `decision`：`approved` 就做，`null` 就等主人回答（读 `GET /api/approvals/{id}` 或 stream），`denied` 就不做。旧 bro 照旧把 201 当「卡已发出」也不会出错，只是放行的卡它会白等一张不会出现的卡——所以 bro 应先看 `decision`。
+
 - 404「群不存在」；400「这个 Bot 不在群里」。
 - 400「请填写要做什么」/「说明只能一行，最多 200 字」/「不支持这个动作」。
 
@@ -515,7 +521,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 任务本来就在私聊里跑：卡留在这个私聊，不显示这行提示。
 - bro 还没有私聊（用 `POST /api/groups/{id}/members` 直接按 `botId` 加进群的 bro）：宿主机先给它建一个私聊，和 `POST /api/bros/{id}/dm` 一样；找不到这个 bro 时卡留在任务所在的群。
 - 同意、拒绝、过期、409 都不变；同意后任务在原来的群里重新排队、在原来的群目录跑完，交付卡也在群里。
-- bro 用 `POST /api/groups/{id}/approvals` 自己发的卡还是留在那个群。#120 的客户端把群里未回答的审批卡画成没有按钮，主人现在哪里都答不了；等后面一张后端 PR 给这些卡走审核并发到私聊。
+- bro 用 `POST /api/groups/{id}/approvals` 自己发的卡（`delete` / `send` / `spend`）也走自动审核；被拦或没有放行规则时，卡发到主人和这个 bro 的私聊（`host/src/approvals.rs:bro_card_group`，没有私聊就先建一个），主人在私聊里点同意或拒绝。发卡的那个群的事件和 stream 里**也列着同一张卡**（同一个 `id`，内容一样，回答后两边一起变）。客户端在群里本来就把待批准的审批卡画成没有按钮、只写「已发到主人私聊」（#120），所以不用改客户端。这张卡只在私聊里算一条未读；群里列着的那张只是提示（跟任务卡的状态卡一样），不算群的未读，回答前后都不算。bro 在私聊里发的卡留在这个私聊，不另列。
 
 ### 任务审批卡
 
@@ -548,14 +554,14 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
   - 没接模型：block，`reason`「还没设置模型，没法自动审核」。从不默认放行。
 - **过期**：卡在 `expiresAt`（出卡后 `ROBROZ_APPROVAL_TTL_SECS` 秒，默认 24 小时）还没回答，宿主机把它记成 `decision: denied`、`reason: "审批已过期"`（`APPROVAL_EXPIRED_REASON`），`answeredBy` 留空。它挡着的任务变成 `done`，`failure`「审批已过期」。之后再 `approve` / `deny` 返回 409「已经答过了」。确认卡（记忆、技能）和接管（captcha）不过期。
 
-任务审批卡和 MCP 工具审批卡发到主人私聊，见「审批卡发到哪」。bro 用 `POST /api/groups/{id}/approvals` 发的卡只会过期，不经过审核。
+任务审批卡、MCP 工具审批卡和 bro 发的卡都走上面的审核，被拦的卡发到主人私聊，见「审批卡发到哪」。bro 发的卡不经过审核线程，而是在 `POST /api/groups/{id}/approvals` 请求里当场审核（锁外调模型）；请求中途断掉、卡还在审核的，审核线程过 60 秒接手。被规则放行的卡（任务卡也一样）`GET /api/approvals/{id}` 能读到，`approve` / `deny` 返回 409「已经答过了」；还在审核的卡两处都是 404。未读只算出了卡的审批卡，审核中和被放行的不算；改发到私聊的 bro 卡只算私聊的未读，见「未读」。
 
 ### GET /api/approvals/{id}
 
 读一张审批卡，返回和事件里一样的 `approval` 对象。`host/src/approvals.rs:get_approval`。设置页的放行规则确认卡只能从这里取到。
 
 - 200 `approval` 对象。
-- 404「审批卡不存在」：id 不存在、是确认卡（`confirm`），或这张卡还在自动审核。
+- 404「审批卡不存在」：id 不存在、是确认卡（`confirm`），或这张卡还在自动审核。被自动审核放行的卡（没出过卡）也能读到，`decision` 为 `approved`、带 `reason`。
 
 ```sh
 curl -s $B/api/approvals/<approvalId>

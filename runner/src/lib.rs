@@ -116,7 +116,10 @@ pub fn strip_side_lines(text: &str) -> String {
     if !text.lines().any(side_line) {
         return text.to_string();
     }
-    text.lines().filter(|line| !side_line(line)).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .filter(|line| !side_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The `proposals.jsonl` lines for the `robroz-memory:` and `robroz-skill:`
@@ -144,7 +147,11 @@ fn record_proposals(root: &Path, task_id: &str, lines: &[String], append: bool) 
             _ => Ok(()),
         };
     }
-    let mut body = if append { fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
+    let mut body = if append {
+        fs::read_to_string(&path).unwrap_or_default()
+    } else {
+        String::new()
+    };
     for line in lines {
         body.push_str(line);
         body.push('\n');
@@ -188,7 +195,11 @@ pub fn parse_intent(text: &str) -> Option<Intent> {
     if kind.is_empty() {
         return None;
     }
-    let hash = parts.next().map(str::trim).filter(|h| !h.is_empty()).map(str::to_string);
+    let hash = parts
+        .next()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_string);
     let line = parts.next().map(str::to_string);
     Some(Intent {
         kind: kind.to_string(),
@@ -272,14 +283,20 @@ pub fn apply_prompt_with(
     let dir = task_dir(root, task_id);
     fs::create_dir_all(&dir)?;
 
-    let gets = prompt.lines().filter(|line| line.trim() == "robroz-action:get").count();
+    let gets = prompt
+        .lines()
+        .filter(|line| line.trim() == "robroz-action:get")
+        .count();
     if gets > 0 {
         fs::write(outbound_path(root, task_id), "GET\n".repeat(gets))?;
     }
     record_progress(root, task_id, prompt)?;
     record_proposals(root, task_id, &proposal_lines(prompt), false)?;
     if let Some(stop) = blocking_line(prompt, approved) {
-        fs::write(intent_path(root, task_id), format_intent(stop.kind, &stop.line))?;
+        fs::write(
+            intent_path(root, task_id),
+            format_intent(stop.kind, &stop.line),
+        )?;
         return Ok(());
     }
     // No unapproved blocking line left: every blocking line here was taken over.
@@ -342,8 +359,14 @@ mod tests {
         let root = scratch();
         let prompt = "robroz-action:get\nrobroz-action:get\n画一张草图";
         apply_prompt(&root, "task-1", prompt).unwrap();
-        assert_eq!(fs::read(outbound_path(&root, "task-1")).unwrap(), b"GET\nGET\n");
-        assert_eq!(fs::read(result_path(&root, "task-1")).unwrap(), prompt.as_bytes());
+        assert_eq!(
+            fs::read(outbound_path(&root, "task-1")).unwrap(),
+            b"GET\nGET\n"
+        );
+        assert_eq!(
+            fs::read(result_path(&root, "task-1")).unwrap(),
+            prompt.as_bytes()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -395,7 +418,10 @@ mod tests {
     fn run_reads_prompt_file() {
         let (base, workspace, control) = mounts("t1", "画一张草图");
         run(&workspace, &control, "t1").unwrap();
-        assert_eq!(fs::read(result_path(&workspace, "t1")).unwrap(), "画一张草图".as_bytes());
+        assert_eq!(
+            fs::read(result_path(&workspace, "t1")).unwrap(),
+            "画一张草图".as_bytes()
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -404,10 +430,22 @@ mod tests {
         let line = "robroz-action:external";
         let (base, workspace, control) = mounts("t1", "robroz-action:external\n正文");
         // The container can write anywhere under /workspace. None of these count.
-        fs::write(task_dir(&workspace, "t1").join("takeover"), format!("{}\n", action_hash(line))).unwrap();
-        fs::write(workspace.join("takeover"), format!("{}\n", action_hash(line))).unwrap();
+        fs::write(
+            task_dir(&workspace, "t1").join("takeover"),
+            format!("{}\n", action_hash(line)),
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("takeover"),
+            format!("{}\n", action_hash(line)),
+        )
+        .unwrap();
         fs::create_dir_all(workspace.join("control")).unwrap();
-        fs::write(workspace.join("control/takeover"), format!("{}\n", action_hash(line))).unwrap();
+        fs::write(
+            workspace.join("control/takeover"),
+            format!("{}\n", action_hash(line)),
+        )
+        .unwrap();
 
         run(&workspace, &control, "t1").unwrap();
         assert_eq!(intent_kind(&workspace, "t1"), "external");
@@ -433,8 +471,12 @@ mod tests {
         append_takeover(&control, &action_hash("robroz-action:external")).unwrap();
 
         run(&workspace, &control, "t1").unwrap();
-        let intent = parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap()).unwrap();
-        assert_eq!(intent.kind, "captcha", "a different blocking line still blocks");
+        let intent =
+            parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap()).unwrap();
+        assert_eq!(
+            intent.kind, "captcha",
+            "a different blocking line still blocks"
+        );
         assert_eq!(intent.line.as_deref(), Some("robroz-action:captcha"));
         assert!(!result_path(&workspace, "t1").exists());
 
@@ -442,7 +484,10 @@ mod tests {
         append_takeover(&control, &action_hash("robroz-action:captcha")).unwrap();
         run(&workspace, &control, "t1").unwrap();
         assert!(!intent_path(&workspace, "t1").exists());
-        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "正文");
+        assert_eq!(
+            fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+            "正文"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -452,7 +497,10 @@ mod tests {
         append_takeover(&control, "aa").unwrap();
         append_takeover(&control, "aa").unwrap();
         append_takeover(&control, "bb").unwrap();
-        assert_eq!(fs::read_to_string(takeover_path(&control)).unwrap(), "aa\nbb\n");
+        assert_eq!(
+            fs::read_to_string(takeover_path(&control)).unwrap(),
+            "aa\nbb\n"
+        );
     }
 
     #[test]
@@ -461,7 +509,10 @@ mod tests {
         // A prompt file the container could plant in the volume.
         fs::write(task_dir(&workspace, "t1").join("prompt.txt"), "伪造的任务").unwrap();
         run(&workspace, &control, "t1").unwrap();
-        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "真正的任务");
+        assert_eq!(
+            fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+            "真正的任务"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -477,7 +528,8 @@ mod tests {
 
     #[test]
     fn runner_stops_where_shared_blocking_line_says() {
-        let prompt = "开头\n robroz-action:captcha\n正文\nrobroz-action:external\nrobroz-action:captcha";
+        let prompt =
+            "开头\n robroz-action:captcha\n正文\nrobroz-action:external\nrobroz-action:captcha";
         let mut approved = HashSet::<String>::new();
         loop {
             let (base, workspace, control) = mounts("t1", prompt);
@@ -487,7 +539,9 @@ mod tests {
             run(&workspace, &control, "t1").unwrap();
             match robroz_policy::blocking_line(prompt, &approved) {
                 Some(expected) => {
-                    let intent = parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap()).unwrap();
+                    let intent =
+                        parse_intent(&fs::read_to_string(intent_path(&workspace, "t1")).unwrap())
+                            .unwrap();
                     assert_eq!(intent.kind, expected.kind);
                     assert_eq!(intent.line.as_deref(), Some(expected.line.as_str()));
                     assert!(!result_path(&workspace, "t1").exists());
@@ -495,14 +549,21 @@ mod tests {
                 }
                 None => {
                     assert!(!intent_path(&workspace, "t1").exists());
-                    assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "开头\n正文");
+                    assert_eq!(
+                        fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+                        "开头\n正文"
+                    );
                     let _ = fs::remove_dir_all(&base);
                     break;
                 }
             }
             let _ = fs::remove_dir_all(&base);
         }
-        assert_eq!(approved.len(), 3, "three distinct blocking lines, three takeovers");
+        assert_eq!(
+            approved.len(),
+            3,
+            "three distinct blocking lines, three takeovers"
+        );
     }
 
     #[test]
@@ -510,27 +571,48 @@ mod tests {
         let (base, workspace, control) = mounts("t1", "写周报");
         fs::write(reply_path(&control), "周报：本周完成三项").unwrap();
         run(&workspace, &control, "t1").unwrap();
-        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
+        assert_eq!(
+            fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+            "周报：本周完成三项"
+        );
         let _ = fs::remove_dir_all(&base);
 
         let (base, workspace, control) = mounts("t2", "发邮件\nrobroz-action:external");
         fs::write(reply_path(&control), "已发送").unwrap();
         run(&workspace, &control, "t2").unwrap();
-        assert!(!result_path(&workspace, "t2").exists(), "still blocked, reply unused");
+        assert!(
+            !result_path(&workspace, "t2").exists(),
+            "still blocked, reply unused"
+        );
         assert!(intent_path(&workspace, "t2").exists());
         let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
     fn progress_lines_are_parsed_and_kept_out_of_the_result() {
-        assert_eq!(progress_text("  robroz-progress: 在查资料 "), Some("在查资料"));
+        assert_eq!(
+            progress_text("  robroz-progress: 在查资料 "),
+            Some("在查资料")
+        );
         assert_eq!(progress_text("robroz-progress:   "), None);
         assert_eq!(progress_text("robroz-action:get"), None);
-        assert_eq!(strip_progress("没有进度行\n"), "没有进度行\n", "byte for byte");
+        assert_eq!(
+            strip_progress("没有进度行\n"),
+            "没有进度行\n",
+            "byte for byte"
+        );
 
         let root = scratch();
-        apply_prompt(&root, "p", "robroz-progress:第一步\n正文\nrobroz-progress:第二步").unwrap();
-        assert_eq!(fs::read_to_string(progress_path(&root, "p")).unwrap(), "第二步");
+        apply_prompt(
+            &root,
+            "p",
+            "robroz-progress:第一步\n正文\nrobroz-progress:第二步",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(progress_path(&root, "p")).unwrap(),
+            "第二步"
+        );
         assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
         apply_prompt(&root, "q", "画一张草图").unwrap();
         assert!(!progress_path(&root, "q").exists());
@@ -539,24 +621,39 @@ mod tests {
 
     #[test]
     fn memory_lines_go_to_proposals_not_result() {
-        assert_eq!(memory_payload(r#"  robroz-memory: {"kind":"habit"} "#), Some(r#"{"kind":"habit"}"#));
+        assert_eq!(
+            memory_payload(r#"  robroz-memory: {"kind":"habit"} "#),
+            Some(r#"{"kind":"habit"}"#)
+        );
         assert_eq!(memory_payload("robroz-progress:x"), None);
-        assert_eq!(strip_side_lines("没有记忆行\n"), "没有记忆行\n", "byte for byte");
+        assert_eq!(
+            strip_side_lines("没有记忆行\n"),
+            "没有记忆行\n",
+            "byte for byte"
+        );
 
         let root = scratch();
         let prompt = "robroz-memory:{\"kind\":\"habit\",\"text\":\"周报用中文\"}\n正文\nrobroz-memory:不是 json";
         apply_prompt(&root, "p", prompt).unwrap();
         assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
         let lines = fs::read_to_string(proposals_path(&root, "p")).unwrap();
-        let parsed: Vec<_> = lines.lines().map(robroz_contract::Proposal::parse_line).collect();
+        let parsed: Vec<_> = lines
+            .lines()
+            .map(robroz_contract::Proposal::parse_line)
+            .collect();
         assert_eq!(parsed.len(), 1, "{lines}");
-        let Some(robroz_contract::Proposal::Memory(m)) = &parsed[0] else { panic!("{lines}") };
+        let Some(robroz_contract::Proposal::Memory(m)) = &parsed[0] else {
+            panic!("{lines}")
+        };
         assert_eq!((m.text.as_str(), m.scope.as_deref()), ("周报用中文", None));
 
         // A rerun replaces the file; a run with none removes it.
         apply_prompt(&root, "p", "只有正文").unwrap();
         assert!(!proposals_path(&root, "p").exists());
-        assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "只有正文");
+        assert_eq!(
+            fs::read_to_string(result_path(&root, "p")).unwrap(),
+            "只有正文"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -571,32 +668,66 @@ mod tests {
         apply_prompt(&root, "p", prompt).unwrap();
         assert_eq!(fs::read_to_string(result_path(&root, "p")).unwrap(), "正文");
         let lines = fs::read_to_string(proposals_path(&root, "p")).unwrap();
-        let parsed: Vec<_> = lines.lines().map(robroz_contract::Proposal::parse_line).collect();
+        let parsed: Vec<_> = lines
+            .lines()
+            .map(robroz_contract::Proposal::parse_line)
+            .collect();
         assert_eq!(parsed.len(), 1, "{lines}");
-        let Some(robroz_contract::Proposal::Skill(s)) = &parsed[0] else { panic!("{lines}") };
-        assert_eq!((s.slug.as_str(), s.title.as_str(), s.instruction.as_str()), ("weekly-report", "写周报", "先列三点"));
+        let Some(robroz_contract::Proposal::Skill(s)) = &parsed[0] else {
+            panic!("{lines}")
+        };
+        assert_eq!(
+            (s.slug.as_str(), s.title.as_str(), s.instruction.as_str()),
+            ("weekly-report", "写周报", "先列三点")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn model_reply_memory_goes_to_proposals_not_result() {
-        let (base, workspace, control) = mounts("t1", "robroz-memory:{\"kind\":\"profile\",\"text\":\"叫 Panda\",\"scope\":\"user\"}\n写周报");
-        fs::write(reply_path(&control), "周报：本周完成三项\nrobroz-memory:{\"kind\":\"habit\",\"text\":\"周五交\"}").unwrap();
+        let (base, workspace, control) = mounts(
+            "t1",
+            "robroz-memory:{\"kind\":\"profile\",\"text\":\"叫 Panda\",\"scope\":\"user\"}\n写周报",
+        );
+        fs::write(
+            reply_path(&control),
+            "周报：本周完成三项\nrobroz-memory:{\"kind\":\"habit\",\"text\":\"周五交\"}",
+        )
+        .unwrap();
         run(&workspace, &control, "t1").unwrap();
-        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
+        assert_eq!(
+            fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+            "周报：本周完成三项"
+        );
         let lines = fs::read_to_string(proposals_path(&workspace, "t1")).unwrap();
-        assert_eq!(lines.lines().count(), 2, "prompt and reply both count: {lines}");
-        assert!(lines.lines().all(|l| robroz_contract::Proposal::parse_line(l).is_some()));
+        assert_eq!(
+            lines.lines().count(),
+            2,
+            "prompt and reply both count: {lines}"
+        );
+        assert!(lines
+            .lines()
+            .all(|l| robroz_contract::Proposal::parse_line(l).is_some()));
         let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
     fn model_reply_progress_goes_to_progress_not_result() {
         let (base, workspace, control) = mounts("t1", "写周报");
-        fs::write(reply_path(&control), "robroz-progress:在排版\n周报：本周完成三项").unwrap();
+        fs::write(
+            reply_path(&control),
+            "robroz-progress:在排版\n周报：本周完成三项",
+        )
+        .unwrap();
         run(&workspace, &control, "t1").unwrap();
-        assert_eq!(fs::read_to_string(result_path(&workspace, "t1")).unwrap(), "周报：本周完成三项");
-        assert_eq!(fs::read_to_string(progress_path(&workspace, "t1")).unwrap(), "在排版");
+        assert_eq!(
+            fs::read_to_string(result_path(&workspace, "t1")).unwrap(),
+            "周报：本周完成三项"
+        );
+        assert_eq!(
+            fs::read_to_string(progress_path(&workspace, "t1")).unwrap(),
+            "在排版"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 }

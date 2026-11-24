@@ -106,35 +106,56 @@ mod tests {
     fn appearance_for_each_state() {
         assert_eq!(
             appearance(TaskState::Queued, false),
-            Appearance { tone: Tone::Gray, action: None }
+            Appearance {
+                tone: Tone::Gray,
+                action: None
+            }
         );
         assert_eq!(
             appearance(TaskState::Queued, true),
-            Appearance { tone: Tone::Gray, action: None },
+            Appearance {
+                tone: Tone::Gray,
+                action: None
+            },
             "queued ignores container_up"
         );
         assert_eq!(
             appearance(TaskState::Running, true),
-            Appearance { tone: Tone::Ink, action: None }
+            Appearance {
+                tone: Tone::Ink,
+                action: None
+            }
         );
         assert_eq!(
             appearance(TaskState::Running, false),
-            Appearance { tone: Tone::Gray, action: None }
+            Appearance {
+                tone: Tone::Gray,
+                action: None
+            }
         );
         assert_eq!(
             appearance(TaskState::Done, false),
-            Appearance { tone: Tone::Green, action: None }
+            Appearance {
+                tone: Tone::Green,
+                action: None
+            }
         );
         assert_eq!(
             appearance(TaskState::Blocked, false),
-            Appearance { tone: Tone::Amber, action: Some("去私聊接管") }
+            Appearance {
+                tone: Tone::Amber,
+                action: Some("去私聊接管")
+            }
         );
     }
 
     #[test]
     fn failure_line_keeps_the_dead_run_line() {
         assert_eq!(failure_line("没写出结果"), "没写出结果");
-        assert_eq!(failure_line(NO_RESULT), status_line(TaskState::Running, false));
+        assert_eq!(
+            failure_line(NO_RESULT),
+            status_line(TaskState::Running, false)
+        );
         assert_eq!(failure_line("模型没回：超时"), "没做成：模型没回：超时");
     }
 

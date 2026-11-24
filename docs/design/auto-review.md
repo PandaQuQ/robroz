@@ -287,7 +287,8 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Implementation status
 
-On `main` at `a2a7e9a` after [#125](https://github.com/PandaQuQ/robroz/pull/125):
+On `main` after [#125](https://github.com/PandaQuQ/robroz/pull/125), plus
+[#127](https://github.com/PandaQuQ/robroz/pull/127):
 
 - Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
   `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
@@ -309,15 +310,21 @@ On `main` at `a2a7e9a` after [#125](https://github.com/PandaQuQ/robroz/pull/125)
   task's bro (created if that bro has none; the task's group if the bro is
   unknown). The group's status card keeps `waitingFor: approval` and shows
   `progress` 「已发到主人私聊」 (`APPROVAL_SENT_TO_OWNER_DM_NOTICE`). A task
-  that runs in a DM keeps its card there. Bro-issued cards stay where they
-  were posted.
-- Not yet: review of bro-issued `delete` / `send` / `spend` cards
-  (they only expire, and they stay in the group). The #120 client draws
-  a pending approval in a group with no buttons, so the owner cannot
-  answer those bro-issued cards anywhere until a later PR reviews them
-  and sends them to the owner's DM. A bro proposing a rule in
-  conversation, with the card in that bro's DM with the owner: there is
-  no bro path for proposing rules yet, so it is not built.
+  that runs in a DM keeps its card there.
+- Done: review of bro-issued `delete` / `send` / `spend` cards
+  (`POST /api/groups/{id}/approvals`). The review runs inside the request,
+  outside the DB lock, so the 201 body is the card after review: allow
+  returns it already `approved` with `reason` and no card is shown; block
+  (or no rules) shows it in the owner's DM with that bro, and the group it
+  was posted in lists the same card, which the client draws without buttons
+  as 「已发到主人私聊」. That group copy is only a notice: unread counts it in
+  the DM only, never in the group. If the request dies mid-review, the review thread
+  picks the card up after 60 seconds. Allowed cards are readable with
+  `GET /api/approvals/{id}`, and answering them returns 409.
+- Not yet: a bro
+  proposing a rule in conversation, with the card in that bro's DM with the
+  owner: there is no bro path for proposing rules yet, so it is not
+  built.
 
 ## Rollout
 

@@ -6,11 +6,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    clean_answered_by, AnswerChoice, ChoiceOption, CreateChoice, Event, CHOICE_OPTIONS_MAX, CHOICE_OPTIONS_MIN,
+    clean_answered_by, AnswerChoice, ChoiceOption, CreateChoice, Event, CHOICE_OPTIONS_MAX,
+    CHOICE_OPTIONS_MIN,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent};
+use crate::{
+    db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent,
+};
 
 pub(crate) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS choices (
@@ -31,7 +34,10 @@ const SELECT: &str = "SELECT c.id, c.bot_id, b.name, c.prompt, c.options, c.choi
 
 /// Trims and checks options: 2 to 4, non-empty labels, distinct non-empty
 /// values, at most one `primary`. `primary` is dropped on multi cards.
-pub fn validate_options(options: &[ChoiceOption], multi: bool) -> Result<Vec<ChoiceOption>, &'static str> {
+pub fn validate_options(
+    options: &[ChoiceOption],
+    multi: bool,
+) -> Result<Vec<ChoiceOption>, &'static str> {
     if !(CHOICE_OPTIONS_MIN..=CHOICE_OPTIONS_MAX).contains(&options.len()) {
         return Err("选项需要 2 到 4 个");
     }
@@ -48,17 +54,29 @@ pub fn validate_options(options: &[ChoiceOption], multi: bool) -> Result<Vec<Cho
         if clean.iter().any(|o| o.id == value) {
             return Err("选项重复");
         }
-        clean.push(ChoiceOption { id: value, label, primary: option.primary && !multi });
+        clean.push(ChoiceOption {
+            id: value,
+            label,
+            primary: option.primary && !multi,
+        });
     }
     Ok(clean)
 }
 
 /// Checks a pick against the card: single takes exactly one value, multi one
 /// or more distinct values; every value must be an option. Returns it trimmed.
-pub fn validate_pick(options: &[ChoiceOption], multi: bool, pick: &[String]) -> Result<Vec<String>, &'static str> {
+pub fn validate_pick(
+    options: &[ChoiceOption],
+    multi: bool,
+    pick: &[String],
+) -> Result<Vec<String>, &'static str> {
     let pick: Vec<String> = pick.iter().map(|v| v.trim().to_string()).collect();
     if pick.is_empty() || (!multi && pick.len() != 1) {
-        return Err(if multi { "至少选一个" } else { "只能选一个" });
+        return Err(if multi {
+            "至少选一个"
+        } else {
+            "只能选一个"
+        });
     }
     for (i, value) in pick.iter().enumerate() {
         if pick[..i].contains(value) {
@@ -115,7 +133,12 @@ pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Resul
         let created_at: String = row.get(6)?;
         let answered_at: Option<String> = row.get(7)?;
         let changed_at = answered_at.unwrap_or_else(|| created_at.clone());
-        Ok(TimedEvent { created_at, changed_at, id, event: event_from_row(row)? })
+        Ok(TimedEvent {
+            created_at,
+            changed_at,
+            id,
+            event: event_from_row(row)?,
+        })
     })?;
     rows.collect()
 }
@@ -138,7 +161,10 @@ pub(crate) async fn create_choice(
             |row| row.get(0),
         )?;
         if member == 0 {
-            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "这个 Bot 不在群里")));
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "这个 Bot 不在群里",
+            )));
         }
         if prompt.is_empty() {
             return Ok(Err(error_response(StatusCode::BAD_REQUEST, "请填写内容")));
@@ -171,7 +197,13 @@ pub(crate) async fn answer_choice(
 ) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
-        let Some(Event::Choice { options, multi, choice, .. }) = load(&conn, &id)? else {
+        let Some(Event::Choice {
+            options,
+            multi,
+            choice,
+            ..
+        }) = load(&conn, &id)?
+        else {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "选项卡不存在")));
         };
         if choice.is_some() {

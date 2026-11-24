@@ -24,7 +24,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    CreateMemory, Memories, Memory, MemoryKind, MemoryScope, MemorySource, MemoryStatus, UpdateMemory, MEMORY_TEXT_MAX,
+    CreateMemory, Memories, Memory, MemoryKind, MemoryScope, MemorySource, MemoryStatus,
+    UpdateMemory, MEMORY_TEXT_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 
@@ -61,7 +62,11 @@ const UNKNOWN_BOT: &str = "这个 bro 不存在";
 const NOT_FOUND: &str = "记忆不存在";
 
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, format!("unknown value {text:?}").into())
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        format!("unknown value {text:?}").into(),
+    )
 }
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
@@ -77,13 +82,22 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         status: MemoryStatus::parse(&status).ok_or_else(|| bad_column(5, &status))?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
-        confirm_id: if status == MemoryStatus::Pending.as_str() { row.get(8)? } else { None },
+        confirm_id: if status == MemoryStatus::Pending.as_str() {
+            row.get(8)?
+        } else {
+            None
+        },
     })
 }
 
 /// A live (not forgotten) memory.
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
-    conn.query_row(&format!("{SELECT} WHERE id = ?1 AND forgotten_at IS NULL"), [id], from_row).optional()
+    conn.query_row(
+        &format!("{SELECT} WHERE id = ?1 AND forgotten_at IS NULL"),
+        [id],
+        from_row,
+    )
+    .optional()
 }
 
 /// Kept, not forgotten memories a bro may use: everyone's (`user`) plus its own
@@ -157,9 +171,15 @@ fn normalized(text: &str) -> String {
 
 /// Whether a memory with this scope, kind and (normalized) text exists and is
 /// not forgotten, whatever its status. Proposals that match are not stored again.
-pub(crate) fn has_live_duplicate(conn: &Connection, scope: &str, kind: MemoryKind, text: &str) -> rusqlite::Result<bool> {
-    let mut stmt =
-        conn.prepare("SELECT text FROM memories WHERE scope = ?1 AND kind = ?2 AND forgotten_at IS NULL")?;
+pub(crate) fn has_live_duplicate(
+    conn: &Connection,
+    scope: &str,
+    kind: MemoryKind,
+    text: &str,
+) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT text FROM memories WHERE scope = ?1 AND kind = ?2 AND forgotten_at IS NULL",
+    )?;
     let wanted = normalized(text);
     let mut rows = stmt.query(params![scope, kind.as_str()])?;
     while let Some(row) = rows.next()? {
@@ -172,11 +192,20 @@ pub(crate) fn has_live_duplicate(conn: &Connection, scope: &str, kind: MemoryKin
 
 /// Parse a scope and make sure a `bot:` scope names a bro that exists.
 /// `Ok(Err(msg))` is a 400.
-pub(crate) fn checked_scope(conn: &Connection, raw: &str) -> rusqlite::Result<Result<String, &'static str>> {
-    let Some(scope) = MemoryScope::parse(raw) else { return Ok(Err(BAD_SCOPE)) };
+pub(crate) fn checked_scope(
+    conn: &Connection,
+    raw: &str,
+) -> rusqlite::Result<Result<String, &'static str>> {
+    let Some(scope) = MemoryScope::parse(raw) else {
+        return Ok(Err(BAD_SCOPE));
+    };
     if let MemoryScope::Bot(id) = &scope {
         let exists = conn
-            .query_row("SELECT 1 FROM bots WHERE id = ?1 AND tenant_id = ?2", params![id, TENANT_ID], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM bots WHERE id = ?1 AND tenant_id = ?2",
+                params![id, TENANT_ID],
+                |_| Ok(()),
+            )
             .optional()?
             .is_some();
         if !exists {
@@ -188,25 +217,36 @@ pub(crate) fn checked_scope(conn: &Connection, raw: &str) -> rusqlite::Result<Re
 
 /// Bad JSON, a missing field or an unknown `kind` are all 400 here.
 fn body_error(rejection: JsonRejection) -> Response {
-    let message = if rejection.body_text().contains("unknown variant") { BAD_KIND } else { "请求格式不正确" };
+    let message = if rejection.body_text().contains("unknown variant") {
+        BAD_KIND
+    } else {
+        "请求格式不正确"
+    };
     error_response(StatusCode::BAD_REQUEST, message)
 }
 
 /// `?kind=&scope=&status=`; an empty value means no filter, unknown keys are ignored.
 type ListQuery = std::collections::HashMap<String, String>;
 
-pub(crate) async fn list_memories(State(state): State<AppState>, Query(query): Query<ListQuery>) -> Response {
+pub(crate) async fn list_memories(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Response {
     let param = |key: &str| query.get(key).map(String::as_str).filter(|v| !v.is_empty());
     let mut filters = vec!["forgotten_at IS NULL".to_string()];
     let mut values: Vec<String> = Vec::new();
     if let Some(kind) = param("kind") {
-        let Some(kind) = MemoryKind::parse(kind) else { return error_response(StatusCode::BAD_REQUEST, BAD_KIND) };
+        let Some(kind) = MemoryKind::parse(kind) else {
+            return error_response(StatusCode::BAD_REQUEST, BAD_KIND);
+        };
         values.push(kind.as_str().into());
         filters.push(format!("kind = ?{}", values.len()));
     }
     if let Some(scope) = param("scope") {
         // Format only: a forgotten bro's memories can still be listed.
-        let Some(scope) = MemoryScope::parse(scope) else { return error_response(StatusCode::BAD_REQUEST, BAD_SCOPE) };
+        let Some(scope) = MemoryScope::parse(scope) else {
+            return error_response(StatusCode::BAD_REQUEST, BAD_SCOPE);
+        };
         values.push(scope.to_string());
         filters.push(format!("scope = ?{}", values.len()));
     }
@@ -225,7 +265,9 @@ pub(crate) async fn list_memories(State(state): State<AppState>, Query(query): Q
     let result = (|| {
         let mut stmt = conn.prepare(&sql)?;
         let args: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
-        let memories = stmt.query_map(args.as_slice(), from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let memories = stmt
+            .query_map(args.as_slice(), from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok::<_, rusqlite::Error>(Memories { memories })
     })();
     drop(conn);
@@ -258,7 +300,15 @@ pub(crate) async fn create_memory(
         conn.execute(
             "INSERT INTO memories (id, scope, kind, text, source, status, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![id, scope, body.kind.as_str(), text, MemorySource::User.as_str(), MemoryStatus::Kept.as_str(), now],
+            params![
+                id,
+                scope,
+                body.kind.as_str(),
+                text,
+                MemorySource::User.as_str(),
+                MemoryStatus::Kept.as_str(),
+                now
+            ],
         )?;
         Ok::<_, rusqlite::Error>(Ok(load(&conn, &id)?.expect("just inserted")))
     })();
@@ -288,7 +338,9 @@ pub(crate) async fn update_memory(
     };
     let conn = lock_db(&state);
     let result = (|| {
-        let Some(current) = load(&conn, &id)? else { return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND))) };
+        let Some(current) = load(&conn, &id)? else {
+            return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND)));
+        };
         let scope = match body.scope.as_deref() {
             None => current.scope,
             Some(raw) => match checked_scope(&conn, raw)? {
@@ -312,22 +364,37 @@ pub(crate) async fn update_memory(
     }
 }
 
-pub(crate) async fn forget_memory(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+pub(crate) async fn forget_memory(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
     let mut conn = lock_db(&state);
     let result = (|| {
         let conn = conn.transaction()?;
         // The first forget time stands; forgetting again changes nothing.
         let forgotten_at: Option<Option<String>> = conn
-            .query_row("SELECT forgotten_at FROM memories WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT forgotten_at FROM memories WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .optional()?;
         match forgotten_at {
             None => Ok(false),
             Some(Some(_)) => Ok(true),
             Some(None) => {
                 let now = now_rfc3339();
-                conn.execute("UPDATE memories SET forgotten_at = ?2 WHERE id = ?1", params![id, now])?;
+                conn.execute(
+                    "UPDATE memories SET forgotten_at = ?2 WHERE id = ?1",
+                    params![id, now],
+                )?;
                 // A pending one may still have a card asking about it: close it.
-                crate::proposals::close_for_forgotten(&conn, robroz_contract::ConfirmSubject::Memory, &id, &now)?;
+                crate::proposals::close_for_forgotten(
+                    &conn,
+                    robroz_contract::ConfirmSubject::Memory,
+                    &id,
+                    &now,
+                )?;
                 conn.commit()?;
                 Ok::<_, rusqlite::Error>(true)
             }
@@ -369,7 +436,12 @@ mod tests {
         (router, db)
     }
 
-    async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(uri);
         let body = match body {
             Some(v) => {
@@ -381,7 +453,11 @@ mod tests {
         let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
         (status, value)
     }
 
@@ -392,8 +468,13 @@ mod tests {
     }
 
     async fn remember(app: &Router, scope: &str, kind: &str, text: &str) -> Value {
-        let (status, memory) =
-            send(app, "POST", "/api/memories", Some(json!({ "scope": scope, "kind": kind, "text": text }))).await;
+        let (status, memory) = send(
+            app,
+            "POST",
+            "/api/memories",
+            Some(json!({ "scope": scope, "kind": kind, "text": text })),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{memory}");
         memory
     }
@@ -401,7 +482,12 @@ mod tests {
     async fn texts(app: &Router, query: &str) -> Vec<String> {
         let (status, body) = send(app, "GET", &format!("/api/memories{query}"), None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        body["memories"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap().to_string()).collect()
+        body["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["text"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[tokio::test]
@@ -420,35 +506,71 @@ mod tests {
         let second = remember(&app, &format!("bot:{ada}"), "habit", "周报用中文").await;
         assert_eq!(second["scope"], format!("bot:{ada}"));
 
-        assert_eq!(texts(&app, "").await, ["周报用中文", "我叫 Panda，在伦敦"], "newest first");
+        assert_eq!(
+            texts(&app, "").await,
+            ["周报用中文", "我叫 Panda，在伦敦"],
+            "newest first"
+        );
 
         let id = first["id"].as_str().unwrap();
-        let (status, changed) =
-            send(&app, "PATCH", &format!("/api/memories/{id}"), Some(json!({ "text": "我叫 Panda", "kind": "habit" }))).await;
+        let (status, changed) = send(
+            &app,
+            "PATCH",
+            &format!("/api/memories/{id}"),
+            Some(json!({ "text": "我叫 Panda", "kind": "habit" })),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{changed}");
         assert_eq!(changed["text"], "我叫 Panda");
         assert_eq!(changed["kind"], "habit");
         assert_eq!(changed["scope"], "user", "untouched field stays");
         assert_eq!(changed["createdAt"], first["createdAt"]);
         assert!(changed["updatedAt"].as_str().unwrap() >= first["updatedAt"].as_str().unwrap());
-        assert_eq!(texts(&app, "").await[0], "我叫 Panda", "edited one moves to the top");
+        assert_eq!(
+            texts(&app, "").await[0],
+            "我叫 Panda",
+            "edited one moves to the top"
+        );
 
-        let (status, moved) =
-            send(&app, "PATCH", &format!("/api/memories/{id}"), Some(json!({ "scope": format!("bot:{ada}") }))).await;
+        let (status, moved) = send(
+            &app,
+            "PATCH",
+            &format!("/api/memories/{id}"),
+            Some(json!({ "scope": format!("bot:{ada}") })),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(moved["scope"], format!("bot:{ada}"));
 
         let (status, body) = send(&app, "DELETE", &format!("/api/memories/{id}"), None).await;
         assert_eq!((status, body), (StatusCode::NO_CONTENT, Value::Null));
         let (status, _) = send(&app, "DELETE", &format!("/api/memories/{id}"), None).await;
-        assert_eq!(status, StatusCode::NO_CONTENT, "forgetting again is a no-op");
+        assert_eq!(
+            status,
+            StatusCode::NO_CONTENT,
+            "forgetting again is a no-op"
+        );
         assert_eq!(texts(&app, "").await, ["周报用中文"]);
         for status_filter in ["kept", "pending", "rejected"] {
-            assert!(!texts(&app, &format!("?status={status_filter}")).await.contains(&"我叫 Panda".to_string()));
+            assert!(!texts(&app, &format!("?status={status_filter}"))
+                .await
+                .contains(&"我叫 Panda".to_string()));
         }
-        let (status, _) = send(&app, "PATCH", &format!("/api/memories/{id}"), Some(json!({ "text": "x" }))).await;
+        let (status, _) = send(
+            &app,
+            "PATCH",
+            &format!("/api/memories/{id}"),
+            Some(json!({ "text": "x" })),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "forgotten can't be edited");
-        let (status, _) = send(&app, "PATCH", "/api/memories/nope", Some(json!({ "text": "x" }))).await;
+        let (status, _) = send(
+            &app,
+            "PATCH",
+            "/api/memories/nope",
+            Some(json!({ "text": "x" })),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = send(&app, "DELETE", "/api/memories/nope", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -465,7 +587,10 @@ mod tests {
         {
             // Bro proposals arrive in PR ②; seed them directly.
             let conn = Connection::open(&db).unwrap();
-            for (id, status, at) in [("p1", "pending", "2000-01-01T00:00:00.000Z"), ("r1", "rejected", "2000-01-01T00:00:00.000Z")] {
+            for (id, status, at) in [
+                ("p1", "pending", "2000-01-01T00:00:00.000Z"),
+                ("r1", "rejected", "2000-01-01T00:00:00.000Z"),
+            ] {
                 conn.execute(
                     "INSERT INTO memories (id, scope, kind, text, source, status, created_at, updated_at)
                      VALUES (?1, 'user', 'habit', ?1, 'bot', ?2, ?3, ?3)",
@@ -474,15 +599,33 @@ mod tests {
                 .unwrap();
             }
         }
-        assert_eq!(texts(&app, "").await, ["bob-habit", "ada-project", "u-profile", "p1"]);
+        assert_eq!(
+            texts(&app, "").await,
+            ["bob-habit", "ada-project", "u-profile", "p1"]
+        );
         assert_eq!(texts(&app, "?status=rejected").await, ["r1"]);
         assert_eq!(texts(&app, "?status=pending").await, ["p1"]);
         assert_eq!(texts(&app, "?kind=habit").await, ["bob-habit", "p1"]);
-        assert_eq!(texts(&app, &format!("?scope=bot:{ada}")).await, ["ada-project"]);
-        assert_eq!(texts(&app, "?scope=user&kind=habit&status=kept").await, Vec::<String>::new());
-        assert_eq!(texts(&app, "?kind=&scope=&status=").await.len(), 4, "empty params mean no filter");
+        assert_eq!(
+            texts(&app, &format!("?scope=bot:{ada}")).await,
+            ["ada-project"]
+        );
+        assert_eq!(
+            texts(&app, "?scope=user&kind=habit&status=kept").await,
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            texts(&app, "?kind=&scope=&status=").await.len(),
+            4,
+            "empty params mean no filter"
+        );
 
-        for query in ["?kind=mood", "?scope=group:g1", "?scope=bot:", "?status=forgotten"] {
+        for query in [
+            "?kind=mood",
+            "?scope=group:g1",
+            "?scope=bot:",
+            "?status=forgotten",
+        ] {
             let (status, body) = send(&app, "GET", &format!("/api/memories{query}"), None).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body}");
         }
@@ -493,12 +636,30 @@ mod tests {
         let (app, _) = app();
         let ada = new_bro(&app, "Ada").await;
         let cases = [
-            (json!({ "scope": "group:g1", "kind": "habit", "text": "x" }), "scope 只能是 user 或 bot:<botId>"),
-            (json!({ "scope": "everyone", "kind": "habit", "text": "x" }), "scope 只能是 user 或 bot:<botId>"),
-            (json!({ "scope": "bot:ghost", "kind": "habit", "text": "x" }), "这个 bro 不存在"),
-            (json!({ "scope": "user", "kind": "mood", "text": "x" }), "kind 只能是 profile、habit 或 project"),
-            (json!({ "scope": "user", "kind": "habit", "text": "   " }), "请填写内容"),
-            (json!({ "scope": "user", "kind": "habit", "text": "长".repeat(2001) }), "内容太长，最多 2000 个字"),
+            (
+                json!({ "scope": "group:g1", "kind": "habit", "text": "x" }),
+                "scope 只能是 user 或 bot:<botId>",
+            ),
+            (
+                json!({ "scope": "everyone", "kind": "habit", "text": "x" }),
+                "scope 只能是 user 或 bot:<botId>",
+            ),
+            (
+                json!({ "scope": "bot:ghost", "kind": "habit", "text": "x" }),
+                "这个 bro 不存在",
+            ),
+            (
+                json!({ "scope": "user", "kind": "mood", "text": "x" }),
+                "kind 只能是 profile、habit 或 project",
+            ),
+            (
+                json!({ "scope": "user", "kind": "habit", "text": "   " }),
+                "请填写内容",
+            ),
+            (
+                json!({ "scope": "user", "kind": "habit", "text": "长".repeat(2001) }),
+                "内容太长，最多 2000 个字",
+            ),
             (json!({ "scope": "user", "text": "x" }), "请求格式不正确"),
         ];
         for (body, message) in cases {
@@ -521,15 +682,27 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         }
         let (_, same) = send(&app, "GET", &format!("/api/memories?scope=bot:{ada}"), None).await;
-        assert_eq!(same["memories"], json!([memory]), "failed edits change nothing");
+        assert_eq!(
+            same["memories"],
+            json!([memory]),
+            "failed edits change nothing"
+        );
     }
 
     #[tokio::test]
     async fn memories_require_the_api_token() {
         let db = temp_path("db");
         let token = crate::auth::ApiToken::parse("0123456789abcdef-good").unwrap();
-        let app = crate::Host::open(&db, temp_path("volumes"), "robroz-runner:local").unwrap().with_token(token).router();
-        for (method, uri) in [("GET", "/api/memories"), ("POST", "/api/memories"), ("PATCH", "/api/memories/x"), ("DELETE", "/api/memories/x")] {
+        let app = crate::Host::open(&db, temp_path("volumes"), "robroz-runner:local")
+            .unwrap()
+            .with_token(token)
+            .router();
+        for (method, uri) in [
+            ("GET", "/api/memories"),
+            ("POST", "/api/memories"),
+            ("PATCH", "/api/memories/x"),
+            ("DELETE", "/api/memories/x"),
+        ] {
             let (status, _) = send(&app, method, uri, Some(json!({}))).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
         }
@@ -541,16 +714,47 @@ mod tests {
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(SCHEMA).expect("migration is idempotent");
         conn.execute_batch(crate::approvals::SCHEMA).unwrap();
-        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []).unwrap();
+        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", [])
+            .unwrap();
         crate::proposals::migrate(&conn).unwrap();
         let rows = [
             ("shared", "user", "kept", None, "2026-01-01T00:00:01.000Z"),
-            ("ada-old", "bot:ada", "kept", None, "2026-01-01T00:00:00.000Z"),
-            ("ada-new", "bot:ada", "kept", None, "2026-01-01T00:00:02.000Z"),
+            (
+                "ada-old",
+                "bot:ada",
+                "kept",
+                None,
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (
+                "ada-new",
+                "bot:ada",
+                "kept",
+                None,
+                "2026-01-01T00:00:02.000Z",
+            ),
             ("bob", "bot:bob", "kept", None, "2026-01-01T00:00:03.000Z"),
-            ("pending", "user", "pending", None, "2026-01-01T00:00:04.000Z"),
-            ("rejected", "bot:ada", "rejected", None, "2026-01-01T00:00:05.000Z"),
-            ("forgotten", "user", "kept", Some("2026-01-02T00:00:00.000Z"), "2026-01-01T00:00:06.000Z"),
+            (
+                "pending",
+                "user",
+                "pending",
+                None,
+                "2026-01-01T00:00:04.000Z",
+            ),
+            (
+                "rejected",
+                "bot:ada",
+                "rejected",
+                None,
+                "2026-01-01T00:00:05.000Z",
+            ),
+            (
+                "forgotten",
+                "user",
+                "kept",
+                Some("2026-01-02T00:00:00.000Z"),
+                "2026-01-01T00:00:06.000Z",
+            ),
         ];
         for (id, scope, status, forgotten, at) in rows {
             conn.execute(
@@ -560,7 +764,13 @@ mod tests {
             )
             .unwrap();
         }
-        let ids = |bot: &str| kept_for(&conn, bot).unwrap().into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let ids = |bot: &str| {
+            kept_for(&conn, bot)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids("ada"), ["ada-new", "shared", "ada-old"]);
         assert_eq!(ids("bob"), ["bob", "shared"]);
         assert_eq!(ids("carol"), ["shared"]);
@@ -622,7 +832,10 @@ mod tests {
         );
         assert_eq!(prompt_section_with(&[newer, older], one - 1), None);
         assert!(
-            prompt_section(&[sample(MemoryKind::Habit, "短")]).unwrap().chars().count()
+            prompt_section(&[sample(MemoryKind::Habit, "短")])
+                .unwrap()
+                .chars()
+                .count()
                 <= super::MEMORY_PROMPT_MAX
         );
     }
@@ -632,16 +845,47 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(crate::approvals::SCHEMA).unwrap();
-        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []).unwrap();
+        conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", [])
+            .unwrap();
         crate::proposals::migrate(&conn).unwrap();
         let rows = [
             ("shared", "user", "kept", None, "2026-01-01T00:00:01.000Z"),
-            ("ada-old", "bot:ada", "kept", None, "2026-01-01T00:00:00.000Z"),
-            ("ada-new", "bot:ada", "kept", None, "2026-01-01T00:00:02.000Z"),
+            (
+                "ada-old",
+                "bot:ada",
+                "kept",
+                None,
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (
+                "ada-new",
+                "bot:ada",
+                "kept",
+                None,
+                "2026-01-01T00:00:02.000Z",
+            ),
             ("bob", "bot:bob", "kept", None, "2026-01-01T00:00:03.000Z"),
-            ("pending", "user", "pending", None, "2026-01-01T00:00:04.000Z"),
-            ("rejected", "bot:ada", "rejected", None, "2026-01-01T00:00:05.000Z"),
-            ("forgotten", "user", "kept", Some("2026-01-02T00:00:00.000Z"), "2026-01-01T00:00:06.000Z"),
+            (
+                "pending",
+                "user",
+                "pending",
+                None,
+                "2026-01-01T00:00:04.000Z",
+            ),
+            (
+                "rejected",
+                "bot:ada",
+                "rejected",
+                None,
+                "2026-01-01T00:00:05.000Z",
+            ),
+            (
+                "forgotten",
+                "user",
+                "kept",
+                Some("2026-01-02T00:00:00.000Z"),
+                "2026-01-01T00:00:06.000Z",
+            ),
         ];
         for (id, scope, status, forgotten, at) in rows {
             conn.execute(
@@ -652,8 +896,16 @@ mod tests {
             .unwrap();
         }
         let section = prompt_section(&kept_for(&conn, "ada").unwrap()).unwrap();
-        assert_eq!(section, "你记得这些：\n[habit] ada-new\n[habit] shared\n[habit] ada-old");
-        assert!(!section.contains("bob") && !section.contains("pending") && !section.contains("rejected") && !section.contains("forgotten"));
+        assert_eq!(
+            section,
+            "你记得这些：\n[habit] ada-new\n[habit] shared\n[habit] ada-old"
+        );
+        assert!(
+            !section.contains("bob")
+                && !section.contains("pending")
+                && !section.contains("rejected")
+                && !section.contains("forgotten")
+        );
         assert_eq!(
             prompt_section(&kept_for(&conn, "carol").unwrap()).as_deref(),
             Some("你记得这些：\n[habit] shared")

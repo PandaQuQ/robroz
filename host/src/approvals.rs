@@ -134,11 +134,27 @@ pub(crate) async fn get_approval(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     let conn = lock_db(&state);
-    match load(&conn, &id) {
+    match load_settled_or_open(&conn, &id) {
         Ok(Some(event)) => (StatusCode::OK, Json(event)).into_response(),
         Ok(None) => error_response(StatusCode::NOT_FOUND, "审批卡不存在"),
         Err(err) => db_error(err),
     }
+}
+
+/// A card by id, unless it is still under review. Cards auto-review allowed
+/// (never shown) are included, so `GET` reads them and answering them is 409.
+pub(crate) fn load_settled_or_open(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
+    let pending = conn
+        .query_row(
+            "SELECT review_state = 'pending' FROM approvals WHERE id = ?1",
+            [id],
+            |r| r.get::<_, Option<bool>>(0),
+        )
+        .optional()?;
+    if pending == Some(Some(true)) {
+        return Ok(None);
+    }
+    load_any(conn, id)
 }
 
 /// Any approval card, including ones auto-review has hidden.
@@ -154,7 +170,7 @@ pub(crate) fn load_any(conn: &Connection, id: &str) -> rusqlite::Result<Option<E
 /// Approval events for one group, for the events stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
     let mut stmt = conn.prepare(&format!(
-        "{SELECT} AND a.group_id = ?1 AND {APPROVALS_ONLY}"
+        "{SELECT} AND (a.group_id = ?1 OR a.origin_group_id = ?1) AND {APPROVALS_ONLY}"
     ))?;
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;
@@ -190,15 +206,96 @@ pub fn validate(
     Ok((summary.to_string(), path))
 }
 
+/// Where a bro-posted card goes: the owner's DM with that bro. A card posted
+/// in a DM stays there. Returns `(card group, origin group if moved)`.
+fn bro_card_group(
+    conn: &Connection,
+    group_id: &str,
+    bot_id: &str,
+) -> rusqlite::Result<(String, Option<String>)> {
+    if crate::bros::dm_owner(conn, group_id)?.is_some() {
+        return Ok((group_id.to_string(), None));
+    }
+    Ok(match crate::bros::owner_dm_for(conn, bot_id)? {
+        Some(dm) => (dm, Some(group_id.to_string())),
+        None => (group_id.to_string(), None),
+    })
+}
+
+/// What a bro-posted card needs reviewed after the insert, if anything.
+struct ToReview {
+    id: String,
+    action: String,
+    rules: Vec<String>,
+    reviewer: Option<std::sync::Arc<dyn crate::review::Reviewer>>,
+}
+
+/// A bro asks before it deletes, sends or spends. The card goes through
+/// auto-review like a task card: with confirmed rules it is reviewed right
+/// here (outside the DB lock), allow settles it as `approved` with the
+/// reviewer's `reason` and shows no card, block shows it with `reason`.
+/// Without rules it is shown at once. Shown cards live in the owner's DM with
+/// the bro; the group where it was posted also lists it (without buttons).
+/// The 201 body is the card as stored after review.
 pub(crate) async fn create_approval(
     State(state): State<AppState>,
     AxumPath(group_id): AxumPath<String>,
     Json(body): Json<CreateApproval>,
 ) -> Response {
-    let bot_id = body.bot_id.trim().to_string();
+    let result = insert_bro_card(&state, &group_id, &body);
+    let (id, review) = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(response)) => return response,
+        Err(err) => return db_error(err),
+    };
+    if let Some(review) = review {
+        let ToReview {
+            id: rid,
+            action,
+            rules,
+            reviewer,
+        } = review;
+        let verdict = match reviewer {
+            Some(r) => tokio::task::spawn_blocking(move || {
+                crate::review::reviewer::review_with_retry(&*r, &action, &rules)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                crate::review::Verdict::Block(crate::review::reviewer::REVIEW_FAILED_REASON.into())
+            }),
+            None => crate::review::Verdict::Block(crate::review::NO_MODEL_REASON.into()),
+        };
+        let mut conn = lock_db(&state);
+        if let Err(err) = crate::review::apply(
+            &mut conn,
+            &state.control_root,
+            &rid,
+            &verdict,
+            crate::review::approval_ttl(),
+            chrono::Utc::now(),
+        ) {
+            return db_error(err);
+        }
+    }
     let conn = lock_db(&state);
-    let result = (|| {
-        if !group_exists(&conn, &group_id)? {
+    match load_any(&conn, &id) {
+        Ok(Some(event)) => (StatusCode::CREATED, Json(event)).into_response(),
+        Ok(None) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "审批卡不见了"),
+        Err(err) => db_error(err),
+    }
+}
+
+/// Validate and store a bro-posted card; returns what still needs review.
+#[allow(clippy::type_complexity)]
+fn insert_bro_card(
+    state: &AppState,
+    group_id: &str,
+    body: &CreateApproval,
+) -> rusqlite::Result<Result<(String, Option<ToReview>), Response>> {
+    let bot_id = body.bot_id.trim().to_string();
+    let conn = lock_db(state);
+    {
+        if !group_exists(&conn, group_id)? {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
         }
         let member: i64 = conn.query_row(
@@ -233,27 +330,46 @@ pub(crate) async fn create_approval(
         };
         let id = new_id();
         let now = now_rfc3339();
-        conn.execute(
-            "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8)",
+        let tx = conn.unchecked_transaction()?;
+        let (card_group, origin) = bro_card_group(&tx, group_id, &bot_id)?;
+        let gate = crate::review::open_gate(&tx, &now)?;
+        tx.execute(
+            "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at,
+                                    review_state, expires_at, origin_group_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, ?9, ?10)",
             params![
                 id,
-                group_id,
+                card_group,
                 bot_id,
                 action_text(body.action),
                 summary,
                 path,
                 now,
-                crate::review::expires_at(&now, crate::review::approval_ttl())
+                gate.review_state,
+                gate.expires_at,
+                origin
             ],
         )?;
-        Ok(Ok(load(&conn, &id)?.expect("approval just inserted")))
-    })();
-    drop(conn);
-    match result {
-        Ok(Ok(event)) => (StatusCode::CREATED, Json(event)).into_response(),
-        Ok(Err(response)) => response,
-        Err(err) => db_error(err),
+        tx.commit()?;
+        if gate.review_state != crate::review::PENDING {
+            return Ok(Ok((id, None)));
+        }
+        let mut action =
+            crate::review::describe(action_text(body.action), &summary, None, None, None);
+        if let Some(p) = &path {
+            action.push_str(&format!("\n路径：{p}"));
+        }
+        let review = ToReview {
+            action,
+            rules: crate::review::rules::texts(&conn)?,
+            reviewer: crate::review::reviewer_for(
+                &conn,
+                state.reviewer.as_ref(),
+                state.model.as_ref(),
+            ),
+            id: id.clone(),
+        };
+        Ok(Ok((id, Some(review))))
     }
 }
 
@@ -297,7 +413,9 @@ fn card_group(conn: &Connection, task_id: &str) -> rusqlite::Result<Option<Strin
     if crate::bros::dm_owner(conn, &group_id)?.is_some() {
         return Ok(Some(group_id));
     }
-    Ok(Some(crate::bros::owner_dm_for(conn, &bot_id)?.unwrap_or(group_id)))
+    Ok(Some(
+        crate::bros::owner_dm_for(conn, &bot_id)?.unwrap_or(group_id),
+    ))
 }
 
 /// A blocked task asks before writing outside. The card names the task and
@@ -309,7 +427,9 @@ pub(crate) fn gate_task(
     hash: &str,
     now: &str,
 ) -> rusqlite::Result<()> {
-    let Some(group) = card_group(conn, task_id)? else { return Ok(()) };
+    let Some(group) = card_group(conn, task_id)? else {
+        return Ok(());
+    };
     let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash,
@@ -331,7 +451,9 @@ pub(crate) fn gate_mcp_task(
     server: &str,
     tool: &str,
 ) -> rusqlite::Result<()> {
-    let Some(group) = card_group(conn, task_id)? else { return Ok(()) };
+    let Some(group) = card_group(conn, task_id)? else {
+        return Ok(());
+    };
     let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash, mcp_server, mcp_tool,
@@ -535,7 +657,7 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
                     .map_err(|(status, message)| error_response(status, message)),
             );
         }
-        let Some(card) = load(&conn, id)? else {
+        let Some(card) = load_settled_or_open(&conn, id)? else {
             return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
         };
         if matches!(

@@ -915,8 +915,19 @@ mod tests {
             .get("progress")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        assert_eq!(progress, robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE, "{ev}");
-        assert!(ev["events"].as_array().unwrap().iter().all(|e| e["type"] != "approval"), "card is not in the group");
+        assert_eq!(
+            progress,
+            robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE,
+            "{ev}"
+        );
+        assert!(
+            ev["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["type"] != "approval"),
+            "card is not in the group"
+        );
 
         let id = card["id"].as_str().unwrap();
         let (status, body) = http(

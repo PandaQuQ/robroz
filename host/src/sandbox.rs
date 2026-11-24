@@ -11,7 +11,9 @@ pub struct SandboxError {
 
 impl SandboxError {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -180,9 +182,15 @@ fn rm_argv(name: &str) -> Vec<String> {
 impl Sandbox for DockerSandbox {
     fn start(&mut self, req: &RunRequest<'_>) -> Result<(), SandboxError> {
         let args = run_argv(req, self.user.as_deref());
-        let output = self.exec.exec(&args).map_err(|err| SandboxError::new(err.to_string()))?;
+        let output = self
+            .exec
+            .exec(&args)
+            .map_err(|err| SandboxError::new(err.to_string()))?;
         if output.code != 0 {
-            return Err(SandboxError::new(format!("docker run exited {}", output.code)));
+            return Err(SandboxError::new(format!(
+                "docker run exited {}",
+                output.code
+            )));
         }
         Ok(())
     }
@@ -211,7 +219,10 @@ impl Sandbox for DockerSandbox {
             .exec(&rm_argv(name))
             .map_err(|err| SandboxError::new(err.to_string()))?;
         if output.code != 0 {
-            return Err(SandboxError::new(format!("docker rm exited {}", output.code)));
+            return Err(SandboxError::new(format!(
+                "docker rm exited {}",
+                output.code
+            )));
         }
         Ok(())
     }
@@ -260,8 +271,12 @@ impl FakeSandbox {
     fn finish_inner(&mut self, code: i32, apply: bool) {
         for container in &mut self.containers {
             if apply && container.phase == ContainerPhase::Running {
-                robroz_runner::run(&container.group_dir, &container.control_dir, &container.task_id)
-                    .expect("runner");
+                robroz_runner::run(
+                    &container.group_dir,
+                    &container.control_dir,
+                    &container.task_id,
+                )
+                .expect("runner");
             }
             container.phase = ContainerPhase::Exited { code };
         }
@@ -278,7 +293,9 @@ impl Sandbox for FakeSandbox {
         let prompt = std::fs::read_to_string(robroz_runner::prompt_path(req.control_dir))
             .map_err(|err| SandboxError::new(format!("control prompt.txt missing: {err}")))?;
         assert!(
-            !robroz_runner::task_dir(req.group_dir, req.task_id).join("prompt.txt").exists(),
+            !robroz_runner::task_dir(req.group_dir, req.task_id)
+                .join("prompt.txt")
+                .exists(),
             "prompt must not be written into the group volume"
         );
         self.containers.push(FakeContainer {
@@ -343,8 +360,12 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["-v", "/var/robroz/groups/group-1:/workspace"]));
         assert!(argv.iter().all(|arg| !arg.contains("docker.sock")));
-        assert!(!argv.iter().any(|arg| arg == "host" || arg == "--network=host"));
-        assert!(argv.windows(2).any(|pair| pair == ["--name", "robroz-task-1"]));
+        assert!(!argv
+            .iter()
+            .any(|arg| arg == "host" || arg == "--network=host"));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--name", "robroz-task-1"]));
         assert!(argv.iter().any(|arg| arg == "ROBROZ_TASK_ID=task-1"));
         assert_eq!(argv.last().map(String::as_str), Some("robroz-runner:local"));
     }
@@ -357,7 +378,10 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["-v", "/var/robroz/control/task-1:/control:ro"]));
         // Only the task's own control dir, and only read-only.
-        let control_mounts: Vec<&String> = argv.iter().filter(|arg| arg.contains(":/control")).collect();
+        let control_mounts: Vec<&String> = argv
+            .iter()
+            .filter(|arg| arg.contains(":/control"))
+            .collect();
         assert_eq!(control_mounts.len(), 1);
         assert!(!argv.iter().any(|arg| arg.contains("ROBROZ_PROMPT")));
         let envs: Vec<&String> = argv
@@ -379,7 +403,10 @@ mod tests {
 
     #[test]
     fn container_user_prefers_override_then_host() {
-        assert_eq!(container_user(Some(" 1234:5678 ".into())), Some("1234:5678".into()));
+        assert_eq!(
+            container_user(Some(" 1234:5678 ".into())),
+            Some("1234:5678".into())
+        );
         #[cfg(unix)]
         {
             let host = container_user(None).expect("unix host user");

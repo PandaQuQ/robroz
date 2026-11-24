@@ -20,7 +20,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 
-use crate::{error_response, group_events, lock_db, parse_since, AppState, EventsQuery, TimedEvent};
+use crate::{
+    error_response, group_events, lock_db, parse_since, AppState, EventsQuery, TimedEvent,
+};
 
 pub(crate) const POLL: Duration = Duration::from_millis(250);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -38,7 +40,10 @@ impl Cursor {
             .into_iter()
             .filter(|t| match &self.at {
                 None => true,
-                Some(at) => t.changed_at > *at || (t.changed_at == *at && !self.sent_at_cursor.contains(&t.id)),
+                Some(at) => {
+                    t.changed_at > *at
+                        || (t.changed_at == *at && !self.sent_at_cursor.contains(&t.id))
+                }
             })
             .collect();
         for t in &fresh {
@@ -69,7 +74,10 @@ impl Cursor {
 fn to_sse(t: &TimedEvent) -> SseEvent {
     let value = serde_json::to_value(&t.event).expect("contract events serialise");
     let name = value["type"].as_str().unwrap_or("event").to_string();
-    SseEvent::default().event(name).id(t.changed_at.clone()).data(value.to_string())
+    SseEvent::default()
+        .event(name)
+        .id(t.changed_at.clone())
+        .data(value.to_string())
 }
 
 pub(crate) async fn stream_events(
@@ -86,7 +94,10 @@ pub(crate) async fn stream_events(
     let Ok(since) = parse_since(raw.as_deref()) else {
         return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
     };
-    let mut cursor = Cursor { at: since, sent_at_cursor: HashSet::new() };
+    let mut cursor = Cursor {
+        at: since,
+        sent_at_cursor: HashSet::new(),
+    };
     let first = {
         let conn = lock_db(&state);
         group_events(&conn, &group_id, cursor.query_since().as_deref())
@@ -121,7 +132,9 @@ pub(crate) async fn stream_events(
             }
         },
     );
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+        .into_response()
 }
 
 #[cfg(test)]
@@ -134,18 +147,29 @@ mod tests {
             created_at: at.into(),
             changed_at: at.into(),
             id: id.into(),
-            event: Event::Message { id: id.into(), kind: MessageKind::Text, body: String::new(), created_at: at.into() },
+            event: Event::Message {
+                id: id.into(),
+                kind: MessageKind::Text,
+                body: String::new(),
+                created_at: at.into(),
+            },
         }
     }
 
     #[test]
     fn same_millisecond_rows_are_neither_lost_nor_repeated() {
         let t = "2026-11-20T02:00:00.000Z";
-        let mut c = Cursor { at: None, sent_at_cursor: HashSet::new() };
+        let mut c = Cursor {
+            at: None,
+            sent_at_cursor: HashSet::new(),
+        };
         assert_eq!(c.take_new(vec![msg("a", t)]).len(), 1);
         // A second row lands in the same millisecond after the first read.
         let again = c.take_new(vec![msg("a", t), msg("b", t)]);
-        assert_eq!(again.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(
+            again.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["b"]
+        );
         assert!(c.take_new(vec![msg("a", t), msg("b", t)]).is_empty());
         let later = c.take_new(vec![msg("a", t), msg("c", "2026-11-20T02:00:00.001Z")]);
         assert_eq!(later.len(), 1);

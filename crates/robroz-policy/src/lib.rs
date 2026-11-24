@@ -1,5 +1,4 @@
 /// Pure decisions. This crate does not start containers or touch the clock.
-
 use std::collections::HashSet;
 
 use sha2::{Digest, Sha256};
@@ -188,8 +187,14 @@ mod tests {
 
     #[test]
     fn side_effect_rules() {
-        assert_eq!(side_effect(SideEffect::WorkspaceRead), SideEffectDecision::Allow);
-        assert_eq!(side_effect(SideEffect::WorkspaceWrite), SideEffectDecision::Allow);
+        assert_eq!(
+            side_effect(SideEffect::WorkspaceRead),
+            SideEffectDecision::Allow
+        );
+        assert_eq!(
+            side_effect(SideEffect::WorkspaceWrite),
+            SideEffectDecision::Allow
+        );
         assert_eq!(
             side_effect(SideEffect::ExternalWrite),
             SideEffectDecision::BlockAndDropContainer
@@ -223,16 +228,31 @@ mod tests {
     fn meter_counts_gets_up_to_the_limit() {
         assert_eq!(meter([], 2), Ok(0));
         assert_eq!(meter(["GET", "GET"], 2), Ok(2));
-        assert_eq!(meter(["GET", "GET", "GET"], 2), Err(OverQuota::TooMany { used: 3, limit: 2 }));
-        assert_eq!(meter(["GET"], 0), Err(OverQuota::TooMany { used: 1, limit: 0 }));
-        assert_eq!(meter(["GET", "POST"], 8), Err(OverQuota::NotGet("POST".into())));
+        assert_eq!(
+            meter(["GET", "GET", "GET"], 2),
+            Err(OverQuota::TooMany { used: 3, limit: 2 })
+        );
+        assert_eq!(
+            meter(["GET"], 0),
+            Err(OverQuota::TooMany { used: 1, limit: 0 })
+        );
+        assert_eq!(
+            meter(["GET", "POST"], 8),
+            Err(OverQuota::NotGet("POST".into()))
+        );
         assert_eq!(meter(["get"], 8), Err(OverQuota::NotGet("get".into())));
     }
 
     #[test]
     fn over_quota_failure_text() {
-        assert_eq!(OverQuota::TooMany { used: 3, limit: 2 }.failure(), "出网超额：已用 3 次，上限 2");
-        assert_eq!(OverQuota::NotGet("POST".into()).failure(), "出网只允许 GET：用了 POST");
+        assert_eq!(
+            OverQuota::TooMany { used: 3, limit: 2 }.failure(),
+            "出网超额：已用 3 次，上限 2"
+        );
+        assert_eq!(
+            OverQuota::NotGet("POST".into()).failure(),
+            "出网只允许 GET：用了 POST"
+        );
     }
 
     #[test]
@@ -258,7 +278,13 @@ mod tests {
     #[test]
     fn blocking_line_none_without_blocking_actions() {
         assert_eq!(blocking_line("", &HashSet::new()), None);
-        assert_eq!(blocking_line("正文\nrobroz-action:get\nrobroz-action:other", &HashSet::new()), None);
+        assert_eq!(
+            blocking_line(
+                "正文\nrobroz-action:get\nrobroz-action:other",
+                &HashSet::new()
+            ),
+            None
+        );
     }
 
     #[test]
@@ -275,7 +301,13 @@ mod tests {
         let prompt = "robroz-action:external\n正文\nrobroz-action:captcha";
         let found = blocking_line(prompt, &set(&["robroz-action:external"])).unwrap();
         assert_eq!(found.kind, "captcha");
-        assert_eq!(blocking_line(prompt, &set(&["robroz-action:external", "robroz-action:captcha"])), None);
+        assert_eq!(
+            blocking_line(
+                prompt,
+                &set(&["robroz-action:external", "robroz-action:captcha"])
+            ),
+            None
+        );
         // Approving the later line does not skip the earlier one.
         let found = blocking_line(prompt, &set(&["robroz-action:captcha"])).unwrap();
         assert_eq!(found.kind, "external");
@@ -292,6 +324,9 @@ mod tests {
         assert_eq!(found.line, "robroz-action:external");
         // Identical lines share approval.
         let twice = "robroz-action:external\n正文\nrobroz-action:external";
-        assert_eq!(blocking_line(twice, &set(&["robroz-action:external"])), None);
+        assert_eq!(
+            blocking_line(twice, &set(&["robroz-action:external"])),
+            None
+        );
     }
 }

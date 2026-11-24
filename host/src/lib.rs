@@ -8,41 +8,41 @@ use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
-    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups, Member,
-    Message, MessageKind, PostMessage, Schedule, Task, TaskState, WaitingFor,
+    AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups,
+    Member, Message, MessageKind, PostMessage, Schedule, Task, TaskState, WaitingFor,
 };
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-mod bros;
-pub mod auth;
 mod approvals;
+pub mod auth;
+mod bros;
 mod choices;
+mod mcp;
+mod mcp_tools;
 mod memories;
-mod skills;
+mod model_settings;
 mod progress;
 mod proposals;
 mod pump;
 pub mod review;
-mod tools;
-mod search;
-mod settings;
-mod model_settings;
-mod mcp;
-mod mcp_tools;
 mod routines;
 mod sandbox;
-mod steps;
-pub mod watchdog;
 mod say;
 mod schedule;
-mod unread;
+mod search;
+mod settings;
+mod skills;
+mod steps;
 mod stream;
 mod text;
+mod tools;
+mod unread;
+pub mod watchdog;
 
 pub use pump::{pump, pump_with, Db, PumpConfig};
-pub use schedule::{tick, TickReport};
 pub use sandbox::DockerSandbox;
+pub use schedule::{tick, TickReport};
 
 use sandbox::Sandbox;
 
@@ -160,22 +160,9 @@ impl Host {
         if waiting == 0 {
             return Ok(());
         }
-        let reviewer: Option<Arc<dyn review::Reviewer>> = match (&self.reviewer, &self.model) {
-            (Some(r), _) => Some(r.clone()),
-            (None, Some(model)) => Some(Arc::new(review::ModelReviewer::new(model.clone()))),
-            (None, None) => {
-                let conn = self.db.lock().expect("sqlite connection lock poisoned");
-                match crate::model_settings::live_model(&conn) {
-                    Ok(Some(cfg)) => Some(Arc::new(review::ModelReviewer::new(Arc::new(
-                        robroz_model::OpenAiCompat::new(cfg),
-                    )))),
-                    Ok(None) => None,
-                    Err(err) => {
-                        eprintln!("review: model config: {err}");
-                        None
-                    }
-                }
-            }
+        let reviewer = {
+            let conn = self.db.lock().expect("sqlite connection lock poisoned");
+            review::reviewer_for(&conn, self.reviewer.as_ref(), self.model.as_ref())
         };
         review::run_pending(
             &self.db,
@@ -209,6 +196,8 @@ impl Host {
         let router = router_from(AppState {
             db: self.db.clone(),
             control_root: self.control_root.clone(),
+            reviewer: self.reviewer.clone(),
+            model: self.model.clone(),
         });
         auth::require_token(router, self.token.clone())
     }
@@ -286,6 +275,9 @@ fn get_limit_from_env() -> u64 {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     control_root: std::path::PathBuf,
+    /// Auto-review of bro-posted cards: test override and fixed model, as on [`Host`].
+    reviewer: Option<Arc<dyn review::Reviewer>>,
+    model: Option<Arc<dyn robroz_model::Model>>,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
@@ -317,16 +309,25 @@ fn router_from(state: AppState) -> Router {
         .route("/api/schedules/{id}", patch(routines::update_schedule))
         .route("/api/groups/{id}/choices", post(choices::create_choice))
         .route("/api/choices/{id}/answer", post(choices::answer_choice))
-        .route("/api/groups/{id}/approvals", post(approvals::create_approval))
+        .route(
+            "/api/groups/{id}/approvals",
+            post(approvals::create_approval),
+        )
         .route("/api/approvals/{id}", get(approvals::get_approval))
         .route("/api/approvals/{id}/approve", post(approvals::approve))
         .route("/api/approvals/{id}/deny", post(approvals::deny))
-        .route("/api/memories", get(memories::list_memories).post(memories::create_memory))
+        .route(
+            "/api/memories",
+            get(memories::list_memories).post(memories::create_memory),
+        )
         .route(
             "/api/memories/{id}",
             patch(memories::update_memory).delete(memories::forget_memory),
         )
-        .route("/api/skills", get(skills::list_skills).post(skills::create_skill))
+        .route(
+            "/api/skills",
+            get(skills::list_skills).post(skills::create_skill),
+        )
         .route(
             "/api/skills/{slug}",
             patch(skills::update_skill).delete(skills::forget_skill),
@@ -336,7 +337,10 @@ fn router_from(state: AppState) -> Router {
             "/api/groups/{id}/skills/{slug}",
             put(skills::enable_skill).delete(skills::disable_skill),
         )
-        .route("/api/settings/search", get(search::get_search).put(search::put_search))
+        .route(
+            "/api/settings/search",
+            get(search::get_search).put(search::put_search),
+        )
         .route("/api/settings/search/test", post(search::test_search))
         .route(
             "/api/settings/model",
@@ -351,7 +355,10 @@ fn router_from(state: AppState) -> Router {
             "/api/settings/review-rules/{id}",
             axum::routing::delete(review::rules::delete_rule),
         )
-        .route("/api/mcp/servers", get(mcp::list_servers).post(mcp::create_server))
+        .route(
+            "/api/mcp/servers",
+            get(mcp::list_servers).post(mcp::create_server),
+        )
         .route(
             "/api/mcp/servers/{id}",
             patch(mcp::patch_server).delete(mcp::delete_server),
@@ -365,7 +372,9 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/mcp", get(mcp::list_group_mcp))
         .route(
             "/api/groups/{id}/mcp/{serverId}",
-            get(mcp::get_group_mcp).put(mcp::enable_group_mcp).delete(mcp::disable_group_mcp),
+            get(mcp::get_group_mcp)
+                .put(mcp::enable_group_mcp)
+                .delete(mcp::disable_group_mcp),
         )
         .with_state(state)
 }
@@ -460,11 +469,17 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(approvals::SCHEMA)?;
     // Added later; ignore "duplicate column" on databases that have it.
     for table in ["choices", "approvals"] {
-        let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN answered_by TEXT"), []);
+        let _ = conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN answered_by TEXT"),
+            [],
+        );
     }
     // Approval cards a blocked task raised: which task and which blocking line.
     for column in ["task_id", "intent_hash"] {
-        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+        let _ = conn.execute(
+            &format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"),
+            [],
+        );
     }
     // Confirm cards: what a bro proposed (`subject_kind`, `subject_id`).
     proposals::migrate(conn)?;
@@ -484,7 +499,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     crate::search::migrate(conn)?;
     crate::mcp::migrate(conn)?;
     for column in ["mcp_server", "mcp_tool"] {
-        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+        let _ = conn.execute(
+            &format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"),
+            [],
+        );
     }
     // Auto-review: allow rules, card expiry and review state.
     review::migrate(conn)?;
@@ -519,11 +537,9 @@ fn lock_db(state: &AppState) -> std::sync::MutexGuard<'_, Connection> {
 }
 
 fn group_exists(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM groups WHERE id = ?1",
-        [id],
-        |row| row.get(0),
-    )?;
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM groups WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })?;
     Ok(n > 0)
 }
 
@@ -614,7 +630,9 @@ async fn add_member(
             params![group_id, bot_id],
         )?;
         let stored_name: String =
-            tx.query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |row| row.get(0))?;
+            tx.query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |row| {
+                row.get(0)
+            })?;
         tx.commit()?;
         Ok(Some(Ok((inserted > 0, stored_name))))
     })();
@@ -805,7 +823,10 @@ async fn resume_task(
 
     let control_dir = state.control_root.join(&task_id);
     if let Err(err) = robroz_runner::append_takeover(&control_dir, &hash) {
-        eprintln!("resume {task_id}: write takeover in {}: {err}", control_dir.display());
+        eprintln!(
+            "resume {task_id}: write takeover in {}: {err}",
+            control_dir.display()
+        );
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, RESUME_MARKER_FAILED);
     }
 
@@ -865,7 +886,10 @@ async fn create_schedule(
         let Some(next) = schedule::parse_cron(&cron_text)
             .and_then(|cron| schedule::next_after(&cron, Utc::now()))
         else {
-            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "cron 格式不对")));
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "cron 格式不对",
+            )));
         };
         let id = new_id();
         let next_run_at = schedule::stamp(next);
@@ -873,7 +897,16 @@ async fn create_schedule(
             "INSERT INTO schedules (id, tenant_id, group_id, assignee_bot_id, cron, prompt,
                                     next_run_at, last_task_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
-            params![id, TENANT_ID, group_id, assignee, cron_text, prompt, next_run_at, now_rfc3339()],
+            params![
+                id,
+                TENANT_ID,
+                group_id,
+                assignee,
+                cron_text,
+                prompt,
+                next_run_at,
+                now_rfc3339()
+            ],
         )?;
         Ok(Ok(Schedule {
             id,
@@ -912,7 +945,12 @@ fn parse_since(raw: Option<&str>) -> Result<Option<String>, ()> {
     match raw.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(None),
         Some(v) => chrono::DateTime::parse_from_rfc3339(v)
-            .map(|t| Some(t.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true)))
+            .map(|t| {
+                Some(
+                    t.with_timezone(&Utc)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true),
+                )
+            })
             .map_err(|_| ()),
     }
 }
@@ -926,8 +964,11 @@ async fn list_events(
         return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
     };
     let conn = lock_db(&state);
-    let result = group_events(&conn, &group_id, since.as_deref())
-        .map(|found| found.map(|timed| Events { events: timed.into_iter().map(|item| item.event).collect() }));
+    let result = group_events(&conn, &group_id, since.as_deref()).map(|found| {
+        found.map(|timed| Events {
+            events: timed.into_iter().map(|item| item.event).collect(),
+        })
+    });
     drop(conn);
 
     match result {
@@ -940,16 +981,19 @@ async fn list_events(
 /// Every card in a group, oldest first, optionally only those that changed after
 /// `since` (normalised RFC3339 millis). `None` when the group does not exist.
 /// Shared by `GET …/events` and the live stream.
-fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusqlite::Result<Option<Vec<TimedEvent>>> {
+fn group_events(
+    conn: &Connection,
+    group_id: &str,
+    since: Option<&str>,
+) -> rusqlite::Result<Option<Vec<TimedEvent>>> {
     if !group_exists(conn, group_id)? {
         return Ok(None);
     }
     let mut timed = Vec::new();
 
     {
-        let mut message_stmt = conn.prepare(
-            "SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1",
-        )?;
+        let mut message_stmt =
+            conn.prepare("SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1")?;
         let messages = message_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
             let created_at: String = row.get(3)?;
@@ -996,7 +1040,11 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             let container_up = container_up != 0;
             let updated_at: String = row.get(5)?;
             // Only a finished task reports why it was not done.
-            let failure: Option<String> = if state == TaskState::Done { row.get(7)? } else { None };
+            let failure: Option<String> = if state == TaskState::Done {
+                row.get(7)?
+            } else {
+                None
+            };
             // Only a blocked task says whether it is waiting for approval or a takeover.
             let waiting_for = if state == TaskState::Blocked {
                 let open_approval: i64 = row.get(8)?;
@@ -1116,7 +1164,12 @@ mod tests {
 
     async fn read_json(response: Response<Body>) -> (StatusCode, Value) {
         let status = response.status();
-        let bytes = response.into_body().collect().await.expect("body").to_bytes();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             panic!("response was not json: {}", String::from_utf8_lossy(&bytes))
         });
@@ -1133,16 +1186,26 @@ mod tests {
     }
 
     fn get(uri: &str) -> Request<Body> {
-        Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     async fn create_group(app: &Router, name: &str) -> Value {
-        let (status, body) = read_json(call(app, post("/api/groups", json!({ "name": name }))).await).await;
+        let (status, body) =
+            read_json(call(app, post("/api/groups", json!({ "name": name }))).await).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         body
     }
 
-    async fn add_member(app: &Router, group_id: &str, bot_id: &str, name: &str) -> (StatusCode, Value) {
+    async fn add_member(
+        app: &Router,
+        group_id: &str,
+        bot_id: &str,
+        name: &str,
+    ) -> (StatusCode, Value) {
         read_json(
             call(
                 app,
@@ -1210,10 +1273,8 @@ mod tests {
             })
         );
 
-        let (status, events) = read_json(
-            call(&app, get(&format!("/api/groups/{group_id}/events"))).await,
-        )
-        .await;
+        let (status, events) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/events"))).await).await;
         assert_eq!(status, StatusCode::OK, "{events}");
         let list = events["events"].as_array().unwrap();
         assert_eq!(list.len(), 2, "{events}");
@@ -1239,11 +1300,19 @@ mod tests {
 
         let db = Connection::open(&path).unwrap();
         let tenant: String = db
-            .query_row("SELECT tenant_id FROM groups WHERE id = ?1", [group_id], |row| row.get(0))
+            .query_row(
+                "SELECT tenant_id FROM groups WHERE id = ?1",
+                [group_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(tenant, "local");
         let bot_tenant: String = db
-            .query_row("SELECT tenant_id FROM bots WHERE id = 'bot-ada'", [], |row| row.get(0))
+            .query_row(
+                "SELECT tenant_id FROM bots WHERE id = 'bot-ada'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(bot_tenant, "local");
         let task_state: String = db
@@ -1256,7 +1325,10 @@ mod tests {
     async fn task_for_non_member_is_rejected_and_absent_from_events() {
         let path = temp_db();
         let app = test_app(&path);
-        let group_id = create_group(&app, "空群").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "空群").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let (status, body) = read_json(
             call(
@@ -1272,15 +1344,15 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
 
-        let (status, events) = read_json(
-            call(&app, get(&format!("/api/groups/{group_id}/events"))).await,
-        )
-        .await;
+        let (status, events) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/events"))).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(events, json!({ "events": [] }));
 
         let db = Connection::open(&path).unwrap();
-        let n: i64 = db.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap();
+        let n: i64 = db
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -1313,15 +1385,15 @@ mod tests {
             assert_eq!(task["state"], "queued");
         }
 
-        let (status, events) = read_json(
-            call(&app, get(&format!("/api/groups/{group_id}/events"))).await,
-        )
-        .await;
+        let (status, events) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/events"))).await).await;
         assert_eq!(status, StatusCode::OK, "{events}");
         let list = events["events"].as_array().unwrap();
         assert_eq!(list.len(), 2, "{events}");
         assert!(list.iter().all(|e| e["type"] == "status"));
-        assert!(list.iter().all(|e| e["state"] == "queued" && e["label"] == "排队"));
+        assert!(list
+            .iter()
+            .all(|e| e["state"] == "queued" && e["label"] == "排队"));
         let mut bots: Vec<&str> = list.iter().map(|e| e["botId"].as_str().unwrap()).collect();
         bots.sort_unstable();
         assert_eq!(bots, ["bot-ada", "bot-bea"]);
@@ -1356,10 +1428,8 @@ mod tests {
             assert_eq!(message["body"], body);
         }
 
-        let (status, events) = read_json(
-            call(&app, get(&format!("/api/groups/{group_id}/events"))).await,
-        )
-        .await;
+        let (status, events) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/events"))).await).await;
         assert_eq!(status, StatusCode::OK, "{events}");
         let list = events["events"].as_array().unwrap();
         assert_eq!(list.len(), 2);
@@ -1402,18 +1472,29 @@ mod tests {
         let path = temp_db();
         let app = test_app(&path);
 
-        let (status, body) = read_json(call(&app, post("/api/groups", json!({ "name": "  " }))).await).await;
+        let (status, body) =
+            read_json(call(&app, post("/api/groups", json!({ "name": "  " }))).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body, json!({ "error": "请填写名称" }));
 
         let (status, body) = read_json(
-            call(&app, post("/api/groups/missing/members", json!({ "botId": "b", "name": "n" }))).await,
+            call(
+                &app,
+                post(
+                    "/api/groups/missing/members",
+                    json!({ "botId": "b", "name": "n" }),
+                ),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, json!({ "error": "群不存在" }));
 
-        let group_id = create_group(&app, "校验").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "校验").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let (status, body) = read_json(
             call(
@@ -1457,10 +1538,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body, json!({ "error": "请填写内容" }));
 
-        let (status, body) = read_json(
-            call(&app, get("/api/groups/missing/events")).await,
-        )
-        .await;
+        let (status, body) = read_json(call(&app, get("/api/groups/missing/events")).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, json!({ "error": "群不存在" }));
 
@@ -1491,12 +1569,25 @@ mod tests {
 
     fn pump_db_limit(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, limit: u64) {
         let conn = Connection::open(db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        super::pump(&conn, sandbox, volumes, &control_of(volumes), "robroz-runner:local", limit).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        super::pump(
+            &conn,
+            sandbox,
+            volumes,
+            &control_of(volumes),
+            "robroz-runner:local",
+            limit,
+        )
+        .unwrap();
     }
 
     fn post_empty(uri: &str) -> Request<Body> {
-        Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     /// Control root next to (never inside) the test volumes root.
@@ -1512,21 +1603,35 @@ mod tests {
     }
 
     fn statuses(events: &Value) -> Vec<&Value> {
-        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "status").collect()
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "status")
+            .collect()
     }
 
     fn deliveries(events: &Value) -> Vec<&Value> {
-        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "delivery").collect()
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "delivery")
+            .collect()
     }
 
     async fn events_of(app: &Router, group_id: &str) -> Value {
-        let (status, events) = read_json(call(app, get(&format!("/api/groups/{group_id}/events"))).await).await;
+        let (status, events) =
+            read_json(call(app, get(&format!("/api/groups/{group_id}/events"))).await).await;
         assert_eq!(status, StatusCode::OK, "{events}");
         events
     }
 
     async fn seed_task(app: &Router, group_name: &str, prompt: &str) -> (String, String) {
-        let group_id = create_group(app, group_name).await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(app, group_name).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (status, _) = add_member(app, &group_id, "bot-ada", "Ada").await;
         assert_eq!(status, StatusCode::CREATED);
         let (status, task) = read_json(
@@ -1568,8 +1673,14 @@ mod tests {
         let prompt = "画一张草图";
         let (group_id, task_id) = seed_task(&app, "沙箱", prompt).await;
         let before = events_of(&app, &group_id).await;
-        let created_at = statuses(&before)[0]["createdAt"].as_str().unwrap().to_string();
-        let updated_queued = statuses(&before)[0]["updatedAt"].as_str().unwrap().to_string();
+        let created_at = statuses(&before)[0]["createdAt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let updated_queued = statuses(&before)[0]["updatedAt"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
@@ -1594,9 +1705,15 @@ mod tests {
         assert!(group_dir.ends_with(&group_id));
 
         pump_db(&path, &volumes, &mut fake);
-        assert!(fake.names().is_empty(), "container list is empty after finish");
+        assert!(
+            fake.names().is_empty(),
+            "container list is empty after finish"
+        );
         assert!(group_dir.is_dir(), "group directory remains");
-        assert!(recorded.is_file(), "file remains after the container is removed");
+        assert!(
+            recorded.is_file(),
+            "file remains after the container is removed"
+        );
         assert_eq!(std::fs::read(&recorded).unwrap(), prompt.as_bytes());
 
         let done = events_of(&app, &group_id).await;
@@ -1716,10 +1833,13 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED);
         pump_db(&path, &volumes, &mut fake);
-        let again = fake.containers.iter().find(|c| c.prompt == "again").unwrap();
+        let again = fake
+            .containers
+            .iter()
+            .find(|c| c.prompt == "again")
+            .unwrap();
         assert_eq!(again.group_dir, dir_a);
     }
-
 
     #[tokio::test]
     async fn get_under_limit_still_finishes_done() {
@@ -1730,7 +1850,10 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "配额内", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db_limit(&path, &volumes, &mut fake, 8);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["containerUp"], true);
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["containerUp"],
+            true
+        );
         fake.finish(0);
         let group_dir = fake.containers[0].group_dir.clone();
         pump_db_limit(&path, &volumes, &mut fake, 8);
@@ -1740,15 +1863,31 @@ mod tests {
         assert_eq!(statuses(&events)[0]["label"], "完成");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert_eq!(deliveries(&events).len(), 1);
-        assert_eq!(deliveries(&events)[0]["path"], format!("tasks/{task_id}/result.txt"));
-        assert_eq!(std::fs::read(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), prompt.as_bytes());
+        assert_eq!(
+            deliveries(&events)[0]["path"],
+            format!("tasks/{task_id}/result.txt")
+        );
+        assert_eq!(
+            std::fs::read(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            prompt.as_bytes()
+        );
         let conn = Connection::open(&path).unwrap();
-        let gets: i64 = conn.query_row("SELECT get_count FROM tasks WHERE id = ?1", [&task_id], |row| row.get(0)).unwrap();
+        let gets: i64 = conn
+            .query_row(
+                "SELECT get_count FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(gets, 1);
     }
 
     /// Tier Metered: the GETs of one run against `limit`, ending as done.
-    async fn run_with_gets(gets: usize, limit: u64, extra: Option<&str>) -> (Router, String, String) {
+    async fn run_with_gets(
+        gets: usize,
+        limit: u64,
+        extra: Option<&str>,
+    ) -> (Router, String, String) {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = test_app(&path);
@@ -1758,7 +1897,9 @@ mod tests {
         pump_db_limit(&path, &volumes, &mut fake, limit);
         fake.finish(0);
         if let Some(line) = extra {
-            let outbound = fake.containers[0].group_dir.join(format!("tasks/{task_id}/outbound.txt"));
+            let outbound = fake.containers[0]
+                .group_dir
+                .join(format!("tasks/{task_id}/outbound.txt"));
             std::fs::write(&outbound, line).unwrap();
         }
         pump_db_limit(&path, &volumes, &mut fake, limit);
@@ -1784,7 +1925,11 @@ mod tests {
         assert_eq!(card["failure"], "出网超额：已用 3 次，上限 2");
         assert_eq!(card["containerUp"], false);
         assert!(deliveries(&events).is_empty(), "no successful delivery");
-        assert!(events["events"].as_array().unwrap().iter().all(|e| e["type"] != "approval"));
+        assert!(events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["type"] != "approval"));
     }
 
     #[tokio::test]
@@ -1802,8 +1947,18 @@ mod tests {
     async fn workspace_write_needs_no_card() {
         let (app, group_id, _) = run_with_gets(0, 8, None).await;
         let events = events_of(&app, &group_id).await;
-        let kinds: Vec<&str> = events["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
-        assert!(kinds.iter().all(|k| matches!(*k, "message" | "status" | "delivery")), "{kinds:?}");
+        let kinds: Vec<&str> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["type"].as_str().unwrap())
+            .collect();
+        assert!(
+            kinds
+                .iter()
+                .all(|k| matches!(*k, "message" | "status" | "delivery")),
+            "{kinds:?}"
+        );
         assert_eq!(statuses(&events)[0]["state"], "done");
         assert!(statuses(&events)[0].get("failure").is_none());
         assert_eq!(deliveries(&events).len(), 1);
@@ -1821,7 +1976,9 @@ mod tests {
         let group_dir = fake.containers[0].group_dir.clone();
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
-        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        assert!(!group_dir
+            .join(format!("tasks/{task_id}/result.txt"))
+            .exists());
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "blocked");
         assert_eq!(statuses(&events)[0]["label"], "卡住");
@@ -1837,10 +1994,12 @@ mod tests {
         let prompt = "robroz-action:external\n画一张草图";
         let (group_id, task_id) = seed_task(&app, "外呼", prompt).await;
 
-        let (status, body) = read_json(call(&app, post_empty("/api/tasks/missing/resume")).await).await;
+        let (status, body) =
+            read_json(call(&app, post_empty("/api/tasks/missing/resume")).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, json!({ "error": "任务不存在" }));
-        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        let (status, body) =
+            read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body, json!({ "error": "这次不能恢复" }));
 
@@ -1848,9 +2007,12 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         fake.finish(0);
         let group_dir = fake.containers[0].group_dir.clone();
-        let intent = std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap();
+        let intent =
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/intent"))).unwrap();
         assert_eq!(intent.lines().next(), Some("external"));
-        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        assert!(!group_dir
+            .join(format!("tasks/{task_id}/result.txt"))
+            .exists());
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty());
         let blocked = events_of(&app, &group_id).await;
@@ -1859,7 +2021,8 @@ mod tests {
         assert_eq!(statuses(&blocked)[0]["containerUp"], false);
         assert!(deliveries(&blocked).is_empty());
 
-        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        let (status, body) =
+            read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, json!({ "id": task_id, "state": "queued" }));
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
@@ -1881,15 +2044,27 @@ mod tests {
         assert_eq!(statuses(&done)[0]["label"], "完成");
         assert_eq!(statuses(&done)[0]["containerUp"], false);
         assert_eq!(deliveries(&done).len(), 1);
-        assert_eq!(deliveries(&done)[0]["path"], format!("tasks/{task_id}/result.txt"));
+        assert_eq!(
+            deliveries(&done)[0]["path"],
+            format!("tasks/{task_id}/result.txt")
+        );
         assert_eq!(deliveries(&done)[0]["briefing"], false);
     }
-
 
     // ---- bros and private chats ----
 
     async fn new_bro(app: &Router, body: Option<Value>) -> (StatusCode, Value) {
-        read_json(call(app, match body { Some(b) => post("/api/bros", b), None => post_empty("/api/bros") }).await).await
+        read_json(
+            call(
+                app,
+                match body {
+                    Some(b) => post("/api/bros", b),
+                    None => post_empty("/api/bros"),
+                },
+            )
+            .await,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -1911,10 +2086,21 @@ mod tests {
         // The DM is an ordinary group with that one bro, usable for tasks right away.
         let dm = named["dmGroupId"].as_str().unwrap().to_string();
         let (_, groups) = read_json(call(&app, get("/api/groups")).await).await;
-        assert!(groups["groups"].as_array().unwrap().iter().any(|g| g["id"] == dm && g["name"] == "小明"));
+        assert!(groups["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["id"] == dm && g["name"] == "小明"));
         let bro_id = named["id"].as_str().unwrap();
         let (status, task) = read_json(
-            call(&app, post(&format!("/api/groups/{dm}/tasks"), json!({ "assigneeBotId": bro_id, "prompt": "你好" }))).await,
+            call(
+                &app,
+                post(
+                    &format!("/api/groups/{dm}/tasks"),
+                    json!({ "assigneeBotId": bro_id, "prompt": "你好" }),
+                ),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{task}");
@@ -1922,7 +2108,12 @@ mod tests {
 
         let (status, list) = read_json(call(&app, get("/api/bros")).await).await;
         assert_eq!(status, StatusCode::OK);
-        let listed: Vec<&str> = list["bros"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap()).collect();
+        let listed: Vec<&str> = list["bros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
         assert_eq!(listed, ["bro", "bro 2", "bro 3", "小明", "bro 4"]);
 
         let (status, _) = new_bro(&app, Some(json!({ "name": "   " }))).await;
@@ -1954,8 +2145,12 @@ mod tests {
         assert_eq!(next["name"], "bro", "the default name is free again");
         let (status, _) = read_json(call(&app, patch("")).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let missing = Request::builder().method("PATCH").uri("/api/bros/nope")
-            .header("content-type", "application/json").body(Body::from(r#"{"name":"x"}"#)).unwrap();
+        let missing = Request::builder()
+            .method("PATCH")
+            .uri("/api/bros/nope")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"x"}"#))
+            .unwrap();
         let (status, _) = read_json(call(&app, missing).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
@@ -1971,7 +2166,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "re-adding its own bro is a no-op");
 
         // A bot that came in through a group gets its DM on demand, once.
-        let group = create_group(&app, "大群").await["id"].as_str().unwrap().to_string();
+        let group = create_group(&app, "大群").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group, "bot-ada", "Ada").await;
         let (status, first) = read_json(call(&app, post_empty("/api/bros/bot-ada/dm")).await).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -1989,14 +2187,25 @@ mod tests {
     // ---- unread ----
 
     async fn unread_of(app: &Router, group_id: &str) -> Value {
-        let (status, body) = read_json(call(app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        let (status, body) =
+            read_json(call(app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body
     }
 
     async fn mark_read(app: &Router, group_id: &str, body: Option<Value>) -> (StatusCode, Value) {
         let uri = format!("/api/groups/{group_id}/read");
-        read_json(call(app, match body { Some(b) => post(&uri, b), None => post_empty(&uri) }).await).await
+        read_json(
+            call(
+                app,
+                match body {
+                    Some(b) => post(&uri, b),
+                    None => post_empty(&uri),
+                },
+            )
+            .await,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -2007,13 +2216,20 @@ mod tests {
         let (group_id, _) = seed_task(&app, "未读", "robroz-action:captcha\n画一张草图").await;
         let fresh = unread_of(&app, &group_id).await;
         assert_eq!(fresh["readAt"], Value::Null);
-        assert_eq!(fresh["unread"], 0, "a queued card and my own messages do not count");
+        assert_eq!(
+            fresh["unread"], 0,
+            "a queued card and my own messages do not count"
+        );
         assert!(fresh["lastActivityAt"].is_string());
 
         // Stuck task needs you: counts.
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(unread_of(&app, &group_id).await["unread"], 0, "running does not count");
+        assert_eq!(
+            unread_of(&app, &group_id).await["unread"],
+            0,
+            "running does not count"
+        );
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
         assert_eq!(unread_of(&app, &group_id).await["unread"], 1);
@@ -2033,16 +2249,36 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
-        let (status, _) = resume(&app, &statuses(&events_of(&app, &group_id).await)[0]["id"].as_str().unwrap().to_string()).await;
+        let (status, _) = resume(
+            &app,
+            &statuses(&events_of(&app, &group_id).await)[0]["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(unread_of(&app, &group_id).await["unread"], 1, "resuming is not news");
+        assert_eq!(
+            unread_of(&app, &group_id).await["unread"],
+            1,
+            "resuming is not news"
+        );
         pump_db(&path, &volumes, &mut fake);
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(unread_of(&app, &group_id).await["unread"], 2, "choice + delivery");
+        assert_eq!(
+            unread_of(&app, &group_id).await["unread"],
+            2,
+            "choice + delivery"
+        );
 
         // Read position only moves forward.
-        let (_, back) = mark_read(&app, &group_id, Some(json!({ "readAt": "2000-01-01T00:00:00Z" }))).await;
+        let (_, back) = mark_read(
+            &app,
+            &group_id,
+            Some(json!({ "readAt": "2000-01-01T00:00:00Z" })),
+        )
+        .await;
         assert_eq!(back["readAt"], read_at);
         assert_eq!(back["unread"], 2);
     }
@@ -2051,17 +2287,41 @@ mod tests {
     async fn unread_list_sorts_by_activity_and_validates() {
         let path = temp_db();
         let app = test_app(&path);
-        let quiet = create_group(&app, "安静").await["id"].as_str().unwrap().to_string();
-        let older = create_group(&app, "旧").await["id"].as_str().unwrap().to_string();
-        let newer = create_group(&app, "新").await["id"].as_str().unwrap().to_string();
+        let quiet = create_group(&app, "安静").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let older = create_group(&app, "旧").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let newer = create_group(&app, "新").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         for (g, text) in [(&older, "a"), (&newer, "b")] {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            let (status, _) = read_json(call(&app, post(&format!("/api/groups/{g}/messages"), json!({ "kind": "text", "body": text }))).await).await;
+            let (status, _) = read_json(
+                call(
+                    &app,
+                    post(
+                        &format!("/api/groups/{g}/messages"),
+                        json!({ "kind": "text", "body": text }),
+                    ),
+                )
+                .await,
+            )
+            .await;
             assert_eq!(status, StatusCode::CREATED);
         }
         let (status, body) = read_json(call(&app, get("/api/unread")).await).await;
         assert_eq!(status, StatusCode::OK);
-        let order: Vec<&str> = body["groups"].as_array().unwrap().iter().map(|g| g["groupId"].as_str().unwrap()).collect();
+        let order: Vec<&str> = body["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["groupId"].as_str().unwrap())
+            .collect();
         assert_eq!(order, [newer.as_str(), older.as_str(), quiet.as_str()]);
         assert_eq!(body["groups"][2]["lastActivityAt"], Value::Null);
 
@@ -2078,42 +2338,71 @@ mod tests {
     #[test]
     fn unread_table_migrates_old_db() {
         let path = temp_db();
-        { super::Host::open(&path, temp_volumes(), "x").unwrap(); }
-        Connection::open(&path).unwrap().execute("DROP TABLE group_reads", []).unwrap();
+        {
+            super::Host::open(&path, temp_volumes(), "x").unwrap();
+        }
+        Connection::open(&path)
+            .unwrap()
+            .execute("DROP TABLE group_reads", [])
+            .unwrap();
         super::Host::open(&path, temp_volumes(), "x").unwrap();
         super::Host::open(&path, temp_volumes(), "x").unwrap();
-        let n: i64 = Connection::open(&path).unwrap()
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'group_reads'", [], |r| r.get(0)).unwrap();
+        let n: i64 = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'group_reads'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
     // ---- live stream ----
 
     /// Reads SSE frames until `n` `data:` events arrived or `wait` passed.
-    async fn sse_take(body: &mut Body, n: usize, wait: std::time::Duration) -> Vec<(String, String, Value)> {
+    async fn sse_take(
+        body: &mut Body,
+        n: usize,
+        wait: std::time::Duration,
+    ) -> Vec<(String, String, Value)> {
         let mut out = Vec::new();
         let mut buf = String::new();
         let deadline = tokio::time::Instant::now() + wait;
         while out.len() < n {
-            let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await else { break };
-            let Ok(bytes) = frame.into_data() else { continue };
+            let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await else {
+                break;
+            };
+            let Ok(bytes) = frame.into_data() else {
+                continue;
+            };
             buf.push_str(std::str::from_utf8(&bytes).unwrap());
             while let Some(end) = buf.find("\n\n") {
                 let block: String = buf.drain(..end + 2).collect();
                 let (mut name, mut id, mut data) = (String::new(), String::new(), None);
                 for line in block.lines() {
-                    if let Some(v) = line.strip_prefix("event: ") { name = v.into(); }
-                    if let Some(v) = line.strip_prefix("id: ") { id = v.into(); }
-                    if let Some(v) = line.strip_prefix("data: ") { data = Some(serde_json::from_str(v).unwrap()); }
+                    if let Some(v) = line.strip_prefix("event: ") {
+                        name = v.into();
+                    }
+                    if let Some(v) = line.strip_prefix("id: ") {
+                        id = v.into();
+                    }
+                    if let Some(v) = line.strip_prefix("data: ") {
+                        data = Some(serde_json::from_str(v).unwrap());
+                    }
                 }
-                if let Some(data) = data { out.push((name, id, data)); }
+                if let Some(data) = data {
+                    out.push((name, id, data));
+                }
             }
         }
         out
     }
 
     async fn open_stream(app: &Router, group_id: &str, last_id: Option<&str>) -> Response<Body> {
-        let mut b = Request::builder().method("GET").uri(format!("/api/groups/{group_id}/stream"));
+        let mut b = Request::builder()
+            .method("GET")
+            .uri(format!("/api/groups/{group_id}/stream"));
         if let Some(id) = last_id {
             b = b.header("last-event-id", id);
         }
@@ -2121,7 +2410,17 @@ mod tests {
     }
 
     async fn say(app: &Router, group_id: &str, text: &str) {
-        let (status, _) = read_json(call(app, post(&format!("/api/groups/{group_id}/messages"), json!({ "kind": "text", "body": text }))).await).await;
+        let (status, _) = read_json(
+            call(
+                app,
+                post(
+                    &format!("/api/groups/{group_id}/messages"),
+                    json!({ "kind": "text", "body": text }),
+                ),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
     }
 
@@ -2153,12 +2452,19 @@ mod tests {
         let wait = std::time::Duration::from_secs(3);
         let backlog = sse_take(&mut body, 2, wait).await;
         assert_events_once(&backlog, &["status", "message"]);
-        let status = backlog.iter().find(|(name, _, _)| name == "status").unwrap();
+        let status = backlog
+            .iter()
+            .find(|(name, _, _)| name == "status")
+            .unwrap();
         assert_eq!(status.2["state"], "queued");
-        assert!(backlog.iter().any(|(name, _, data)| name == "message" && data["body"] == "第一条"));
+        assert!(backlog
+            .iter()
+            .any(|(name, _, data)| name == "message" && data["body"] == "第一条"));
 
         // Nothing changed: nothing arrives.
-        assert!(sse_take(&mut body, 1, super::stream::POLL * 4).await.is_empty());
+        assert!(sse_take(&mut body, 1, super::stream::POLL * 4)
+            .await
+            .is_empty());
 
         // New message and a milestone on the same card are pushed.
         say(&app, &group_id, "第二条").await;
@@ -2166,11 +2472,21 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let live = sse_take(&mut body, 2, wait).await;
         assert_eq!(live.len(), 2, "{live:?}");
-        assert!(live.iter().any(|(n, _, d)| n == "message" && d["body"] == "第二条"));
-        let status = live.iter().find(|(n, _, _)| n == "status").expect("status pushed");
+        assert!(live
+            .iter()
+            .any(|(n, _, d)| n == "message" && d["body"] == "第二条"));
+        let status = live
+            .iter()
+            .find(|(n, _, _)| n == "status")
+            .expect("status pushed");
         assert_eq!(status.2["id"], task_id, "same card id, replaced in place");
         assert_eq!(status.2["state"], "running");
-        assert!(sse_take(&mut body, 1, super::stream::POLL * 4).await.is_empty(), "no repeats");
+        assert!(
+            sse_take(&mut body, 1, super::stream::POLL * 4)
+                .await
+                .is_empty(),
+            "no repeats"
+        );
 
         // Reconnect from the last id: only what changed afterwards.
         let last = live.iter().map(|(_, id, _)| id.clone()).max().unwrap();
@@ -2180,7 +2496,10 @@ mod tests {
         let mut body = open_stream(&app, &group_id, Some(&last)).await.into_body();
         let resumed = sse_take(&mut body, 3, wait).await;
         assert_events_once(&resumed, &["status", "delivery"]);
-        let status = resumed.iter().find(|(name, _, _)| name == "status").unwrap();
+        let status = resumed
+            .iter()
+            .find(|(name, _, _)| name == "status")
+            .unwrap();
         assert_eq!(status.2["id"], task_id);
         assert_eq!(status.2["state"], "done");
     }
@@ -2192,7 +2511,10 @@ mod tests {
         let (status, body) = read_json(open_stream(&app, "missing", None).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, json!({ "error": "群不存在" }));
-        let group_id = create_group(&app, "x").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "x").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (status, _) = read_json(open_stream(&app, &group_id, Some("not-a-time")).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
@@ -2203,7 +2525,10 @@ mod tests {
     async fn token_guards_every_route_when_set() {
         let path = temp_db();
         let token = super::auth::ApiToken::parse("0123456789abcdef-good").unwrap();
-        let app = super::Host::open(&path, temp_volumes(), "robroz-runner:local").unwrap().with_token(token).router();
+        let app = super::Host::open(&path, temp_volumes(), "robroz-runner:local")
+            .unwrap()
+            .with_token(token)
+            .router();
         let req = |auth: Option<&str>| {
             let mut b = Request::builder().method("GET").uri("/api/groups");
             if let Some(a) = auth {
@@ -2211,14 +2536,21 @@ mod tests {
             }
             b.body(Body::empty()).unwrap()
         };
-        for bad in [None, Some("Bearer wrong-token-0000000"), Some("0123456789abcdef-good"), Some("Basic 0123456789abcdef-good")] {
+        for bad in [
+            None,
+            Some("Bearer wrong-token-0000000"),
+            Some("0123456789abcdef-good"),
+            Some("Basic 0123456789abcdef-good"),
+        ] {
             let (status, body) = read_json(call(&app, req(bad)).await).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{bad:?}");
             assert!(!body.to_string().contains("0123456789abcdef-good"));
         }
-        let (status, body) = read_json(call(&app, post("/api/groups", json!({ "name": "x" }))).await).await;
+        let (status, body) =
+            read_json(call(&app, post("/api/groups", json!({ "name": "x" }))).await).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "writes too: {body}");
-        let (status, _) = read_json(call(&app, req(Some("Bearer 0123456789abcdef-good"))).await).await;
+        let (status, _) =
+            read_json(call(&app, req(Some("Bearer 0123456789abcdef-good"))).await).await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -2239,7 +2571,14 @@ mod tests {
     }
 
     async fn events_since(app: &Router, group_id: &str, since: &str) -> (StatusCode, Value) {
-        read_json(call(app, get(&format!("/api/groups/{group_id}/events?since={since}"))).await).await
+        read_json(
+            call(
+                app,
+                get(&format!("/api/groups/{group_id}/events?since={since}")),
+            )
+            .await,
+        )
+        .await
     }
 
     /// Receiving a task: the queued card is there right away, before any pump.
@@ -2260,12 +2599,16 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "节点", "robroz-action:external\n画一张草图").await;
+        let (group_id, task_id) =
+            seed_task(&app, "节点", "robroz-action:external\n画一张草图").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let mut seen: Vec<(String, String)> = Vec::new();
         let mut snap = |events: Value| {
             let card = one_status(&events, &task_id);
-            seen.push((card["state"].as_str().unwrap().into(), card["updatedAt"].as_str().unwrap().into()));
+            seen.push((
+                card["state"].as_str().unwrap().into(),
+                card["updatedAt"].as_str().unwrap().into(),
+            ));
         };
 
         snap(events_of(&app, &group_id).await);
@@ -2274,7 +2617,8 @@ mod tests {
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
         snap(events_of(&app, &group_id).await);
-        let (status, _) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        let (status, _) =
+            read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::OK);
         snap(events_of(&app, &group_id).await);
         pump_db(&path, &volumes, &mut fake);
@@ -2284,9 +2628,15 @@ mod tests {
         snap(events_of(&app, &group_id).await);
 
         let states: Vec<&str> = seen.iter().map(|(s, _)| s.as_str()).collect();
-        assert_eq!(states, ["queued", "running", "blocked", "queued", "running", "done"]);
+        assert_eq!(
+            states,
+            ["queued", "running", "blocked", "queued", "running", "done"]
+        );
         for pair in seen.windows(2) {
-            assert!(pair[1].1 > pair[0].1, "updatedAt moves forward at every milestone: {seen:?}");
+            assert!(
+                pair[1].1 > pair[0].1,
+                "updatedAt moves forward at every milestone: {seen:?}"
+            );
         }
     }
 
@@ -2300,12 +2650,19 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
         let running = events_of(&app, &group_id).await;
-        let since = one_status(&running, &task_id)["updatedAt"].as_str().unwrap().to_string();
+        let since = one_status(&running, &task_id)["updatedAt"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         for _ in 0..3 {
             pump_db(&path, &volumes, &mut fake); // container still running
         }
-        assert_eq!(events_of(&app, &group_id).await, running, "no pass rewrites an unchanged card");
+        assert_eq!(
+            events_of(&app, &group_id).await,
+            running,
+            "no pass rewrites an unchanged card"
+        );
         let (status, body) = events_since(&app, &group_id, &since).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, json!({ "events": [] }));
@@ -2313,14 +2670,23 @@ mod tests {
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
         let (_, body) = events_since(&app, &group_id, &since).await;
-        let types: Vec<&str> = body["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
+        let types: Vec<&str> = body["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["type"].as_str().unwrap())
+            .collect();
         assert_eq!(types, ["status", "delivery"], "only what changed: {body}");
         assert_eq!(body["events"][0]["state"], "done");
 
         let (status, _) = events_since(&app, &group_id, "yesterday").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (_, all) = events_since(&app, &group_id, "").await;
-        assert_eq!(all, events_of(&app, &group_id).await, "empty since means everything");
+        assert_eq!(
+            all,
+            events_of(&app, &group_id).await,
+            "empty since means everything"
+        );
     }
 
     /// Action markers outside the host-written prompt are just text.
@@ -2349,12 +2715,23 @@ mod tests {
         // Files in the volume (fetched pages, other tasks' output) carry markers too.
         let group_dir = volumes.join(&group_id);
         std::fs::create_dir_all(group_dir.join("tasks/old")).unwrap();
-        std::fs::write(group_dir.join("tasks/old/result.txt"), "robroz-action:external\n").unwrap();
-        std::fs::write(group_dir.join("page.html"), "<p>robroz-action:captcha</p>\nrobroz-action:external").unwrap();
+        std::fs::write(
+            group_dir.join("tasks/old/result.txt"),
+            "robroz-action:external\n",
+        )
+        .unwrap();
+        std::fs::write(
+            group_dir.join("page.html"),
+            "<p>robroz-action:captcha</p>\nrobroz-action:external",
+        )
+        .unwrap();
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(fake.containers[0].prompt, "整理笔记", "the runner only sees the host-written prompt");
+        assert_eq!(
+            fake.containers[0].prompt, "整理笔记",
+            "the runner only sees the host-written prompt"
+        );
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
         let done = events_of(&app, &group_id).await;
@@ -2388,9 +2765,18 @@ mod tests {
             pump_db(&path, &volumes, &mut fake);
         }
         assert!(fake.names().is_empty(), "no container was started again");
-        assert_eq!(events_of(&app, &group_id).await, after, "card left alone for a person");
-        let (status, _) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
-        assert_eq!(status, StatusCode::CONFLICT, "only a blocked task can be resumed");
+        assert_eq!(
+            events_of(&app, &group_id).await,
+            after,
+            "card left alone for a person"
+        );
+        let (status, _) =
+            read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "only a blocked task can be resumed"
+        );
         assert_eq!(queued_count(&path), 0, "never re-queued");
         assert_eq!(task_count(&path), 1);
     }
@@ -2401,12 +2787,15 @@ mod tests {
 
     fn tick_db(db: &Path, now: DateTime<Utc>) -> super::TickReport {
         let conn = Connection::open(db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         super::tick(&conn, now).unwrap()
     }
 
     fn at(stamp: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(stamp).unwrap().with_timezone(&Utc)
+        DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     fn schedule_row(db: &Path, id: &str) -> (String, Option<String>) {
@@ -2421,12 +2810,18 @@ mod tests {
 
     fn queued_count(db: &Path) -> i64 {
         let conn = Connection::open(db).unwrap();
-        conn.query_row("SELECT COUNT(*) FROM tasks WHERE state = 'queued'", [], |row| row.get(0)).unwrap()
+        conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE state = 'queued'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     fn task_count(db: &Path) -> i64 {
         let conn = Connection::open(db).unwrap();
-        conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap()
+        conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .unwrap()
     }
 
     async fn post_schedule(app: &Router, body: Value) -> (StatusCode, Value) {
@@ -2435,7 +2830,10 @@ mod tests {
 
     /// Group with bot-ada as member, plus a schedule every minute.
     async fn seed_schedule(app: &Router, name: &str, prompt: &str) -> (String, Value) {
-        let group_id = create_group(app, name).await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(app, name).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (status, _) = add_member(app, &group_id, "bot-ada", "Ada").await;
         assert_eq!(status, StatusCode::CREATED);
         let (status, schedule) = post_schedule(
@@ -2459,11 +2857,22 @@ mod tests {
     }
 
     fn put(uri: &str) -> Request<Body> {
-        Request::builder().method("PUT").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     async fn set_paused(app: &Router, id: &str, paused: bool) -> (StatusCode, Value) {
-        read_json(call(app, patch(&format!("/api/schedules/{id}"), json!({ "paused": paused }))).await).await
+        read_json(
+            call(
+                app,
+                patch(&format!("/api/schedules/{id}"), json!({ "paused": paused })),
+            )
+            .await,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -2471,15 +2880,20 @@ mod tests {
         let path = temp_db();
         let app = test_app(&path);
         let (group_id, schedule) = seed_schedule(&app, "例行", "早报").await;
-        let other = create_group(&app, "别的群").await["id"].as_str().unwrap().to_string();
+        let other = create_group(&app, "别的群").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let (status, body) = read_json(call(&app, get(&format!("/api/groups/{group_id}/schedules"))).await).await;
+        let (status, body) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/schedules"))).await).await;
         assert_eq!(status, StatusCode::OK);
         let mut expected = schedule.clone();
         expected["paused"] = json!(false);
         assert_eq!(body, json!({ "schedules": [expected] }));
 
-        let (status, body) = read_json(call(&app, get(&format!("/api/groups/{other}/schedules"))).await).await;
+        let (status, body) =
+            read_json(call(&app, get(&format!("/api/groups/{other}/schedules"))).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, json!({ "schedules": [] }));
 
@@ -2492,7 +2906,10 @@ mod tests {
         let path = temp_db();
         let app = test_app(&path);
         let (_, schedule) = seed_schedule(&app, "例行", "早报").await;
-        assert!(schedule.get("paused").is_none(), "POST /api/schedules keeps the frozen shape");
+        assert!(
+            schedule.get("paused").is_none(),
+            "POST /api/schedules keeps the frozen shape"
+        );
     }
 
     #[tokio::test]
@@ -2521,11 +2938,21 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["paused"], false);
         let next = at(body["nextRunAt"].as_str().unwrap());
-        assert!(next > Utc::now() - ChronoDuration::seconds(1), "resume picks a slot after now");
-        assert_eq!(schedule_row(&path, id).0, body["nextRunAt"].as_str().unwrap());
+        assert!(
+            next > Utc::now() - ChronoDuration::seconds(1),
+            "resume picks a slot after now"
+        );
+        assert_eq!(
+            schedule_row(&path, id).0,
+            body["nextRunAt"].as_str().unwrap()
+        );
 
         let report = tick_db(&path, next);
-        assert_eq!(report.created.len(), 1, "resumed schedule fires once at its next slot");
+        assert_eq!(
+            report.created.len(),
+            1,
+            "resumed schedule fires once at its next slot"
+        );
     }
 
     #[tokio::test]
@@ -2537,7 +2964,11 @@ mod tests {
 
         let (_, schedule) = seed_schedule(&app, "例行", "早报").await;
         let id = schedule["id"].as_str().unwrap();
-        let response = call(&app, patch(&format!("/api/schedules/{id}"), json!({ "paused": "yes" }))).await;
+        let response = call(
+            &app,
+            patch(&format!("/api/schedules/{id}"), json!({ "paused": "yes" })),
+        )
+        .await;
         assert!(response.status().is_client_error());
         let response = call(&app, patch(&format!("/api/schedules/{id}"), json!({}))).await;
         assert!(response.status().is_client_error());
@@ -2562,7 +2993,11 @@ mod tests {
         let _ = test_app(&path); // second open stays idempotent
         let conn = Connection::open(&path).unwrap();
         let paused: Option<String> = conn
-            .query_row("SELECT paused_at FROM schedules WHERE id = 's1'", [], |row| row.get(0))
+            .query_row(
+                "SELECT paused_at FROM schedules WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(paused, None);
     }
@@ -2570,7 +3005,14 @@ mod tests {
     // ---- approval cards ----
 
     async fn post_approval(app: &Router, group_id: &str, body: Value) -> (StatusCode, Value) {
-        read_json(call(app, post(&format!("/api/groups/{group_id}/approvals"), body)).await).await
+        read_json(
+            call(
+                app,
+                post(&format!("/api/groups/{group_id}/approvals"), body),
+            )
+            .await,
+        )
+        .await
     }
 
     async fn decide(app: &Router, id: &str, verb: &str) -> (StatusCode, Value) {
@@ -2580,7 +3022,10 @@ mod tests {
     #[tokio::test]
     async fn approval_card_is_answered_once_by_approve_or_deny() {
         let app = test_app(&temp_db());
-        let group_id = create_group(&app, "审批").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "审批").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
 
         let (status, card) = post_approval(
@@ -2597,13 +3042,24 @@ mod tests {
         assert_eq!(card["path"], "target/");
         assert_eq!(card["decision"], Value::Null);
         assert_eq!(card["answeredAt"], Value::Null);
-        assert!(card.get("reason").is_none(), "no reason on a bro-issued card: {card}");
-        assert!(card["expiresAt"].as_str().unwrap() > card["createdAt"].as_str().unwrap(), "{card}");
+        assert!(
+            card.get("reason").is_none(),
+            "no reason on a bro-issued card: {card}"
+        );
+        assert!(
+            card["expiresAt"].as_str().unwrap() > card["createdAt"].as_str().unwrap(),
+            "{card}"
+        );
         let id = card["id"].as_str().unwrap().to_string();
 
         let since = card["createdAt"].as_str().unwrap().to_string();
         let events = events_of(&app, &group_id).await;
-        let open: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").collect();
+        let open: Vec<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "approval")
+            .collect();
         assert_eq!(open, vec![&card]);
 
         let (status, answered) = decide(&app, &id, "approve").await;
@@ -2612,7 +3068,10 @@ mod tests {
         assert!(answered["answeredAt"].is_string());
         let (status, changed) = events_since(&app, &group_id, &since).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(changed["events"].as_array().unwrap().contains(&answered), "answer shows up as a change: {changed}");
+        assert!(
+            changed["events"].as_array().unwrap().contains(&answered),
+            "answer shows up as a change: {changed}"
+        );
 
         for verb in ["approve", "deny"] {
             let (status, body) = decide(&app, &id, verb).await;
@@ -2620,10 +3079,24 @@ mod tests {
             assert_eq!(body, json!({ "error": "已经答过了" }));
         }
         let events = events_of(&app, &group_id).await;
-        let cards: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").collect();
-        assert_eq!(cards, vec![&answered], "first answer stands, card replaced in place");
+        let cards: Vec<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "approval")
+            .collect();
+        assert_eq!(
+            cards,
+            vec![&answered],
+            "first answer stands, card replaced in place"
+        );
 
-        let (status, other) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "spend", "summary": "买域名" })).await;
+        let (status, other) = post_approval(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "action": "spend", "summary": "买域名" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(other["path"], Value::Null);
         let (status, denied) = decide(&app, other["id"].as_str().unwrap(), "deny").await;
@@ -2634,27 +3107,81 @@ mod tests {
     #[tokio::test]
     async fn approval_card_validates_and_counts_as_unread() {
         let app = test_app(&temp_db());
-        let group_id = create_group(&app, "审批").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "审批").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
 
-        let (status, _) = post_approval(&app, "nope", json!({ "botId": "bot-ada", "action": "send", "summary": "x" })).await;
+        let (status, _) = post_approval(
+            &app,
+            "nope",
+            json!({ "botId": "bot-ada", "action": "send", "summary": "x" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, body) = post_approval(&app, &group_id, json!({ "botId": "bot-bob", "action": "send", "summary": "x" })).await;
+        let (status, body) = post_approval(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-bob", "action": "send", "summary": "x" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
         for summary in ["  ", "两行\n不行"] {
-            let (status, _) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": summary })).await;
+            let (status, _) = post_approval(
+                &app,
+                &group_id,
+                json!({ "botId": "bot-ada", "action": "send", "summary": summary }),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{summary:?}");
         }
-        let (status, body) = read_json(call(&app, post(&format!("/api/groups/{group_id}/approvals"), json!({ "botId": "bot-ada", "action": "nuke", "summary": "x" }))).await).await;
+        let (status, body) = read_json(
+            call(
+                &app,
+                post(
+                    &format!("/api/groups/{group_id}/approvals"),
+                    json!({ "botId": "bot-ada", "action": "nuke", "summary": "x" }),
+                ),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body, json!({ "error": "不支持这个动作" }), "unknown action is rejected");
+        assert_eq!(
+            body,
+            json!({ "error": "不支持这个动作" }),
+            "unknown action is rejected"
+        );
         let (status, _) = decide(&app, "nope", "approve").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
-        let (status, _) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": "发周报" })).await;
+        let (status, _) = post_approval(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "action": "send", "summary": "发周报" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
-        let (_, unread) = read_json(call(&app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        let (_, unread) =
+            read_json(call(&app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        assert_eq!(
+            unread["unread"], 0,
+            "the card moved to the owner's DM; the group copy is a notice: {unread}"
+        );
+        let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
+        let dm = bros["bros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == "bot-ada")
+            .unwrap()["dmGroupId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (_, unread) =
+            read_json(call(&app, get(&format!("/api/groups/{dm}/unread"))).await).await;
         assert_eq!(unread["unread"], 1, "{unread}");
     }
 
@@ -2665,7 +3192,17 @@ mod tests {
     }
 
     async fn answer(app: &Router, id: &str, choice: Value) -> (StatusCode, Value) {
-        read_json(call(app, post(&format!("/api/choices/{id}/answer"), json!({ "choice": choice }))).await).await
+        read_json(
+            call(
+                app,
+                post(
+                    &format!("/api/choices/{id}/answer"),
+                    json!({ "choice": choice }),
+                ),
+            )
+            .await,
+        )
+        .await
     }
 
     fn two_options() -> Value {
@@ -2676,7 +3213,10 @@ mod tests {
     async fn choice_card_flow_answer_comes_back_as_choice() {
         let path = temp_db();
         let app = test_app(&path);
-        let group_id = create_group(&app, "选项").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "选项").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
 
         let (status, card) = post_choice(
@@ -2696,19 +3236,33 @@ mod tests {
         let id = card["id"].as_str().unwrap();
 
         let events = events_of(&app, &group_id).await;
-        let open: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "choice").collect();
+        let open: Vec<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "choice")
+            .collect();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0], &card);
 
         let (status, _) = answer(&app, id, json!(["a", "b"])).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "single choice takes one value");
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "single choice takes one value"
+        );
         let (status, answered) = answer(&app, id, json!(["b"])).await;
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(answered["choice"], json!(["b"]));
         assert!(answered["answeredAt"].is_string());
 
         let events = events_of(&app, &group_id).await;
-        let cards: Vec<_> = events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "choice").collect();
+        let cards: Vec<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "choice")
+            .collect();
         assert_eq!(cards, vec![&answered], "same card, now answered");
 
         let (status, _) = answer(&app, id, json!(["a"])).await;
@@ -2719,17 +3273,29 @@ mod tests {
     async fn multi_choice_takes_several_and_drops_primary() {
         let path = temp_db();
         let app = test_app(&path);
-        let group_id = create_group(&app, "多选").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "多选").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
         let options = json!([
             { "id": "a", "label": "A", "primary": true },
             { "id": "b", "label": "B" },
             { "id": "c", "label": "C" }
         ]);
-        let (status, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "选几个", "options": options, "multi": true })).await;
+        let (status, card) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "选几个", "options": options, "multi": true }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{card}");
         assert_eq!(card["multi"], true);
-        assert!(card["options"].as_array().unwrap().iter().all(|o| o["primary"] == false));
+        assert!(card["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["primary"] == false));
         let id = card["id"].as_str().unwrap();
         for bad in [json!([]), json!(["a", "a"]), json!(["a", "z"])] {
             let (status, _) = answer(&app, id, bad.clone()).await;
@@ -2744,14 +3310,32 @@ mod tests {
     async fn choice_validation() {
         let path = temp_db();
         let app = test_app(&path);
-        let group_id = create_group(&app, "选项").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "选项").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
 
-        let (status, _) = post_choice(&app, "nope", json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() })).await;
+        let (status, _) = post_choice(
+            &app,
+            "nope",
+            json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() }),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = post_choice(&app, &group_id, json!({ "botId": "bot-zed", "prompt": "?", "options": two_options() })).await;
+        let (status, _) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-zed", "prompt": "?", "options": two_options() }),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, _) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "  ", "options": two_options() })).await;
+        let (status, _) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "  ", "options": two_options() }),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         for options in [
             json!([{ "id": "a", "label": "A" }]),
@@ -2759,17 +3343,31 @@ mod tests {
             json!([{ "id": "a", "label": "A" }, { "id": "", "label": "B" }]),
             json!([{ "id": "a", "label": "A" }, { "id": "b", "label": " " }]),
             json!([{ "id": "a", "label": "A", "primary": true }, { "id": "b", "label": "B", "primary": true }]),
-            json!((0..5).map(|i| json!({ "id": i.to_string(), "label": "x" })).collect::<Vec<_>>()),
+            json!((0..5)
+                .map(|i| json!({ "id": i.to_string(), "label": "x" }))
+                .collect::<Vec<_>>()),
         ] {
-            let (status, body) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": options })).await;
+            let (status, body) = post_choice(
+                &app,
+                &group_id,
+                json!({ "botId": "bot-ada", "prompt": "?", "options": options }),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{options} -> {body}");
         }
         let conn = Connection::open(&path).unwrap();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM choices", [], |row| row.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM choices", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(n, 0, "rejected cards are not stored");
         drop(conn);
 
-        let (_, card) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() })).await;
+        let (_, card) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "?", "options": two_options() }),
+        )
+        .await;
         let id = card["id"].as_str().unwrap();
         let (status, _) = answer(&app, id, json!(["c"])).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2784,7 +3382,10 @@ mod tests {
     async fn create_schedule_validates_and_returns_shape() {
         let path = temp_db();
         let app = test_app(&path);
-        let group_id = create_group(&app, "定时").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "定时").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (status, _) = add_member(&app, &group_id, "bot-ada", "Ada").await;
         assert_eq!(status, StatusCode::CREATED);
 
@@ -2812,7 +3413,15 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body, json!({ "error": "请填写内容" }));
 
-        for bad in ["", "nope", "61 * * * *", "* * * *", "0 0 0 * * * 2026", "@daily", "0 0 30 2 *"] {
+        for bad in [
+            "",
+            "nope",
+            "61 * * * *",
+            "* * * *",
+            "0 0 0 * * * 2026",
+            "@daily",
+            "0 0 30 2 *",
+        ] {
             let (status, body) = post_schedule(
                 &app,
                 json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": bad, "prompt": "x" }),
@@ -2822,7 +3431,9 @@ mod tests {
             assert_eq!(body, json!({ "error": "cron 格式不对" }), "cron {bad:?}");
         }
         let conn = Connection::open(&path).unwrap();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM schedules", [], |row| row.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schedules", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(n, 0, "rejected schedules are not stored");
         drop(conn);
 
@@ -2833,11 +3444,24 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{schedule}");
-        let mut keys: Vec<&str> = schedule.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = schedule
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["assigneeBotId", "cron", "groupId", "id", "lastTaskId", "nextRunAt", "prompt"]
+            [
+                "assigneeBotId",
+                "cron",
+                "groupId",
+                "id",
+                "lastTaskId",
+                "nextRunAt",
+                "prompt"
+            ]
         );
         assert_eq!(schedule["groupId"], group_id);
         assert_eq!(schedule["assigneeBotId"], "bot-ada");
@@ -2846,21 +3470,37 @@ mod tests {
         assert_eq!(schedule["lastTaskId"], Value::Null);
         let next = at(schedule["nextRunAt"].as_str().unwrap());
         assert!(next > before);
-        assert_eq!(next.format("%H:%M:%S").to_string(), "09:00:00", "cron is UTC");
+        assert_eq!(
+            next.format("%H:%M:%S").to_string(),
+            "09:00:00",
+            "cron is UTC"
+        );
 
         let (status, six) = post_schedule(
             &app,
             json!({ "groupId": group_id, "assigneeBotId": "bot-ada", "cron": "*/30 * * * * *", "prompt": "x" }),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "6-field cron with seconds: {six}");
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "6-field cron with seconds: {six}"
+        );
 
         let conn = Connection::open(&path).unwrap();
         let tenant: String = conn
-            .query_row("SELECT tenant_id FROM schedules WHERE id = ?1", [schedule["id"].as_str().unwrap()], |row| row.get(0))
+            .query_row(
+                "SELECT tenant_id FROM schedules WHERE id = ?1",
+                [schedule["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(tenant, "local");
-        assert_eq!(task_count(&path), 0, "creating a schedule does not create a task");
+        assert_eq!(
+            task_count(&path),
+            0,
+            "creating a schedule does not create a task"
+        );
     }
 
     #[tokio::test]
@@ -2875,7 +3515,10 @@ mod tests {
         assert!(report.created.is_empty());
         assert!(report.skipped.is_empty());
         assert_eq!(task_count(&path), 0);
-        assert_eq!(schedule_row(&path, id), (schedule["nextRunAt"].as_str().unwrap().to_string(), None));
+        assert_eq!(
+            schedule_row(&path, id),
+            (schedule["nextRunAt"].as_str().unwrap().to_string(), None)
+        );
     }
 
     #[tokio::test]
@@ -2893,7 +3536,11 @@ mod tests {
 
         let (next_run_at, last) = schedule_row(&path, id);
         assert_eq!(last.as_deref(), Some(task_id.as_str()));
-        assert_eq!(at(&next_run_at), next + ChronoDuration::minutes(1), "strictly after now");
+        assert_eq!(
+            at(&next_run_at),
+            next + ChronoDuration::minutes(1),
+            "strictly after now"
+        );
 
         let events = events_of(&app, &group_id).await;
         let cards = statuses(&events);
@@ -2902,14 +3549,19 @@ mod tests {
         assert_eq!(cards[0]["botId"], "bot-ada");
         assert_eq!(cards[0]["state"], "queued");
         assert_eq!(cards[0]["label"], "排队");
-        assert_eq!(cards[0]["containerUp"], false, "tick does not start a container");
+        assert_eq!(
+            cards[0]["containerUp"], false,
+            "tick does not start a container"
+        );
         assert!(deliveries(&events).is_empty());
 
         let conn = Connection::open(&path).unwrap();
         let (briefing, schedule_id): (i64, String) = conn
-            .query_row("SELECT briefing, schedule_id FROM tasks WHERE id = ?1", [&task_id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT briefing, schedule_id FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(briefing, 1);
         assert_eq!(schedule_id, id);
@@ -2974,7 +3626,10 @@ mod tests {
         fake.finish(0);
         let group_dir = fake.containers[0].group_dir.clone();
         pump_db(&path, &volumes, &mut fake);
-        assert!(fake.names().is_empty(), "container list is empty afterwards");
+        assert!(
+            fake.names().is_empty(),
+            "container list is empty afterwards"
+        );
 
         let scheduled_file = group_dir.join(format!("tasks/{scheduled}/result.txt"));
         assert!(group_dir.ends_with(&group_id));
@@ -2992,7 +3647,11 @@ mod tests {
         assert_eq!(delivered.len(), 2);
         let by_path = |task: &str| {
             let rel = format!("tasks/{task}/result.txt");
-            delivered.iter().find(|d| d["path"] == rel.as_str()).copied().unwrap()
+            delivered
+                .iter()
+                .find(|d| d["path"] == rel.as_str())
+                .copied()
+                .unwrap()
         };
         assert_eq!(by_path(&scheduled)["briefing"], true);
         assert_eq!(by_path(&scheduled)["summary"], "已写入结果");
@@ -3027,7 +3686,10 @@ mod tests {
         assert_eq!(fake.names().len(), 1);
         let third_due = at(&next_run_at);
         let report = tick_db(&path, third_due);
-        assert!(report.created.is_empty(), "no second task while containerUp is true");
+        assert!(
+            report.created.is_empty(),
+            "no second task while containerUp is true"
+        );
         assert_eq!(task_count(&path), 1);
         let (next_run_at, last) = schedule_row(&path, id);
         assert!(at(&next_run_at) > third_due);
@@ -3070,7 +3732,8 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, schedule) = seed_schedule(&app, "卡住简报", "robroz-action:external\n简报正文").await;
+        let (group_id, schedule) =
+            seed_schedule(&app, "卡住简报", "robroz-action:external\n简报正文").await;
         let due = at(schedule["nextRunAt"].as_str().unwrap());
         let task_id = tick_db(&path, due).created[0].clone();
 
@@ -3084,7 +3747,8 @@ mod tests {
         assert_eq!(statuses(&blocked)[0]["label"], "卡住");
         assert!(deliveries(&blocked).is_empty());
 
-        let (status, body) = read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
+        let (status, body) =
+            read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, json!({ "id": task_id, "state": "queued" }));
         pump_db(&path, &volumes, &mut fake);
@@ -3099,7 +3763,9 @@ mod tests {
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0]["briefing"], true);
         assert_eq!(delivered[0]["path"], format!("tasks/{task_id}/result.txt"));
-        assert!(group_dir.join(format!("tasks/{task_id}/result.txt")).is_file());
+        assert!(group_dir
+            .join(format!("tasks/{task_id}/result.txt"))
+            .is_file());
     }
 
     #[tokio::test]
@@ -3143,7 +3809,12 @@ mod tests {
     /// Pump, let the fake container run the real runner, pump again.
     fn run_once(db: &Path, volumes: &Path, fake: &mut super::sandbox::FakeSandbox) -> PathBuf {
         pump_db(db, volumes, fake);
-        let group_dir = fake.containers.last().expect("container started").group_dir.clone();
+        let group_dir = fake
+            .containers
+            .last()
+            .expect("container started")
+            .group_dir
+            .clone();
         fake.finish(0);
         pump_db(db, volumes, fake);
         assert!(fake.names().is_empty());
@@ -3176,9 +3847,14 @@ mod tests {
         );
         let file = container.control_dir.join("prompt.txt");
         assert_eq!(std::fs::read_to_string(file).unwrap(), "第一行\n第二行");
-        assert!(!container.group_dir.join(format!("tasks/{task_id}/prompt.txt")).exists());
+        assert!(!container
+            .group_dir
+            .join(format!("tasks/{task_id}/prompt.txt"))
+            .exists());
         assert!(!container.control_dir.starts_with(&container.group_dir));
-        assert!(!container.control_dir.starts_with(std::fs::canonicalize(&volumes).unwrap()));
+        assert!(!container
+            .control_dir
+            .starts_with(std::fs::canonicalize(&volumes).unwrap()));
     }
 
     #[tokio::test]
@@ -3189,20 +3865,37 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "接管", "robroz-action:external\n正文").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
-        assert!(!takeover_file(&volumes, &task_id).exists(), "no marker before resume");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
+        assert!(
+            !takeover_file(&volumes, &task_id).exists(),
+            "no marker before resume"
+        );
         // Captured into the DB at container exit; the volume file is gone.
         let hash = robroz_runner::action_hash("robroz-action:external");
         assert_eq!(
             stored_intent(&path, &task_id),
-            (Some("external".into()), Some("robroz-action:external".into()), Some(hash.clone()))
+            (
+                Some("external".into()),
+                Some("robroz-action:external".into()),
+                Some(hash.clone())
+            )
         );
         assert!(!group_dir.join(format!("tasks/{task_id}/intent")).exists());
 
         let (status, body) = resume(&app, &task_id).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(), format!("{hash}\n"));
-        assert_eq!(stored_intent(&path, &task_id), (None, None, None), "cleared after resume");
+        assert_eq!(
+            std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(),
+            format!("{hash}\n")
+        );
+        assert_eq!(
+            stored_intent(&path, &task_id),
+            (None, None, None),
+            "cleared after resume"
+        );
         assert!(!group_dir.join(format!("tasks/{task_id}/takeover")).exists());
 
         run_once(&path, &volumes, &mut fake);
@@ -3227,14 +3920,20 @@ mod tests {
         std::fs::create_dir_all(&task_dir).unwrap();
         let hash = robroz_runner::action_hash("robroz-action:external");
         std::fs::write(task_dir.join("takeover"), format!("{hash}\n")).unwrap();
-        std::fs::write(volumes.join(&group_id).join("takeover"), format!("{hash}\n")).unwrap();
+        std::fs::write(
+            volumes.join(&group_id).join("takeover"),
+            format!("{hash}\n"),
+        )
+        .unwrap();
 
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "blocked");
         assert_eq!(statuses(&events)[0]["label"], "卡住");
-        assert!(!group_dir.join(format!("tasks/{task_id}/result.txt")).exists());
+        assert!(!group_dir
+            .join(format!("tasks/{task_id}/result.txt"))
+            .exists());
         assert!(deliveries(&events).is_empty());
     }
 
@@ -3248,12 +3947,19 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
 
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
         assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
 
         run_once(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
-        assert_eq!(statuses(&events)[0]["state"], "blocked", "captcha was not taken over yet");
+        assert_eq!(
+            statuses(&events)[0]["state"],
+            "blocked",
+            "captcha was not taken over yet"
+        );
         assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("captcha"));
         assert!(deliveries(&events).is_empty());
 
@@ -3283,12 +3989,19 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "改意图", prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
-        assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("external"));
+        assert_eq!(
+            stored_intent(&path, &task_id).0.as_deref(),
+            Some("external")
+        );
 
         // After exit, something in the group rewrites intent to the other real
         // blocking line, hoping resume approves that one instead.
         let intent = group_dir.join(format!("tasks/{task_id}/intent"));
-        std::fs::write(&intent, robroz_runner::format_intent("captcha", "robroz-action:captcha")).unwrap();
+        std::fs::write(
+            &intent,
+            robroz_runner::format_intent("captcha", "robroz-action:captcha"),
+        )
+        .unwrap();
 
         assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
         assert_eq!(
@@ -3299,7 +4012,10 @@ mod tests {
 
         // The forged file is cleared before the next start; captcha still blocks.
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
         assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("captcha"));
     }
 
@@ -3311,7 +4027,10 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "没记录", "robroz-action:external\n正文").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
         Connection::open(&path)
             .unwrap()
             .execute(
@@ -3334,7 +4053,10 @@ mod tests {
         assert_eq!(body, json!({ "error": "恢复失败，找不到卡住记录" }));
         let after = statuses(&events_of(&app, &group_id).await)[0].clone();
         assert_eq!(after, blocked, "state and updatedAt unchanged");
-        assert!(!takeover_file(&volumes, &task_id).exists(), "no marker written");
+        assert!(
+            !takeover_file(&volumes, &task_id).exists(),
+            "no marker written"
+        );
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty(), "nothing queued");
     }
@@ -3385,7 +4107,11 @@ mod tests {
         pump_db(&path, &volumes, &mut fake);
         let group_dir = fake.containers[0].group_dir.clone();
         fake.finish_without_output(0);
-        std::fs::write(group_dir.join(format!("tasks/{task_id}/intent")), "external").unwrap();
+        std::fs::write(
+            group_dir.join(format!("tasks/{task_id}/intent")),
+            "external",
+        )
+        .unwrap();
         pump_db(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
@@ -3408,26 +4134,46 @@ mod tests {
         // Before the host looks, the bot rewrites intent to the other real
         // blocking line, so that line would be the one approved.
         let intent = group_dir.join(format!("tasks/{task_id}/intent"));
-        std::fs::write(&intent, robroz_runner::format_intent("captcha", "robroz-action:captcha")).unwrap();
+        std::fs::write(
+            &intent,
+            robroz_runner::format_intent("captcha", "robroz-action:captcha"),
+        )
+        .unwrap();
         pump_db(&path, &volumes, &mut fake);
 
         let external = robroz_runner::action_hash("robroz-action:external");
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
         assert_eq!(
             stored_intent(&path, &task_id),
-            (Some("external".into()), Some("robroz-action:external".into()), Some(external.clone())),
+            (
+                Some("external".into()),
+                Some("robroz-action:external".into()),
+                Some(external.clone())
+            ),
             "host computes the first unapproved line; intent content is ignored"
         );
         assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
-        assert_eq!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(), format!("{external}\n"));
+        assert_eq!(
+            std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap(),
+            format!("{external}\n")
+        );
 
         // Still needs a second takeover for captcha.
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "blocked"
+        );
         assert_eq!(stored_intent(&path, &task_id).0.as_deref(), Some("captcha"));
         assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "done"
+        );
     }
 
     #[tokio::test]
@@ -3441,7 +4187,10 @@ mod tests {
         std::fs::write(task_dir.join("intent"), "external").unwrap();
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "done"
+        );
     }
 
     #[tokio::test]
@@ -3477,10 +4226,19 @@ mod tests {
         };
 
         let conn = Connection::open(&path).unwrap();
-        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('tasks')").unwrap();
-        let columns: Vec<String> = stmt.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('tasks')")
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
         for column in ["intent_kind", "intent_line", "intent_hash"] {
-            assert!(columns.iter().any(|c| c == column), "missing {column}: {columns:?}");
+            assert!(
+                columns.iter().any(|c| c == column),
+                "missing {column}: {columns:?}"
+            );
         }
         assert_eq!(stored_intent(&path, "t-old"), (None, None, None));
 
@@ -3491,7 +4249,10 @@ mod tests {
         let (status, body) = resume(&app, "t-old").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body, json!({ "error": "恢复失败，找不到卡住记录" }));
-        assert_eq!(statuses(&events_of(&app, "g1").await)[0]["state"], "blocked");
+        assert_eq!(
+            statuses(&events_of(&app, "g1").await)[0]["state"],
+            "blocked"
+        );
     }
 
     /// Schema shape from before later ALTER columns and some later tables,
@@ -3682,55 +4443,82 @@ mod tests {
     fn assert_has_columns(conn: &Connection, table: &str, columns: &[&str]) {
         let have = table_columns(conn, table);
         for column in columns {
-            assert!(have.iter().any(|c| c == column), "missing {table}.{column}: {have:?}");
+            assert!(
+                have.iter().any(|c| c == column),
+                "missing {table}.{column}: {have:?}"
+            );
         }
     }
 
     fn assert_fixture_rows_survived(conn: &Connection) {
         let group: (String, String) = conn
-            .query_row("SELECT name, tenant_id FROM groups WHERE id = 'g1'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT name, tenant_id FROM groups WHERE id = 'g1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(group, ("旧群".into(), "local".into()));
         let bot: String = conn
-            .query_row("SELECT name FROM bots WHERE id = 'bot-ada'", [], |r| r.get(0))
+            .query_row("SELECT name FROM bots WHERE id = 'bot-ada'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(bot, "Ada");
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memberships WHERE group_id = 'g1' AND bot_id = 'bot-ada'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memberships WHERE group_id = 'g1' AND bot_id = 'bot-ada'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 1);
         let body: String = conn
-            .query_row("SELECT body FROM messages WHERE id = 'm1'", [], |r| r.get(0))
+            .query_row("SELECT body FROM messages WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(body, "hello");
         let task: (String, String) = conn
-            .query_row("SELECT prompt, state FROM tasks WHERE id = 't-old'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT prompt, state FROM tasks WHERE id = 't-old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(task, ("画一张草图".into(), "done".into()));
         let delivery: (String, String) = conn
-            .query_row("SELECT summary, path FROM deliveries WHERE id = 'd1'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT summary, path FROM deliveries WHERE id = 'd1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(delivery, ("完成了".into(), "result.txt".into()));
         let cron: String = conn
-            .query_row("SELECT cron FROM schedules WHERE id = 's1'", [], |r| r.get(0))
+            .query_row("SELECT cron FROM schedules WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(cron, "0 9 * * *");
         let prompt: String = conn
-            .query_row("SELECT prompt FROM choices WHERE id = 'c1'", [], |r| r.get(0))
+            .query_row("SELECT prompt FROM choices WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(prompt, "选一个");
         let summary: String = conn
-            .query_row("SELECT summary FROM approvals WHERE id = 'a1'", [], |r| r.get(0))
+            .query_row("SELECT summary FROM approvals WHERE id = 'a1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(summary, "删一个文件");
         let url: String = conn
-            .query_row("SELECT value FROM settings WHERE key = 'search.url'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'search.url'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(url, "https://api.search.brave.com/res/v1/web/search");
         let mcp: (String, String, Option<i64>) = conn
@@ -3742,13 +4530,19 @@ mod tests {
             .unwrap();
         assert_eq!(mcp, ("echo".into(), "echo".into(), Some(2)));
         let linked: i64 = conn
-            .query_row("SELECT COUNT(*) FROM group_mcp WHERE group_id = 'g1' AND server_id = 'mcp1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM group_mcp WHERE group_id = 'g1' AND server_id = 'mcp1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(linked, 1);
         let memory: (String, String) = conn
-            .query_row("SELECT kind, text FROM memories WHERE id = 'mem1'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT kind, text FROM memories WHERE id = 'mem1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(memory, ("project".into(), "正在做 robroz".into()));
         let skill: String = conn
@@ -3756,30 +4550,62 @@ mod tests {
             .unwrap();
         assert_eq!(skill, "draft");
         let enabled: i64 = conn
-            .query_row("SELECT COUNT(*) FROM group_skills WHERE group_id = 'g1' AND slug = 'draft'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM group_skills WHERE group_id = 'g1' AND slug = 'draft'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(enabled, 1);
         let read_at: String = conn
-            .query_row("SELECT read_at FROM group_reads WHERE group_id = 'g1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT read_at FROM group_reads WHERE group_id = 'g1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(read_at, "2026-10-01T00:00:13.000Z");
     }
 
     fn assert_migrated_schema(conn: &Connection) {
         for table in [
-            "groups", "bots", "memberships", "messages", "tasks", "deliveries", "schedules",
-            "choices", "approvals", "settings", "mcp_servers", "group_mcp", "memories", "skills",
-            "group_skills", "group_reads",
+            "groups",
+            "bots",
+            "memberships",
+            "messages",
+            "tasks",
+            "deliveries",
+            "schedules",
+            "choices",
+            "approvals",
+            "settings",
+            "mcp_servers",
+            "group_mcp",
+            "memories",
+            "skills",
+            "group_skills",
+            "group_reads",
         ] {
             let names = table_names(conn);
-            assert!(names.iter().any(|n| n == table), "missing table {table}: {names:?}");
+            assert!(
+                names.iter().any(|n| n == table),
+                "missing table {table}: {names:?}"
+            );
         }
         assert_has_columns(
             conn,
             "tasks",
             &[
-                "container_up", "get_count", "briefing", "schedule_id",
-                "intent_kind", "intent_line", "intent_hash", "failure", "progress", "needs_setup",
+                "container_up",
+                "get_count",
+                "briefing",
+                "schedule_id",
+                "intent_kind",
+                "intent_line",
+                "intent_hash",
+                "failure",
+                "progress",
+                "needs_setup",
             ],
         );
         assert_has_columns(conn, "deliveries", &["failure", "needs_setup"]);
@@ -3789,9 +4615,21 @@ mod tests {
         assert_has_columns(
             conn,
             "approvals",
-            &["answered_by", "task_id", "intent_hash", "subject_kind", "subject_id", "mcp_server", "mcp_tool"],
+            &[
+                "answered_by",
+                "task_id",
+                "intent_hash",
+                "subject_kind",
+                "subject_id",
+                "mcp_server",
+                "mcp_tool",
+            ],
         );
-        assert_has_columns(conn, "mcp_servers", &["command_fingerprint", "command_approved_at"]);
+        assert_has_columns(
+            conn,
+            "mcp_servers",
+            &["command_fingerprint", "command_approved_at"],
+        );
     }
 
     fn write_previous_main_fixture(path: &Path) {
@@ -3844,7 +4682,6 @@ mod tests {
         assert_eq!(n, 1);
     }
 
-
     /// Wraps the fake and records whether the DB lock was free during each docker call.
     struct LockProbe {
         db: std::sync::Arc<std::sync::Mutex<Connection>>,
@@ -3863,11 +4700,17 @@ mod tests {
     }
 
     impl super::Sandbox for LockProbe {
-        fn start(&mut self, req: &super::sandbox::RunRequest<'_>) -> Result<(), super::sandbox::SandboxError> {
+        fn start(
+            &mut self,
+            req: &super::sandbox::RunRequest<'_>,
+        ) -> Result<(), super::sandbox::SandboxError> {
             self.check();
             self.inner.start(req)
         }
-        fn phase(&mut self, name: &str) -> Result<super::sandbox::ContainerPhase, super::sandbox::SandboxError> {
+        fn phase(
+            &mut self,
+            name: &str,
+        ) -> Result<super::sandbox::ContainerPhase, super::sandbox::SandboxError> {
             self.check();
             self.inner.phase(name)
         }
@@ -3897,17 +4740,33 @@ mod tests {
         host.pump_once(&mut probe).unwrap();
         assert!(probe.calls >= 3, "start, inspect, remove");
         assert_eq!(probe.locked, 0, "DB lock held during a docker call");
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "done"
+        );
     }
 
     async fn say_in(app: &Router, group_id: &str, body: &str) -> (StatusCode, Value) {
-        read_json(call(app, post(&format!("/api/groups/{group_id}/say"), json!({ "body": body }))).await).await
+        read_json(
+            call(
+                app,
+                post(
+                    &format!("/api/groups/{group_id}/say"),
+                    json!({ "body": body }),
+                ),
+            )
+            .await,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn say_routes_mentions_and_dms_to_one_task() {
         let app = test_app(&temp_db());
-        let group = create_group(&app, "研发").await["id"].as_str().unwrap().to_string();
+        let group = create_group(&app, "研发").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group, "b1", "bro").await;
         add_member(&app, &group, "b2", "bro 2").await;
 
@@ -3929,7 +4788,15 @@ mod tests {
         assert!(say_in(&app, &group, "@bro").await.1["task"].is_null());
 
         let events = events_of(&app, &group).await;
-        assert_eq!(events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "message").count(), 4);
+        assert_eq!(
+            events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["type"] == "message")
+                .count(),
+            4
+        );
         let queued = statuses(&events);
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0]["botId"], "b2");
@@ -3946,14 +4813,23 @@ mod tests {
     #[tokio::test]
     async fn say_rejects_empty_and_unknown_group() {
         let app = test_app(&temp_db());
-        let group = create_group(&app, "研发").await["id"].as_str().unwrap().to_string();
+        let group = create_group(&app, "研发").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (status, body) = say_in(&app, &group, "   ").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "请填写内容");
         let (status, body) = say_in(&app, "nope", "你好").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "群不存在");
-        assert_eq!(events_of(&app, &group).await["events"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            events_of(&app, &group).await["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     /// Fake model: answers or fails, and records each call's prompt and memory paragraph.
@@ -3965,18 +4841,34 @@ mod tests {
 
     impl FakeModel {
         fn new(answer: Result<String, String>) -> Self {
-            Self { answer, calls: Default::default(), seen: Default::default() }
+            Self {
+                answer,
+                calls: Default::default(),
+                seen: Default::default(),
+            }
         }
 
         fn memory_sections(&self) -> Vec<Option<String>> {
-            self.seen.lock().unwrap().iter().map(|(_, section)| section.clone()).collect()
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, section)| section.clone())
+                .collect()
         }
     }
 
     impl robroz_model::Model for FakeModel {
-        fn reply(&self, prompt: &str, memory_section: Option<&str>) -> Result<String, robroz_model::ModelError> {
+        fn reply(
+            &self,
+            prompt: &str,
+            memory_section: Option<&str>,
+        ) -> Result<String, robroz_model::ModelError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.seen.lock().unwrap().push((prompt.to_string(), memory_section.map(str::to_string)));
+            self.seen
+                .lock()
+                .unwrap()
+                .push((prompt.to_string(), memory_section.map(str::to_string)));
             self.answer
                 .clone()
                 .map(|a| format!("{a}（{prompt}）"))
@@ -3995,7 +4887,12 @@ mod tests {
     impl GatedModel {
         fn new() -> (std::sync::Arc<Self>, std::sync::mpsc::Sender<()>) {
             let (tx, rx) = std::sync::mpsc::channel();
-            (std::sync::Arc::new(Self { gate: std::sync::Mutex::new(rx) }), tx)
+            (
+                std::sync::Arc::new(Self {
+                    gate: std::sync::Mutex::new(rx),
+                }),
+                tx,
+            )
         }
 
         fn answer(&self, prompt: &str) -> String {
@@ -4028,7 +4925,11 @@ mod tests {
         }
     }
 
-    fn offloaded_host(db: &Path, volumes: &Path, model: std::sync::Arc<dyn robroz_model::Model>) -> super::Host {
+    fn offloaded_host(
+        db: &Path,
+        volumes: &Path,
+        model: std::sync::Arc<dyn robroz_model::Model>,
+    ) -> super::Host {
         super::Host::open(db, volumes, "robroz-runner:local")
             .unwrap()
             .with_control_root(control_of(volumes))
@@ -4037,7 +4938,11 @@ mod tests {
     }
 
     /// Pump until `done` holds, at most five seconds.
-    fn pump_until(host: &super::Host, fake: &mut super::sandbox::FakeSandbox, done: impl Fn(&super::sandbox::FakeSandbox) -> bool) {
+    fn pump_until(
+        host: &super::Host,
+        fake: &mut super::sandbox::FakeSandbox,
+        done: impl Fn(&super::sandbox::FakeSandbox) -> bool,
+    ) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !done(fake) {
             assert!(std::time::Instant::now() < deadline, "pump never got there");
@@ -4070,12 +4975,18 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         let card = status_of(&events, &slow);
         assert_eq!(card["state"], "running");
-        assert_eq!(card["containerUp"], true, "a step in flight is not a dead run");
+        assert_eq!(
+            card["containerUp"], true,
+            "a step in flight is not a dead run"
+        );
         assert_eq!(card["progress"], "在想怎么回");
         for _ in 0..3 {
             host.pump_once(&mut fake).unwrap();
         }
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &slow)["state"], "running");
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &slow)["state"],
+            "running"
+        );
 
         gate.send(()).unwrap();
         pump_until(&host, &mut fake, |f| f.names().len() == 2);
@@ -4085,7 +4996,9 @@ mod tests {
         assert_eq!(status_of(&events, &slow)["state"], "done");
         assert_eq!(status_of(&events, &quick)["state"], "done");
         assert_eq!(deliveries(&events).len(), 2);
-        let result = volumes.join(&group_id).join(crate::sandbox::result_rel(&slow));
+        let result = volumes
+            .join(&group_id)
+            .join(crate::sandbox::result_rel(&slow));
         assert_eq!(std::fs::read_to_string(result).unwrap(), "好了（慢慢写）");
     }
 
@@ -4102,8 +5015,12 @@ mod tests {
 
         let now = std::time::Instant::now();
         host.watchdog_once(now).unwrap();
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["progress"], "在想怎么回");
-        host.watchdog_once(now + std::time::Duration::from_secs(11 * 60)).unwrap();
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &task_id)["progress"],
+            "在想怎么回"
+        );
+        host.watchdog_once(now + std::time::Duration::from_secs(11 * 60))
+            .unwrap();
         let card = status_of(&events_of(&app, &group_id).await, &task_id).clone();
         assert_eq!(card["state"], "running");
         assert_eq!(card["containerUp"], true);
@@ -4116,7 +5033,10 @@ mod tests {
         pump_until(&host, &mut fake, |f| f.names().len() == 1);
         fake.finish(0);
         host.pump_once(&mut fake).unwrap();
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["state"], "done");
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &task_id)["state"],
+            "done"
+        );
     }
 
     #[tokio::test]
@@ -4134,13 +5054,23 @@ mod tests {
         host.pump_once(&mut fake).unwrap();
         let now = std::time::Instant::now();
         host.watchdog_once(now).unwrap();
-        host.watchdog_once(now + std::time::Duration::from_secs(16 * 60)).unwrap();
+        host.watchdog_once(now + std::time::Duration::from_secs(16 * 60))
+            .unwrap();
         let progress = |events: &Value| status_of(events, &task_id)["progress"].clone();
-        assert_eq!(progress(&events_of(&app, &group_id).await), "16 分钟没有新进度");
+        assert_eq!(
+            progress(&events_of(&app, &group_id).await),
+            "16 分钟没有新进度"
+        );
         // The runner's old line does not overwrite the hint.
         host.pump_once(&mut fake).unwrap();
-        assert_eq!(progress(&events_of(&app, &group_id).await), "16 分钟没有新进度");
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["state"], "running");
+        assert_eq!(
+            progress(&events_of(&app, &group_id).await),
+            "16 分钟没有新进度"
+        );
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &task_id)["state"],
+            "running"
+        );
         // A new line does.
         progress_file(&volumes, &group_id, &task_id, "第二步");
         host.pump_once(&mut fake).unwrap();
@@ -4157,7 +5087,10 @@ mod tests {
         let host = offloaded_host(&path, &volumes, model.clone());
         let mut fake = super::sandbox::FakeSandbox::new();
         host.pump_once(&mut fake).unwrap();
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["containerUp"], true);
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &task_id)["containerUp"],
+            true
+        );
 
         // A new host process has no step in flight and finds no container.
         let restarted = offloaded_host(&path, &volumes, model);
@@ -4196,9 +5129,15 @@ mod tests {
         assert_eq!(queued_count(&path), 0);
     }
 
-    fn pump_with_model(db: &Path, volumes: &Path, sandbox: &mut dyn super::Sandbox, model: &FakeModel) {
+    fn pump_with_model(
+        db: &Path,
+        volumes: &Path,
+        sandbox: &mut dyn super::Sandbox,
+        model: &FakeModel,
+    ) {
         let conn = Connection::open(db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         let control = control_of(volumes);
         super::pump_with(
             &conn,
@@ -4229,19 +5168,41 @@ mod tests {
         pump_with_model(&path, &volumes, &mut fake, &model);
         assert_eq!(fake.containers[0].prompt, "写周报", "prompt.txt unchanged");
         let reply = control_of(&volumes).join(&task_id).join("reply.txt");
-        assert!(!reply.starts_with(&volumes), "reply lives in the control dir, not the volume");
+        assert!(
+            !reply.starts_with(&volumes),
+            "reply lives in the control dir, not the volume"
+        );
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &model);
-        assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "running tasks are not asked again");
+        assert_eq!(
+            model.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "running tasks are not asked again"
+        );
 
-        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
-        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["state"], "done");
+        let result = volumes
+            .join(&group_id)
+            .join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(
+            std::fs::read_to_string(result).unwrap(),
+            "周报写好了（写周报）"
+        );
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["state"],
+            "done"
+        );
     }
 
     async fn post_memory(app: &Router, scope: &str, kind: &str, text: &str) {
         let (status, body) = read_json(
-            call(app, post("/api/memories", json!({ "scope": scope, "kind": kind, "text": text }))).await,
+            call(
+                app,
+                post(
+                    "/api/memories",
+                    json!({ "scope": scope, "kind": kind, "text": text }),
+                ),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -4261,22 +5222,41 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &empty);
         assert_eq!(empty.memory_sections(), [None]);
-        assert_eq!(fake.containers[0].prompt, "先跑一次", "prompt.txt is still just the task");
+        assert_eq!(
+            fake.containers[0].prompt, "先跑一次",
+            "prompt.txt is still just the task"
+        );
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &empty);
-        assert_eq!(empty.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "done tasks are not asked again");
+        assert_eq!(
+            empty.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "done tasks are not asked again"
+        );
 
         post_memory(&app, "user", "habit", "共享习惯").await;
         post_memory(&app, "bot:bot-ada", "profile", "Ada 专用旧").await;
         post_memory(&app, "bot:bot-bob", "habit", "Bob 的，Ada 不该看到").await;
         post_memory(&app, "bot:bot-ada", "project", "Ada 专用新").await;
         post_memory(&app, "user", "habit", "忘掉的").await;
-        let forgotten = memories_with(&app, "").await.into_iter().find(|m| m["text"] == "忘掉的").unwrap();
-        let resp = call(&app, delete_req(&format!("/api/memories/{}", forgotten["id"].as_str().unwrap()))).await;
+        let forgotten = memories_with(&app, "")
+            .await
+            .into_iter()
+            .find(|m| m["text"] == "忘掉的")
+            .unwrap();
+        let resp = call(
+            &app,
+            delete_req(&format!(
+                "/api/memories/{}",
+                forgotten["id"].as_str().unwrap()
+            )),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         let conn = Connection::open(&path).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         for (id, scope, status, text) in [
             ("pending-row", "user", "pending", "还没点头"),
             ("rejected-row", "bot:bot-ada", "rejected", "被拒绝的"),
@@ -4292,18 +5272,32 @@ mod tests {
         let (_, next) = seed_task_in(&app, &group_id, "再写周报").await;
         let model = FakeModel::new(Ok("周报写好了".into()));
         pump_with_model(&path, &volumes, &mut fake, &model);
-        let section = model.memory_sections()[0].clone().expect("kept memories go into the system prompt");
+        let section = model.memory_sections()[0]
+            .clone()
+            .expect("kept memories go into the system prompt");
         assert_eq!(
             section,
             "你记得这些：\n[project] Ada 专用新\n[profile] Ada 专用旧\n[habit] 共享习惯"
         );
-        assert!(!section.contains("Bob") && !section.contains("还没点头") && !section.contains("被拒绝的") && !section.contains("忘掉的"));
-        let started = fake.containers.iter().find(|c| c.task_id == next).expect("second task started");
+        assert!(
+            !section.contains("Bob")
+                && !section.contains("还没点头")
+                && !section.contains("被拒绝的")
+                && !section.contains("忘掉的")
+        );
+        let started = fake
+            .containers
+            .iter()
+            .find(|c| c.task_id == next)
+            .expect("second task started");
         assert_eq!(started.prompt, "再写周报", "user prompt unchanged");
     }
 
     fn status_of<'a>(events: &'a Value, task_id: &str) -> &'a Value {
-        statuses(events).into_iter().find(|s| s["taskId"] == task_id).expect("status card")
+        statuses(events)
+            .into_iter()
+            .find(|s| s["taskId"] == task_id)
+            .expect("status card")
     }
 
     #[tokio::test]
@@ -4316,7 +5310,10 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
 
         let events = events_of(&app, &group_id).await;
-        assert!(status_of(&events, &task_id).get("progress").is_none(), "queued has no progress");
+        assert!(
+            status_of(&events, &task_id).get("progress").is_none(),
+            "queued has no progress"
+        );
 
         // Started: claimed, model answered, sandbox up.
         pump_with_model(&path, &volumes, &mut fake, &model);
@@ -4327,7 +5324,9 @@ mod tests {
         let at = card["updatedAt"].as_str().unwrap().to_string();
 
         // The runner reports a step: same card, new text, newer updatedAt.
-        let progress_file = volumes.join(&group_id).join(format!("tasks/{task_id}/progress"));
+        let progress_file = volumes
+            .join(&group_id)
+            .join(format!("tasks/{task_id}/progress"));
         std::fs::create_dir_all(progress_file.parent().unwrap()).unwrap();
         std::fs::write(&progress_file, "在查资料").unwrap();
         pump_with_model(&path, &volumes, &mut fake, &model);
@@ -4344,7 +5343,10 @@ mod tests {
         pump_with_model(&path, &volumes, &mut fake, &model);
         let since = format!("/api/groups/{group_id}/events?since={at}");
         let (_, fresh) = read_json(call(&app, get(&since)).await).await;
-        assert!(statuses(&fresh).is_empty(), "same progress, no new status: {fresh}");
+        assert!(
+            statuses(&fresh).is_empty(),
+            "same progress, no new status: {fresh}"
+        );
 
         // Another step: a new status again.
         std::fs::write(&progress_file, "在排版").unwrap();
@@ -4362,7 +5364,11 @@ mod tests {
         assert!(card.get("progress").is_none(), "{card}");
         let stored: Option<String> = Connection::open(&path)
             .unwrap()
-            .query_row("SELECT progress FROM tasks WHERE id = ?1", [&task_id], |r| r.get(0))
+            .query_row(
+                "SELECT progress FROM tasks WHERE id = ?1",
+                [&task_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(stored, None);
     }
@@ -4376,11 +5382,19 @@ mod tests {
         let model = FakeModel::new(Ok("robroz-progress:在整理要点\n周报写好了".into()));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &task_id)["progress"], "在整理要点");
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &task_id)["progress"],
+            "在整理要点"
+        );
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &model);
-        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
-        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
+        let result = volumes
+            .join(&group_id)
+            .join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(
+            std::fs::read_to_string(result).unwrap(),
+            "周报写好了（写周报）"
+        );
         let events = events_of(&app, &group_id).await;
         assert!(status_of(&events, &task_id).get("progress").is_none());
         assert_eq!(deliveries(&events).len(), 1);
@@ -4400,7 +5414,10 @@ mod tests {
 
         let (_, dead) = seed_task_in(&app, &group_id, "写周报").await;
         pump_db(&path, &volumes, &mut fake);
-        assert_eq!(status_of(&events_of(&app, &group_id).await, &dead)["progress"], "在沙箱里跑");
+        assert_eq!(
+            status_of(&events_of(&app, &group_id).await, &dead)["progress"],
+            "在沙箱里跑"
+        );
         fake.finish_without_output(1);
         pump_db(&path, &volumes, &mut fake);
         let events = events_of(&app, &group_id).await;
@@ -4412,7 +5429,17 @@ mod tests {
 
     async fn seed_task_in(app: &Router, group_id: &str, prompt: &str) -> (StatusCode, String) {
         let url = format!("/api/groups/{group_id}/tasks");
-        let (status, task) = read_json(call(app, post(&url, json!({ "assigneeBotId": "bot-ada", "prompt": prompt }))).await).await;
+        let (status, task) = read_json(
+            call(
+                app,
+                post(
+                    &url,
+                    json!({ "assigneeBotId": "bot-ada", "prompt": prompt }),
+                ),
+            )
+            .await,
+        )
+        .await;
         (status, task["id"].as_str().unwrap().to_string())
     }
 
@@ -4427,12 +5454,25 @@ mod tests {
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &model);
-        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
-        assert_eq!(std::fs::read_to_string(result).unwrap(), "模型没回：模型服务返回 401");
+        let result = volumes
+            .join(&group_id)
+            .join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(
+            std::fs::read_to_string(result).unwrap(),
+            "模型没回：模型服务返回 401"
+        );
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
-        assert_eq!(deliveries(&events)[0]["failure"], "模型没回：模型服务返回 401", "card can say it was not done");
-        assert_eq!(statuses(&events)[0]["failure"], "模型没回：模型服务返回 401", "status card too");
+        assert_eq!(
+            deliveries(&events)[0]["failure"],
+            "模型没回：模型服务返回 401",
+            "card can say it was not done"
+        );
+        assert_eq!(
+            statuses(&events)[0]["failure"],
+            "模型没回：模型服务返回 401",
+            "status card too"
+        );
 
         // The next task with a working model gets a normal delivery: no failure key at all.
         let ok = FakeModel::new(Ok("周报写好了".into()));
@@ -4443,16 +5483,32 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         let delivered = deliveries(&events);
         assert_eq!(delivered.len(), 2, "{next}");
-        assert!(delivered.iter().filter(|d| d.get("failure").is_some()).count() == 1);
-        assert!(statuses(&events).iter().filter(|t| t.get("failure").is_some()).count() == 1);
+        assert!(
+            delivered
+                .iter()
+                .filter(|d| d.get("failure").is_some())
+                .count()
+                == 1
+        );
+        assert!(
+            statuses(&events)
+                .iter()
+                .filter(|t| t.get("failure").is_some())
+                .count()
+                == 1
+        );
     }
 
     #[tokio::test]
     async fn answered_by_is_stored_when_sent_and_null_otherwise() {
         let app = test_app(&temp_db());
-        let group_id = create_group(&app, "谁答的").await["id"].as_str().unwrap().to_string();
+        let group_id = create_group(&app, "谁答的").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         add_member(&app, &group_id, "bot-ada", "Ada").await;
-        let card = |summary: &str| json!({ "botId": "bot-ada", "action": "send", "summary": summary });
+        let card =
+            |summary: &str| json!({ "botId": "bot-ada", "action": "send", "summary": summary });
 
         // Old request (no body): answeredBy null.
         let (_, a1) = post_approval(&app, &group_id, card("发周报")).await;
@@ -4465,17 +5521,21 @@ mod tests {
         let (_, a2) = post_approval(&app, &group_id, card("发邮件")).await;
         let id = a2["id"].as_str().unwrap();
         let url = format!("/api/approvals/{id}/deny");
-        let (status, done) = read_json(call(&app, post(&url, json!({ "answeredBy": " Panda 的手机 " }))).await).await;
+        let (status, done) =
+            read_json(call(&app, post(&url, json!({ "answeredBy": " Panda 的手机 " }))).await)
+                .await;
         assert_eq!(status, StatusCode::OK, "{done}");
         assert_eq!(done["answeredBy"], "Panda 的手机");
         let approve = format!("/api/approvals/{id}/approve");
-        let (status, _) = read_json(call(&app, post(&approve, json!({ "answeredBy": "Mac" }))).await).await;
+        let (status, _) =
+            read_json(call(&app, post(&approve, json!({ "answeredBy": "Mac" }))).await).await;
         assert_eq!(status, StatusCode::CONFLICT);
 
         // Bad answeredBy: 400, card stays open.
         let (_, a3) = post_approval(&app, &group_id, card("付款")).await;
         let url = format!("/api/approvals/{}/approve", a3["id"].as_str().unwrap());
-        let (status, body) = read_json(call(&app, post(&url, json!({ "answeredBy": "a\nb" }))).await).await;
+        let (status, body) =
+            read_json(call(&app, post(&url, json!({ "answeredBy": "a\nb" }))).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         let (status, _) = read_json(call(&app, post(&url, json!({ "answeredBy": 3 }))).await).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -4483,14 +5543,31 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "still open after bad requests");
 
         // Choice cards take it next to `choice`.
-        let (_, c) = post_choice(&app, &group_id, json!({ "botId": "bot-ada", "prompt": "哪个？", "options": two_options() })).await;
+        let (_, c) = post_choice(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "prompt": "哪个？", "options": two_options() }),
+        )
+        .await;
         let url = format!("/api/choices/{}/answer", c["id"].as_str().unwrap());
-        let (status, picked) = read_json(call(&app, post(&url, json!({ "choice": ["a"], "answeredBy": "Mac" }))).await).await;
+        let (status, picked) = read_json(
+            call(
+                &app,
+                post(&url, json!({ "choice": ["a"], "answeredBy": "Mac" })),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{picked}");
         assert_eq!(picked["answeredBy"], "Mac");
 
         let events = events_of(&app, &group_id).await;
-        let by: Vec<_> = events["events"].as_array().unwrap().iter().map(|e| e["answeredBy"].clone()).collect();
+        let by: Vec<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["answeredBy"].clone())
+            .collect();
         assert!(by.contains(&json!("Panda 的手机")) && by.contains(&json!("Mac")));
     }
 
@@ -4510,26 +5587,44 @@ mod tests {
         let _again = test_app(&path);
         let conn = Connection::open(&path).unwrap();
         for table in ["approvals", "choices"] {
-            conn.query_row(&format!("SELECT answered_by FROM {table} LIMIT 1"), [], |_| Ok(())).or_else(|e| match e {
+            conn.query_row(
+                &format!("SELECT answered_by FROM {table} LIMIT 1"),
+                [],
+                |_| Ok(()),
+            )
+            .or_else(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => Ok(()),
                 e => Err(e),
-            }).unwrap();
+            })
+            .unwrap();
         }
     }
 
     /// Approval cards in the owner's DM with `bot-ada`, where task cards go.
     async fn ada_dm_cards(app: &Router) -> Vec<Value> {
-        let (status, bro) = read_json(call(app, post("/api/bros/bot-ada/dm", json!({}))).await).await;
+        let (status, bro) =
+            read_json(call(app, post("/api/bros/bot-ada/dm", json!({}))).await).await;
         assert!(status.is_success(), "{bro}");
         approvals_in(&events_of(app, bro["dmGroupId"].as_str().unwrap()).await)
     }
 
     fn approvals_in(events: &Value) -> Vec<Value> {
-        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").cloned().collect()
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "approval")
+            .cloned()
+            .collect()
     }
 
     fn task_state(db: &Path, task_id: &str) -> String {
-        Connection::open(db).unwrap().query_row("SELECT state FROM tasks WHERE id = ?1", [task_id], |r| r.get(0)).unwrap()
+        Connection::open(db)
+            .unwrap()
+            .query_row("SELECT state FROM tasks WHERE id = ?1", [task_id], |r| {
+                r.get(0)
+            })
+            .unwrap()
     }
 
     #[tokio::test]
@@ -4537,12 +5632,16 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
+        let (group_id, task_id) =
+            seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "blocked");
 
-        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "card goes to the DM");
+        assert!(
+            approvals_in(&events_of(&app, &group_id).await).is_empty(),
+            "card goes to the DM"
+        );
         let cards = ada_dm_cards(&app).await;
         assert_eq!(cards.len(), 1, "one card per blocking line");
         assert_eq!(cards[0]["action"], "send");
@@ -4555,13 +5654,27 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(task_state(&path, &task_id), "queued");
         let hash = robroz_policy::action_hash("robroz-action:external");
-        assert!(std::fs::read_to_string(takeover_file(&volumes, &task_id)).unwrap().contains(&hash));
+        assert!(std::fs::read_to_string(takeover_file(&volumes, &task_id))
+            .unwrap()
+            .contains(&hash));
 
         let group_dir = run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "done");
-        assert!(statuses(&events_of(&app, &group_id).await)[0].get("failure").is_none(), "approved run is a normal done");
-        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "给客户发周报");
-        assert_eq!(ada_dm_cards(&app).await.len(), 1, "no second card after approval");
+        assert!(
+            statuses(&events_of(&app, &group_id).await)[0]
+                .get("failure")
+                .is_none(),
+            "approved run is a normal done"
+        );
+        assert_eq!(
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            "给客户发周报"
+        );
+        assert_eq!(
+            ada_dm_cards(&app).await.len(),
+            1,
+            "no second card after approval"
+        );
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
@@ -4571,15 +5684,22 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "审批闸", "删远端分支\nrobroz-action:external").await;
+        let (group_id, task_id) =
+            seed_task(&app, "审批闸", "删远端分支\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
         let card = ada_dm_cards(&app).await[0].clone();
         let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(task_state(&path, &task_id), "done");
-        assert_eq!(statuses(&events_of(&app, &group_id).await)[0]["failure"], "你拒绝了：删远端分支");
-        assert!(!takeover_file(&volumes, &task_id).exists(), "deny writes no marker");
+        assert_eq!(
+            statuses(&events_of(&app, &group_id).await)[0]["failure"],
+            "你拒绝了：删远端分支"
+        );
+        assert!(
+            !takeover_file(&volumes, &task_id).exists(),
+            "deny writes no marker"
+        );
         pump_db(&path, &volumes, &mut fake);
         assert!(fake.names().is_empty(), "denied task never starts again");
         assert!(deliveries(&events_of(&app, &group_id).await).is_empty());
@@ -4592,11 +5712,15 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, external) = seed_task(&app, "等什么", "发周报\nrobroz-action:external").await;
+        let (group_id, external) =
+            seed_task(&app, "等什么", "发周报\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
 
         let events = events_of(&app, &group_id).await;
-        assert!(statuses(&events)[0].get("waitingFor").is_none(), "queued has no waitingFor");
+        assert!(
+            statuses(&events)[0].get("waitingFor").is_none(),
+            "queued has no waitingFor"
+        );
 
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &external), "blocked");
@@ -4620,7 +5744,10 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         let st = statuses(&events);
         let of = |id: &str| st.iter().find(|s| s["taskId"] == id).copied().unwrap();
-        assert!(of(&external).get("waitingFor").is_none(), "done has no waitingFor");
+        assert!(
+            of(&external).get("waitingFor").is_none(),
+            "done has no waitingFor"
+        );
         assert_eq!(of(&captcha)["waitingFor"], "takeover");
     }
 
@@ -4633,7 +5760,10 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &captcha), "blocked");
-        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "captcha needs a person, not a card");
+        assert!(
+            approvals_in(&events_of(&app, &group_id).await).is_empty(),
+            "captcha needs a person, not a card"
+        );
 
         let (_, external) = seed_task_in(&app, &group_id, "发帖\nrobroz-action:external").await;
         run_once(&path, &volumes, &mut fake);
@@ -4641,7 +5771,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let cards = ada_dm_cards(&app).await;
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0]["decision"], "approved", "taking over answers the card");
+        assert_eq!(
+            cards[0]["decision"], "approved",
+            "taking over answers the card"
+        );
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(task_state(&path, &external), "queued");
@@ -4650,7 +5783,13 @@ mod tests {
     // ---- bro proposals and confirm cards ----
 
     fn confirms_in(events: &Value) -> Vec<Value> {
-        events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "confirm").cloned().collect()
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "confirm")
+            .cloned()
+            .collect()
     }
 
     fn memory_line(kind: &str, text: &str) -> String {
@@ -4658,13 +5797,18 @@ mod tests {
     }
 
     async fn memories_with(app: &Router, query: &str) -> Vec<Value> {
-        let (status, body) = read_json(call(app, get(&format!("/api/memories{query}"))).await).await;
+        let (status, body) =
+            read_json(call(app, get(&format!("/api/memories{query}"))).await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body["memories"].as_array().unwrap().clone()
     }
 
     fn delete_req(uri: &str) -> Request<Body> {
-        Request::builder().method("DELETE").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     #[tokio::test]
@@ -4677,8 +5821,16 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "done");
-        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "写周报");
-        assert!(!group_dir.join(format!("tasks/{task_id}/proposals.jsonl")).exists(), "read once, then removed");
+        assert_eq!(
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            "写周报"
+        );
+        assert!(
+            !group_dir
+                .join(format!("tasks/{task_id}/proposals.jsonl"))
+                .exists(),
+            "read once, then removed"
+        );
 
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 1, "{cards:?}");
@@ -4686,33 +5838,59 @@ mod tests {
         assert_eq!(card["subject"], "memory");
         assert_eq!(card["kind"], "habit");
         assert_eq!(card["text"], "周报用中文");
-        assert_eq!(card["scope"], "bot:bot-ada", "defaults to the bro that ran it");
+        assert_eq!(
+            card["scope"], "bot:bot-ada",
+            "defaults to the bro that ran it"
+        );
         assert_eq!(card["taskId"], task_id.as_str());
         assert_eq!(card["botId"], "bot-ada");
         assert_eq!(card["botName"], "Ada");
         assert_eq!(card["decision"], Value::Null);
         assert_eq!(card["answeredAt"], Value::Null);
         assert!(card.get("slug").is_none() && card.get("title").is_none());
-        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "not an approval card");
+        assert!(
+            approvals_in(&events_of(&app, &group_id).await).is_empty(),
+            "not an approval card"
+        );
         let card_id = card["id"].as_str().unwrap().to_string();
 
         let pending = memories_with(&app, "?status=pending").await;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["source"], "bot");
         assert_eq!(pending[0]["id"], card["memoryId"]);
-        assert_eq!(pending[0]["confirmId"], card_id.as_str(), "the memory page answers through this card");
+        assert_eq!(
+            pending[0]["confirmId"],
+            card_id.as_str(),
+            "the memory page answers through this card"
+        );
         let memory_id = pending[0]["id"].as_str().unwrap().to_string();
 
         // Editing while pending shows on the card, and the card is sent again.
         let before = card["createdAt"].as_str().unwrap().to_string();
-        let resp = call(&app, patch(&format!("/api/memories/{memory_id}"), json!({ "text": "周报一律用中文" }))).await;
+        let resp = call(
+            &app,
+            patch(
+                &format!("/api/memories/{memory_id}"),
+                json!({ "text": "周报一律用中文" }),
+            ),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let since = format!("/api/groups/{group_id}/events?since={before}");
         let (_, fresh) = read_json(call(&app, get(&since)).await).await;
         assert_eq!(confirms_in(&fresh)[0]["text"], "周报一律用中文");
 
-        let (status, answered) =
-            read_json(call(&app, post(&format!("/api/approvals/{card_id}/approve"), json!({ "answeredBy": "Mac" }))).await).await;
+        let (status, answered) = read_json(
+            call(
+                &app,
+                post(
+                    &format!("/api/approvals/{card_id}/approve"),
+                    json!({ "answeredBy": "Mac" }),
+                ),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(answered["type"], "confirm");
         assert_eq!(answered["decision"], "approved");
@@ -4720,14 +5898,24 @@ mod tests {
         let kept = memories_with(&app, "?status=kept").await;
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0]["text"], "周报一律用中文");
-        assert!(kept[0].get("confirmId").is_none(), "answered: nothing left to confirm");
+        assert!(
+            kept[0].get("confirmId").is_none(),
+            "answered: nothing left to confirm"
+        );
 
         for verb in ["approve", "deny"] {
             let (status, _) = decide(&app, &card_id, verb).await;
             assert_eq!(status, StatusCode::CONFLICT, "only one answer");
         }
-        assert_eq!(memories_with(&app, "?status=kept").await.len(), 1, "still kept");
-        assert_eq!(confirms_in(&events_of(&app, &group_id).await)[0]["decision"], "approved");
+        assert_eq!(
+            memories_with(&app, "?status=kept").await.len(),
+            1,
+            "still kept"
+        );
+        assert_eq!(
+            confirms_in(&events_of(&app, &group_id).await)[0]["decision"],
+            "approved"
+        );
     }
 
     #[tokio::test]
@@ -4735,13 +5923,22 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = format!("{}\n{}\n写周报", memory_line("habit", "周报用中文"), memory_line("project", "robroz 用 Rust"));
+        let prompt = format!(
+            "{}\n{}\n写周报",
+            memory_line("habit", "周报用中文"),
+            memory_line("project", "robroz 用 Rust")
+        );
         let (group_id, _) = seed_task(&app, "记忆", &prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 2);
-        let card = |text: &str| cards.iter().find(|c| c["text"] == text).unwrap()["id"].as_str().unwrap().to_string();
+        let card = |text: &str| {
+            cards.iter().find(|c| c["text"] == text).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
         let (status, denied) = decide(&app, &card("周报用中文"), "deny").await;
         assert_eq!(status, StatusCode::OK, "{denied}");
         assert_eq!(denied["decision"], "denied");
@@ -4751,14 +5948,28 @@ mod tests {
         let rejected = memories_with(&app, "?status=rejected").await;
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0]["text"], "周报用中文");
-        assert!(memories_with(&app, "").await.iter().all(|m| m["text"] != "周报用中文"), "rejected is not in use");
+        assert!(
+            memories_with(&app, "")
+                .await
+                .iter()
+                .all(|m| m["text"] != "周报用中文"),
+            "rejected is not in use"
+        );
 
         // Same scope, kind and text (spaces aside), rejected or kept: no new card.
-        let again = format!("{}\n{}\n又写周报", memory_line("habit", "  周报用中文 "), memory_line("project", "robroz  用 Rust"));
+        let again = format!(
+            "{}\n{}\n又写周报",
+            memory_line("habit", "  周报用中文 "),
+            memory_line("project", "robroz  用 Rust")
+        );
         let (_, second) = seed_task_in(&app, &group_id, &again).await;
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &second), "done");
-        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 2, "no new card");
+        assert_eq!(
+            confirms_in(&events_of(&app, &group_id).await).len(),
+            2,
+            "no new card"
+        );
         // Another kind is another memory.
         let other = format!("{}\n再写", memory_line("profile", "周报用中文"));
         seed_task_in(&app, &group_id, &other).await;
@@ -4778,25 +5989,41 @@ mod tests {
             r#"robroz-memory:{"kind":"habit"}"#.to_string(),
             r#"robroz-memory:{"kind":"habit","text":"x","scope":"bot:nobody"}"#.to_string(),
             r#"robroz-memory:{"kind":"habit","text":"x","scope":"group:g1"}"#.to_string(),
-            format!(r#"robroz-memory:{{"kind":"habit","text":"{}"}}"#, "长".repeat(2001)),
+            format!(
+                r#"robroz-memory:{{"kind":"habit","text":"{}"}}"#,
+                "长".repeat(2001)
+            ),
             r#"robroz-memory:{"kind":"profile","text":"叫 Panda","scope":"user"}"#.to_string(),
             "正文".to_string(),
         ];
         let (group_id, task_id) = seed_task(&app, "记忆", &lines.join("\n")).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
-        assert_eq!(task_state(&path, &task_id), "done", "bad lines never fail the task");
-        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "正文");
+        assert_eq!(
+            task_state(&path, &task_id),
+            "done",
+            "bad lines never fail the task"
+        );
+        assert_eq!(
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            "正文"
+        );
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 1, "{cards:?}");
         assert_eq!(cards[0]["scope"], "user");
 
-        let many: Vec<String> = (0..25).map(|i| memory_line("project", &format!("第 {i} 条"))).collect();
+        let many: Vec<String> = (0..25)
+            .map(|i| memory_line("project", &format!("第 {i} 条")))
+            .collect();
         seed_task_in(&app, &group_id, &format!("{}\n正文", many.join("\n"))).await;
         run_once(&path, &volumes, &mut fake);
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 1 + robroz_contract::PROPOSALS_PER_TASK_MAX);
-        assert!(cards.iter().any(|c| c["text"] == "第 19 条") && !cards.iter().any(|c| c["text"] == "第 20 条"), "first 20 in order");
+        assert!(
+            cards.iter().any(|c| c["text"] == "第 19 条")
+                && !cards.iter().any(|c| c["text"] == "第 20 条"),
+            "first 20 in order"
+        );
     }
 
     #[tokio::test]
@@ -4805,13 +6032,21 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "记忆", "写周报").await;
-        let model = FakeModel::new(Ok(format!("{}\n周报写好了", memory_line("habit", "周五交周报"))));
+        let model = FakeModel::new(Ok(format!(
+            "{}\n周报写好了",
+            memory_line("habit", "周五交周报")
+        )));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &model);
-        let result = volumes.join(&group_id).join(format!("tasks/{task_id}/result.txt"));
-        assert_eq!(std::fs::read_to_string(result).unwrap(), "周报写好了（写周报）");
+        let result = volumes
+            .join(&group_id)
+            .join(format!("tasks/{task_id}/result.txt"));
+        assert_eq!(
+            std::fs::read_to_string(result).unwrap(),
+            "周报写好了（写周报）"
+        );
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0]["text"], "周五交周报");
@@ -4819,11 +6054,20 @@ mod tests {
 
         // A run that did not get done proposes nothing.
         let failing = FakeModel::new(Err("模型服务返回 500".into()));
-        seed_task_in(&app, &group_id, &format!("{}\n再写", memory_line("habit", "失败也想记"))).await;
+        seed_task_in(
+            &app,
+            &group_id,
+            &format!("{}\n再写", memory_line("habit", "失败也想记")),
+        )
+        .await;
         pump_with_model(&path, &volumes, &mut fake, &failing);
         fake.finish(0);
         pump_with_model(&path, &volumes, &mut fake, &failing);
-        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 1, "failed run: no card");
+        assert_eq!(
+            confirms_in(&events_of(&app, &group_id).await).len(),
+            1,
+            "failed run: no card"
+        );
     }
 
     #[tokio::test]
@@ -4831,7 +6075,11 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = format!("{}\n{}\n写", memory_line("habit", "A"), memory_line("habit", "B"));
+        let prompt = format!(
+            "{}\n{}\n写",
+            memory_line("habit", "A"),
+            memory_line("habit", "B")
+        );
         let (group_id, _) = seed_task(&app, "记忆", &prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
@@ -4841,15 +6089,40 @@ mod tests {
         let b = pending.iter().find(|m| m["text"] == "B").unwrap().clone();
 
         // PATCH has no status: the body is "nothing to change", status stays pending.
-        let resp = call(&app, patch(&format!("/api/memories/{}", b["id"].as_str().unwrap()), json!({ "status": "kept" }))).await;
+        let resp = call(
+            &app,
+            patch(
+                &format!("/api/memories/{}", b["id"].as_str().unwrap()),
+                json!({ "status": "kept" }),
+            ),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let resp = call(&app, patch(&format!("/api/memories/{}", b["id"].as_str().unwrap()), json!({ "status": "kept", "text": "B2" }))).await;
+        let resp = call(
+            &app,
+            patch(
+                &format!("/api/memories/{}", b["id"].as_str().unwrap()),
+                json!({ "status": "kept", "text": "B2" }),
+            ),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let b_now = memories_with(&app, "?status=pending").await.into_iter().find(|m| m["id"] == b["id"]).unwrap();
-        assert_eq!((b_now["status"].clone(), b_now["text"].clone()), (json!("pending"), json!("B2")));
+        let b_now = memories_with(&app, "?status=pending")
+            .await
+            .into_iter()
+            .find(|m| m["id"] == b["id"])
+            .unwrap();
+        assert_eq!(
+            (b_now["status"].clone(), b_now["text"].clone()),
+            (json!("pending"), json!("B2"))
+        );
         assert_eq!(b_now["confirmId"], b["confirmId"]);
 
-        let resp = call(&app, delete_req(&format!("/api/memories/{}", a["id"].as_str().unwrap()))).await;
+        let resp = call(
+            &app,
+            delete_req(&format!("/api/memories/{}", a["id"].as_str().unwrap())),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         let cards = confirms_in(&events_of(&app, &group_id).await);
         let closed = cards.iter().find(|c| c["memoryId"] == a["id"]).unwrap();
@@ -4857,7 +6130,10 @@ mod tests {
         assert_eq!(closed["answeredBy"], Value::Null);
         let (status, _) = decide(&app, a["confirmId"].as_str().unwrap(), "approve").await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert!(memories_with(&app, "?status=kept").await.is_empty(), "a forgotten one is never kept");
+        assert!(
+            memories_with(&app, "?status=kept").await.is_empty(),
+            "a forgotten one is never kept"
+        );
         let open = cards.iter().find(|c| c["memoryId"] == b["id"]).unwrap();
         assert_eq!(open["decision"], Value::Null, "the other card is untouched");
 
@@ -4870,13 +6146,19 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, task_id) = seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
+        let (group_id, task_id) =
+            seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
 
         // bot-ada was added by botId and had no DM: one is created for the card.
         let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
-        let dm = bros["bros"].as_array().unwrap().iter().find(|b| b["id"] == "bot-ada").unwrap()["dmGroupId"]
+        let dm = bros["bros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == "bot-ada")
+            .unwrap()["dmGroupId"]
             .as_str()
             .unwrap()
             .to_string();
@@ -4885,27 +6167,53 @@ mod tests {
         let wait = std::time::Duration::from_millis(800);
         let mut group_stream = open_stream(&app, &group_id, None).await.into_body();
         let group_backlog = sse_take(&mut group_stream, 5, wait).await;
-        assert!(group_backlog.iter().all(|(name, _, _)| name != "approval"), "{group_backlog:?}");
-        let (_, _, status) = group_backlog.iter().find(|(name, _, _)| name == "status").unwrap();
+        assert!(
+            group_backlog.iter().all(|(name, _, _)| name != "approval"),
+            "{group_backlog:?}"
+        );
+        let (_, _, status) = group_backlog
+            .iter()
+            .find(|(name, _, _)| name == "status")
+            .unwrap();
         assert_eq!(status["waitingFor"], "approval");
-        assert_eq!(status["progress"], robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE);
+        assert_eq!(
+            status["progress"],
+            robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE
+        );
 
         let mut dm_stream = open_stream(&app, &dm, None).await.into_body();
         let dm_backlog = sse_take(&mut dm_stream, 5, wait).await;
-        let (_, _, card) = dm_backlog.iter().find(|(name, _, _)| name == "approval").expect("card in the DM stream");
+        let (_, _, card) = dm_backlog
+            .iter()
+            .find(|(name, _, _)| name == "approval")
+            .expect("card in the DM stream");
         assert_eq!(card["taskId"], task_id.as_str());
-        assert!(dm_backlog.iter().all(|(name, _, _)| name != "status"), "the task's status stays in the group");
+        assert!(
+            dm_backlog.iter().all(|(name, _, _)| name != "status"),
+            "the task's status stays in the group"
+        );
 
         // Approve from the DM: the task resumes in its group.
         let (status, _) = decide(&app, card["id"].as_str().unwrap(), "approve").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(task_state(&path, &task_id), "queued");
         let group_dir = run_once(&path, &volumes, &mut fake);
-        assert_eq!(group_dir, volumes.join(&group_id), "runs in the group's volume");
+        assert_eq!(
+            group_dir,
+            volumes.join(&group_id),
+            "runs in the group's volume"
+        );
         assert_eq!(task_state(&path, &task_id), "done");
         let events = events_of(&app, &group_id).await;
-        assert_eq!(deliveries(&events).len(), 1, "result is delivered in the group");
-        assert!(statuses(&events)[0].get("progress").is_none(), "notice goes away once answered");
+        assert_eq!(
+            deliveries(&events).len(),
+            1,
+            "result is delivered in the group"
+        );
+        assert!(
+            statuses(&events)[0].get("progress").is_none(),
+            "notice goes away once answered"
+        );
     }
 
     #[tokio::test]
@@ -4913,10 +6221,21 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (_, bro) = read_json(call(&app, post("/api/bros", json!({ "name": "bob" }))).await).await;
-        let (bot, dm) = (bro["id"].as_str().unwrap().to_string(), bro["dmGroupId"].as_str().unwrap().to_string());
+        let (_, bro) =
+            read_json(call(&app, post("/api/bros", json!({ "name": "bob" }))).await).await;
+        let (bot, dm) = (
+            bro["id"].as_str().unwrap().to_string(),
+            bro["dmGroupId"].as_str().unwrap().to_string(),
+        );
         let (status, task) = read_json(
-            call(&app, post(&format!("/api/groups/{dm}/tasks"), json!({ "assigneeBotId": bot, "prompt": "发周报\nrobroz-action:external" }))).await,
+            call(
+                &app,
+                post(
+                    &format!("/api/groups/{dm}/tasks"),
+                    json!({ "assigneeBotId": bot, "prompt": "发周报\nrobroz-action:external" }),
+                ),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{task}");
@@ -4928,9 +6247,16 @@ mod tests {
         assert_eq!(cards[0]["taskId"], task["id"]);
         let status = statuses(&events)[0];
         assert_eq!(status["waitingFor"], "approval");
-        assert!(status.get("progress").is_none(), "no notice when the card is right here: {status}");
+        assert!(
+            status.get("progress").is_none(),
+            "no notice when the card is right here: {status}"
+        );
         let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
-        assert_eq!(bros["bros"].as_array().unwrap().len(), 1, "no extra DM or bro");
+        assert_eq!(
+            bros["bros"].as_array().unwrap().len(),
+            1,
+            "no extra DM or bro"
+        );
     }
 
     #[tokio::test]
@@ -4941,15 +6267,31 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "审批闸", "发周报\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
-        let (status, posted) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": "发邮件" })).await;
+        let (status, posted) = post_approval(
+            &app,
+            &group_id,
+            json!({ "botId": "bot-ada", "action": "send", "summary": "发邮件" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
-        assert!(posted.get("taskId").is_none(), "a bot's own card has no task");
+        assert!(
+            posted.get("taskId").is_none(),
+            "a bot's own card has no task"
+        );
         let cards = approvals_in(&events_of(&app, &group_id).await);
-        assert_eq!(cards.len(), 1, "the bro's own card stays in the group");
+        assert_eq!(
+            cards.len(),
+            1,
+            "the group lists the bro's own card (moved to the owner's DM)"
+        );
         assert_eq!(cards[0]["id"], posted["id"]);
         let dm_cards = ada_dm_cards(&app).await;
-        assert_eq!(dm_cards.len(), 1);
-        let gated = &dm_cards[0];
+        assert_eq!(
+            dm_cards.len(),
+            2,
+            "both cards are answered in the owner's DM"
+        );
+        let gated = dm_cards.iter().find(|c| c.get("taskId").is_some()).unwrap();
         assert_eq!(gated["taskId"], task_id.as_str());
         let (_, answered) = decide(&app, gated["id"].as_str().unwrap(), "approve").await;
         assert_eq!(answered["taskId"], task_id.as_str());
@@ -4960,7 +6302,12 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let (group_id, _) = seed_task(&app, "记忆", &format!("{}\n写", memory_line("habit", "周报用中文"))).await;
+        let (group_id, _) = seed_task(
+            &app,
+            "记忆",
+            &format!("{}\n写", memory_line("habit", "周报用中文")),
+        )
+        .await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
 
@@ -4968,7 +6315,10 @@ mod tests {
         let mut body = open_stream(&app, &group_id, None).await.into_body();
         let backlog = sse_take(&mut body, 3, wait).await;
         assert_events_once(&backlog, &["status", "delivery", "confirm"]);
-        let (_, _, card) = backlog.iter().find(|(name, _, _)| name == "confirm").unwrap();
+        let (_, _, card) = backlog
+            .iter()
+            .find(|(name, _, _)| name == "confirm")
+            .unwrap();
         assert_eq!(card["text"], "周报用中文");
         assert!(card["taskId"].is_string());
 
@@ -4980,7 +6330,10 @@ mod tests {
     }
 
     fn skill_line(slug: &str, title: &str, instruction: &str) -> String {
-        format!("robroz-skill:{}", json!({ "slug": slug, "title": title, "instruction": instruction }))
+        format!(
+            "robroz-skill:{}",
+            json!({ "slug": slug, "title": title, "instruction": instruction })
+        )
     }
 
     async fn skills_with(app: &Router, query: &str) -> Vec<Value> {
@@ -4989,7 +6342,13 @@ mod tests {
         body["skills"].as_array().unwrap().clone()
     }
 
-    async fn post_skill(app: &Router, scope: &str, slug: &str, title: &str, instruction: &str) -> Value {
+    async fn post_skill(
+        app: &Router,
+        scope: &str,
+        slug: &str,
+        title: &str,
+        instruction: &str,
+    ) -> Value {
         let (status, body) = read_json(
             call(app, post("/api/skills", json!({ "scope": scope, "slug": slug, "title": title, "instruction": instruction }))).await,
         )
@@ -5003,13 +6362,21 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = format!("{}\n写周报", skill_line("weekly-report", "写周报", "先列三点"));
+        let prompt = format!(
+            "{}\n写周报",
+            skill_line("weekly-report", "写周报", "先列三点")
+        );
         let (group_id, task_id) = seed_task(&app, "技能", &prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         let group_dir = run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "done");
-        assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "写周报");
-        assert!(!group_dir.join(format!("tasks/{task_id}/proposals.jsonl")).exists());
+        assert_eq!(
+            std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
+            "写周报"
+        );
+        assert!(!group_dir
+            .join(format!("tasks/{task_id}/proposals.jsonl"))
+            .exists());
 
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 1, "{cards:?}");
@@ -5028,14 +6395,29 @@ mod tests {
         let (status, answered) = decide(&app, card["id"].as_str().unwrap(), "approve").await;
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(answered["decision"], "approved");
-        assert_eq!(skills_with(&app, "?status=kept").await[0]["slug"], "weekly-report");
+        assert_eq!(
+            skills_with(&app, "?status=kept").await[0]["slug"],
+            "weekly-report"
+        );
         let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::CONFLICT);
 
         // Same slug is not proposed again, even after keep.
-        seed_task_in(&app, &group_id, &format!("{}\n再写", skill_line("weekly-report", "写周报", "先列三点"))).await;
+        seed_task_in(
+            &app,
+            &group_id,
+            &format!(
+                "{}\n再写",
+                skill_line("weekly-report", "写周报", "先列三点")
+            ),
+        )
+        .await;
         run_once(&path, &volumes, &mut fake);
-        assert_eq!(confirms_in(&events_of(&app, &group_id).await).len(), 1, "duplicate slug dropped");
+        assert_eq!(
+            confirms_in(&events_of(&app, &group_id).await).len(),
+            1,
+            "duplicate slug dropped"
+        );
     }
 
     #[tokio::test]
@@ -5043,24 +6425,37 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let prompt = format!("{}\n{}\n写", skill_line("keep-me", "留下", "留下说明"), skill_line("drop-me", "丢掉", "丢掉说明"));
+        let prompt = format!(
+            "{}\n{}\n写",
+            skill_line("keep-me", "留下", "留下说明"),
+            skill_line("drop-me", "丢掉", "丢掉说明")
+        );
         let (group_id, _) = seed_task(&app, "技能", &prompt).await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), 2);
         let drop = cards.iter().find(|c| c["slug"] == "drop-me").unwrap();
-                let (status, denied) = decide(&app, drop["id"].as_str().unwrap(), "deny").await;
+        let (status, denied) = decide(&app, drop["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(denied["decision"], "denied");
-        assert_eq!(skills_with(&app, "?status=rejected").await[0]["slug"], "drop-me");
+        assert_eq!(
+            skills_with(&app, "?status=rejected").await[0]["slug"],
+            "drop-me"
+        );
 
         let resp = call(&app, delete_req("/api/skills/keep-me")).await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        let closed = confirms_in(&events_of(&app, &group_id).await).into_iter().find(|c| c["slug"] == "keep-me").unwrap();
+        let closed = confirms_in(&events_of(&app, &group_id).await)
+            .into_iter()
+            .find(|c| c["slug"] == "keep-me")
+            .unwrap();
         assert_eq!(closed["decision"], "denied");
         assert!(closed["answeredBy"].is_null());
-        assert!(skills_with(&app, "").await.iter().all(|s| s["slug"] != "keep-me"));
+        assert!(skills_with(&app, "")
+            .await
+            .iter()
+            .all(|s| s["slug"] != "keep-me"));
     }
 
     #[tokio::test]
@@ -5068,7 +6463,9 @@ mod tests {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
-        let mut lines: Vec<String> = (0..12).map(|i| memory_line("habit", &format!("记 {i}"))).collect();
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| memory_line("habit", &format!("记 {i}")))
+            .collect();
         lines.extend((0..12).map(|i| skill_line(&format!("s-{i}"), &format!("技 {i}"), "说明")));
         lines.push("正文".into());
         let (group_id, _) = seed_task(&app, "技能", &lines.join("\n")).await;
@@ -5076,8 +6473,14 @@ mod tests {
         run_once(&path, &volumes, &mut fake);
         let cards = confirms_in(&events_of(&app, &group_id).await);
         assert_eq!(cards.len(), robroz_contract::PROPOSALS_PER_TASK_MAX);
-        assert!(cards.iter().any(|c| c["subject"] == "memory") && cards.iter().any(|c| c["subject"] == "skill"));
-        assert!(!cards.iter().any(|c| c["slug"] == "s-8"), "memories first, then skills, cap 20");
+        assert!(
+            cards.iter().any(|c| c["subject"] == "memory")
+                && cards.iter().any(|c| c["subject"] == "skill")
+        );
+        assert!(
+            !cards.iter().any(|c| c["slug"] == "s-8"),
+            "memories first, then skills, cap 20"
+        );
     }
 
     #[tokio::test]
@@ -5093,11 +6496,23 @@ mod tests {
         post_skill(&app, "bot:bot-bob", "bob-notes", "Bob 笔记", "Ada 不该看到").await;
         post_skill(&app, "user", "unused", "未启用", "不该出现").await;
 
-        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/weekly-report"))).await;
+        let resp = call(
+            &app,
+            put(&format!("/api/groups/{group_id}/skills/weekly-report")),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/ada-notes"))).await;
+        let resp = call(
+            &app,
+            put(&format!("/api/groups/{group_id}/skills/ada-notes")),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        let resp = call(&app, put(&format!("/api/groups/{group_id}/skills/bob-notes"))).await;
+        let resp = call(
+            &app,
+            put(&format!("/api/groups/{group_id}/skills/bob-notes")),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         // unused stays disabled
 
@@ -5116,10 +6531,23 @@ mod tests {
             .flatten()
             .expect("kept enabled skills go into the system prompt");
         assert!(section.contains("你会这些技能："), "{section}");
-        assert!(section.contains("### 写周报 (weekly-report)\n先列三点"), "{section}");
-        assert!(section.contains("### Ada 笔记 (ada-notes)\n只给 Ada"), "{section}");
-        assert!(!section.contains("Bob") && !section.contains("未启用") && !section.contains("unused"), "{section}");
-        let started = fake.containers.iter().find(|c| c.task_id == next).expect("second task started");
+        assert!(
+            section.contains("### 写周报 (weekly-report)\n先列三点"),
+            "{section}"
+        );
+        assert!(
+            section.contains("### Ada 笔记 (ada-notes)\n只给 Ada"),
+            "{section}"
+        );
+        assert!(
+            !section.contains("Bob") && !section.contains("未启用") && !section.contains("unused"),
+            "{section}"
+        );
+        let started = fake
+            .containers
+            .iter()
+            .find(|c| c.task_id == next)
+            .expect("second task started");
         assert_eq!(started.prompt, "再写周报");
     }
 
@@ -5129,7 +6557,9 @@ mod tests {
         let _app = test_app(&path);
         let _again = test_app(&path);
         let conn = Connection::open(&path).unwrap();
-        conn.prepare("SELECT subject_kind, subject_id FROM approvals").unwrap();
-        conn.prepare("SELECT slug, title, instruction FROM skills").unwrap();
+        conn.prepare("SELECT subject_kind, subject_id FROM approvals")
+            .unwrap();
+        conn.prepare("SELECT slug, title, instruction FROM skills")
+            .unwrap();
     }
 }

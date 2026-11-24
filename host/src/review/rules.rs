@@ -97,7 +97,11 @@ fn raise(
 }
 
 fn accepted(id: String) -> Response {
-    (StatusCode::ACCEPTED, Json(ReviewRuleCreated { approval_id: id })).into_response()
+    (
+        StatusCode::ACCEPTED,
+        Json(ReviewRuleCreated { approval_id: id }),
+    )
+        .into_response()
 }
 
 pub(crate) async fn list_rules(State(state): State<AppState>) -> Response {
@@ -130,9 +134,15 @@ pub(crate) async fn delete_rule(
     let conn = lock_db(&state);
     let result = (|| {
         let text: Option<String> = conn
-            .query_row("SELECT text FROM review_rules WHERE id = ?1", [&rule_id], |r| r.get(0))
+            .query_row(
+                "SELECT text FROM review_rules WHERE id = ?1",
+                [&rule_id],
+                |r| r.get(0),
+            )
             .optional()?;
-        let Some(text) = text else { return Ok(Err(error_response(StatusCode::NOT_FOUND, "规则不存在"))) };
+        let Some(text) = text else {
+            return Ok(Err(error_response(StatusCode::NOT_FOUND, "规则不存在")));
+        };
         Ok(Ok(raise(&conn, "rule_delete", &text, Some(&rule_id))?))
     })();
     match result {
@@ -144,7 +154,11 @@ pub(crate) async fn delete_rule(
 
 /// Called inside the approve transaction: a `rule_add` card adds its rule,
 /// a `rule_delete` card removes its rule. Any other card: nothing.
-pub(crate) fn apply_confirmed(conn: &Connection, approval_id: &str, now: &str) -> rusqlite::Result<()> {
+pub(crate) fn apply_confirmed(
+    conn: &Connection,
+    approval_id: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
     let row: Option<(String, String, Option<String>)> = conn
         .query_row(
             "SELECT action, summary, rule_id FROM approvals WHERE id = ?1",
