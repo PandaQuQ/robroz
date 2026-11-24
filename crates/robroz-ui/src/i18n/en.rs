@@ -2,10 +2,11 @@
 //! Chinese source (`zh.rs`).
 //!
 //! Copy owner: the designer. Every entry is her approved copy, marked with
-//! the batch it came in (`[approved, batch 1]` or `[approved, batch 2]`).
+//! the batch it came in (`[approved, batch 1]`, `[approved, batch 2]` or
+//! `[approved, settings row]`).
 //! Edit the strings here only; keep each `{0}`, `{1}` placeholder that the
-//! Chinese has. Language names (`LocaleName*`) stay native in both files;
-//! `SettingsLanguage` is the label the PM review asked for.
+//! Chinese has. The Settings language row (`SettingsLanguage`, `LocaleName*`)
+//! is approved too; the option names stay native in both files.
 
 use super::Key;
 
@@ -370,11 +371,11 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientThemeLight => "Light",
         // 选一个聊天  [approved, batch 2]
         Key::ClientPickChat => "Pick a chat",
-        // 语言  [PM review: Settings row label]
+        // 语言  [approved, settings row]
         Key::SettingsLanguage => "Language",
-        // English  [native name, same in both files]
+        // English  [approved, settings row; native name in both files]
         Key::LocaleNameEn => "English",
-        // 中文  [native name, same in both files]
+        // 中文  [approved, settings row; native name in both files]
         Key::LocaleNameZh => "中文",
 
         // ---- Client-side errors (client/src/api.rs) ----
