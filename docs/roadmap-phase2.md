@@ -7,7 +7,7 @@ robroz 要做成一个开源版的 Grok Bot：用 Rust 自研，交互是 IM，�
 > **已上线的部分（2026-11-21 补记，不改下面的排期决定）：** 这份路线图写成之后，下面几项的第一期基础版已经合入 `main`，表里对应的行标了「已上线基础版」：
 > - 长期记忆、技能库：记忆和技能的接口、确认卡、按群启用技能、拼进模型提示。见 [memory-and-skills.md](memory-and-skills.md)。
 > - 公开网页检索：`web_search` / `web_fetch` 两个工具，走按任务计数的出网 GET，用户自己填 Brave 或 SearXNG。还没有检索过程的展示事件和 URL 出处展示。见 [search-and-mcp.md](search-and-mcp.md#联网搜索)。
-> - 连接器（MCP）：MCP 服务器的配置、列工具、按群启用，以及 bro 调用 MCP 工具（只读工具直接调用并计次，其余先出 `call` 审批卡，2026-11-22 补记，[robroz#83](https://github.com/PandaQuQ/robroz/pull/83)）。OAuth、按 bot 授权和 MCP 网关都还没做，客户端的 MCP 配置页也还没合入。见 [search-and-mcp.md](search-and-mcp.md#mcp)。
+> - 连接器（MCP）：MCP 服务器的配置、列工具、按群启用，以及 bro 调用 MCP 工具（只读工具直接调用并计次，其余先出 `call` 审批卡，2026-11-22 补记，[robroz#83](https://github.com/PandaQuQ/robroz/pull/83)）。客户端的 MCP 页 2026-11-22 合入（[robroz#96](https://github.com/PandaQuQ/robroz/pull/96)）。OAuth、按 bot 授权和 MCP 网关都还没做。见 [search-and-mcp.md](search-and-mcp.md#mcp)。
 >
 > 下文「第一期不做」里提到这几项的地方，指的是写路线图时的范围。
 
