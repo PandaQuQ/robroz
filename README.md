@@ -26,7 +26,7 @@ The desktop client UI is currently in Chinese; English UI is in progress (Englis
 ## Works today
 
 - **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
-- **Bros talk to each other.** In a group, when one bro replies, the other bros can join in. They only speak when they have something to add, and the back-and-forth stops after 2 rounds.
+- **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
