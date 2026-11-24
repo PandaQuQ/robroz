@@ -72,7 +72,7 @@ pub fn connect_reason(err: &str) -> Option<Text> {
     }
 }
 
-fn is_token_rejected(err: &str) -> bool {
+pub(crate) fn is_token_rejected(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     err.contains(robroz_contract::host_text::TOKEN_REJECTED)
         || err.contains("The host rejected the token")

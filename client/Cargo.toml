@@ -18,6 +18,9 @@ tokio = { version = "1", features = ["rt"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 # Decodes the embedded PNG for the window icon (iced is built without its `image` feature).
 png = "0.18"
+# OS keychain for the saved host token; falls back to a 0600 file if unavailable.
+# Native backends only (no OpenSSL, no libdbus). linux-native is the kernel keyring.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 
 [dev-dependencies]
 robroz-host = { path = "../host" }

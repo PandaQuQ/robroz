@@ -304,6 +304,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientTimedOut => "超时",
         Key::ClientHostNotFound => "找不到主机",
         Key::ClientTokenRejected => "宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。",
+        Key::ClientCantReachHost => "连不上宿主。",
         Key::SettingsLanguage => "Language / 语言",
         Key::LocaleNameEn => "English",
         Key::LocaleNameZh => "中文",

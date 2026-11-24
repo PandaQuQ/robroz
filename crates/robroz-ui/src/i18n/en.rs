@@ -595,6 +595,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientHostNotFound => "Host not found",
         // 宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。  [approved, disconnected state]
         Key::ClientTokenRejected => "The host rejected the token. Check `ROBROZ_TOKEN`.",
+        // 连不上宿主。  [approved, disconnected state]
+        Key::ClientCantReachHost => "Can't reach host.",
         // Language / 语言  [approved, settings row]
         Key::SettingsLanguage => "Language / 语言",
         // English  [approved, settings row; native name in both files]

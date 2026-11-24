@@ -203,6 +203,23 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Map a failed request onto the connection form's two cases:
+    /// a rejected token, or a host that cannot be reached.
+    #[allow(dead_code)] // connection form, follow-up PR
+    pub fn as_conn_error(&self) -> crate::conn::ConnError {
+        use crate::conn::ConnError;
+        match self {
+            ApiError::Status(401, _) => ConnError::Unauthorized,
+            ApiError::Transport(msg)
+            | ApiError::Status(_, msg)
+            | ApiError::Conflict(msg)
+            | ApiError::BadRequest(msg)
+            | ApiError::NotFound(msg)
+            | ApiError::Decode(msg) => ConnError::classify(msg),
+            ApiError::CommandNotApproved(_) => ConnError::classify(&self.reason()),
+        }
+    }
+
     /// Plain reason for notes outside cards (send, rename, new bro):
     /// the host's message, or 「连不上主机」.
     pub fn reason(&self) -> String {
@@ -2065,6 +2082,21 @@ mod tests {
             Note::Rejected("没有这个选项".into())
         );
         assert_eq!(ApiError::Transport("down".into()).note(), Note::Retry);
+    }
+
+    #[test]
+    fn as_conn_error_maps_401_and_transport() {
+        use crate::conn::ConnError;
+        assert_eq!(
+            ApiError::Status(401, "缺少或错误的令牌".into()).as_conn_error(),
+            ConnError::Unauthorized
+        );
+        let err =
+            ApiError::Transport("io: Connection refused (os error 111)".into()).as_conn_error();
+        assert_eq!(
+            err,
+            ConnError::Unreachable(Text::ClientConnectionRefused.to_string())
+        );
     }
 
     #[test]

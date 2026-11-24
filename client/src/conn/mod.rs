@@ -1,17 +1,31 @@
 //! One HTTP connection setup shared by the event source, the card API and
 //! the live stream: base URL, timeouts and the optional host token.
 //!
-//! Token: `ROBROZ_TOKEN` for this run, otherwise the `token` file next to
-//! `lang` in the client config folder (see [`crate::prefs`]). Sent as
+//! Token: `ROBROZ_TOKEN` for this run, otherwise the OS keychain, otherwise
+//! the `token` file next to `lang` in the client config folder. Sent as
 //! `Authorization: Bearer …` on every request when set (robroz#22), including
 //! the live SSE stream. It is never printed: `Debug` hides it and error
-//! texts only carry the base URL. A 401 is surfaced as
-//! [`robroz_ui::i18n::Key::ClientTokenRejected`].
+//! texts only carry the base URL. A 401 is [`ConnError::Unauthorized`]
+//! (shown as [`robroz_ui::i18n::Key::ClientTokenRejected`]). A host that
+//! cannot be reached is [`ConnError::Unreachable`].
+//!
+//! The connection form uses [`load`] and [`save`]. After a successful
+//! `save`, build a new [`Conn`] with [`Conn::from_env`].
 
 use std::fmt;
 use std::time::Duration;
 
+mod config;
+// Public API for the connection form (a follow-up PR). Unused in this binary
+// until that form lands, so the names would otherwise warn.
+#[allow(unused_imports, dead_code)]
+pub use config::{load, save, ConnConfig, ConnError, SaveError, Source, TokenEdit, TokenState};
+
 pub const DEFAULT_HOST: &str = "http://127.0.0.1:8790";
+
+pub(super) fn normalize_host(base: &str) -> String {
+    base.trim().trim_end_matches('/').to_string()
+}
 
 #[derive(Clone)]
 pub struct Conn {
@@ -41,17 +55,10 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
 impl Conn {
     pub fn new(base: impl Into<String>) -> Self {
         Self {
-            base: base.into().trim().trim_end_matches('/').to_string(),
+            base: normalize_host(&base.into()),
             token: None,
             agent: agent(Some(Duration::from_secs(5))),
         }
-    }
-
-    /// `ROBROZ_HOST` (default [`DEFAULT_HOST`]) and the token from
-    /// [`crate::prefs::token_for_run`].
-    pub fn from_env() -> Self {
-        let base = std::env::var("ROBROZ_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
-        Self::new(base).with_token(crate::prefs::token_for_run())
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
@@ -181,5 +188,18 @@ mod tests {
         assert!(
             !error_text("GET", "http://h/api/groups", 401, "sekrit-0123456789").contains("sekrit")
         );
+    }
+
+    #[test]
+    fn connection_form_api_is_exported() {
+        let _load: fn() -> ConnConfig = load;
+        let _save: fn(&str, TokenEdit) -> Result<(), SaveError> = save;
+        let cfg = ConnConfig {
+            host: DEFAULT_HOST.to_string(),
+            host_source: Source::Default,
+            token: TokenState::None,
+        };
+        assert_eq!(cfg.token, TokenState::None);
+        assert_eq!(ConnError::Unauthorized.to_string(), unauthorized_message());
     }
 }
