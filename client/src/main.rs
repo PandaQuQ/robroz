@@ -512,8 +512,11 @@ impl App {
         Skin::for_mode(self.mode).for_input(self.touch, self.width)
     }
 
+    /// One pane at a time: the sidebar is hidden below
+    /// [`robroz_ui::CHAT_COMPACT_WIDTH`] and the chat list and a chat take
+    /// turns. (The skin's own `narrow` stays the phone-sized 480px rule.)
     fn narrow(&self) -> bool {
-        self.skin().narrow
+        self.width < robroz_ui::CHAT_COMPACT_WIDTH
     }
 
     fn load_unread(&self) -> Task<Message> {
@@ -2305,7 +2308,7 @@ impl App {
         if let Some(g) = &self.gallery {
             return self.gallery_view(&t, g);
         }
-        let main: Element<'_, Message> = if t.narrow {
+        let main: Element<'_, Message> = if self.narrow() {
             // Phone: one screen at a time.
             if !self.host_state().shows_sidebar() || (self.narrow_open && self.page == Page::Group)
             {
@@ -2507,7 +2510,7 @@ impl App {
     }
 
     fn content_width(&self, t: &Skin) -> f32 {
-        let chrome = if self.gallery.is_some() || t.narrow {
+        let chrome = if self.gallery.is_some() || self.narrow() {
             0.0
         } else {
             t.controls.sidebar_w
@@ -2658,30 +2661,42 @@ impl App {
             .feeds
             .get(id)
             .into_iter()
-            .flat_map(Feed::rows)
+            .flat_map(Feed::items)
             .collect::<Vec<_>>();
         // More than three pending confirm cards from one task fold away
         // behind 「还有 N 条待确认」.
         let plan = confirm::fold_plan(
-            rows.iter().map(|r| match r {
+            rows.iter().map(|(r, _)| match r {
                 Row::Card(Card::Confirm(c)) => c.task_id.as_deref().map(|t| (t, c.is_pending())),
                 _ => None,
             }),
             &self.unfolded,
         );
-        let rows = rows
+        let items = rows
             .into_iter()
             .zip(plan)
-            .filter_map(|(r, fold)| match fold {
-                Fold::Show => Some(row_view(t, r, &self.ui, &empty, self.caps, width, in_group)),
+            .filter_map(|((r, meta), fold)| match fold {
+                Fold::Show => Some((FeedItem::Row(r), meta.clone())),
                 Fold::Hide => None,
-                Fold::More { task, n } => Some(view::confirm_more(t, &task, n).map(Message::Ui)),
+                Fold::More { task, n } => Some((FeedItem::More { task, n }, meta.clone())),
             });
+        let groups = model::group_items(items, t.chat.group_secs);
+        let (bubble_max, card_w) = t.chat_widths(self.width, width);
         let feed = scrollable(
-            column(rows)
-                .spacing(t.metrics.stream_spacing)
-                .padding(t.metrics.stream_padding)
-                .width(Fill),
+            column(groups.into_iter().map(|g| {
+                group_view(
+                    t,
+                    g,
+                    &self.ui,
+                    &empty,
+                    self.caps,
+                    (bubble_max, card_w),
+                    in_group,
+                )
+            }))
+            .spacing(t.chat.gap_between)
+            .padding(t.metrics.stream_padding)
+            .width(Fill),
         )
         .anchor_bottom()
         .height(Fill)
@@ -2799,35 +2814,115 @@ async fn tokio_sleep(d: Duration) {
     tokio::time::sleep(d).await;
 }
 
-fn row_view<'a>(
+/// One item of the chat feed: a row, or the fold line for hidden confirm cards.
+enum FeedItem<'a> {
+    Row(&'a Row),
+    More { task: String, n: usize },
+}
+
+/// A group of items from one sender. Own items go right in ink bubbles;
+/// a bro's go left, behind a round avatar with its name over the first
+/// item. Cards sit at the bubbles' left edge at their own fixed width. The
+/// time (11px) closes the group.
+fn group_view<'a>(
+    t: &Skin,
+    group: model::Group<FeedItem<'a>>,
+    ui: &HashMap<String, CardUi>,
+    empty: &CardUi,
+    caps: Caps,
+    (bubble_max, card_w): (f32, f32),
+    in_group: bool,
+) -> Element<'a, Message> {
+    let own = group.sender.is_own();
+    let mut col = column![].spacing(t.chat.gap_in);
+    if let model::Sender::Bro { name, .. } = &group.sender {
+        col = col.push(
+            text(name.clone())
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
+    }
+    for (i, item) in group.items.into_iter().enumerate() {
+        let first = i == 0;
+        col = col.push(match item {
+            FeedItem::Row(r) => {
+                item_view(t, r, ui, empty, caps, bubble_max, card_w, first, in_group)
+            }
+            FeedItem::More { task, n } => {
+                container(view::confirm_more(t, &task, n).map(Message::Ui))
+                    .width(Length::Fixed(card_w))
+                    .into()
+            }
+        });
+    }
+    if let Some(at) = group.last_at {
+        let clock = robroz_ui::cards::status::clock_in(at, &chrono::Local);
+        if !clock.is_empty() {
+            col = col.push(
+                text(clock)
+                    .size(t.chat.time_size)
+                    .color(color(t.palette.text3)),
+            );
+        }
+    }
+    if own {
+        row![space::horizontal(), col.align_x(Alignment::End)].into()
+    } else {
+        row![
+            container(view::chat_avatar(t, group.sender.name()))
+                .width(Length::Fixed(t.chat.avatar)),
+            col
+        ]
+        .spacing(t.chat.avatar_gap)
+        .into()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn item_view<'a>(
     t: &Skin,
     r: &'a Row,
     ui: &HashMap<String, CardUi>,
     empty: &CardUi,
     caps: Caps,
-    width: f32,
+    bubble_max: f32,
+    card_w: f32,
+    first: bool,
     in_group: bool,
 ) -> Element<'a, Message> {
+    let own_text = color(t.chat.own_text);
+    let bubble = |content: Element<'a, Message>| -> Element<'a, Message> {
+        container(content)
+            .padding(view::bubble_padding(t))
+            .max_width(bubble_max)
+            .style(view::bubble_style(*t, true, first))
+            .into()
+    };
+    let card = |e: Element<'a, Message>| -> Element<'a, Message> {
+        container(e).width(Length::Fixed(card_w)).into()
+    };
     match r {
-        Row::Text { body } => text(body).color(color(t.palette.text)).into(),
-        Row::Attachment { kind, name } => row![
-            container(
-                text(attachment_label(*kind))
-                    .size(t.type_.tag)
-                    .color(color(t.palette.text2))
-            )
-            .padding(Padding::from([2.0, t.metrics.tag_pad_h]))
-            .style(view::card_style(*t)),
-            text(name).color(color(t.palette.text)),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into(),
-        Row::Status(card) => status_view(t, card, width),
-        Row::Delivery(card) => delivery_view(t, card, width),
-        Row::Card(card) => {
-            let state = ui.get(card.id()).unwrap_or(empty);
-            view::card(t, card, state, caps, width, in_group).map(Message::Ui)
+        Row::Text { body } => bubble(text(body).color(own_text).into()),
+        Row::Attachment { kind, name } => bubble(
+            row![
+                container(
+                    text(attachment_label(*kind))
+                        .size(t.type_.tag)
+                        .color(own_text)
+                )
+                .padding(Padding::from([2.0, t.metrics.tag_pad_h + 2.0]))
+                .style(view::chip_style(*t)),
+                text(name).color(own_text),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        ),
+        Row::Status(c) => card(status_view(t, c, card_w)),
+        Row::Delivery(c) => card(delivery_view(t, c, card_w)),
+        Row::Card(c) => {
+            let state = ui.get(c.id()).unwrap_or(empty);
+            card(view::card(t, c, state, caps, card_w, in_group).map(Message::Ui))
         }
     }
 }
@@ -2835,11 +2930,15 @@ fn row_view<'a>(
 /// Frozen status card: palette from `robroz-card`, outline from the skin.
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::Wrapping;
+    let fill = match (t.chat.running_fill, card.tone) {
+        (Some(f), robroz_card::Tone::Ink) => f,
+        _ => card.palette.fill,
+    };
     let mut line = row![progress_cell(t, card, width)]
         .spacing(12)
         .align_y(Alignment::Center);
     if let Some(step) = visible_step_progress(t, card, width) {
-        let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
+        let rgb = robroz_ui::cards::status::progress_rgb(fill, card.palette.text);
         line = line.push(
             text(model::display(step).into_owned())
                 .color(color(rgb))
@@ -2860,11 +2959,7 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Me
     container(line)
         .padding(view::status_card_padding(t))
         .width(Fill)
-        .style(view::status_card_style(
-            *t,
-            card.palette.fill,
-            card.palette.text,
-        ))
+        .style(view::status_card_style(*t, fill, card.palette.text))
         .into()
 }
 
@@ -2922,7 +3017,11 @@ fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, 
     let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
     let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
-    let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
+    let fill = match (t.chat.running_fill, card.tone) {
+        (Some(f), robroz_card::Tone::Ink) => f,
+        _ => card.palette.fill,
+    };
+    let rgb = robroz_ui::cards::status::progress_rgb(fill, card.palette.text);
     let line = text(fitted)
         .size(size)
         .line_height(LineHeight::Absolute(progress_line_height(size).into()))

@@ -53,7 +53,7 @@ impl FakeSource {
                     DM,
                     "m-dm1",
                     MessageKind::Text,
-                    "你好，我是 Ada。有事直接在这里找我。",
+                    "你好 Ada，以后有事我直接在这里找你。",
                 ),
             ],
             vec![status(
@@ -125,6 +125,22 @@ impl FakeSource {
             vec![
                 choice(SITE, "c-install", false),
                 choice(SITE, "c-pages", true),
+                // Six minutes later: a new group of the person's own.
+                msg_at(
+                    SITE,
+                    "m5",
+                    MessageKind::Text,
+                    "收到。CI 变绿就发。",
+                    "19:06:00",
+                ),
+                // A person's message and a bro's approval in the DM.
+                msg_at(
+                    DM,
+                    "m-dm2",
+                    MessageKind::Text,
+                    "帮我把旧日志清一下。",
+                    "19:00:40",
+                ),
             ],
         ];
         let last = steps.len() - 1;
@@ -136,6 +152,23 @@ impl FakeSource {
                     card: Card::Approval(ApprovalCard {
                         id: "a-logs".into(),
                         bot: "后端".into(),
+                        kind: ActionKind::Delete,
+                        summary: "清理 12 个旧日志文件".into(),
+                        path: Some("logs/2026-10/".into()),
+                        state: ApprovalState::Pending,
+                        mcp_server: None,
+                        mcp_tool: None,
+                        reason: None,
+                    }),
+                },
+            ),
+            (
+                last,
+                GroupCard {
+                    group_id: DM.into(),
+                    card: Card::Approval(ApprovalCard {
+                        id: "a-dm-logs".into(),
+                        bot: "Ada".into(),
                         kind: ActionKind::Delete,
                         summary: "清理 12 个旧日志文件".into(),
                         path: Some("logs/2026-10/".into()),
@@ -327,13 +360,18 @@ pub fn fake_schedules() -> Vec<ScheduleEntry> {
 }
 
 fn msg(group: &str, id: &str, kind: MessageKind, body: &str) -> GroupEvent {
+    msg_at(group, id, kind, body, "19:00:00")
+}
+
+/// A person's message sent at `hms` on the fake day (UTC).
+fn msg_at(group: &str, id: &str, kind: MessageKind, body: &str, hms: &str) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
         event: Event::Message {
             id: id.into(),
             kind,
             body: body.into(),
-            created_at: at("00"),
+            created_at: format!("2026-10-07T{hms}.000Z"),
         },
         approval_extras: None,
     }

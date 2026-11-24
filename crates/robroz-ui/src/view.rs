@@ -411,6 +411,80 @@ pub fn status_card_style(
     }
 }
 
+/// Chat bubble: own = ink fill (inverted on dark), a bro's = surface with a
+/// 1px border. 16px corners, 4px on the sender's top corner when `first` in
+/// its group.
+pub fn bubble_style(t: Skin, own: bool, first: bool) -> impl Fn(&IcedTheme) -> container::Style {
+    move |_| {
+        let c = &t.chat;
+        let mut radius = iced::border::radius(c.radius);
+        if first {
+            radius = if own {
+                radius.top_right(c.corner)
+            } else {
+                radius.top_left(c.corner)
+            };
+        }
+        let (bg, fg, border) = if own {
+            (c.own_bg, c.own_text, Border::default())
+        } else {
+            (
+                c.bro_bg,
+                t.palette.text,
+                Border::default()
+                    .width(t.stroke.card)
+                    .color(color(c.bro_border)),
+            )
+        };
+        container::Style {
+            background: Some(color(bg).into()),
+            text_color: Some(color(fg)),
+            border: border.rounded(radius),
+            ..container::Style::default()
+        }
+    }
+}
+
+/// Padding inside a bubble (10 / 14).
+pub fn bubble_padding(t: &Skin) -> Padding {
+    Padding::from([t.chat.pad_v, t.chat.pad_h])
+}
+
+/// Attachment chip inside an own bubble: pill with a thin outline.
+pub fn chip_style(t: Skin) -> impl Fn(&IcedTheme) -> container::Style {
+    move |_| container::Style {
+        border: Border::default()
+            .width(1.0)
+            .color(color(t.chat.own_chip))
+            .rounded(999.0),
+        ..container::Style::default()
+    }
+}
+
+/// Small round avatar for a bro in the chat feed: accent ring, initial.
+pub fn chat_avatar<'a, M: 'a>(t: &Skin, name: &str) -> Element<'a, M> {
+    let size = t.chat.avatar;
+    let ring = t.chat.accent;
+    container(
+        text(conversations::initial(name))
+            .size(t.type_.foot)
+            .font(bold())
+            .color(color(ring)),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(move |_| container::Style {
+        border: Border::default()
+            .width(1.5)
+            .color(color(ring))
+            .rounded(size / 2.0),
+        ..container::Style::default()
+    })
+    .into()
+}
+
 pub fn status_card_padding(t: &Skin) -> Padding {
     Padding::from([t.metrics.status_pad_v, t.metrics.status_pad_h])
 }
@@ -716,9 +790,12 @@ fn btn<'a>(
 ) -> Element<'a, Action> {
     let t = *t;
     let enabled = on_press.is_some();
-    let strong = matches!(look, Look::Primary | Look::Selected | Look::Danger);
-    let faded_out =
-        look == Look::Disabled || (!enabled && matches!(look, Look::Primary | Look::Danger));
+    let strong = matches!(
+        look,
+        Look::Primary | Look::Ink | Look::Selected | Look::Danger
+    );
+    let faded_out = look == Look::Disabled
+        || (!enabled && matches!(look, Look::Primary | Look::Ink | Look::Danger));
     let alpha = if faded_out {
         t.palette.disabled_alpha
     } else {
@@ -726,6 +803,7 @@ fn btn<'a>(
     };
     let fg = match look {
         Look::Primary | Look::Danger => t.palette.on_accent,
+        Look::Ink => t.chat.primary_text,
         _ => t.palette.text,
     };
     let fg_color = faded(fg, alpha);
@@ -773,6 +851,8 @@ fn btn<'a>(
                 let fill = if hovered { c.accent_hover } else { c.accent };
                 (Some(faded(fill, alpha)), Border::default())
             }
+            // Chat cards: ink on light, inverted on dark.
+            Look::Ink => (Some(faded(t.chat.primary_bg, alpha)), Border::default()),
             // Proposed red for 「删除规则」; UI姐 to confirm the exact colour.
             Look::Danger => {
                 let fill = if hovered {
@@ -833,6 +913,32 @@ fn frame<'a>(t: &Skin, content: Element<'a, Action>) -> Element<'a, Action> {
         .padding(card_padding(t))
         .width(Fill)
         .style(card_style(*t))
+        .into()
+}
+
+/// 11px note line in a chat card (under the approval header).
+const CHAT_NOTE_SIZE: f32 = 11.0;
+
+/// An open approval card: the chat accent as its outline.
+fn approval_frame<'a>(
+    t: &Skin,
+    card: &ApprovalCard,
+    content: Element<'a, Action>,
+) -> Element<'a, Action> {
+    if card.state != crate::cards::ApprovalState::Pending {
+        return frame(t, content);
+    }
+    let t = *t;
+    container(content)
+        .padding(card_padding(&t))
+        .width(Fill)
+        .style(move |th| container::Style {
+            border: Border::default()
+                .width(t.stroke.card)
+                .color(color(t.chat.accent))
+                .rounded(t.radii.card),
+            ..card_style(t)(th)
+        })
         .into()
 }
 
@@ -1093,13 +1199,18 @@ pub fn approval<'a>(
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
     let (label, d) = status::approval_status(&card.state);
-    let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
-        gap(t.metrics.head_gap)
-    ];
-    // Group thread: same header and action line as a DM card, then
-    // 「已发到主人私聊」, no buttons.
+    let mut col = column![header(t, &card.id, &card.bot, ui, label, d)];
+    // Group thread: same header and action line as a DM card, with
+    // 「已发到主人私聊」 on its own 11px line under the header, no buttons.
     let group_pending = in_group && card.state == crate::cards::ApprovalState::Pending;
+    if group_pending && !card.is_rule() {
+        col = col.push(
+            text(review_rules::SENT_TO_OWNER)
+                .size(CHAT_NOTE_SIZE)
+                .color(color(t.palette.text2)),
+        );
+    }
+    col = col.push(gap(t.metrics.head_gap));
     if card.is_rule() && !group_pending {
         return rule_approval(t, card, ui, col);
     }
@@ -1150,12 +1261,7 @@ pub fn approval<'a>(
             }
         }
         if group_pending {
-            col = col.push(gap(t.metrics.head_gap)).push(
-                text(review_rules::SENT_TO_OWNER)
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text2)),
-            );
-            return frame(t, col.into());
+            return approval_frame(t, card, col.into());
         }
         if let ApprovalActions::Decide { enabled } = actions {
             let id = &card.id;
@@ -1165,7 +1271,7 @@ pub fn approval<'a>(
                     btn(
                         t,
                         Key::ViewApprove.into(),
-                        Look::Primary,
+                        Look::Ink,
                         Leading::None,
                         enabled.then(|| Action::Decide {
                             card: id.clone(),
@@ -1199,7 +1305,7 @@ pub fn approval<'a>(
             .push(gap(t.metrics.foot_gap))
             .push(approval_footnote_view(t, foot));
     }
-    frame(t, col.into())
+    approval_frame(t, card, col.into())
 }
 
 pub fn draft<'a>(

@@ -166,6 +166,154 @@ pub enum Row {
     Card(Card),
 }
 
+/// Who a feed item belongs to, for the chat bubbles. The host only writes
+/// `messages` from a person (`post_message`, `say`), so a `Message` is
+/// always [`Sender::Own`] and goes on the right; status, delivery and
+/// card events belong to a bro and go on the left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sender {
+    Own,
+    Bro { id: String, name: String },
+}
+
+impl Sender {
+    /// Same sender: both own, or the same bro (by id when both have one,
+    /// else by name).
+    pub fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Sender::Own, Sender::Own) => true,
+            (Sender::Bro { id: a, name: x }, Sender::Bro { id: b, name: y }) => {
+                if a.is_empty() || b.is_empty() {
+                    x == y
+                } else {
+                    a == b
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_own(&self) -> bool {
+        matches!(self, Sender::Own)
+    }
+
+    /// The bro's name; empty for own.
+    pub fn name(&self) -> &str {
+        match self {
+            Sender::Own => "",
+            Sender::Bro { name, .. } => name,
+        }
+    }
+}
+
+/// Client-side facts about a feed item, kept beside its [`Row`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Meta {
+    pub sender: Sender,
+    /// When it was sent (`createdAt`, Unix seconds); `None` for a card the
+    /// client made itself.
+    pub at: Option<i64>,
+}
+
+/// Consecutive items of one sender, drawn as one block: avatar and name on
+/// the first item, the time at the end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group<T> {
+    pub sender: Sender,
+    pub items: Vec<T>,
+    /// Time of the last item that has one.
+    pub last_at: Option<i64>,
+}
+
+/// Split items into groups: a new group starts when the sender changes or
+/// the gap to the previous timed item in the group is over `window` seconds.
+/// Items without a time never start a group on their own.
+pub fn group_items<T>(items: impl IntoIterator<Item = (T, Meta)>, window: i64) -> Vec<Group<T>> {
+    let mut out: Vec<Group<T>> = Vec::new();
+    for (item, meta) in items {
+        let joins = out.last().is_some_and(|g| {
+            g.sender.same(&meta.sender)
+                && match (g.last_at, meta.at) {
+                    (Some(prev), Some(at)) => (at - prev).abs() <= window,
+                    _ => true,
+                }
+        });
+        if joins {
+            let g = out.last_mut().expect("joins implies a group");
+            g.items.push(item);
+            if meta.at.is_some() {
+                g.last_at = meta.at;
+            }
+        } else {
+            out.push(Group {
+                sender: meta.sender,
+                items: vec![item],
+                last_at: meta.at,
+            });
+        }
+    }
+    out
+}
+
+fn unix(iso: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.timestamp())
+}
+
+fn bro(id: &str, name: &str) -> Sender {
+    Sender::Bro {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+/// Who owns a card and when it was made. A delivery event names no bro, so
+/// it takes the last bro in the feed (`prev`).
+fn meta_of(event: &Event, prev: Option<&Sender>) -> Meta {
+    let (sender, at) = match event {
+        Event::Message { created_at, .. } => (Sender::Own, unix(created_at)),
+        Event::Status {
+            bot_id,
+            bot_name,
+            created_at,
+            ..
+        }
+        | Event::Choice {
+            bot_id,
+            bot_name,
+            created_at,
+            ..
+        }
+        | Event::Approval {
+            bot_id,
+            bot_name,
+            created_at,
+            ..
+        }
+        | Event::Confirm {
+            bot_id,
+            bot_name,
+            created_at,
+            ..
+        } => (bro(bot_id, bot_name), unix(created_at)),
+        Event::Delivery { created_at, .. } => (
+            prev.cloned().unwrap_or_else(|| bro("", "")),
+            unix(created_at),
+        ),
+    };
+    Meta { sender, at }
+}
+
+fn card_bot(card: &Card) -> &str {
+    match card {
+        Card::Choice(c) => &c.bot,
+        Card::Approval(c) => &c.bot,
+        Card::Draft(c) => &c.bot,
+        Card::Confirm(c) => &c.bot,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Key {
     Event(String),
@@ -177,12 +325,21 @@ enum Key {
 /// `GET /api/groups/:id/events` or only what is new.
 #[derive(Debug, Default, Clone)]
 pub struct Feed {
-    rows: Vec<(Key, Row)>,
+    rows: Vec<(Key, Row, Meta)>,
+    /// The bro of the last bro event applied, in any order: a delivery
+    /// event names no bro, so it follows this one.
+    last_bro: Option<Sender>,
 }
 
 impl Feed {
+    #[cfg(test)]
     pub fn rows(&self) -> impl Iterator<Item = &Row> {
-        self.rows.iter().map(|(_, row)| row)
+        self.rows.iter().map(|(_, row, _)| row)
+    }
+
+    /// Rows with who sent them and when, in arrival order.
+    pub fn items(&self) -> impl Iterator<Item = (&Row, &Meta)> {
+        self.rows.iter().map(|(_, row, meta)| (row, meta))
     }
 
     #[cfg(test)]
@@ -202,7 +359,11 @@ impl Feed {
             return;
         }
         let (key, row) = to_row(event, extras);
-        self.upsert(key, row);
+        let meta = meta_of(event, self.last_bro.as_ref());
+        if !meta.sender.is_own() && !matches!(event, Event::Delivery { .. }) {
+            self.last_bro = Some(meta.sender.clone());
+        }
+        self.upsert(key, row, Some(meta));
     }
 
     /// Insert or replace a new-kind card by its id. Used for card kinds the
@@ -210,20 +371,35 @@ impl Feed {
     /// host's reply to an answer before the next poll.
     pub fn apply_card(&mut self, card: Card) {
         let key = Key::Event(card.id().to_string());
-        self.upsert(key, Row::Card(card));
+        let meta = Meta {
+            sender: bro("", card_bot(&card)),
+            at: None,
+        };
+        self.upsert(key, Row::Card(card), Some(meta));
     }
 
     pub fn card(&self, id: &str) -> Option<&Card> {
-        self.rows.iter().find_map(|(k, row)| match (k, row) {
+        self.rows.iter().find_map(|(k, row, _)| match (k, row) {
             (Key::Event(k), Row::Card(c)) if k == id => Some(c),
             _ => None,
         })
     }
 
-    fn upsert(&mut self, key: Key, row: Row) {
-        match self.rows.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = row,
-            None => self.rows.push((key, row)),
+    /// A replaced row keeps its place and its time (an answered card was
+    /// still sent when it was first sent).
+    fn upsert(&mut self, key: Key, row: Row, meta: Option<Meta>) {
+        match self.rows.iter_mut().find(|(k, _, _)| *k == key) {
+            Some(slot) => {
+                slot.1 = row;
+                if let Some(m) = meta {
+                    slot.2.sender = m.sender;
+                    slot.2.at = slot.2.at.or(m.at);
+                }
+            }
+            None => {
+                let meta = meta.expect("a new row has meta");
+                self.rows.push((key, row, meta));
+            }
         }
     }
 }
@@ -1432,5 +1608,131 @@ mod tests {
         assert_eq!(redrawn, vec![("g1", preview(&status))]);
         // Same time and rank: the newer arrival still wins.
         assert!(previews.offer("g1", &status).is_some(), "tie, same rank");
+    }
+
+    // ---- chat bubbles: who sent it, and grouping ----
+
+    const T0: i64 = 1_790_000_000;
+
+    fn own(at: Option<i64>) -> Meta {
+        Meta {
+            sender: Sender::Own,
+            at,
+        }
+    }
+
+    fn by(name: &str, at: Option<i64>) -> Meta {
+        Meta {
+            sender: bro(&format!("bot-{name}"), name),
+            at,
+        }
+    }
+
+    fn sizes(groups: &[Group<&str>]) -> Vec<usize> {
+        groups.iter().map(|g| g.items.len()).collect()
+    }
+
+    #[test]
+    fn same_sender_within_two_minutes_is_one_group() {
+        let g = group_items(
+            [
+                ("a", own(Some(T0))),
+                ("b", own(Some(T0 + 60))),
+                ("c", own(Some(T0 + 60 + 120))),
+            ],
+            120,
+        );
+        assert_eq!(sizes(&g), vec![3], "exactly 2 minutes still groups");
+        assert_eq!(g[0].last_at, Some(T0 + 180));
+    }
+
+    #[test]
+    fn more_than_two_minutes_starts_a_new_group() {
+        let g = group_items([("a", own(Some(T0))), ("b", own(Some(T0 + 121)))], 120);
+        assert_eq!(sizes(&g), vec![1, 1]);
+        // The gap is to the previous item, not to the group's first.
+        let g = group_items(
+            [
+                ("a", own(Some(T0))),
+                ("b", own(Some(T0 + 100))),
+                ("c", own(Some(T0 + 200))),
+            ],
+            120,
+        );
+        assert_eq!(sizes(&g), vec![3]);
+    }
+
+    #[test]
+    fn a_different_sender_starts_a_new_group() {
+        let g = group_items(
+            [
+                ("a", own(Some(T0))),
+                ("b", by("Ada", Some(T0 + 1))),
+                ("c", by("Ada", Some(T0 + 2))),
+                ("d", by("Bea", Some(T0 + 3))),
+                ("e", own(Some(T0 + 4))),
+            ],
+            120,
+        );
+        assert_eq!(sizes(&g), vec![1, 2, 1, 1]);
+        let sides: Vec<bool> = g.iter().map(|g| g.sender.is_own()).collect();
+        assert_eq!(sides, vec![true, false, false, true]);
+        assert_eq!(g[1].sender.name(), "Ada");
+    }
+
+    #[test]
+    fn items_without_a_time_join_the_group_of_their_sender() {
+        let g = group_items(
+            [
+                ("a", by("Ada", Some(T0))),
+                ("card", by("Ada", None)),
+                ("b", by("Ada", Some(T0 + 30))),
+            ],
+            120,
+        );
+        assert_eq!(sizes(&g), vec![3]);
+        assert_eq!(g[0].last_at, Some(T0 + 30));
+    }
+
+    #[test]
+    fn a_bro_is_matched_by_id_then_by_name() {
+        assert!(bro("b1", "Ada").same(&bro("b1", "Ada 2")));
+        assert!(!bro("b1", "Ada").same(&bro("b2", "Ada")));
+        assert!(
+            bro("", "Ada").same(&bro("b1", "Ada")),
+            "client card: by name"
+        );
+        assert!(!Sender::Own.same(&bro("", "")));
+    }
+
+    #[test]
+    fn messages_are_own_and_bro_events_name_their_bro() {
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "hello"));
+        feed.apply(&status("t1", "Ada", TaskState::Running, true));
+        feed.apply(&delivery("d1", "tasks/t1/result.txt", false));
+        feed.apply(&status("t2", "Bea", TaskState::Queued, false));
+        let items: Vec<_> = feed.items().collect();
+        assert_eq!(items[0].1.sender, Sender::Own);
+        assert_eq!(items[1].1.sender.name(), "Ada");
+        assert_eq!(
+            items[2].1.sender.name(),
+            "Ada",
+            "a delivery follows the last bro that spoke"
+        );
+        assert_eq!(items[3].1.sender.name(), "Bea");
+        assert_eq!(items[0].1.at, Some(1_791_399_600));
+    }
+
+    #[test]
+    fn an_updated_card_keeps_its_place_and_time() {
+        let mut feed = Feed::default();
+        feed.apply(&status("t1", "Ada", TaskState::Running, true));
+        feed.apply(&text("m1", "later"));
+        feed.apply(&status("t1", "Ada", TaskState::Done, false));
+        let items: Vec<_> = feed.items().collect();
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0].0, Row::Status(_)));
+        assert_eq!(items[0].1.sender.name(), "Ada");
     }
 }

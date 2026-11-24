@@ -224,6 +224,53 @@ pub struct Type {
     pub unit_width: f32,
 }
 
+/// Chat feed colours and sizes (designer spec, chat bubbles). Colours are
+/// the designer's exact values per mode; sizes are the same in both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Chat {
+    /// Own message bubble: ink on light, inverted (bone) on dark.
+    pub own_bg: Rgb,
+    pub own_text: Rgb,
+    /// Dimmed text and chip outline inside an own bubble (attachment chip).
+    pub own_chip: Rgb,
+    /// A bro's bubble and cards: fill and 1px border.
+    pub bro_bg: Rgb,
+    pub bro_border: Rgb,
+    /// Running status card fill where it differs from the frozen
+    /// `robroz-card` palette (dark only).
+    pub running_fill: Option<Rgb>,
+    /// Chat accent: avatar ring and approval card outline. Brighter than
+    /// the brand orange on dark.
+    pub accent: Rgb,
+    /// Primary button inside chat cards: ink on light, inverted on dark.
+    pub primary_bg: Rgb,
+    pub primary_text: Rgb,
+    /// Bubble corner radius, and the corner nearest the sender.
+    pub radius: f32,
+    pub corner: f32,
+    pub pad_v: f32,
+    pub pad_h: f32,
+    /// Bubble max width: this share of the chat column, at most `max_w`.
+    pub max_frac: f32,
+    pub max_w: f32,
+    /// Share used instead of `max_frac` in a window narrower than
+    /// [`CHAT_COMPACT_WIDTH`].
+    pub compact_frac: f32,
+    /// Fixed card width; cards shrink to the column when it is narrower.
+    pub card_w: f32,
+    /// Spacing inside a group and between groups.
+    pub gap_in: f32,
+    pub gap_between: f32,
+    /// Same sender within this many seconds forms a group.
+    pub group_secs: i64,
+    pub time_size: f32,
+    pub avatar: f32,
+    pub avatar_gap: f32,
+}
+
+/// Windows narrower than this hide the sidebar and widen bubbles.
+pub const CHAT_COMPACT_WIDTH: f32 = 760.0;
+
 /// Motion durations in ms (THEMES.md `motion`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Motion {
@@ -249,6 +296,7 @@ pub struct Skin {
     pub metrics: Metrics,
     pub type_: Type,
     pub motion: Motion,
+    pub chat: Chat,
     /// Not a skin value: set by [`Skin::for_input`] when the window is no
     /// wider than [`NARROW_MAX_WIDTH`]. Turns on the narrow-screen rules
     /// (middle-ellipsis paths, 8-character bot names).
@@ -420,7 +468,73 @@ fn fonts() -> Type {
 /// for clamping preview lines, not a design token.
 const UNIT_WIDTH: f32 = 0.56;
 
+fn chat(mode: Mode) -> Chat {
+    let (own_bg, own_text, own_chip, bro_bg, bro_border, running_fill, accent, pb, pt) = match mode
+    {
+        Mode::Light => (
+            [0x1f, 0x21, 0x24],
+            [0xf4, 0xf1, 0xea],
+            [0x6b, 0x6d, 0x70],
+            [0xfb, 0xf9, 0xf4],
+            [0xe3, 0xde, 0xd3],
+            None,
+            [0xc8, 0x57, 0x2a],
+            [0x1f, 0x21, 0x24],
+            [0xf4, 0xf1, 0xea],
+        ),
+        Mode::Dark => (
+            [0xec, 0xe8, 0xdf],
+            [0x1f, 0x21, 0x24],
+            [0xa9, 0xa6, 0xa0],
+            [0x23, 0x25, 0x28],
+            [0x2f, 0x32, 0x36],
+            Some([0x2c, 0x2f, 0x33]),
+            [0xe0, 0x74, 0x3f],
+            [0xec, 0xe8, 0xdf],
+            [0x1f, 0x21, 0x24],
+        ),
+    };
+    Chat {
+        own_bg,
+        own_text,
+        own_chip,
+        bro_bg,
+        bro_border,
+        running_fill,
+        accent,
+        primary_bg: pb,
+        primary_text: pt,
+        radius: 16.0,
+        corner: 4.0,
+        pad_v: 10.0,
+        pad_h: 14.0,
+        max_frac: 0.68,
+        max_w: 560.0,
+        compact_frac: 0.80,
+        card_w: 360.0,
+        gap_in: 4.0,
+        gap_between: 16.0,
+        group_secs: 120,
+        time_size: 11.0,
+        avatar: 28.0,
+        avatar_gap: 8.0,
+    }
+}
+
 impl Skin {
+    /// Bubble and card width limits for a chat column of `column_w` in a
+    /// window `window_w` wide: `(bubble_max, card)`.
+    pub fn chat_widths(&self, window_w: f32, column_w: f32) -> (f32, f32) {
+        let c = &self.chat;
+        let frac = if window_w < CHAT_COMPACT_WIDTH {
+            c.compact_frac
+        } else {
+            c.max_frac
+        };
+        let bubble = (column_w * frac).min(c.max_w);
+        (bubble, c.card_w.min(column_w))
+    }
+
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
             Mode::Light => Self::light(),
@@ -439,10 +553,26 @@ impl Skin {
     }
 
     fn solid(mode: Mode, set: &tokens::ColorSet) -> Self {
+        let mut palette = palette(set);
+        let chat = chat(mode);
+        // Designer palette for the chat (until it lands in tokens.json):
+        // the card/bubble fill and border, and in dark the page colours.
+        palette.surface = chat.bro_bg;
+        palette.border = chat.bro_border;
+        if mode == Mode::Dark {
+            palette.window = [0x17, 0x18, 0x1a];
+            palette.content = [0x17, 0x18, 0x1a];
+            palette.sidebar = [0x1d, 0x1e, 0x21];
+            palette.sunken = [0x1d, 0x1e, 0x21];
+            palette.divider = [0x2f, 0x32, 0x36];
+            palette.text = [0xec, 0xe8, 0xdf];
+            palette.text2 = [0x8f, 0x8b, 0x83];
+        }
         Self {
             mode,
             material: MaterialKind::Solid,
-            palette: palette(set),
+            palette,
+            chat,
             status: status(set),
             radii: radii(),
             stroke: stroke(),
@@ -523,6 +653,37 @@ mod tests {
             Some([0x3f, 0x44, 0x4d])
         );
         assert_eq!(Skin::dark().stroke.status_outline, 1.0);
+    }
+
+    #[test]
+    fn chat_palette_is_the_designers_in_both_modes() {
+        let l = Skin::light().chat;
+        assert_eq!(l.own_bg, [0x1f, 0x21, 0x24]);
+        assert_eq!(l.bro_bg, [0xfb, 0xf9, 0xf4]);
+        assert_eq!(l.bro_border, [0xe3, 0xde, 0xd3]);
+        assert_eq!(l.accent, [0xc8, 0x57, 0x2a]);
+        let d = Skin::dark();
+        assert_eq!(d.chat.own_bg, [0xec, 0xe8, 0xdf]);
+        assert_eq!(d.chat.own_text, [0x1f, 0x21, 0x24]);
+        assert_eq!(d.chat.bro_bg, [0x23, 0x25, 0x28]);
+        assert_eq!(d.chat.running_fill, Some([0x2c, 0x2f, 0x33]));
+        assert_eq!(d.chat.accent, [0xe0, 0x74, 0x3f]);
+        assert_eq!(d.palette.window, [0x17, 0x18, 0x1a]);
+        assert_eq!(d.palette.sidebar, [0x1d, 0x1e, 0x21]);
+        assert_eq!(d.palette.divider, [0x2f, 0x32, 0x36]);
+        assert_eq!(d.palette.text, [0xec, 0xe8, 0xdf]);
+        assert_eq!(d.palette.text2, [0x8f, 0x8b, 0x83]);
+    }
+
+    #[test]
+    fn chat_widths_follow_the_spec() {
+        let t = Skin::light();
+        // 1280 window: 68% of the column, capped at 560; card 360.
+        assert_eq!(t.chat_widths(1280.0, 1000.0), (560.0, 360.0));
+        assert_eq!(t.chat_widths(900.0, 600.0), (408.0, 360.0));
+        // Below 760: 80%; the card shrinks to the column.
+        assert_eq!(t.chat_widths(720.0, 688.0), (550.4, 360.0));
+        assert_eq!(t.chat_widths(400.0, 300.0), (240.0, 300.0));
     }
 
     #[test]
