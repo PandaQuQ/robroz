@@ -1,11 +1,12 @@
 # Multi-agent design: Router, Thread subscriptions, and Watchdog
 
-Status: **Accepted**. Group turns, follow-up attachment, and the internal
-Router (PR A, B, and C below) are accepted design and are **not built**
-on `main`. See [Implementation plan](#implementation-plan).
+Status: **Accepted**. Group turns (PR A) shipped in
+[#129](https://github.com/PandaQuQ/robroz/pull/129) (`41edf6f`). Follow-up
+attachment and the internal Router (PR B and C) are accepted design and are
+**not built** on `main`. See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `6b66129`. This document
+Existing behaviour below is taken from `main` at `41edf6f`. This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -22,9 +23,9 @@ end.
 
 robroz is a single-machine, multi-bro IM workspace, not a single Super-agent
 facing the user. The mappings below keep that product shape: a person still
-addresses a named bro with `@name`; the accepted design gives every bro in
-the room one turn on a group message with no `@` (not built yet; today that
-message is only stored); and the four task states stay frozen.
+addresses a named bro with `@name`; every bro in the room gets one turn on
+a group message (PR A, shipped in #129); and the four task states stay
+frozen.
 
 ## 1. Router and Worker
 
@@ -51,16 +52,44 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`6b66129`). There is no Router session and no Worker pool.
+Verified on `main` (`41edf6f`). There is no Router session and no Worker pool.
 
-- A person creates work by naming a bro. `POST /api/groups/{id}/say`
-  (`host/src/say.rs`) stores the message, then maybe inserts one `queued` task.
-  In a DM, every message becomes a new task for that bro. In a group, a task is
-  created only when the message starts with `@name` or `＠name` that matches a
-  member (`robroz_contract::route_mention` in `crates/robroz-contract/src/lib.rs`).
-  An unaddressed group message is stored and nothing is dispatched. One message
-  routes to at most one bro. `POST /api/groups/{id}/tasks` assigns a bot
-  directly, with no dispatch step.
+- A person creates work with `POST /api/groups/{id}/say` (`host/src/say.rs`).
+  In a DM, every message becomes a new task for that bro (unchanged). In a
+  group, every member gets one turn (`host/src/turns.rs`). At most one bro
+  speaks first: the one named by a leading `@name` or `＠name` that matches
+  a member (`robroz_contract::route_mention` in
+  `crates/robroz-contract/src/lib.rs`). That mentioned bro uses today's fast
+  path: the mention is stripped from the prompt, the status card is visible
+  at once, and the task is returned in `Said.task`. The rest go one at a
+  time in join order (`memberships.rowid`). If no one is named, `Said.task`
+  is `null` and every member takes a turn in join order. Only a person's
+  `/say` opens a round; each turn records `depth` (`turns.depth`, today
+  always `PERSON_DEPTH` 0). Bro deliveries, `/messages`, `/tasks` and
+  schedules never open a round. Approvals are unchanged.
+  `POST /api/groups/{id}/tasks` assigns a bot directly, with no dispatch
+  step.
+- Turns in one round run one after another: the next turn's task is created
+  only after every earlier turn's task in that round has left `queued` /
+  `running` (it is `done` or `blocked`). Two rounds from two messages do
+  not wait for each other. If a bro has left the group when their turn
+  comes, the turn is skipped. Later bros see earlier bros' delivered
+  results (failure-free deliveries only): each quote is clipped to 2000
+  characters, and lines whose trim-start begins with `robroz-` are
+  stripped, so a quote cannot trigger an external write, progress, or
+  silence on the reader's behalf.
+- A non-mentioned bro's task starts hidden (`tasks.turn_hidden = 1`): no
+  status card, no unread, and it does not move `lastActivityAt`. It is
+  revealed only if the bro speaks. Silence is the whole reply being
+  `robroz-silent` or empty (after dropping empty lines and
+  `robroz-progress:` lines). For a hidden turn, a failed model call or no
+  model configured also counts as silence: the host logs it (`eprintln`)
+  and does not show a card. A silent turn ends `done`, stays hidden, posts
+  no message, shows no card, adds no unread, and leaves `lastActivityAt`
+  unchanged. A pending MCP approval, or `ROBROZ_MODEL=echo`, reveals the
+  task and it continues as a normal task. On reveal, `created_at` and
+  `updated_at` are set to the reveal time. The `@`-mentioned bro is never
+  hidden, so a model error on that path still surfaces as it does today.
 - The same assignee both "speaks" and "works". The host pump
   (`host/src/pump.rs`) claims the task, calls the model and tools as that bot,
   starts a container, and later writes the status card (`botId` / `botName` of
@@ -77,8 +106,9 @@ Verified on `main` (`6b66129`). There is no Router session and no Worker pool.
 
 ### How to change it
 
-This section is accepted design. It is not built on `main`. The order and
-done standards are in the [Implementation plan](#implementation-plan).
+Group turns (PR A) shipped in #129 (`41edf6f`). The internal Router (PR C)
+is still accepted design and is not built on `main`. The order and done
+standards are in [Implementation status](#implementation-status).
 
 Keep the existing `@name` and DM paths as a deterministic fast path: the person
 already named the assignee, so the host does not ask a model to re-route that
@@ -89,16 +119,22 @@ are not room members, they do not appear in the member list, and they do not
 speak in the group. A Worker reports to the bro that dispatched it; that bro
 speaks. No agent speaks for another.
 
-Group messages keep today's `@` routing, plus turn-taking (PR A):
+Group messages keep today's `@` routing, plus turn-taking (PR A, shipped):
 
-- A group message with no `@` gives every bro in the room one turn. Each bro
-  decides to speak or stay silent. Nothing is answered on anyone else's
-  behalf.
-- If the message `@`-mentions a bro, that bro speaks first. The rest take
-  their turn in join order, and may stay silent.
-- Staying silent produces nothing at all: no message, no card, no unread.
-- A bro's own message never triggers a new round. Direct messages are
-  unchanged by PR A.
+- A group message gives every bro in the room one turn. Each bro decides to
+  speak or stay silent. Nothing is answered on anyone else's behalf.
+- At most one bro speaks first: the one named by a leading `@name`. That
+  bro uses the existing fast path (card visible at once, returned in
+  `Said.task`). The rest take their turn one at a time in join order, and
+  may stay silent. Later bros see earlier bros' replies (each quoted up to
+  2000 characters, with `robroz-` control lines stripped).
+- Silence (`robroz-silent` or empty; for a hidden turn, also a model error
+  or no model, logged only) produces nothing at all: no message, no card,
+  no unread, and `lastActivityAt` is unchanged. A non-mentioned bro's task
+  starts hidden and appears only if the bro speaks.
+- Only a person's `/say` starts a new round. A bro's own message never
+  triggers a new round. Direct messages and approvals are unchanged by
+  PR A.
 - Do not introduce a group-level Router that picks one assignee and posts the
   only user-visible reply.
 
@@ -110,8 +146,9 @@ the internal Router a sandbox or write tools.
 
 ### Crates
 
-- `robroz-host`: turn-taking and follow-up attachment in `say.rs`, any
-  per-bro Router loop, and how `pump.rs` records reports.
+- `robroz-host`: group turns in `turns.rs` (called from `say.rs` and the
+  pump), follow-up attachment in `say.rs`, any per-bro Router loop, and
+  how `pump.rs` records reports.
 - `robroz-policy`: optional, if turn-taking or dispatch rules should be
   unit-tested next to the existing permission rules.
 - `robroz-model`: only if a bro's internal Router uses a model call of its
@@ -189,7 +226,7 @@ in-flight task.
 ### How to change it
 
 This section is accepted design. Follow-up attachment in a group is PR B
-and is not built on `main`. See the [Implementation plan](#implementation-plan).
+and is not built on `main`. See [Implementation status](#implementation-status).
 
 Introduce Thread as a host-internal correlation, not as a new user-facing
 session.
@@ -435,67 +472,6 @@ proposed. A rerun is the user's choice.
 way (after PR C; #118 only hints); and a Watchdog that only logs and
 adds a card hint (shipped in #118, with the dead-task change).
 
-## Implementation plan
-
-Verified on `main` at `6b66129` in `host/src/say.rs` and
-`robroz_contract::route_mention`:
-
-- In a group, a task is created only when the message starts with `@name`
-  or `＠name` that matches a member. An unaddressed group message is
-  stored and no bro is dispatched.
-- One message routes to at most one bro.
-- In a DM, every `/say` still inserts a new `queued` task for that bro.
-
-PR A, B, and C below are **Not yet**. Land them in that order. A timeout
-that *cancels* a still-running step or stops the container comes after
-PR C (#118 only hints). This docs change should merge together with
-host PR A.
-
-### PR A: Group turns (Not yet, first)
-
-Every group message gives every bro in the group one turn. A bro may
-stay silent. Bros `@`-mentioned in the message go first; the rest take
-their turn in join order.
-
-Staying silent produces nothing at all: no message, no card, and no
-unread. A bro's own message never triggers a new round. Direct messages
-are unchanged.
-
-**Done when:** in a group with two bros, one message with no `@` gives
-both bros a turn, and at least one of them can choose to stay silent
-(posts nothing).
-
-### PR B: Follow-ups (Not yet, after A)
-
-A follow-up in the group attaches to that bro's still-open task
-(`queued`, `running`, or `blocked`). The host does not create a new
-task. A `done` task is not still-open, and a follow-up is not a
-`resume`.
-
-**Done when:** a follow-up in the group attaches to that bro's open
-task and does not start a new one.
-
-### PR C: Router (Not yet, after A and B)
-
-Router and Worker stay an internal dispatch layer *inside one bro*.
-Group behaviour from PR A and PR B is unchanged.
-
-1. The bro's model splits the task into Workers, at most three steps
-   per task.
-2. Each step is a sub-step inside the task: one status card, and one
-   merged delivery at the end. The contract is unchanged.
-3. The Router uses the bro's own configured model. If the model errors
-   or cannot split the work, fall back to one Worker, behaving exactly
-   as today.
-4. `progress` shows a line of the form 「2/3 步」.
-5. If any step fails, the whole card ends as `done` + `failure`
-   「没写出结果」, with no requeue.
-
-**Done when:** a task can be split into at most three sub-steps with one
-status card and one delivery; a failed or impossible split falls back to
-one Worker; a failed step ends the task as 「没写出结果」 and does not
-requeue.
-
 ## Next phase, and what we will not do
 
 This table is the recommended implementation order after this document
@@ -503,8 +479,9 @@ merges. It is not a schedule.
 
 | Item | In the next phase? | Why |
 | --- | --- | --- |
-| Turn-taking on a group message with no `@`; `@`-mentioned bros first, the rest in join order | Not yet (PR A, first) | Accepted design, not built. Today an unaddressed group message is only stored, and one message goes to at most one bro (`host/src/say.rs`, `route_mention`). See [Implementation plan](#implementation-plan). |
+| Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
 | Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Not yet (PR B) | Accepted design, not built. A second `/say` today starts a parallel task in the same group volume, with no link to the work already running. |
+| A bro's message also wakes the other bros, with a round cap on recorded `depth` | Not yet (after PR B) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
 | Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
 | New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | After PR C | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
@@ -526,18 +503,25 @@ merges. It is not a schedule.
 These replace the open questions in the draft. They follow Grok Bot's group
 behaviour: every bro in the room sees the message and gets one turn; a bro
 that has nothing to add stays silent; whoever does the work speaks for
-themselves. They are accepted design, not built on `main`. The PR order
-and done standards are in the [Implementation plan](#implementation-plan).
+themselves. Group turns (PR A) shipped in #129 (`41edf6f`). Follow-up
+attachment (PR B) and the internal Router (PR C) are accepted design, not
+built on `main`. The PR order and done standards are in
+[Implementation status](#implementation-status).
 
-1. **Group turns and follow-ups.** A group message with no `@` gives every
-   bro in the room one turn. Each bro decides to speak or stay silent.
-   Staying silent produces nothing at all: no message, no card, no unread.
-   If the message `@`-mentions a bro, that bro speaks first; the rest take
-   their turn in join order. A bro's own message never triggers a new
-   round. Direct messages are unchanged by the group-turns PR. A follow-up
-   in the group attaches to that bro's own still-open task (`queued`,
-   `running`, or `blocked`); the host does not create a new task. Only
-   genuinely new work creates a task.
+1. **Group turns and follow-ups.** A group message gives every bro in the
+   room one turn. Each bro decides to speak or stay silent. Silence
+   (`robroz-silent` or empty; for a hidden turn, also a model error or no
+   model, logged only) produces nothing at all: no message, no card, no
+   unread, and `lastActivityAt` is unchanged. At most one bro speaks first:
+   the one named by a leading `@name`, on the existing fast path; the rest
+   take their turn one at a time in join order. A non-mentioned bro's task
+   starts hidden and appears only if the bro speaks. Only a person's `/say`
+   starts a new round. Direct messages and approvals are unchanged by the
+   group-turns PR. A follow-up in the group attaches to that bro's own
+   still-open task (`queued`, `running`, or `blocked`); the host does not
+   create a new task. Only genuinely new work creates a task. The follow-up
+   rule is not built yet (PR B). After PR B, a bro's message should also
+   wake the other bros, with a round cap on recorded `depth`.
 2. **Who speaks, and where Router sits.** In a group, whoever does the work
    replies themselves. No agent speaks for another. Router and Worker are
    only an internal dispatch layer inside one bro: their background workers
@@ -556,22 +540,79 @@ not a `resume`.
 
 ## Implementation status
 
-- Done: group turns (`host/src/turns.rs`, called from `say.rs` and the
-  pump). Every person's group `/say` opens a round with one turn per member:
-  the `@`-mentioned bro first (its task is today's fast-path task, unchanged),
-  then the other members in join order. Turns run one after another; the next
-  turn's task is created only after every earlier turn's task is `done` or
-  `blocked`, and its prompt quotes the earlier bros' delivered results with
-  `robroz-` control lines removed. A non-mentioned turn stays hidden (no status
-  card, no unread) until its model step answers. The reply `robroz-silent`
-  (or an empty reply, a failed model call, or no model) ends the task `done`
-  and keeps it hidden, so a silent turn shows nothing at all. Any other reply
-  reveals the task and it carries on as a normal task. Bro deliveries,
-  `/messages`, direct `/tasks` and schedules never open a round, and DMs are
-  unchanged. No contract change: `Said.task` is still the mentioned bro's
-  task or `null`.
-- Not yet: follow-ups attaching to a bro's still-open task (PR B); the
-  per-bro Router and Workers (PR C); cancelling a timed-out step.
+Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/say.rs`,
+`host/src/pump.rs`, `host/src/unread.rs`).
+
+- Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
+  `41edf6f`): group turns. Every person's group `/say` opens a round with
+  one turn per member. At most one bro speaks first: the one named by a
+  leading `@name` or `＠name` (`robroz_contract::route_mention`). That
+  mentioned bro uses today's fast path (mention stripped from the prompt,
+  status card visible at once, task returned in `Said.task`). The rest go
+  one at a time in join order (`memberships.rowid`). If no one is named,
+  `Said.task` is `null` and every member takes a turn in join order. Turns
+  in one round run sequentially: the next task is created only after every
+  earlier turn's task is `done` or `blocked`. Later prompts quote earlier
+  bros' failure-free deliveries (each clipped to 2000 characters, with
+  lines whose trim-start begins with `robroz-` removed). A non-mentioned
+  turn starts hidden (`tasks.turn_hidden = 1`: no status card, no unread,
+  `lastActivityAt` unchanged) and is revealed only if the bro speaks. The
+  whole reply `robroz-silent` or empty (after dropping empty lines and
+  `robroz-progress:` lines) is silence. For a hidden turn, a failed model
+  call or no model configured also counts as silence, logged only, with
+  no card. A silent turn ends `done`, stays hidden, posts no message,
+  shows no card, adds no unread, and leaves `lastActivityAt` unchanged.
+  A pending MCP approval, or `ROBROZ_MODEL=echo`, reveals the task (and
+  sets `created_at` / `updated_at` to the reveal time) and it continues
+  as a normal task. The `@`-mentioned bro is never hidden, so a model
+  error on that path still surfaces as it does today. Only a person's
+  `/say` opens a round; each turn records `depth` (today always
+  `PERSON_DEPTH` 0). Bro deliveries, `/messages`, `/tasks` and schedules
+  never open a round. Direct messages, the `@` direct path, and approvals
+  are unchanged. No contract change: `Said.task` is still the mentioned
+  bro's task or `null`.
+
+  **Done when (met in #129):** in a group with two bros, one message with
+  no `@` gives both bros a turn, and at least one of them can choose to
+  stay silent (posts nothing).
+
+- Not yet (PR B, after A): follow-ups attaching to a bro's still-open
+  task (`queued`, `running`, or `blocked`). The host does not create a
+  new task. A `done` task is not still-open, and a follow-up is not a
+  `resume`.
+
+  **Done when:** a follow-up in the group attaches to that bro's open
+  task and does not start a new one.
+
+- Not yet (after PR B): a bro's message also wakes the other bros, so
+  bros can reply to each other (as in Grok Bot). The recorded `depth` on
+  each round is the cap hook: a later change can open a follow-up round
+  at `depth + 1` and stop at a cap. At the cap the round wraps up, and
+  bros speak only when necessary. Today only a person's `/say` opens a
+  round.
+
+- Not yet (PR C, after A and B): the per-bro Router and Workers.
+  Router and Worker stay an internal dispatch layer *inside one bro*.
+  Group behaviour from PR A and PR B is unchanged.
+
+  1. The bro's model splits the task into Workers, at most three steps
+     per task.
+  2. Each step is a sub-step inside the task: one status card, and one
+     merged delivery at the end. The contract is unchanged.
+  3. The Router uses the bro's own configured model. If the model errors
+     or cannot split the work, fall back to one Worker, behaving exactly
+     as today.
+  4. `progress` shows a line of the form 「2/3 步」.
+  5. If any step fails, the whole card ends as `done` + `failure`
+     「没写出结果」, with no requeue.
+
+  **Done when:** a task can be split into at most three sub-steps with
+  one status card and one delivery; a failed or impossible split falls
+  back to one Worker; a failed step ends the task as 「没写出结果」 and
+  does not requeue.
+
+- Not yet (after PR C): a timeout that *cancels* a still-running step or
+  stops the container (#118 only hints).
 
 ## Sources and attribution
 
@@ -591,8 +632,9 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `6b66129` on
-`main`, in particular `host/src/say.rs`, `host/src/pump.rs`,
+robroz behaviour cited above was checked against the tree at `41edf6f` on
+`main`, in particular `host/src/say.rs`, `host/src/turns.rs`,
+`host/src/pump.rs`, `host/src/unread.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
 `host/src/watchdog.rs`, `host/src/sandbox.rs`,
 `host/src/progress.rs`, `host/src/schedule.rs`,
