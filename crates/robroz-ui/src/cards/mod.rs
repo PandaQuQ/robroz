@@ -136,6 +136,9 @@ pub enum ActionKind {
     Send,
     Spend,
     Call,
+    /// An action value this client does not recognise. Shown with the
+    /// generic verb 「操作」.
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +222,7 @@ impl ApprovalCard {
             ApprovalAction::Send => ActionKind::Send,
             ApprovalAction::Spend => ActionKind::Spend,
             ApprovalAction::Call => ActionKind::Call,
+            ApprovalAction::Unknown => ActionKind::Unknown,
         };
         Some(Self {
             id: id.clone(),
@@ -316,6 +320,8 @@ mod tests {
             task_id: None,
             mcp_server: None,
             mcp_tool: None,
+            reason: None,
+            expires_at: None,
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";
@@ -422,6 +428,8 @@ mod tests {
             task_id: Some("t1".into()),
             mcp_server: server.map(Into::into),
             mcp_tool: tool.map(Into::into),
+            reason: None,
+            expires_at: None,
         }
     }
 
@@ -465,5 +473,30 @@ mod tests {
         assert!(cut.ends_with('…'), "{cut}");
         assert!(!cut.contains('\n'), "{cut}");
         assert!(cut.chars().count() < long.chars().count());
+    }
+
+    #[test]
+    fn unknown_action_is_a_generic_card() {
+        let event = Event::Approval {
+            id: "a-future".into(),
+            bot_id: "bot-doc".into(),
+            bot_name: "文档哥".into(),
+            action: ApprovalAction::Unknown,
+            summary: "新增一条规则".into(),
+            path: None,
+            decision: None,
+            created_at: "2026-11-24T12:00:00Z".into(),
+            answered_at: None,
+            answered_by: None,
+            task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
+            reason: None,
+            expires_at: None,
+        };
+        let card = ApprovalCard::from_event(&event).unwrap();
+        assert_eq!(card.kind, ActionKind::Unknown);
+        assert_eq!(status::action_kind_label(card.kind), "操作");
+        assert_eq!(card.summary, "新增一条规则");
     }
 }
