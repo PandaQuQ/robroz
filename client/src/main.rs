@@ -2760,7 +2760,7 @@ impl App {
         let draft = self.drafts.get(id).map_or("", String::as_str);
         let note = self.send_note.get(id).map(String::as_str);
         column![
-            view::chat_header(t, name, dm, t.narrow, rename).map(Message::Ui),
+            view::chat_header(t, name, dm, self.narrow(), rename).map(Message::Ui),
             view::rule(t),
             feed,
             view::rule(t),
