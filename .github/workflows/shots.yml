@@ -59,6 +59,17 @@ jobs:
           fi
           system_profiler SPDisplaysDataType | grep -i resolution || true
 
+      # windows-latest also boots at 1024x768. Set-DisplayResolution ships
+      # with Windows Server; keep going if it is missing.
+      - name: Display resolution (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop }
+          catch { Write-Host "could not change resolution: $_" }
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.SystemInformation]::VirtualScreen
+
       - name: Screenshots
         shell: bash
         env:
