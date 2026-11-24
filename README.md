@@ -35,13 +35,7 @@ The desktop client UI is English by default. Switch to 中文 with the Language 
   <!-- TODO(screenshot): approval card -->
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
-You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
-
-## Not yet
-
-These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
-
-- Cancelling a timed-out step or stopping the container.
+You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. A hint appears on the card at half of `ROBROZ_STEP_TIMEOUT_SECS`; at the full timeout the step is cancelled and the task ends as Finished with no result (「没写出结果」), with no rerun. Time waiting on an approval card does not count.
 
 ## Quick start
 
@@ -75,7 +69,7 @@ cargo run -p robroz-host
 
 `ROBROZ_MODEL=echo` is a test switch (CI uses it) that echoes the prompt when no complete model is configured. Do not set it in a real deployment.
 
-Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control how soon a long or stalled step shows a hint on the card; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
+Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) is the per-step cancel limit, and a hint appears at half of it; `ROBROZ_STALL_SECS` (default `900`) is hint-only; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
 
 ## Architecture
 
