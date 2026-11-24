@@ -91,7 +91,10 @@ pub(crate) async fn list_schedules(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(schedules)) => (StatusCode::OK, Json(Schedules { schedules })).into_response(),
         Err(err) => db_error(err),
     }
@@ -106,7 +109,10 @@ pub(crate) async fn update_schedule(
     let result = set_paused(&conn, &id, body.paused);
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "例行任务不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::ROUTINE_NOT_FOUND,
+        ),
         Ok(Some(entry)) => (StatusCode::OK, Json(entry)).into_response(),
         Err(err) => db_error(err),
     }

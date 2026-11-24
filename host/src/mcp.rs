@@ -18,9 +18,9 @@ use serde_json::Value;
 
 use crate::{db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState};
 
-const NAME_TAKEN: &str = "这个名字已经有了";
-const NOT_FOUND: &str = "MCP 服务器不存在";
-const GROUP_NOT_FOUND: &str = "群不存在";
+const NAME_TAKEN: &str = robroz_contract::host_text::NAME_TAKEN;
+const NOT_FOUND: &str = robroz_contract::host_text::MCP_SERVER_NOT_FOUND;
+const GROUP_NOT_FOUND: &str = robroz_contract::host_text::GROUP_NOT_FOUND;
 const NAME_MAX: usize = 80;
 const SECRET_NAME_MAX: usize = 64;
 
@@ -154,7 +154,7 @@ impl Row {
 
     fn connect_config(&self) -> Result<ConnectConfig, String> {
         let kind = parse_transport(&self.transport)
-            .ok_or_else(|| "transport 只能是 stdio 或 http".to_string())?;
+            .ok_or_else(|| robroz_contract::host_text::BAD_TRANSPORT.to_string())?;
         let mut env = Vec::new();
         let mut headers = Vec::new();
         for secret in &self.secrets {
@@ -224,19 +224,22 @@ fn is_unique_violation(err: &rusqlite::Error) -> bool {
 }
 
 fn body_error(_rejection: JsonRejection) -> Response {
-    error_response(StatusCode::BAD_REQUEST, "请求格式不正确")
+    error_response(
+        StatusCode::BAD_REQUEST,
+        robroz_contract::host_text::BAD_REQUEST_FORMAT,
+    )
 }
 
 fn clean_name(raw: &str) -> Result<String, &'static str> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("请填写名称");
+        return Err(robroz_contract::host_text::NEED_NAME);
     }
     if name.chars().count() > NAME_MAX {
-        return Err("名称最多 80 个字");
+        return Err(robroz_contract::host_text::NAME_MAX_80);
     }
     if name.contains('\n') || name.contains('\r') {
-        return Err("名称只能一行");
+        return Err(robroz_contract::host_text::NAME_ONE_LINE);
     }
     Ok(name.to_string())
 }
@@ -244,10 +247,10 @@ fn clean_name(raw: &str) -> Result<String, &'static str> {
 fn clean_command(raw: &str) -> Result<String, &'static str> {
     let command = raw.trim();
     if command.is_empty() {
-        return Err("请填写启动命令");
+        return Err(robroz_contract::host_text::NEED_COMMAND);
     }
     if command.contains('\0') {
-        return Err("启动命令无效");
+        return Err(robroz_contract::host_text::COMMAND_INVALID);
     }
     Ok(command.to_string())
 }
@@ -255,10 +258,10 @@ fn clean_command(raw: &str) -> Result<String, &'static str> {
 fn clean_url(raw: &str) -> Result<String, &'static str> {
     let url = raw.trim();
     if url.is_empty() {
-        return Err("请填写地址");
+        return Err(robroz_contract::host_text::NEED_URL);
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("地址要以 http:// 或 https:// 开头");
+        return Err(robroz_contract::host_text::URL_NEEDS_HTTP);
     }
     Ok(url.to_string())
 }
@@ -266,13 +269,13 @@ fn clean_url(raw: &str) -> Result<String, &'static str> {
 fn clean_secret_name(raw: &str) -> Result<String, &'static str> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("请填写密钥名称");
+        return Err(robroz_contract::host_text::NEED_SECRET_NAME);
     }
     if name.chars().count() > SECRET_NAME_MAX {
-        return Err("密钥名称最多 64 个字");
+        return Err(robroz_contract::host_text::SECRET_NAME_MAX);
     }
     if name.chars().any(char::is_whitespace) {
-        return Err("密钥名称里不能有空白");
+        return Err(robroz_contract::host_text::SECRET_NAME_WHITESPACE);
     }
     Ok(name.to_string())
 }
@@ -477,7 +480,7 @@ fn secrets_from_input(
                 if let Some(found) = out.iter_mut().find(|s| s.name == name) {
                     found.placement = placement;
                 } else {
-                    return Err("新增密钥时请填写值");
+                    return Err(robroz_contract::host_text::NEED_SECRET_VALUE);
                 }
             }
             Some(None) => {
@@ -485,7 +488,7 @@ fn secrets_from_input(
             }
             Some(Some(value)) => {
                 if value.is_empty() {
-                    return Err("密钥不能为空");
+                    return Err(robroz_contract::host_text::KEY_EMPTY);
                 }
                 if let Some(found) = out.iter_mut().find(|s| s.name == name) {
                     found.placement = placement;
@@ -505,13 +508,13 @@ fn secrets_from_input(
 
 fn build_create(body: CreateMcpServer) -> Result<Row, &'static str> {
     let name = clean_name(&body.name)?;
-    let kind = parse_transport(&body.transport).ok_or("transport 只能是 stdio 或 http")?;
+    let kind = parse_transport(&body.transport).ok_or(robroz_contract::host_text::BAD_TRANSPORT)?;
     let (command, args, url) = match kind {
         TransportKind::Stdio => {
             let command = clean_command(body.command.as_deref().unwrap_or(""))?;
             let args = body.args.unwrap_or_default();
             if args.iter().any(|a| a.contains('\0')) {
-                return Err("参数无效");
+                return Err(robroz_contract::host_text::ARGS_INVALID);
             }
             (Some(command), args, None)
         }
@@ -545,7 +548,7 @@ fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str
         row.name = clean_name(&name)?;
     }
     if let Some(transport) = patch.transport {
-        let kind = parse_transport(&transport).ok_or("transport 只能是 stdio 或 http")?;
+        let kind = parse_transport(&transport).ok_or(robroz_contract::host_text::BAD_TRANSPORT)?;
         row.transport = transport_str(kind).to_string();
         match kind {
             TransportKind::Stdio => row.url = None,
@@ -555,7 +558,7 @@ fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str
             }
         }
     }
-    let kind = parse_transport(&row.transport).ok_or("transport 只能是 stdio 或 http")?;
+    let kind = parse_transport(&row.transport).ok_or(robroz_contract::host_text::BAD_TRANSPORT)?;
     if let Some(command) = patch.command {
         match command {
             None => row.command = None,
@@ -564,7 +567,7 @@ fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str
     }
     if let Some(args) = patch.args {
         if args.iter().any(|a| a.contains('\0')) {
-            return Err("参数无效");
+            return Err(robroz_contract::host_text::ARGS_INVALID);
         }
         row.args = args;
     }
@@ -577,13 +580,13 @@ fn apply_patch(row: &mut Row, patch: UpdateMcpServer) -> Result<(), &'static str
     match kind {
         TransportKind::Stdio => {
             if row.command.as_deref().unwrap_or("").is_empty() {
-                return Err("请填写启动命令");
+                return Err(robroz_contract::host_text::NEED_COMMAND);
             }
             row.url = None;
         }
         TransportKind::Http => {
             if row.url.as_deref().unwrap_or("").is_empty() {
-                return Err("请填写地址");
+                return Err(robroz_contract::host_text::NEED_URL);
             }
             row.command = None;
             row.args = Vec::new();
@@ -623,7 +626,10 @@ async fn list_tools_now(row: &Row) -> Result<Vec<robroz_mcp::ListedTool>, String
     match join.await {
         Ok(Ok(tools)) => Ok(tools),
         Ok(Err(err)) => Err(redact(&err, &secrets)),
-        Err(err) => Err(format!("连接中断：{err}")),
+        Err(err) => Err(format!(
+            "{}{err}",
+            robroz_contract::host_text::CONNECTION_LOST_PREFIX
+        )),
     }
 }
 
@@ -798,7 +804,7 @@ pub(crate) async fn test_connection(
     (StatusCode::OK, Json(result)).into_response()
 }
 
-const STDIO_ONLY_APPROVE: &str = "只有 stdio 服务器需要批准启动命令";
+const STDIO_ONLY_APPROVE: &str = robroz_contract::host_text::MCP_STDIO_ONLY_APPROVE;
 
 pub(crate) async fn approve_command(
     State(state): State<AppState>,
@@ -813,7 +819,10 @@ pub(crate) async fn approve_command(
             return Ok(Err((StatusCode::BAD_REQUEST, STDIO_ONLY_APPROVE)));
         }
         let Some(command) = row.command.clone() else {
-            return Ok(Err((StatusCode::BAD_REQUEST, "请填写启动命令")));
+            return Ok(Err((
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::NEED_COMMAND,
+            )));
         };
         row.command_fingerprint = Some(command_fingerprint(&command, &row.args));
         row.command_approved_at = Some(now_rfc3339());
@@ -873,7 +882,10 @@ pub(crate) async fn get_group_mcp(
     drop(conn);
     match result {
         Ok(Ok(Some(row))) => (StatusCode::OK, Json(row.public())).into_response(),
-        Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, "这个群还没启用这台服务器"),
+        Ok(Ok(None)) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::MCP_NOT_ENABLED_IN_GROUP,
+        ),
         Ok(Err((status, msg))) => error_response(status, msg),
         Err(err) => db_error(err),
     }

@@ -136,7 +136,10 @@ pub(crate) async fn get_approval(
     let conn = lock_db(&state);
     match load_settled_or_open(&conn, &id) {
         Ok(Some(event)) => (StatusCode::OK, Json(event)).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "审批卡不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::APPROVAL_NOT_FOUND,
+        ),
         Err(err) => db_error(err),
     }
 }
@@ -194,10 +197,10 @@ pub fn validate(
 ) -> Result<(String, Option<String>), &'static str> {
     let summary = summary.trim();
     if summary.is_empty() {
-        return Err("请填写要做什么");
+        return Err(robroz_contract::host_text::NEED_ACTION);
     }
     if summary.chars().count() > APPROVAL_SUMMARY_MAX || summary.contains('\n') {
-        return Err("说明只能一行，最多 200 字");
+        return Err(robroz_contract::host_text::SUMMARY_ONE_LINE);
     }
     let path = path
         .map(str::trim)
@@ -280,7 +283,10 @@ pub(crate) async fn create_approval(
     let conn = lock_db(&state);
     match load_any(&conn, &id) {
         Ok(Some(event)) => (StatusCode::CREATED, Json(event)).into_response(),
-        Ok(None) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "审批卡不见了"),
+        Ok(None) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            robroz_contract::host_text::APPROVAL_VANISHED,
+        ),
         Err(err) => db_error(err),
     }
 }
@@ -296,7 +302,10 @@ fn insert_bro_card(
     let conn = lock_db(state);
     {
         if !group_exists(&conn, group_id)? {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::GROUP_NOT_FOUND,
+            )));
         }
         let member: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memberships WHERE group_id = ?1 AND bot_id = ?2",
@@ -306,13 +315,13 @@ fn insert_bro_card(
         if member == 0 {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "这个 Bot 不在群里",
+                robroz_contract::host_text::BOT_NOT_IN_GROUP,
             )));
         }
         if matches!(body.action, ApprovalAction::Unknown) {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "不支持这个动作",
+                robroz_contract::host_text::ACTION_NOT_SUPPORTED,
             )));
         }
         if matches!(
@@ -321,7 +330,7 @@ fn insert_bro_card(
         ) {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "这个动作只能由宿主机发出",
+                robroz_contract::host_text::ACTION_HOST_ONLY,
             )));
         }
         let (summary, path) = match validate(&body.summary, body.path.as_deref()) {
@@ -384,7 +393,7 @@ pub(crate) fn gate_summary(prompt: &str) -> String {
     format!("{GATE_PREFIX}{}", gate_line(prompt))
 }
 
-const GATE_PREFIX: &str = "要对外写入：";
+const GATE_PREFIX: &str = robroz_contract::host_text::GATE_PREFIX;
 
 /// The task's first plain line, at most 60 characters.
 fn gate_line(prompt: &str) -> String {
@@ -392,7 +401,7 @@ fn gate_line(prompt: &str) -> String {
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && robroz_policy::blocking_kind(l).is_none())
-        .unwrap_or("这个任务");
+        .unwrap_or(robroz_contract::host_text::GATE_FALLBACK_LINE);
     crate::text::clip(line, 60)
 }
 
@@ -508,7 +517,14 @@ fn settle_task(
                 conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| {
                     r.get(0)
                 })?;
-            ("done", Some(format!("你拒绝了：{}", gate_line(&prompt))))
+            (
+                "done",
+                Some(format!(
+                    "{}{}",
+                    robroz_contract::host_text::DENIED_PREFIX,
+                    gate_line(&prompt)
+                )),
+            )
         }
     };
     conn.execute(
@@ -570,14 +586,14 @@ pub(crate) fn settle(
                 eprintln!("approve {id}: mcp pending for {task_id}: {err}");
                 return Ok(Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "批准失败，无法写入继续标记",
+                    robroz_contract::host_text::APPROVE_CONTINUE_MARKER_FAILED,
                 )));
             }
         } else if let Err(err) = robroz_runner::append_takeover(&control_root.join(task_id), hash) {
             eprintln!("approve {id}: takeover for {task_id}: {err}");
             return Ok(Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "批准失败，无法写入接管标记",
+                robroz_contract::host_text::APPROVE_TAKEOVER_MARKER_FAILED,
             )));
         }
     }
@@ -599,7 +615,10 @@ pub(crate) fn settle(
         ],
     )?;
     if changed == 0 {
-        return Ok(Err((StatusCode::CONFLICT, "已经答过了")));
+        return Ok(Err((
+            StatusCode::CONFLICT,
+            robroz_contract::host_text::ALREADY_ANSWERED,
+        )));
     }
     if let Some((task_id, hash)) = &gate {
         if mcp {
@@ -618,9 +637,9 @@ pub(crate) fn settle(
                                     ..
                                 } => format!("{s}.{tool}"),
                                 Event::Approval { summary, .. } => summary.clone(),
-                                _ => "MCP 工具".into(),
+                                _ => robroz_contract::host_text::DENIED_MCP_FALLBACK.into(),
                             };
-                            format!("你拒绝了：{line}")
+                            format!("{}{line}", robroz_contract::host_text::DENIED_PREFIX)
                         }
                     };
                     crate::mcp_tools::finish_denied(&tx, task_id, hash, &failure, &now)?;
@@ -658,7 +677,10 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
             );
         }
         let Some(card) = load_settled_or_open(&conn, id)? else {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "审批卡不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::APPROVAL_NOT_FOUND,
+            )));
         };
         if matches!(
             card,
@@ -667,7 +689,10 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
                 ..
             }
         ) {
-            return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
+            return Ok(Err(error_response(
+                StatusCode::CONFLICT,
+                robroz_contract::host_text::ALREADY_ANSWERED,
+            )));
         }
         let settled = settle(
             &mut conn,
@@ -699,8 +724,12 @@ fn answered_by(body: &[u8]) -> Result<Option<String>, (StatusCode, &'static str)
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
-    let answer: Answer = serde_json::from_slice(body)
-        .map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "请求格式不正确"))?;
+    let answer: Answer = serde_json::from_slice(body).map_err(|_| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            robroz_contract::host_text::BAD_REQUEST_FORMAT,
+        )
+    })?;
     clean_answered_by(answer.answered_by.as_deref()).map_err(|m| (StatusCode::BAD_REQUEST, m))
 }
 
@@ -735,5 +764,15 @@ mod tests {
         assert!(validate("两行\n不行", None).is_err());
         assert!(validate(&"长".repeat(201), None).is_err());
         assert!(validate(&"长".repeat(200), None).is_ok());
+    }
+
+    /// `SELECT` spells the settings card's bot name in SQL; keep it the contract's.
+    #[test]
+    fn select_names_settings_cards_with_the_contract_text() {
+        assert!(super::SELECT.contains(&format!(
+            "a.bot_id = '{}' THEN '{}'",
+            robroz_contract::SETTINGS_APPROVAL_BOT_ID,
+            robroz_contract::SETTINGS_APPROVAL_BOT_NAME
+        )));
     }
 }

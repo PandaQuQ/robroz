@@ -98,7 +98,10 @@ pub(crate) async fn group_unread(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(body)) => (StatusCode::OK, Json(body)).into_response(),
         Err(err) => db_error(err),
     }
@@ -113,7 +116,12 @@ pub(crate) async fn mark_read(
     let at = match parse_since(requested.as_deref()) {
         Ok(Some(at)) => at,
         Ok(None) => now_rfc3339(),
-        Err(()) => return error_response(StatusCode::BAD_REQUEST, "readAt 不是合法时间"),
+        Err(()) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::READ_AT_INVALID,
+            )
+        }
     };
     let conn = lock_db(&state);
     let result = (|| {
@@ -129,7 +137,10 @@ pub(crate) async fn mark_read(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(body)) => (StatusCode::OK, Json(body)).into_response(),
         Err(err) => db_error(err),
     }

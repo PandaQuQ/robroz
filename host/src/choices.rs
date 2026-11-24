@@ -39,20 +39,20 @@ pub fn validate_options(
     multi: bool,
 ) -> Result<Vec<ChoiceOption>, &'static str> {
     if !(CHOICE_OPTIONS_MIN..=CHOICE_OPTIONS_MAX).contains(&options.len()) {
-        return Err("选项需要 2 到 4 个");
+        return Err(robroz_contract::host_text::CHOICE_OPTION_COUNT);
     }
     if options.iter().filter(|o| o.primary).count() > 1 {
-        return Err("推荐项最多一个");
+        return Err(robroz_contract::host_text::CHOICE_ONE_RECOMMENDED);
     }
     let mut clean: Vec<ChoiceOption> = Vec::with_capacity(options.len());
     for option in options {
         let value = option.id.trim().to_string();
         let label = option.label.trim().to_string();
         if value.is_empty() || label.is_empty() {
-            return Err("选项不能为空");
+            return Err(robroz_contract::host_text::CHOICE_OPTION_EMPTY);
         }
         if clean.iter().any(|o| o.id == value) {
-            return Err("选项重复");
+            return Err(robroz_contract::host_text::CHOICE_DUPLICATE);
         }
         clean.push(ChoiceOption {
             id: value,
@@ -73,17 +73,17 @@ pub fn validate_pick(
     let pick: Vec<String> = pick.iter().map(|v| v.trim().to_string()).collect();
     if pick.is_empty() || (!multi && pick.len() != 1) {
         return Err(if multi {
-            "至少选一个"
+            robroz_contract::host_text::CHOICE_PICK_AT_LEAST_ONE
         } else {
-            "只能选一个"
+            robroz_contract::host_text::CHOICE_PICK_ONLY_ONE
         });
     }
     for (i, value) in pick.iter().enumerate() {
         if pick[..i].contains(value) {
-            return Err("选项重复");
+            return Err(robroz_contract::host_text::CHOICE_DUPLICATE);
         }
         if !options.iter().any(|o| &o.id == value) {
-            return Err("没有这个选项");
+            return Err(robroz_contract::host_text::CHOICE_NO_SUCH_OPTION);
         }
     }
     Ok(pick)
@@ -153,7 +153,10 @@ pub(crate) async fn create_choice(
     let conn = lock_db(&state);
     let result = (|| {
         if !group_exists(&conn, &group_id)? {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::GROUP_NOT_FOUND,
+            )));
         }
         let member: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memberships WHERE group_id = ?1 AND bot_id = ?2",
@@ -163,11 +166,14 @@ pub(crate) async fn create_choice(
         if member == 0 {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "这个 Bot 不在群里",
+                robroz_contract::host_text::BOT_NOT_IN_GROUP,
             )));
         }
         if prompt.is_empty() {
-            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "请填写内容")));
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::NEED_TEXT,
+            )));
         }
         let options = match validate_options(&body.options, body.multi) {
             Ok(options) => options,
@@ -204,10 +210,16 @@ pub(crate) async fn answer_choice(
             ..
         }) = load(&conn, &id)?
         else {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "选项卡不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::CHOICE_CARD_NOT_FOUND,
+            )));
         };
         if choice.is_some() {
-            return Ok(Err(error_response(StatusCode::CONFLICT, "已经选过了")));
+            return Ok(Err(error_response(
+                StatusCode::CONFLICT,
+                robroz_contract::host_text::CHOICE_ALREADY_PICKED,
+            )));
         }
         let pick = match validate_pick(&options, multi, &body.choice) {
             Ok(pick) => pick,
@@ -223,7 +235,10 @@ pub(crate) async fn answer_choice(
             params![pick_json, now_rfc3339(), id, by],
         )?;
         if changed == 0 {
-            return Ok(Err(error_response(StatusCode::CONFLICT, "已经选过了")));
+            return Ok(Err(error_response(
+                StatusCode::CONFLICT,
+                robroz_contract::host_text::CHOICE_ALREADY_PICKED,
+            )));
         }
         Ok(Ok(load(&conn, &id)?.expect("choice exists")))
     })();

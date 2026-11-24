@@ -36,7 +36,7 @@ pub const MAX_FETCH_CHARS: usize = 16_000;
 const TRUNCATED_MARK: &str = "\n…（已截断）";
 
 /// Returned to the model (and shown on the delivery) when search is not set up.
-pub const NOT_CONFIGURED: &str = "还没设置联网搜索";
+pub const NOT_CONFIGURED: &str = robroz_contract::host_text::SEARCH_NOT_CONFIGURED;
 
 pub const ENV_PROVIDER: &str = "ROBROZ_SEARCH_PROVIDER";
 pub const ENV_BRAVE_KEY: &str = "ROBROZ_BRAVE_KEY";
@@ -177,7 +177,8 @@ impl BraveProvider {
 
 impl SearchProvider for BraveProvider {
     fn search(&self, query: &str, count: u32) -> Result<Vec<SearchHit>, String> {
-        let mut url = Url::parse(&self.url).map_err(|err| format!("地址无效：{err}"))?;
+        let mut url = Url::parse(&self.url)
+            .map_err(|err| format!("{}{err}", robroz_contract::host_text::URL_INVALID_PREFIX))?;
         url.query_pairs_mut()
             .append_pair("q", query)
             .append_pair("count", &count.to_string());
@@ -196,18 +197,22 @@ impl SearchProvider for BraveProvider {
             .read_to_string()
             .map_err(|err| redact_err(&err.to_string(), Some(&self.key)))?;
         if !(200..300).contains(&status) {
-            return Err(format!("搜索服务返回 {status}"));
+            return Err(format!(
+                "{}{status}",
+                robroz_contract::host_text::SEARCH_SERVICE_STATUS_PREFIX
+            ));
         }
         parse_brave(&body).map_err(|err| redact_err(&err, Some(&self.key)))
     }
 }
 
 pub fn parse_brave(body: &str) -> Result<Vec<SearchHit>, String> {
-    let value: Value = serde_json::from_str(body).map_err(|_| "搜索返回的不是 JSON".to_string())?;
+    let value: Value = serde_json::from_str(body)
+        .map_err(|_| robroz_contract::host_text::SEARCH_NOT_JSON.to_string())?;
     let results = value
         .pointer("/web/results")
         .and_then(Value::as_array)
-        .ok_or_else(|| "搜索返回里没有 web.results".to_string())?;
+        .ok_or_else(|| robroz_contract::host_text::SEARCH_NO_WEB_RESULTS.to_string())?;
     Ok(results.iter().filter_map(hit_from_brave).collect())
 }
 
@@ -254,7 +259,8 @@ impl SearxProvider {
         } else {
             format!("{trimmed}/search")
         };
-        Url::parse(&base).map_err(|err| format!("地址无效：{err}"))
+        Url::parse(&base)
+            .map_err(|err| format!("{}{err}", robroz_contract::host_text::URL_INVALID_PREFIX))
     }
 }
 
@@ -279,7 +285,10 @@ impl SearchProvider for SearxProvider {
             .read_to_string()
             .map_err(|err| err.to_string())?;
         if !(200..300).contains(&status) {
-            return Err(format!("搜索服务返回 {status}"));
+            return Err(format!(
+                "{}{status}",
+                robroz_contract::host_text::SEARCH_SERVICE_STATUS_PREFIX
+            ));
         }
         let mut hits = parse_searx(&body)?;
         hits.truncate(count as usize);
@@ -288,11 +297,12 @@ impl SearchProvider for SearxProvider {
 }
 
 pub fn parse_searx(body: &str) -> Result<Vec<SearchHit>, String> {
-    let value: Value = serde_json::from_str(body).map_err(|_| "搜索返回的不是 JSON".to_string())?;
+    let value: Value = serde_json::from_str(body)
+        .map_err(|_| robroz_contract::host_text::SEARCH_NOT_JSON.to_string())?;
     let results = value
         .get("results")
         .and_then(Value::as_array)
-        .ok_or_else(|| "搜索返回里没有 results".to_string())?;
+        .ok_or_else(|| robroz_contract::host_text::SEARCH_NO_RESULTS.to_string())?;
     Ok(results.iter().filter_map(hit_from_searx).collect())
 }
 
@@ -343,7 +353,10 @@ fn provider_from(cfg: &EffectiveConfig) -> Result<Box<dyn SearchProvider>, Strin
             Ok(Box::new(BraveProvider::new(cfg.url.clone(), key)))
         }
         "searxng" => Ok(Box::new(SearxProvider::new(cfg.url.clone()))),
-        other => Err(format!("不支持的搜索服务：{other}")),
+        other => Err(format!(
+            "{}{other}",
+            robroz_contract::host_text::SEARCH_PROVIDER_UNSUPPORTED_PREFIX
+        )),
     }
 }
 
@@ -410,11 +423,21 @@ pub async fn put_search(
 ) -> Response {
     let Json(raw) = match body {
         Ok(body) => body,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "请求体不是 JSON"),
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::BODY_NOT_JSON,
+            )
+        }
     };
     let put: PutSearch = match serde_json::from_value(raw) {
         Ok(put) => put,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "请求体无效"),
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::BODY_INVALID,
+            )
+        }
     };
     if let Err(err) = validate_put(&put) {
         return error_response(StatusCode::BAD_REQUEST, &err);
@@ -433,7 +456,7 @@ fn validate_put(put: &PutSearch) -> Result<(), String> {
     if let Some(Some(provider)) = &put.provider {
         let p = provider.trim().to_ascii_lowercase();
         if p != "brave" && p != "searxng" {
-            return Err("provider 只能是 brave 或 searxng".into());
+            return Err(robroz_contract::host_text::BAD_SEARCH_PROVIDER.into());
         }
         if p == "searxng" {
             // Need a URL either in this request or already stored — checked in apply
@@ -443,18 +466,18 @@ fn validate_put(put: &PutSearch) -> Result<(), String> {
     if let Some(Some(url)) = &put.url {
         let url = url.trim();
         if url.is_empty() {
-            return Err("请填写地址".into());
+            return Err(robroz_contract::host_text::NEED_URL.into());
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err("地址要以 http:// 或 https:// 开头".into());
+            return Err(robroz_contract::host_text::URL_NEEDS_HTTP.into());
         }
     }
     if let Some(Some(key)) = &put.key {
         if key.trim().is_empty() {
-            return Err("密钥不能为空".into());
+            return Err(robroz_contract::host_text::KEY_EMPTY.into());
         }
         if key.chars().any(char::is_whitespace) {
-            return Err("密钥里不能有空白".into());
+            return Err(robroz_contract::host_text::KEY_HAS_WHITESPACE.into());
         }
     }
     Ok(())
@@ -477,7 +500,7 @@ fn apply_put_checked(conn: &Connection, put: &PutSearch) -> Result<(), String> {
             .or_else(|| env_get(ENV_SEARXNG_URL)),
     };
     if next_provider.as_deref() == Some("searxng") && next_url.is_none() {
-        return Err("请填写 SearXNG 地址".into());
+        return Err(robroz_contract::host_text::NEED_SEARXNG_URL.into());
     }
     if let Some(Some(p)) = &put.provider {
         upsert_setting(conn, SETTING_PROVIDER, Some(&p.trim().to_ascii_lowercase()))
@@ -521,7 +544,11 @@ pub async fn test_search(State(state): State<AppState>) -> Response {
                     },
                     Err(err) => SearchTestResult {
                         ok: false,
-                        error: Some(format!("连不上：{}", cfg.redact(&err))),
+                        error: Some(format!(
+                            "{}{}",
+                            robroz_contract::host_text::CANT_CONNECT_PREFIX,
+                            cfg.redact(&err)
+                        )),
                     },
                 }
             }

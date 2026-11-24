@@ -47,7 +47,10 @@ pub(crate) async fn say(
 ) -> Response {
     let text = input.body.trim().to_string();
     if text.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "请填写内容");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NEED_TEXT,
+        );
     }
     let mut conn = lock_db(&state);
     let result = (|| {
@@ -125,7 +128,10 @@ pub(crate) async fn say(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(said)) => (StatusCode::CREATED, Json(said)).into_response(),
         Err(err) => db_error(err),
     }

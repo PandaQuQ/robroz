@@ -26,7 +26,7 @@ pub const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Written as the task result, and shown on the delivery, when no model is set
 /// and echo mode is off.
-pub const NOT_CONFIGURED: &str = "还没设置模型";
+pub const NOT_CONFIGURED: &str = robroz_contract::host_text::MODEL_NOT_CONFIGURED;
 
 const SETTING_BASE_URL: &str = "model.base_url";
 const SETTING_MODEL: &str = "model.model";
@@ -82,23 +82,27 @@ impl EffectiveConfig {
 
 fn env_key() -> Result<Option<String>, String> {
     match (env_get(ENV_KEY), env_get(ENV_KEY_FILE)) {
-        (Some(_), Some(_)) => Err(format!("{ENV_KEY} 和 {ENV_KEY_FILE} 只能设一个")),
+        (Some(_), Some(_)) => Err(robroz_contract::host_text::MODEL_ENV_KEY_CONFLICT.to_string()),
         (Some(key), None) => {
             if key.chars().any(char::is_whitespace) {
-                Err("模型密钥里不能有空白".into())
+                Err(robroz_contract::host_text::MODEL_KEY_HAS_WHITESPACE.into())
             } else {
                 Ok(Some(key))
             }
         }
         (None, Some(file)) => {
-            let raw = std::fs::read_to_string(&file)
-                .map_err(|err| format!("{ENV_KEY_FILE} 读不出来：{err}"))?;
+            let raw = std::fs::read_to_string(&file).map_err(|err| {
+                format!(
+                    "{}{err}",
+                    robroz_contract::host_text::MODEL_ENV_KEY_FILE_UNREADABLE_PREFIX
+                )
+            })?;
             let key = raw.trim().to_string();
             if key.is_empty() {
-                return Err(format!("{ENV_KEY_FILE} 是空的"));
+                return Err(robroz_contract::host_text::MODEL_ENV_KEY_FILE_EMPTY.to_string());
             }
             if key.chars().any(char::is_whitespace) {
-                return Err("模型密钥里不能有空白".into());
+                return Err(robroz_contract::host_text::MODEL_KEY_HAS_WHITESPACE.into());
             }
             Ok(Some(key))
         }
@@ -186,7 +190,11 @@ fn test_failure_error(cfg: &EffectiveConfig, err: &robroz_model::ModelError) -> 
     if matches!(err.http_status(), Some(401 | 403)) {
         MODEL_TEST_BAD_KEY.to_string()
     } else {
-        format!("连不上：{}", cfg.redact(&err.to_string()))
+        format!(
+            "{}{}",
+            robroz_contract::host_text::CANT_CONNECT_PREFIX,
+            cfg.redact(&err.to_string())
+        )
     }
 }
 
@@ -216,11 +224,21 @@ pub async fn put_model(
 ) -> Response {
     let Json(raw) = match body {
         Ok(body) => body,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "请求体不是 JSON"),
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::BODY_NOT_JSON,
+            )
+        }
     };
     let put: PutModel = match serde_json::from_value(raw) {
         Ok(put) => put,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "请求体无效"),
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::BODY_INVALID,
+            )
+        }
     };
     if let Err(err) = validate_put(&put) {
         return error_response(StatusCode::BAD_REQUEST, &err);
@@ -239,23 +257,23 @@ fn validate_put(put: &PutModel) -> Result<(), String> {
     if let Some(Some(url)) = &put.base_url {
         let url = url.trim();
         if url.is_empty() {
-            return Err("请填写地址".into());
+            return Err(robroz_contract::host_text::NEED_URL.into());
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err("地址要以 http:// 或 https:// 开头".into());
+            return Err(robroz_contract::host_text::URL_NEEDS_HTTP.into());
         }
     }
     if let Some(Some(model)) = &put.model {
         if model.trim().is_empty() {
-            return Err("请填写模型名".into());
+            return Err(robroz_contract::host_text::NEED_MODEL_NAME.into());
         }
     }
     if let Some(Some(key)) = &put.key {
         if key.trim().is_empty() {
-            return Err("密钥不能为空".into());
+            return Err(robroz_contract::host_text::KEY_EMPTY.into());
         }
         if key.chars().any(char::is_whitespace) {
-            return Err("密钥里不能有空白".into());
+            return Err(robroz_contract::host_text::KEY_HAS_WHITESPACE.into());
         }
     }
     Ok(())
@@ -988,6 +1006,24 @@ mod tests {
         assert!(
             delivery.get("needsSetup").is_none() || delivery["needsSetup"].is_null(),
             "{delivery}"
+        );
+    }
+
+    /// The contract spells the env var names out; they must match the model crate.
+    #[test]
+    fn env_key_texts_name_the_real_env_vars() {
+        use robroz_contract::host_text as t;
+        assert_eq!(
+            t::MODEL_ENV_KEY_CONFLICT,
+            format!("{ENV_KEY} 和 {ENV_KEY_FILE} 只能设一个")
+        );
+        assert_eq!(
+            t::MODEL_ENV_KEY_FILE_EMPTY,
+            format!("{ENV_KEY_FILE} 是空的")
+        );
+        assert_eq!(
+            t::MODEL_ENV_KEY_FILE_UNREADABLE_PREFIX,
+            format!("{ENV_KEY_FILE} 读不出来：")
         );
     }
 }
