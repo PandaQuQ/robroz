@@ -1,6 +1,7 @@
-//! Follow-ups: in a group, a person's `@name` message to a bro that already
-//! has a still-open task there (`queued`, `running` or `blocked`, and not a
-//! hidden turn) joins that task instead of starting a new one.
+//! Follow-ups: a person's `/say` to a bro (in its DM, or with a leading
+//! `@name` in a group) when that bro already has a still-open task there
+//! (`queued`, `running` or `blocked`, and not a hidden turn) joins that task
+//! instead of starting a new one.
 //!
 //! The message is stored here, not yet in the task's prompt. It reaches the
 //! bro on the task's next model step:
@@ -16,7 +17,7 @@
 //!   still waiting then stays unanswered; nothing is re-queued.
 //!
 //! A follow-up is never a `resume`: a `blocked` task stays blocked until the
-//! person answers its card. DMs are unchanged: every DM `/say` is a new task.
+//! person answers its card.
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub(crate) const SCHEMA: &str = "

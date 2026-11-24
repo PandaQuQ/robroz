@@ -6950,19 +6950,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dms_and_other_bros_never_join_a_task() {
+    async fn a_dm_follow_up_joins_the_open_task_and_other_bros_never_do() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
         let (_, bro) = new_bro(&app, Some(json!({ "name": "小明" }))).await;
+        let bot = bro["id"].as_str().unwrap().to_string();
         let dm = bro["dmGroupId"].as_str().unwrap();
-        say_in(&app, dm, "整理周报").await;
+        let (_, first) = say_in(&app, dm, "整理周报").await;
+        let id = first["task"]["id"].as_str().unwrap().to_string();
         let (_, said) = say_in(&app, dm, "再加一段").await;
+        assert_eq!(
+            said["appendedToTaskId"],
+            id.as_str(),
+            "a DM follow-up joins too: {said}"
+        );
+        assert_eq!(said["task"]["id"], id.as_str());
+        assert_eq!(task_ids_of(&path, &bot), vec![id.clone()]);
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE tasks SET state = 'done' WHERE id = ?1", [&id])
+            .unwrap();
+        let (_, said) = say_in(&app, dm, "下周的也整理").await;
         assert!(
             said.get("appendedToTaskId").is_none(),
-            "DMs are unchanged: {said}"
+            "done is not open: {said}"
         );
-        assert_eq!(count(&path, "SELECT COUNT(*) FROM follow_ups"), 0);
+        assert_eq!(task_ids_of(&path, &bot).len(), 2);
 
         let group = two_bro_group(&app).await;
         say_in(&app, &group, "@Ada 写周报").await;
@@ -6977,6 +6991,68 @@ mod tests {
             said["task"].is_null(),
             "an unaddressed message is not a follow-up"
         );
-        assert_eq!(count(&path, "SELECT COUNT(*) FROM follow_ups"), 0);
+        assert_eq!(
+            count(&path, "SELECT COUNT(*) FROM follow_ups"),
+            1,
+            "only the DM one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_waits_while_its_bro_still_runs_a_task_in_the_group() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "@Ada 写周报").await;
+        let model = TurnModel::new(&[
+            Ok("周报初稿。"),
+            Ok("robroz-silent"),
+            Ok("robroz-silent"),
+            Ok("robroz-silent"),
+        ]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let (_, said) = say_in(&app, &group, "大家看看").await;
+        assert!(said["task"].is_null());
+        for _ in 0..3 {
+            pump_with_model(&path, &volumes, &mut fake, &model);
+        }
+        assert_eq!(
+            count(
+                &path,
+                "SELECT COUNT(*) FROM tasks WHERE assignee_bot_id = 'b-ada'"
+            ),
+            1,
+            "no hidden turn for Ada while her task runs"
+        );
+        assert_eq!(
+            count(&path, "SELECT COUNT(*) FROM tasks"),
+            1,
+            "Bob waits behind Ada's turn"
+        );
+        assert_eq!(model.prompts().len(), 1);
+
+        fake.finish(0);
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+        assert_eq!(model.prompts().len(), 4, "{:?}", model.prompts());
+        assert_eq!(
+            count(
+                &path,
+                "SELECT COUNT(*) FROM tasks WHERE assignee_bot_id = 'b-ada' AND turn_hidden = 1"
+            ),
+            1,
+            "Ada's turn ran after her task left running"
+        );
+        let conn = Connection::open(&path).unwrap();
+        let (task_done, turn_created): (String, String) = conn
+            .query_row(
+                "SELECT (SELECT updated_at FROM tasks WHERE assignee_bot_id = 'b-ada' AND turn_hidden = 0),
+                        (SELECT created_at FROM tasks WHERE assignee_bot_id = 'b-ada' AND turn_hidden = 1)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(turn_created >= task_done, "{turn_created} < {task_done}");
     }
 }

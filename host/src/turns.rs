@@ -8,7 +8,9 @@
 //!
 //! Turns run one after another: the next turn's task is only created once
 //! every earlier turn's task has left `queued` / `running` (it is `done` or
-//! `blocked`), and its prompt quotes what the earlier bros wrote. A non-mentioned
+//! `blocked`), and its prompt quotes what the earlier bros wrote. A turn also
+//! waits while its bro has any other task in the group still `queued` or
+//! `running`, so one bro never runs twice on the group volume at once. A non-mentioned
 //! turn's task starts hidden (`tasks.turn_hidden = 1`): no status card, no
 //! unread. When its model step answers with [`SILENT_REPLY`] (or nothing), the
 //! task ends `done` and stays hidden: no message, no delivery, no card. Any
@@ -230,6 +232,18 @@ fn start(
     if !member {
         conn.execute("UPDATE turns SET skipped = 1 WHERE id = ?1", [&turn.id])?;
         return Ok(Start::Skipped);
+    }
+    // The bro is still working in this group (its own task, or a turn of
+    // another round): wait until that leaves `queued` / `running`, so two
+    // runs of one bro never share the group volume at once.
+    let working: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE group_id = ?1 AND assignee_bot_id = ?2
+                       AND state IN ('queued', 'running'))",
+        params![turn.group_id, turn.bot_id],
+        |r| r.get(0),
+    )?;
+    if working {
+        return Ok(Start::Busy);
     }
     let replies = match volumes_root {
         Some(root) => earlier

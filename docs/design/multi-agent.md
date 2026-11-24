@@ -2,7 +2,7 @@
 
 Status: **Accepted**. Group turns (PR A) shipped in
 [#129](https://github.com/PandaQuQ/robroz/pull/129) (`41edf6f`). Follow-up
-attachment in a group (PR B) is built; see Implementation status. The
+attachment (PR B, group and DM) is built; see Implementation status. The
 internal Router (PR C) is accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
@@ -226,8 +226,8 @@ in-flight task.
 ### How to change it
 
 This section is accepted design. Follow-up attachment in a group is PR B
-and is built (`host/src/follow_ups.rs`); DM follow-ups and external Threads
-are not. See [Implementation status](#implementation-status).
+and is built for groups and DMs (`host/src/follow_ups.rs`); external
+Threads are not. See [Implementation status](#implementation-status).
 
 Introduce Thread as a host-internal correlation, not as a new user-facing
 session.
@@ -481,7 +481,7 @@ merges. It is not a schedule.
 | Item | In the next phase? | Why |
 | --- | --- | --- |
 | Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
-| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done in a group (PR B, #130) | A group `@name` to a bro with a visible `queued` / `running` / `blocked` task joins it (`host/src/follow_ups.rs`); the task's next step sees it. DMs still start a new task per `/say`. |
+| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done (PR B, #130) | A DM `/say`, or a group `@name`, to a bro with a visible `queued` / `running` / `blocked` task there joins it (`host/src/follow_ups.rs`); the task's next step sees it. |
 | A bro's message also wakes the other bros, with a round cap on recorded `depth` | Not yet (after PR B) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
 | Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
@@ -521,7 +521,7 @@ built on `main`. The PR order and done standards are in
    group-turns PR. A follow-up in the group attaches to that bro's own
    still-open task (`queued`, `running`, or `blocked`); the host does not
    create a new task. Only genuinely new work creates a task. The follow-up
-   rule is built for an `@name` in a group (PR B). After PR B, a bro's message should also
+   rule is built for a group `@name` and for DMs (PR B). After PR B, a bro's message should also
    wake the other bros, with a round cap on recorded `depth`.
 2. **Who speaks, and where Router sits.** In a group, whoever does the work
    replies themselves. No agent speaks for another. Router and Worker are
@@ -577,9 +577,9 @@ Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/follow_ups.rs`, 
   no `@` gives both bros a turn, and at least one of them can choose to
   stay silent (posts nothing).
 
-- Done (PR B, [#130](https://github.com/PandaQuQ/robroz/pull/130)): follow-ups in a group (`host/src/follow_ups.rs`, called
-  from `say.rs` and the pump). A follow-up is a person's group `/say` with
-  a leading `@name` when that bro has a still-open task in the group: the
+- Done (PR B, [#130](https://github.com/PandaQuQ/robroz/pull/130)): follow-ups (`host/src/follow_ups.rs`, called from
+  `say.rs` and the pump). A follow-up is a person's DM `/say`, or a group
+  `/say` with a leading `@name`, when that bro has a still-open task there: the
   newest one in `queued`, `running`, or `blocked` that is not a hidden turn
   task. The host stores it in `follow_ups` and creates no task and no card.
   `Said.task` is the joined task (current state, original prompt) and the
@@ -597,8 +597,11 @@ Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/follow_ups.rs`, 
   starts a new task. In the round the follow-up opens, the named bro's
   turn is the joined task (no extra hidden turn task); the other bros take
   their turns after it leaves `queued` / `running`, as for any `@name`.
-  Not follow-ups: messages with no `@`, an `@` to another bro, and DMs
-  (still one new task per `/say`).
+  Not follow-ups: group messages with no `@`, and an `@` to another bro.
+  A turn also waits while its bro has any other task in the group still
+  `queued` or `running` (its own task, or another round's turn), so one bro
+  never runs twice on the group volume at once; the bros after it keep
+  waiting behind it.
 
   **Done when (met in #130):** a follow-up in the group attaches to that
   bro's open task and does not start a new one.
