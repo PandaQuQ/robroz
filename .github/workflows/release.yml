@@ -3,6 +3,12 @@ name: Release
 # Builds release binaries when a `v*` tag is pushed and attaches them, with
 # SHA256 checksums, to a draft GitHub Release. The draft stays private until
 # a maintainer publishes it by hand. Binaries are not code-signed.
+#
+# A separate job builds the runner image (linux/amd64) from runner/Dockerfile
+# (context is the repository root) and pushes it to
+# ghcr.io/pandaquq/robroz-runner:<tag>. The draft release does not wait for
+# that job, so host and client assets still upload if the image push fails.
+# There is no `latest` tag yet.
 on:
   push:
     tags: ["v*"]
@@ -104,3 +110,43 @@ jobs:
             --draft \
             --title "robroz ${GITHUB_REF_NAME}" \
             --notes "Draft build for ${GITHUB_REF_NAME}. Binaries are not code-signed. Check files against SHA256SUMS.txt."
+
+  runner-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lowercase image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/robroz-runner" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runner/Dockerfile
+          push: true
+          platforms: linux/amd64
+          # Attestation needs id-token: write. Keep this job's permissions to
+          # contents: read and packages: write only.
+          provenance: false
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/PandaQuQ/robroz
+            org.opencontainers.image.url=https://github.com/PandaQuQ/robroz
+            org.opencontainers.image.title=robroz-runner
+            org.opencontainers.image.description=Task runner image for robroz host sandboxes
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
