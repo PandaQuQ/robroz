@@ -1,6 +1,6 @@
 # 联网搜索和 MCP
 
-宿主机替 bro 访问外部的两条路：联网搜索（`web_search` / `web_fetch`）和 MCP 服务器。都在宿主机上调用，沙箱仍然不联网。接口字段和报错见 [api.md 的「搜索设置」](api.md#搜索设置)、[「MCP 服务器配置」](api.md#mcp-服务器配置)和 [「MCP 工具调用」](api.md#mcp-工具调用)，环境变量见 [configuration.md 的「搜索」](configuration.md#搜索)。
+宿主机替 bro 访问外部的两条路：联网搜索（`web_search` / `web_fetch`）和 MCP 服务器。都在宿主机上调用，沙箱仍然不联网。接口字段和报错见 [api.md 的「搜索设置」](api.md#search-settings)、[「MCP 服务器配置」](api.md#mcp-server-settings)和 [「MCP 工具调用」](api.md#mcp-tool-calls)，环境变量见 [configuration.md 的「搜索」](configuration.md#search)。
 
 ## 联网搜索
 
@@ -18,7 +18,7 @@
 
 ### 设置和环境变量谁优先
 
-设置接口优先，按 provider、地址、密钥三项逐项退回环境变量；改设置不用重启宿主机。`GET` / `PUT` 的返回体在已生效时带可选字段 `source`：设置接口里填过任意一项是 `settings`，全部来自环境变量是 `env`，完全没生效时没有这个字段。详见 [configuration.md](configuration.md#搜索)。
+设置接口优先，按 provider、地址、密钥三项逐项退回环境变量；改设置不用重启宿主机。`GET` / `PUT` 的返回体在已生效时带可选字段 `source`：设置接口里填过任意一项是 `settings`，全部来自环境变量是 `env`，完全没生效时没有这个字段。详见 [configuration.md](configuration.md#search)。
 
 ### 怎么填搜索服务
 
