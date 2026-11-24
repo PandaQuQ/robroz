@@ -806,6 +806,11 @@ pub struct ModelSettings {
     pub source: Option<ModelSettingsSource>,
 }
 
+/// `POST /api/settings/model/test` when the provider answers HTTP 401 or 403.
+/// Other failures keep their existing messages. The frontend can match
+/// `error == MODEL_TEST_BAD_KEY`.
+pub const MODEL_TEST_BAD_KEY: &str = "密钥不对或没填";
+
 /// `POST /api/settings/model/test`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

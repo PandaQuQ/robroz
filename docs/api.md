@@ -839,8 +839,9 @@ curl -s -X PUT $B/api/settings/model -H 'content-type: application/json' \
 用当前生效的配置发一条最短的 `/chat/completions` 请求试连。无请求体。总是 200。超时 10 秒。`host/src/model_settings.rs:test_model`
 
 - `{"ok":true}`。
-- `{"ok":false,"error":"还没设置模型"}`：地址、模型名、密钥没有配齐。
-- `{"ok":false,"error":"连不上：<原因>"}`：原因里的密钥会被替换成 `***`。
+- `{"ok":false,"error":"还没设置模型"}`：地址、模型名没有配齐。密钥可选。
+- `{"ok":false,"error":"密钥不对或没填"}`：服务商返回 HTTP 401 或 403。此句是契约常量 `MODEL_TEST_BAD_KEY`，前端按 `error == MODEL_TEST_BAD_KEY` 判断。
+- `{"ok":false,"error":"连不上：<原因>"}`：其他失败。原因里的密钥会被替换成 `***`。
 
 ```sh
 curl -s -X POST $B/api/settings/model/test
