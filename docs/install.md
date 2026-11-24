@@ -140,8 +140,8 @@ $env:ROBROZ_TOKEN = "<your-token>"
 cargo run -p robroz-client
 ```
 
-- The client speaks HTTP or HTTPS (`ROBROZ_HOST`). The host itself does not do TLS; for a remote host see [Connecting to a remote host](#connecting-to-a-remote-host).
-- The client sends `Authorization: Bearer <token>` on every request, including the live stream, when a token is set. `ROBROZ_TOKEN` wins for this run; otherwise it reads the `token` file next to `lang` in the client config folder. It does not read the host's `ROBROZ_TOKEN_FILE` variable. A 401 is shown as "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」).
+- The client uses plain HTTP only, with no TLS. Across machines, stay on a private network or add your own tunnel.
+- The client reads `ROBROZ_TOKEN` only, not `ROBROZ_TOKEN_FILE`.
 - The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set, the client shows only those groups and does not follow the host's list.
 - To look at the UI without a host: `cargo run -p robroz-client -- --fake` (or `ROBROZ_FAKE=1`).
 - If the host cannot be reached, the client keeps what is already on screen and retries after a short wait.
