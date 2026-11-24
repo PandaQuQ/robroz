@@ -222,7 +222,10 @@ impl ApprovalCard {
             ApprovalAction::Send => ActionKind::Send,
             ApprovalAction::Spend => ActionKind::Spend,
             ApprovalAction::Call => ActionKind::Call,
-            ApprovalAction::Unknown => ActionKind::Unknown,
+            // Rule confirm cards get their own layout with the review-rules page.
+            ApprovalAction::RuleAdd | ApprovalAction::RuleDelete | ApprovalAction::Unknown => {
+                ActionKind::Unknown
+            }
         };
         Some(Self {
             id: id.clone(),

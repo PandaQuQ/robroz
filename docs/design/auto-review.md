@@ -272,6 +272,33 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 `ruleadd`. The new variants need explicit `#[serde(rename = "rule_add")]` and
 `#[serde(rename = "rule_delete")]`.
 
+## Implementation status
+
+On `main` after the auto-review PR (`feat/auto-review`):
+
+- Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
+  `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
+  `REVIEW_RULE_MAX`. `GET` / `POST` / `DELETE /api/settings/review-rules`
+  (202 plus a confirm card; approve applies, deny or expiry discards).
+- Done: expiry of task, MCP `call`, bro-issued and rule cards
+  (`ROBROZ_APPROVAL_TTL_SECS`, default 24 hours), settled as `denied` +
+  `APPROVAL_EXPIRED_REASON`, task `done` + 「审批已过期」, later answers 409.
+- Done: review of task external-write cards and MCP `call` cards against the
+  confirmed rules (`host/src/review/`), retry once, then block; allow
+  continues with no card; block shows the card with `reason`.
+- Done: rule cards raised from the settings page are shown on the settings
+  page only, not in any chat or unread count, and work with no bro. They use
+  `botId` `SETTINGS_APPROVAL_BOT_ID` (`"settings"`) and `botName`
+  `SETTINGS_APPROVAL_BOT_NAME` (「设置」), and the client reads them with the
+  new `GET /api/approvals/{id}`. A card under review returns 404 there and
+  on `approve` / `deny`.
+- Not yet: moving approval cards to the owner's DM and the group's
+  「已发到主人私聊」 status (cards still appear in the task's group). Review of
+  bro-issued `delete` / `send` / `spend` cards (they only expire). A bro
+  proposing a rule in conversation, with the card in that bro's DM with the
+  owner: there is no bro path for proposing rules yet, so it is not built. The client's expired and rule-card layouts
+  ([#120](https://github.com/PandaQuQ/robroz/pull/120)).
+
 ## Rollout
 
 Verified on `main` at `0aed709` (the `ApprovalAction` enum is unchanged since `91efdde`), `crates/robroz-contract/src/lib.rs` (the

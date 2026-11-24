@@ -94,6 +94,19 @@ async fn main() {
         })
         .expect("无法启动 pump 线程");
 
+    // Auto-review and approval expiry. Review calls the model, so it runs on
+    // its own thread and never holds up the pump.
+    let reviewing = host.clone();
+    std::thread::Builder::new()
+        .name("robroz-review".into())
+        .spawn(move || loop {
+            if let Err(err) = reviewing.review_once(chrono::Utc::now()) {
+                eprintln!("review: {err}");
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        })
+        .expect("无法启动审核线程");
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|err| panic!("无法监听 {addr}: {err}"));
