@@ -5,10 +5,10 @@ Status: **Accepted**. Group turns (PR A) shipped in
 attachment (PR B, group and DM) and bros waking bros (with a depth cap)
 are built, and so are the internal Router (PR C,
 [#140](https://github.com/PandaQuQ/robroz/pull/140)) and step timeouts that
-cancel (PR D). See [Implementation status](#implementation-status).
+cancel ([#143](https://github.com/PandaQuQ/robroz/pull/143)). See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `43fbec2` plus [#140](https://github.com/PandaQuQ/robroz/pull/140) and PR D. This document
+Existing behaviour below is taken from `main` at `43fbec2` plus [#140](https://github.com/PandaQuQ/robroz/pull/140) and [#143](https://github.com/PandaQuQ/robroz/pull/143). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -348,7 +348,7 @@ described separately:
   `host/src/sandbox.rs`. Later pump passes inspect the container and collect
   the result.
 - A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` (default 600) is
-  cancelled (`host/src/timeouts.rs`, PR D). A step is the model phase after
+  cancelled (`host/src/timeouts.rs`, #143). A step is the model phase after
   a claim, each Router step, or the container run. Each starts a clock
   stored in SQLite (`step_clocks`), so a host restart does not reset it.
   The host stops the container (`docker rm -f`), tells a step still on its
@@ -383,7 +383,7 @@ described separately:
 
 Part of this has landed on `main` in #118 (`41c8e7f`): per-task step
 threads, Watchdog hints on `progress`, and the dead-task transition
-(`done` + `failure`, card 「没写出结果」). PR D added the host-side
+(`done` + `failure`, card 「没写出结果」). #143 added the host-side
 timeout that cancels a step and stops its container. What has not landed:
 a start/cancel/result shape for long tools.
 
@@ -499,7 +499,7 @@ merges. It is not a schedule.
 | A bro's message also wakes the other bros, with a round cap on recorded `depth` | Done (#132) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. A person's `/say` opens round 0 (`PERSON_DEPTH`); a bro's clean reply opens a round one level deeper for the other bros, up to `MAX_BRO_DEPTH = 2`. |
 | Router and Worker as an internal dispatch layer inside one bro | Done (PR C, #140) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」 (`router_step_progress`). See [Implementation status](#implementation-status). |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
-| New timeout on a model, tool, or live container, surfaced as `done` + `failure` without changing dead-run semantics | Done (PR D) | A host/pump path, not a Watchdog state change (`host/src/timeouts.rs`). The step is cancelled, the container stopped, and the task ends as 「没写出结果」 like a failed Router step. Not a contract change (see section 3). |
+| New timeout on a model, tool, or live container, surfaced as `done` + `failure` without changing dead-run semantics | Done (#143) | A host/pump path, not a Watchdog state change (`host/src/timeouts.rs`). The step is cancelled, the container stopped, and the task ends as 「没写出结果」 like a failed Router step. Not a contract change (see section 3). |
 | Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Done (#118) | Hints go in the existing `progress` field. Defaults: `ROBROZ_STEP_TIMEOUT_SECS` 600, `ROBROZ_STALL_SECS` 900. Does not change state except for the dead-task rule, and does not cancel the step. |
 | Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Done (#118) | Compare-and-set while still `running`. `Outcome::Dead` and leftover cleanup write `robroz_card::NO_RESULT`. The card uses `failure_line`, not 「没做成：没写出结果」. No auto-requeue. |
 | A group-level Router that picks one assignee for an unaddressed message and posts the only reply | No | Superseded by turn-taking. No agent speaks for another. |
@@ -555,14 +555,14 @@ order and done standards are in
    auto-requeue; a rerun is the user's choice. There is no fifth task state.
 
 Hint budgets shipped in #118: `ROBROZ_STEP_TIMEOUT_SECS` defaults to 600,
-`ROBROZ_STALL_SECS` to 900. PR D cancels a step at the same
+`ROBROZ_STALL_SECS` to 900. #143 cancels a step at the same
 `ROBROZ_STEP_TIMEOUT_SECS` budget. A follow-up on a
 `blocked` task attaches to that task and does not create a sibling; it is
 not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `43fbec2` plus #140 and PR D (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+Verified on `main` at `43fbec2` plus #140 and #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
 `host/src/pump.rs`, `host/src/router.rs`, `host/src/timeouts.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
@@ -688,14 +688,14 @@ Verified on `main` at `43fbec2` plus #140 and PR D (`host/src/turns.rs`, `host/s
      restart. The plan is dropped when the task ends. A follow-up that
      sends a running task back to `queued` (PR B) splits it again from
      scratch.
-  7. No step was cancelled on timeout in #140; PR D added that.
+  7. No step was cancelled on timeout in #140; #143 added that.
 
   **Done when (met in #140):** a task can be split into at most three
   sub-steps with one status card and one delivery; a failed or impossible
   split falls back to one Worker; a failed step ends the task as
   「没写出结果」 and does not requeue.
 
-- Done (PR D): step timeouts that cancel (`host/src/timeouts.rs`).
+- Done (#143): step timeouts that cancel (`host/src/timeouts.rs`).
 
   1. A step is the model phase after a claim (the model call and its tool
      calls), each Router step, or the container run. Each starts its own
