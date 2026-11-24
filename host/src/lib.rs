@@ -977,7 +977,13 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress
+                    t.progress,
+                    EXISTS(
+                        SELECT 1 FROM approvals a
+                        WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
+                          AND a.group_id <> t.group_id
+                          AND (a.review_state IS NULL OR a.review_state = 'blocked')
+                    )
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1",
@@ -1002,7 +1008,13 @@ fn group_events(conn: &Connection, group_id: &str, since: Option<&str>) -> rusql
             } else {
                 None
             };
-            let progress = progress::shown(state, container_up, row.get(9)?);
+            // The card went to the owner's DM: say so here, where the task is.
+            let sent_to_dm: bool = state == TaskState::Blocked && row.get::<_, i64>(10)? != 0;
+            let progress = if sent_to_dm {
+                Some(robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE.to_string())
+            } else {
+                progress::shown(state, container_up, row.get(9)?)
+            };
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -4505,6 +4517,13 @@ mod tests {
         }
     }
 
+    /// Approval cards in the owner's DM with `bot-ada`, where task cards go.
+    async fn ada_dm_cards(app: &Router) -> Vec<Value> {
+        let (status, bro) = read_json(call(app, post("/api/bros/bot-ada/dm", json!({}))).await).await;
+        assert!(status.is_success(), "{bro}");
+        approvals_in(&events_of(app, bro["dmGroupId"].as_str().unwrap()).await)
+    }
+
     fn approvals_in(events: &Value) -> Vec<Value> {
         events["events"].as_array().unwrap().iter().filter(|e| e["type"] == "approval").cloned().collect()
     }
@@ -4523,7 +4542,8 @@ mod tests {
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "blocked");
 
-        let cards = approvals_in(&events_of(&app, &group_id).await);
+        assert!(approvals_in(&events_of(&app, &group_id).await).is_empty(), "card goes to the DM");
+        let cards = ada_dm_cards(&app).await;
         assert_eq!(cards.len(), 1, "one card per blocking line");
         assert_eq!(cards[0]["action"], "send");
         assert_eq!(cards[0]["summary"], "要对外写入：给客户发周报");
@@ -4541,7 +4561,7 @@ mod tests {
         assert_eq!(task_state(&path, &task_id), "done");
         assert!(statuses(&events_of(&app, &group_id).await)[0].get("failure").is_none(), "approved run is a normal done");
         assert_eq!(std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(), "给客户发周报");
-        assert_eq!(approvals_in(&events_of(&app, &group_id).await).len(), 1, "no second card after approval");
+        assert_eq!(ada_dm_cards(&app).await.len(), 1, "no second card after approval");
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
@@ -4554,7 +4574,7 @@ mod tests {
         let (group_id, task_id) = seed_task(&app, "审批闸", "删远端分支\nrobroz-action:external").await;
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
-        let card = approvals_in(&events_of(&app, &group_id).await)[0].clone();
+        let card = ada_dm_cards(&app).await[0].clone();
         let (status, _) = decide(&app, card["id"].as_str().unwrap(), "deny").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(task_state(&path, &task_id), "done");
@@ -4592,7 +4612,7 @@ mod tests {
         assert_eq!(of(&external)["waitingFor"], "approval");
         assert_eq!(of(&captcha)["waitingFor"], "takeover");
 
-        let cards = approvals_in(&events);
+        let cards = ada_dm_cards(&app).await;
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "approve").await;
         assert_eq!(status, StatusCode::OK);
         run_once(&path, &volumes, &mut fake);
@@ -4619,7 +4639,7 @@ mod tests {
         run_once(&path, &volumes, &mut fake);
         let (status, _) = resume(&app, &external).await;
         assert_eq!(status, StatusCode::OK);
-        let cards = approvals_in(&events_of(&app, &group_id).await);
+        let cards = ada_dm_cards(&app).await;
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0]["decision"], "approved", "taking over answers the card");
         let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
@@ -4846,6 +4866,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_group_task_card_goes_to_the_owner_dm_and_the_group_gets_a_notice() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "审批闸", "给客户发周报\nrobroz-action:external").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+
+        // bot-ada was added by botId and had no DM: one is created for the card.
+        let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
+        let dm = bros["bros"].as_array().unwrap().iter().find(|b| b["id"] == "bot-ada").unwrap()["dmGroupId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(dm, group_id);
+
+        let wait = std::time::Duration::from_millis(800);
+        let mut group_stream = open_stream(&app, &group_id, None).await.into_body();
+        let group_backlog = sse_take(&mut group_stream, 5, wait).await;
+        assert!(group_backlog.iter().all(|(name, _, _)| name != "approval"), "{group_backlog:?}");
+        let (_, _, status) = group_backlog.iter().find(|(name, _, _)| name == "status").unwrap();
+        assert_eq!(status["waitingFor"], "approval");
+        assert_eq!(status["progress"], robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE);
+
+        let mut dm_stream = open_stream(&app, &dm, None).await.into_body();
+        let dm_backlog = sse_take(&mut dm_stream, 5, wait).await;
+        let (_, _, card) = dm_backlog.iter().find(|(name, _, _)| name == "approval").expect("card in the DM stream");
+        assert_eq!(card["taskId"], task_id.as_str());
+        assert!(dm_backlog.iter().all(|(name, _, _)| name != "status"), "the task's status stays in the group");
+
+        // Approve from the DM: the task resumes in its group.
+        let (status, _) = decide(&app, card["id"].as_str().unwrap(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(task_state(&path, &task_id), "queued");
+        let group_dir = run_once(&path, &volumes, &mut fake);
+        assert_eq!(group_dir, volumes.join(&group_id), "runs in the group's volume");
+        assert_eq!(task_state(&path, &task_id), "done");
+        let events = events_of(&app, &group_id).await;
+        assert_eq!(deliveries(&events).len(), 1, "result is delivered in the group");
+        assert!(statuses(&events)[0].get("progress").is_none(), "notice goes away once answered");
+    }
+
+    #[tokio::test]
+    async fn a_card_raised_in_a_dm_stays_in_that_dm() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, bro) = read_json(call(&app, post("/api/bros", json!({ "name": "bob" }))).await).await;
+        let (bot, dm) = (bro["id"].as_str().unwrap().to_string(), bro["dmGroupId"].as_str().unwrap().to_string());
+        let (status, task) = read_json(
+            call(&app, post(&format!("/api/groups/{dm}/tasks"), json!({ "assigneeBotId": bot, "prompt": "发周报\nrobroz-action:external" }))).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{task}");
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_once(&path, &volumes, &mut fake);
+        let events = events_of(&app, &dm).await;
+        let cards = approvals_in(&events);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["taskId"], task["id"]);
+        let status = statuses(&events)[0];
+        assert_eq!(status["waitingFor"], "approval");
+        assert!(status.get("progress").is_none(), "no notice when the card is right here: {status}");
+        let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
+        assert_eq!(bros["bros"].as_array().unwrap().len(), 1, "no extra DM or bro");
+    }
+
+    #[tokio::test]
     async fn approval_cards_carry_the_task_id_when_a_task_raised_them() {
         let path = temp_db();
         let volumes = temp_volumes();
@@ -4857,8 +4945,11 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert!(posted.get("taskId").is_none(), "a bot's own card has no task");
         let cards = approvals_in(&events_of(&app, &group_id).await);
-        assert_eq!(cards.len(), 2);
-        let gated = cards.iter().find(|c| c["id"] != posted["id"]).unwrap();
+        assert_eq!(cards.len(), 1, "the bro's own card stays in the group");
+        assert_eq!(cards[0]["id"], posted["id"]);
+        let dm_cards = ada_dm_cards(&app).await;
+        assert_eq!(dm_cards.len(), 1);
+        let gated = &dm_cards[0];
         assert_eq!(gated["taskId"], task_id.as_str());
         let (_, answered) = decide(&app, gated["id"].as_str().unwrap(), "approve").await;
         assert_eq!(answered["taskId"], task_id.as_str());

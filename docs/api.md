@@ -368,6 +368,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 只在 `running` 且 `containerUp` 为 true 时带，或任务因 MCP 审批而 `blocked` 且库里还存着进度行时带，原地更新在状态卡上（`host/src/progress.rs`）：
 
+- 任务在群里等一张发到主人私聊的审批卡时（见「审批卡发到哪」），这行固定是契约常量 `APPROVAL_SENT_TO_OWNER_DM_NOTICE`（「已发到主人私聊」），盖过库里存的进度行；卡回答、过期或还在自动审核时不显示。
 - 宿主机自己报：开跑时「开始干活」（接了模型时是「在想怎么回」），容器起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。MCP 工具用展示名 `{server}.{tool}`。等审批时这行仍显示。
 - bro 报：prompt 或模型回复里一行 `robroz-progress:<文字>`，取最后一行。
 - Watchdog 也可能写「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改状态，见上面「pump 做什么」。
@@ -506,9 +507,19 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
   -d '{"botId":"bot-ada","action":"delete","summary":"删缓存","path":"target/"}'
 ```
 
+### 审批卡发到哪
+
+任务审批卡和 MCP 工具审批卡发到**主人和这个任务的 bro 的私聊**（`host/src/approvals.rs:card_group`），不进任务所在的群：
+
+- 群里的状态卡照旧 `blocked` + `waitingFor:"approval"`，`progress` 是「已发到主人私聊」（`APPROVAL_SENT_TO_OWNER_DM_NOTICE`），没有按钮。旧客户端已经会把 `progress` 显示在「等你批准」下面，不用改客户端。
+- 任务本来就在私聊里跑：卡留在这个私聊，不显示这行提示。
+- bro 还没有私聊（用 `POST /api/groups/{id}/members` 直接按 `botId` 加进群的 bro）：宿主机先给它建一个私聊，和 `POST /api/bros/{id}/dm` 一样；找不到这个 bro 时卡留在任务所在的群。
+- 同意、拒绝、过期、409 都不变；同意后任务在原来的群里重新排队、在原来的群目录跑完，交付卡也在群里。
+- bro 用 `POST /api/groups/{id}/approvals` 自己发的卡还是留在那个群。
+
 ### 任务审批卡
 
-任务的 prompt 里有没接管过的 `robroz-action:external` 行时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_task`）：`action` 为 `send`，`summary` 为「要对外写入：<prompt 第一行普通内容，最多 60 字>」，带 `taskId`，状态卡 `waitingFor` 为 `approval`。
+任务的 prompt 里有没接管过的 `robroz-action:external` 行时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_task`）：`action` 为 `send`，`summary` 为「要对外写入：<prompt 第一行普通内容，最多 60 字>」，带 `taskId`，发到主人私聊（见上），状态卡 `waitingFor` 为 `approval`。
 
 - 同意：写接管标记，任务重新排队，跳过这一行跑完。
 - 拒绝：任务变成 `done`，`failure`「你拒绝了：…」，没有交付卡。
@@ -517,7 +528,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 
 ### MCP 工具审批卡
 
-模型要调用未标 `readOnlyHint: true` 的 MCP 工具时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_mcp_task`）：`action` 为 `call`，`summary` 为「调用 {server}.{tool}」加上参数摘要（超过 `APPROVAL_SUMMARY_MAX` 会截断），带 `taskId`、`mcpServer`、`mcpTool`，状态卡 `waitingFor` 为 `approval`，进度行是「在用 {server}.{tool}」。
+模型要调用未标 `readOnlyHint: true` 的 MCP 工具时，宿主机替执行者发一张审批卡（`host/src/approvals.rs:gate_mcp_task`）：`action` 为 `call`，`summary` 为「调用 {server}.{tool}」加上参数摘要（超过 `APPROVAL_SUMMARY_MAX` 会截断），带 `taskId`、`mcpServer`、`mcpTool`，发到主人私聊（见上），状态卡 `waitingFor` 为 `approval`，进度行是「已发到主人私聊」（卡在同一个私聊里时是「在用 {server}.{tool}」）。
 
 - 同意：任务回到 `queued`，由 pump 执行这次调用，把结果交回模型继续；这次调用计一次出网 GET。写继续标记失败时 500「批准失败，无法写入继续标记」，卡保持未回答。
 - 拒绝：不执行，任务变成 `done`，交付卡 `summary` 为「未执行」，`failure` 为「你拒绝了：{server}.{tool}」。
@@ -537,7 +548,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
   - 没接模型：block，`reason`「还没设置模型，没法自动审核」。从不默认放行。
 - **过期**：卡在 `expiresAt`（出卡后 `ROBROZ_APPROVAL_TTL_SECS` 秒，默认 24 小时）还没回答，宿主机把它记成 `decision: denied`、`reason: "审批已过期"`（`APPROVAL_EXPIRED_REASON`），`answeredBy` 留空。它挡着的任务变成 `done`，`failure`「审批已过期」。之后再 `approve` / `deny` 返回 409「已经答过了」。确认卡（记忆、技能）和接管（captcha）不过期。
 
-本版本卡片仍发在任务所在的群，还没有挪到主人私聊；bro 用 `POST /api/groups/{id}/approvals` 发的卡只会过期，不经过审核。
+任务审批卡和 MCP 工具审批卡发到主人私聊，见「审批卡发到哪」。bro 用 `POST /api/groups/{id}/approvals` 发的卡只会过期，不经过审核。
 
 ### GET /api/approvals/{id}
 

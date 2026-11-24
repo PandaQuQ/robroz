@@ -783,6 +783,15 @@ mod tests {
         body
     }
 
+    /// Events of the owner's DM with the task's bro, where its approval cards go.
+    async fn dm_events(h: &Harness) -> Value {
+        let (_, bro) = http(&h.app, json_req("POST", "/api/bros/bot-ada/dm", json!({}))).await;
+        let dm = bro["dmGroupId"].as_str().unwrap().to_string();
+        let (status, body) = http(&h.app, get_req(&format!("/api/groups/{dm}/events"))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
     fn event_of<'a>(body: &'a Value, typ: &str) -> &'a Value {
         body["events"]
             .as_array()
@@ -890,7 +899,7 @@ mod tests {
         let ev = events(&h).await;
         assert_eq!(status_of(&ev)["state"], "blocked", "{ev}");
         assert_eq!(status_of(&ev)["waitingFor"], "approval", "{ev}");
-        let card = event_of(&ev, "approval");
+        let card = event_of(&dm_events(&h).await, "approval").clone();
         assert_eq!(card["action"], "call", "{card}");
         assert_eq!(card["mcpServer"], "notes", "{card}");
         assert_eq!(card["mcpTool"], "write_note", "{card}");
@@ -906,7 +915,8 @@ mod tests {
             .get("progress")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        assert_eq!(progress, "在用 notes.write_note", "{ev}");
+        assert_eq!(progress, robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE, "{ev}");
+        assert!(ev["events"].as_array().unwrap().iter().all(|e| e["type"] != "approval"), "card is not in the group");
 
         let id = card["id"].as_str().unwrap();
         let (status, body) = http(
@@ -952,8 +962,7 @@ mod tests {
         let _task_id = post_task(&h, "写笔记").await;
         let mut sandbox = crate::sandbox::FakeSandbox::new();
         h.host.pump_once(&mut sandbox).unwrap();
-        let ev = events(&h).await;
-        let card = event_of(&ev, "approval");
+        let card = event_of(&dm_events(&h).await, "approval").clone();
         let id = card["id"].as_str().unwrap().to_string();
 
         let (status, body) = http(
@@ -1004,8 +1013,7 @@ mod tests {
         let task_id = post_task(&h, "写笔记").await;
         let mut sandbox = crate::sandbox::FakeSandbox::new();
         h.host.pump_once(&mut sandbox).unwrap();
-        let ev = events(&h).await;
-        let card = event_of(&ev, "approval");
+        let card = event_of(&dm_events(&h).await, "approval").clone();
         let id = card["id"].as_str().unwrap().to_string();
 
         let (status, body) = http(
@@ -1023,7 +1031,7 @@ mod tests {
 
         let ev = events(&h).await;
         assert_eq!(status_of(&ev)["state"], "blocked", "{ev}");
-        let card = event_of(&ev, "approval");
+        let card = event_of(&dm_events(&h).await, "approval").clone();
         assert!(card["decision"].is_null(), "{card}");
         assert_eq!(card["id"], id, "{card}");
     }

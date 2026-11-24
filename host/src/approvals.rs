@@ -280,6 +280,26 @@ fn gate_line(prompt: &str) -> String {
     crate::text::clip(line, 60)
 }
 
+/// Where a task's approval card goes: the owner's DM with the task's bro.
+/// A task that already runs in a DM keeps its card there. If the bro is
+/// unknown (no `bots` row), the card stays in the task's group.
+fn card_group(conn: &Connection, task_id: &str) -> rusqlite::Result<Option<String>> {
+    let Some((group_id, bot_id)) = conn
+        .query_row(
+            "SELECT group_id, assignee_bot_id FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if crate::bros::dm_owner(conn, &group_id)?.is_some() {
+        return Ok(Some(group_id));
+    }
+    Ok(Some(crate::bros::owner_dm_for(conn, &bot_id)?.unwrap_or(group_id)))
+}
+
 /// A blocked task asks before writing outside. The card names the task and
 /// the blocking line; answering it resumes or ends that task.
 pub(crate) fn gate_task(
@@ -289,12 +309,13 @@ pub(crate) fn gate_task(
     hash: &str,
     now: &str,
 ) -> rusqlite::Result<()> {
+    let Some(group) = card_group(conn, task_id)? else { return Ok(()) };
     let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash,
                                review_state, expires_at)
-         SELECT ?1, group_id, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4, ?6, ?7 FROM tasks WHERE id = ?5",
-        params![new_id(), gate_summary(prompt), now, hash, task_id, gate.review_state, gate.expires_at],
+         SELECT ?1, ?8, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4, ?6, ?7 FROM tasks WHERE id = ?5",
+        params![new_id(), gate_summary(prompt), now, hash, task_id, gate.review_state, gate.expires_at, group],
     )?;
     Ok(())
 }
@@ -310,12 +331,13 @@ pub(crate) fn gate_mcp_task(
     server: &str,
     tool: &str,
 ) -> rusqlite::Result<()> {
+    let Some(group) = card_group(conn, task_id)? else { return Ok(()) };
     let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash, mcp_server, mcp_tool,
                                review_state, expires_at)
-         SELECT ?1, group_id, assignee_bot_id, 'call', ?2, NULL, NULL, ?3, NULL, id, ?4, ?5, ?6, ?8, ?9 FROM tasks WHERE id = ?7",
-        params![new_id(), summary, now, hash, server, tool, task_id, gate.review_state, gate.expires_at],
+         SELECT ?1, ?10, assignee_bot_id, 'call', ?2, NULL, NULL, ?3, NULL, id, ?4, ?5, ?6, ?8, ?9 FROM tasks WHERE id = ?7",
+        params![new_id(), summary, now, hash, server, tool, task_id, gate.review_state, gate.expires_at, group],
     )?;
     Ok(())
 }
