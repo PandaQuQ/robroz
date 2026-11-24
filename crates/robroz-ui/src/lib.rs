@@ -11,6 +11,7 @@
 
 pub mod cards;
 pub mod conversations;
+pub mod i18n;
 pub mod theme;
 pub mod view;
 mod widgets;

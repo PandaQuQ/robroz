@@ -5,6 +5,7 @@
 //! no contract event yet, so their shapes follow SPEC §8 and stay client-side
 //! until the backend adds them. None of this touches the frozen status card.
 
+use crate::i18n::Key;
 pub mod confirm;
 pub mod interact;
 pub mod mcp;
@@ -306,14 +307,29 @@ pub fn split_call_summary<'a>(
     })
 }
 
-/// The footnote name for `answeredBy`: 「我」 when it is this client's own
-/// name, else the name as sent; `None` stays `None` (no person shown).
+/// The footnote name for `answeredBy`: [`ME_MARK`] when it is this client's
+/// own name, else the name as sent; `None` stays `None` (no person shown).
+/// The mark, not the word, is stored so a language switch re-renders it.
 pub fn as_me(by: Option<String>, me: &str) -> Option<String> {
-    by.map(|b| if b == me { ME.to_string() } else { b })
+    by.map(|b| if b == me { ME_MARK.to_string() } else { b })
 }
 
 /// How a card names the person using this client.
-pub const ME: &str = "我";
+pub const ME: Key = Key::CardsMe;
+
+/// Stored in a card's `by` for "this client"; [`who`] turns it into [`ME`]
+/// in the active language. A private-use character, so no real name can
+/// collide with it.
+pub const ME_MARK: &str = "\u{E000}me";
+
+/// The name to show for a stored `by`.
+pub fn who(by: &str) -> &str {
+    if by == ME_MARK {
+        ME.as_str()
+    } else {
+        by
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftChannel {
@@ -346,6 +362,7 @@ mod tests {
 
     #[test]
     fn answered_by_shows_me_other_or_nobody() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let event = |decision, by: Option<&str>| Event::Approval {
             id: "a1".into(),
             bot_id: "bot-doc".into(),
@@ -387,7 +404,9 @@ mod tests {
             let card = ApprovalCard::from_event(&event(d, by)).unwrap().seen_by(me);
             assert_eq!(status::approval_footnote(&card.state, &utc).unwrap(), want);
         }
-        assert_eq!(as_me(Some(me.into()), me).as_deref(), Some(ME));
+        assert_eq!(as_me(Some(me.into()), me).as_deref(), Some(ME_MARK));
+        assert_eq!(who(ME_MARK), ME.as_str());
+        assert_eq!(who("Panda 的手机"), "Panda 的手机");
         assert_eq!(as_me(None, me), None);
     }
 
@@ -475,6 +494,7 @@ mod tests {
 
     #[test]
     fn call_approval_keeps_the_host_summary_and_names_the_tool() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let summary = "调用 notes.write_note：{\"title\":\"hi\"}";
         let card =
             ApprovalCard::from_event(&call_event(summary, Some("notes"), Some("write_note")))
@@ -545,7 +565,7 @@ mod tests {
         assert!(matches!(card.state, ApprovalState::Expired { .. }));
         assert_eq!(
             status::approval_status(&card.state),
-            (review_rules::EXPIRED, status::Dot::Void)
+            (review_rules::EXPIRED.as_str(), status::Dot::Void)
         );
         let foot = status::approval_footnote(&card.state, &chrono::Utc).unwrap();
         assert_eq!(foot.text, review_rules::EXPIRED_FOOT);
@@ -595,6 +615,7 @@ mod tests {
 
     #[test]
     fn unknown_action_is_a_generic_card() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let event = Event::Approval {
             id: "a-future".into(),
             bot_id: "bot-doc".into(),

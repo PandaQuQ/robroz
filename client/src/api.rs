@@ -31,6 +31,7 @@ use robroz_contract::{
 };
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
+use robroz_ui::i18n::{host_text, Key as Text};
 
 use robroz_ui::cards::model as model_page;
 use robroz_ui::cards::review_rules;
@@ -206,13 +207,13 @@ impl ApiError {
     /// the host's message, or 「连不上主机」.
     pub fn reason(&self) -> String {
         match self {
-            ApiError::Transport(_) => "连不上主机".into(),
-            ApiError::CommandNotApproved(_) => "命令未批准".into(),
+            ApiError::Transport(_) => Text::ClientNoHost.into(),
+            ApiError::CommandNotApproved(_) => robroz_ui::cards::mcp::COMMAND_UNAPPROVED.into(),
             ApiError::Conflict(msg)
             | ApiError::BadRequest(msg)
             | ApiError::NotFound(msg)
             | ApiError::Status(_, msg)
-            | ApiError::Decode(msg) => msg.clone(),
+            | ApiError::Decode(msg) => host_text(msg).into_owned(),
         }
     }
 
@@ -220,7 +221,9 @@ impl ApiError {
     pub fn note(&self) -> Note {
         match self {
             ApiError::Conflict(_) => Note::AlreadyAnswered,
-            ApiError::CommandNotApproved(_) => Note::Failed("命令未批准".into()),
+            ApiError::CommandNotApproved(_) => {
+                Note::Failed(robroz_ui::cards::mcp::COMMAND_UNAPPROVED.into())
+            }
             ApiError::BadRequest(msg) => Note::Rejected(msg.clone()),
             ApiError::Transport(_) => Note::Retry,
             ApiError::NotFound(msg) | ApiError::Status(_, msg) | ApiError::Decode(msg) => {
@@ -337,7 +340,7 @@ fn decode_review_rules(body: &str) -> Result<Vec<review_rules::Rule>, ApiError> 
 fn decode_approval_id(body: &str) -> Result<String, ApiError> {
     let created: ReviewRuleCreated = decode(body)?;
     if created.approval_id.is_empty() {
-        return Err(ApiError::Decode("与契约不符: 需要 approvalId".into()));
+        return Err(ApiError::Decode(Text::ClientDecodeNeedsApprovalId.into()));
     }
     Ok(created.approval_id)
 }
@@ -345,7 +348,7 @@ fn decode_approval_id(body: &str) -> Result<String, ApiError> {
 fn decode_approval_event(body: &str) -> Result<Event, ApiError> {
     event_decode::parse_event_str(body)
         .map(|(event, _)| event)
-        .map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
+        .map_err(|e| ApiError::Decode(Text::ClientDecodeFailed.fill(&[&e])))
 }
 
 pub fn decode_search(body: &str) -> Result<search::Current, ApiError> {
@@ -446,13 +449,14 @@ impl HttpApi {
         url: &str,
         result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     ) -> Result<String, ApiError> {
-        let mut response = result
-            .map_err(|e| ApiError::Transport(format!("连不上宿主机 {}: {e}", self.conn.base())))?;
+        let mut response = result.map_err(|e| {
+            ApiError::Transport(Text::ClientConnectFailed.fill(&[&self.conn.base(), &e]))
+        })?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| ApiError::Transport(format!("读 {url} 失败: {e}")))?;
+            .map_err(|e| ApiError::Transport(Text::ClientReadFailed.fill(&[&url, &e])))?;
         if (200..300).contains(&status) {
             return Ok(body);
         }
@@ -465,7 +469,7 @@ impl HttpApi {
         }
         let msg = serde_json::from_str::<ErrorBody>(&body)
             .map(|e| e.error)
-            .unwrap_or_else(|_| format!("{method} {url} 返回 {status}"));
+            .unwrap_or_else(|_| Text::ClientHttpStatus.fill(&[&method, &url, &status]));
         Err(match status {
             400 => ApiError::BadRequest(msg),
             404 => ApiError::NotFound(msg),
@@ -524,7 +528,7 @@ impl HttpApi {
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, ApiError> {
-    serde_json::from_str(body).map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
+    serde_json::from_str(body).map_err(|e| ApiError::Decode(Text::ClientDecodeFailed.fill(&[&e])))
 }
 
 fn mcp_secret_json(s: &SecretPut) -> serde_json::Value {
@@ -623,7 +627,7 @@ impl CardApi for HttpApi {
         }
         event_decode::parse_event_str(&body)
             .map(Some)
-            .map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
+            .map_err(|e| ApiError::Decode(Text::ClientDecodeFailed.fill(&[&e])))
     }
 
     fn send_draft(&self, id: &str) -> Result<(), ApiError> {
@@ -726,7 +730,7 @@ impl CardApi for HttpApi {
         let id = save
             .id
             .as_deref()
-            .ok_or_else(|| ApiError::BadRequest("没有这台服务器".into()))?;
+            .ok_or_else(|| ApiError::BadRequest(Text::ClientNoSuchServer.into()))?;
         decode(&self.patch(&paths::mcp_server(id), mcp_save_body(save, true))?)
     }
 
@@ -2066,6 +2070,7 @@ mod tests {
 
     #[test]
     fn plain_reasons() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         assert_eq!(ApiError::BadRequest("名字太长".into()).reason(), "名字太长");
         assert_eq!(ApiError::Transport("refused".into()).reason(), "连不上主机");
     }
@@ -2546,7 +2551,11 @@ mod tests {
             assert_eq!(api.say(&group.id, "@路人 帮忙").unwrap().task, None);
             let err = api.say(&group.id, "  ").unwrap_err();
             assert!(matches!(err, ApiError::BadRequest(_)));
-            assert_eq!(err.reason(), "请填写内容");
+            // The host's own constant, shown in the active (default) language.
+            assert_eq!(err.reason(), "Enter some text");
+            assert!(
+                matches!(&err, ApiError::BadRequest(r) if r == robroz_contract::host_text::NEED_TEXT)
+            );
             assert!(matches!(
                 api.say("no-such-group", "hi"),
                 Err(ApiError::NotFound(_))

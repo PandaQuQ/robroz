@@ -7,6 +7,7 @@
 
 use super::status::{self, Dot};
 use super::{ApprovalCard, ApprovalState, ChoiceCard, ChoiceState, DraftCard, DraftState};
+use crate::i18n::{host_text, Key};
 
 /// How one button is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,10 +53,10 @@ impl Note {
     pub fn text(&self) -> String {
         match self {
             Note::Retry => status::RETRY_NOTE.into(),
-            Note::AlreadyAnswered => "已经有人选过了，正在刷新".into(),
-            Note::AlreadyDecided => "这张卡已经处理过了，正在刷新".into(),
-            Note::Rejected(msg) => format!("没选上：{msg}"),
-            Note::Failed(msg) => format!("没成功：{msg}"),
+            Note::AlreadyAnswered => Key::InteractAlreadyPicked.into(),
+            Note::AlreadyDecided => Key::InteractAlreadyDecided.into(),
+            Note::Rejected(msg) => Key::InteractRejected.fill(&[&host_text(msg)]),
+            Note::Failed(msg) => Key::InteractFailed.fill(&[&host_text(msg)]),
         }
     }
 }
@@ -327,6 +328,7 @@ mod tests {
 
     #[test]
     fn failure_restores_open_with_retry_note() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let card = single();
         let mut ui = CardUi::default();
         ui.begin_choice(&card, Some("cargo"));
@@ -346,6 +348,7 @@ mod tests {
 
     #[test]
     fn multi_picks_keep_order_and_confirm_counts() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let card = multi();
         let mut ui = CardUi::default();
         assert_eq!(
