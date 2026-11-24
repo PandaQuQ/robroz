@@ -287,8 +287,8 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Implementation status
 
-On `main` after [#123](https://github.com/PandaQuQ/robroz/pull/123),
-[#125](https://github.com/PandaQuQ/robroz/pull/125) and the bro-card review PR:
+On `main` after [#125](https://github.com/PandaQuQ/robroz/pull/125), plus the
+bro-card review PR:
 
 - Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
   `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
@@ -323,8 +323,7 @@ On `main` after [#123](https://github.com/PandaQuQ/robroz/pull/123),
 - Not yet: a bro
   proposing a rule in conversation, with the card in that bro's DM with the
   owner: there is no bro path for proposing rules yet, so it is not
-  built. The client's expired and rule-card layouts
-  ([#120](https://github.com/PandaQuQ/robroz/pull/120)).
+  built.
 
 ## Rollout
 

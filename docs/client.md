@@ -6,9 +6,7 @@
 
 ## 布局
 
-
 - 左边：会话列表，标题「聊天」，标题行右边是「引入一个 bro」按钮（新建 bro 并打开它的私聊）；下面是群和私聊，按最近活动从新到旧，带未读数；还没有会话时显示「还没有 bro，引入第一个」。列表下面依次是「例行任务」「记忆」「技能」「模型」「联网搜索」「MCP」「放行规则」七个按钮。右边：打开的会话的消息流，或对应的页面。
-
 - 窗口宽度不超过 480 时，列表和会话各占整个窗口：点进去看会话，「‹ 聊天」返回。
 - 群列表来自 `GET /api/groups`；设了 `ROBROZ_GROUPS`（逗号分隔，每项 `id` 或 `id=名字`）就只显示这几个群。
 - 打开一个会话会标记已读（`POST /api/groups/{id}/read`），未读数来自 `GET /api/unread`。
@@ -148,7 +146,7 @@
 
 ## 放行规则页
 
-点左边的「放行规则」（在「MCP」下面）打开。列出已经确认的放行规则。在设置页上新增或删除时，宿主返回 202 和 `approvalId`，客户端再调 `GET /api/approvals/{id}` 取卡，确认卡直接显示在本页（新增在输入框下面，删除替换那一行），主人当场点批准或拒绝，走 `POST /api/approvals/{id}/approve` / `deny`；`botId` 是 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），没有 `taskId`，不进任何聊天、stream 或未读，没有 bro 也能用。客户端也会把这种卡从会话流里滤掉。批准后再拉一次列表，拒绝就收起这张卡。接口见 [design/auto-review.md](design/auto-review.md)。代码：状态和文字在 `crates/robroz-ui/src/cards/review_rules.rs`，界面在 `crates/robroz-ui/src/view.rs:review_rules_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_review_action`。
+点左边的「放行规则」（在「MCP」下面）打开。列出已经确认的放行规则。在设置页上新增或删除时，宿主返回 202 和 `approvalId`，客户端再调 `GET /api/approvals/{id}` 取卡，确认卡直接显示在本页（新增在输入框下面，删除替换那一行），主人当场点批准或拒绝，走 `POST /api/approvals/{id}/approve` / `deny`；`botId` 是 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），没有 `taskId`，不进任何聊天、stream 或未读，没有 bro 也能用。客户端也会把这种卡从会话流里滤掉。批准后再拉一次列表，拒绝就收起这张卡。接口见 [api.md 的「放行规则」](api.md#放行规则)，设计见 [design/auto-review.md](design/auto-review.md)。代码：状态和文字在 `crates/robroz-ui/src/cards/review_rules.rs`，界面在 `crates/robroz-ui/src/view.rs:review_rules_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_review_action`。
 
 - **标题行**：「放行规则」。
 - **添加**：输入框占位符是「用一句话写，比如：允许合并 CI 全绿的 PR」，右边「添加」。点了不立刻进列表。空提交提示「请填写规则」。超过 200 字提示「最多 200 字，还要删掉 N 字」（N 是多出来的字数），红字，放在输入框下面。
@@ -156,7 +154,7 @@
 - **一行规则**：规则原文，下面一行灰字「添加于 {日期}」（来自 `createdAt`），右边「删除」。没有开关，也没有编辑。删除后规则仍留在列表里，直到确认；确认卡显示在这一行的位置。
 - **确认卡**（设置页内，复用 #68 的确认布局）：没有粗体标题。正文是规则原文，下面一行灰字：「确认后加入放行规则」或「确认后删除这条规则」。新增按钮是「添加」/「不用」，删除按钮是红色「删除规则」/「不用」。这张卡已经在别处处理过时，卡片收起，页上灰字提示「这张卡已经处理过了」，并重新拉取列表。
 - **过期卡**：`decision` 是 `denied` 且 `reason` 等于 contract 常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）时，显示「已过期」，脚注「没人批准，已过期」和时间分成两个 span，按钮锁死，不写「我已拒绝」，也没有「重新发起」。聊天里的过期卡右上仍是灰点「已过期」，并保留操作那一行。
-- **群里的审批卡**：和私聊卡一样显示操作那一行，再加「已发到主人私聊」，右上「等你批准」，没有批准/拒绝按钮。被拦操作在主人私聊里的审批卡多一行灰字「被拦原因：」加上 `reason`。
+- **群里的审批卡**：任务卡和 MCP 卡发在主人和这个 bro 的私聊里，主人在那里批准或拒绝；被拦时多一行灰字「被拦原因：」加上 `reason`。群里只剩状态卡：`blocked` + `waitingFor: approval`，`progress` 是「已发到主人私聊」（`APPROVAL_SENT_TO_OWNER_DM_NOTICE`），没有批准/拒绝按钮。任务本来就在私聊里跑时，卡留在这个私聊，不显示这行提示。bro 用 `POST /api/groups/{id}/approvals` 发的卡先过自动审核，放行的不出卡；被拦或没有放行规则时，卡发在主人和这个 bro 的私聊里，主人在那里批准或拒绝。发卡的群里也列着同一张卡（同一个 `id`），客户端照现在的做法画成没有按钮、写「已发到主人私聊」，主人在私聊答了之后群里那张跟着变。
 
 ## 例行任务
 
