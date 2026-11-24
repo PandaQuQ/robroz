@@ -11,7 +11,7 @@
 | `web_search` | 用选好的服务搜索公开网页。 |
 | `web_fetch` | 用 GET 读一个页面，转成纯文本。只允许 http / https，拒绝解析到内网、回环和链路本地地址的目标。结果最多 16000 个字符，超出截断加「…（已截断）」。 |
 
-- 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#三级权限)。
+- 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#permission-tiers)。
 - 服务由 robroz 用户自己选、自己填，密钥不必交给别人：[Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
 - 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」（`host/src/search.rs:NOT_CONFIGURED`），并给任务记上 `needsSetup: "search"`。这句话会加在结果文件开头，交付卡带可选字段 `needsSetup: "search"`。`web_fetch` 不用搜索服务，不会记这个字段。客户端按这个字段给出「去设置」，不匹配文字：只要带这个字段就会显示按钮，不要求同时有 `failure`；没有 `failure` 时路径下面再加一行灰字「这次没联网搜索：还没设置」。见 [client.md 的「联网搜索页」](client.md#联网搜索页)。
 - 设置存在本机 SQLite 的 `settings` 表。密钥不进日志、不进报错，接口只返回 `hasKey` 和 `keyLast4`。
@@ -71,7 +71,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 
 交给模型的名字是 `{safe_server}__{safe_tool}`：只保留字母、数字、`_`、`-`，最长 64 个字符；重名时加短哈希。进度行和审批卡仍用原来的 `{server}.{tool}`，例如「在用 notes.write_note」。映射写在 `host/src/mcp_tools.rs`。
 
-权限跟 [permissions.md](permissions.md#三级权限) 对齐：
+权限跟 [permissions.md](permissions.md#permission-tiers) 对齐：
 
 - `readOnlyHint: true`：计数（Metered），按一次出网 GET 计次，直接调用，不出审批卡。
 - 其余：接管（Takeover），先出审批卡（`action` 为 `call`），卡上带可选字段 `mcpServer`、`mcpTool` 和参数摘要，以及 `taskId`。批准、拒绝走现有的 `POST /api/approvals/{id}/approve` 和 `/deny`，答过一次再答是 409。等待期间任务是 `blocked`（`waitingFor` 为 `approval`），不加新状态。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。

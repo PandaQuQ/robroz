@@ -1097,4 +1097,4 @@ curl -s -X PUT $B/api/groups/<groupId>/mcp/<serverId>
 - 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
 - 契约只加了可选字段和新类型：`ApprovalAction::Call`（JSON `"call"`），以及 `Event::Approval` 上可选的 `mcpServer`、`mcpTool`。现有字段和任务状态不变。
 
-行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用) 和 [permissions.md](permissions.md#mcp-工具)。
+行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用) 和 [permissions.md](permissions.md#mcp-tools)。

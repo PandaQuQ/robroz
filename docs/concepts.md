@@ -40,7 +40,7 @@ A first-task walk-through is in [install.md](install.md#first-task). The code is
 Failure is not a state. It is expressed in two ways:
 
 - **A dead run:** the container exited non-zero, wrote no result, or disappeared (the host or Docker restarted, or the container was deleted). The task ends as `done`, `failure` is 「没写出结果」 (Finished with no result), and there is no delivery card. It is not queued again, a container is not started again, and `resume` returns 409 「这次不能恢复」 (this run can't be resumed). There is no fifth state.
-- **Couldn't finish:** the task is `done` but carries a `failure`. See [permissions.md, “Couldn't finish”](permissions.md#没做成failure). The client shows 「没写出结果」 as it is; any other reason is shown as 「没做成：原因」 (Couldn't finish: reason). It is not shown as 「没做成：没写出结果」.
+- **Couldn't finish:** the task is `done` but carries a `failure`. See [permissions.md, “Couldn't finish”](permissions.md#couldnt-finish-failure). The client shows 「没写出结果」 as it is; any other reason is shown as 「没做成：原因」 (Couldn't finish: reason). It is not shown as 「没做成：没写出结果」.
 
 ## Status card fields
 
