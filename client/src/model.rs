@@ -32,6 +32,8 @@ pub struct DeliveryCard {
     pub failure: Option<String>,
     /// `needsSetup: "search"` (robroz#76): offer 「去设置」 on the card.
     pub needs_search_setup: bool,
+    /// `needsSetup: "model"` (robroz#102): offer 「去设置」 on the card.
+    pub needs_model_setup: bool,
 }
 
 /// Status line while the task waits on an approval card (`waitingFor:
@@ -89,9 +91,10 @@ pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
     }
 }
 
-/// The grey line for a task the host says did not get done.
+/// The grey line for a task the host says did not get done. A dead run reads
+/// 「没写出结果」, anything else 「没做成：原因」 (from `robroz-card`).
 pub fn failure_line(failure: &str) -> String {
-    format!("没做成：{failure}")
+    robroz_card::failure_line(failure)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +349,7 @@ fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
                 badge: briefing.then(robroz_card::briefing_badge),
                 failure: failure.clone(),
                 needs_search_setup: needs_setup.as_deref() == Some("search"),
+                needs_model_setup: needs_setup.as_deref() == Some("model"),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
         }
@@ -701,6 +705,23 @@ mod tests {
     }
 
     #[test]
+    fn dead_run_ended_as_done_still_reads_no_result() {
+        let mut ev = status("t5", "Cy", TaskState::Done, false);
+        if let Event::Status { failure, .. } = &mut ev {
+            *failure = Some("没写出结果".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&status("t5", "Cy", TaskState::Running, true));
+        feed.apply(&ev);
+        let cards = status_cards(&feed);
+        assert_eq!(cards[0].status_line, "没写出结果");
+        assert_eq!(cards[0].tone, Tone::Gray);
+        assert_eq!(cards[0].palette, expected(TaskState::Running, false).2);
+        assert_eq!(cards[0].action, None);
+        assert_eq!(preview(&ev), "Cy：没写出结果");
+    }
+
+    #[test]
     fn failed_delivery_carries_failure_and_old_json_is_unchanged() {
         let mut ev = delivery("d9", "tasks/t9/result.txt", false);
         if let Event::Delivery { failure, .. } = &mut ev {
@@ -772,7 +793,7 @@ mod tests {
             "去设置 when needsSetup is set, even without failure"
         );
 
-        let mut text_only = ev;
+        let mut text_only = ev.clone();
         if let Event::Delivery {
             failure,
             needs_setup,
@@ -793,6 +814,31 @@ mod tests {
                 }))
             ),
             "no 去设置 without needsSetup"
+        );
+
+        let mut model_setup = ev.clone();
+        if let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = &mut model_setup
+        {
+            *failure = None;
+            *needs_setup = Some("model".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&model_setup);
+        assert!(
+            matches!(
+                feed.rows().next(),
+                Some(Row::Delivery(DeliveryCard {
+                    needs_model_setup: true,
+                    needs_search_setup: false,
+                    failure: None,
+                    ..
+                }))
+            ),
+            "去设置 when needsSetup is model"
         );
 
         let old_status: Event = serde_json::from_value(serde_json::json!({

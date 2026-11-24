@@ -25,10 +25,15 @@ use robroz_contract::{
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
     MCP_COMMAND_NOT_APPROVED,
 };
-use robroz_contract::{SearchSettings, SearchTestResult};
+use robroz_contract::{
+    ModelSettings, ModelSettingsSource, ModelTestResult, SearchSettings, SearchTestResult,
+};
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
+
 use robroz_ui::cards::review_rules;
+use robroz_ui::cards::model as model_page;
+
 use robroz_ui::cards::search;
 use robroz_ui::cards::ApprovalExtras;
 
@@ -115,12 +120,18 @@ pub mod paths {
     pub const SEARCH_SETTINGS: &str = "/api/settings/search";
     /// robroz#76: try the effective config once.
     pub const SEARCH_TEST: &str = "/api/settings/search/test";
+
     /// GET confirmed rules; POST proposes an add (202 + approvalId).
     pub const REVIEW_RULES: &str = "/api/settings/review-rules";
     /// DELETE proposes removing a confirmed rule (202 + approvalId).
     pub fn review_rule(id: &str) -> String {
         format!("/api/settings/review-rules/{id}")
     }
+    /// robroz#102: read (GET) or change (PUT) the model config.
+    pub const MODEL_SETTINGS: &str = "/api/settings/model";
+    /// robroz#102: try the effective config once.
+    pub const MODEL_TEST: &str = "/api/settings/model/test";
+
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn send_draft(id: &str) -> String {
         format!("/api/cards/{id}/send")
@@ -290,12 +301,18 @@ pub trait CardApi: Send + Sync {
     fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError>;
     /// `{ok, error?}`: 「能用了」 or 「连不上：原因」.
     fn test_search(&self) -> Result<(bool, Option<String>), ApiError>;
+
     /// Confirmed allow rules only.
     fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError>;
     /// Propose adding a rule. Returns the pending approval id (202).
     fn propose_review_rule(&self, text: &str) -> Result<String, ApiError>;
     /// Propose deleting a confirmed rule. Returns the pending approval id (202).
     fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError>;
+    /// 模型 page: what is in effect; never the key (robroz#102).
+    fn model_settings(&self) -> Result<model_page::Current, ApiError>;
+    fn put_model(&self, put: &model_page::Put) -> Result<model_page::Current, ApiError>;
+    fn test_model(&self) -> Result<(bool, Option<String>), ApiError>;
+
 }
 
 /// `GET`/`PUT /api/settings/search` body. `source` is read only when the
@@ -349,6 +366,47 @@ pub fn decode_search(body: &str) -> Result<search::Current, ApiError> {
         key_last4: s.key_last4,
         source: search::Source::parse(raw.get("source").and_then(|v| v.as_str())),
     })
+}
+
+pub fn decode_model(body: &str) -> Result<model_page::Current, ApiError> {
+    let s: ModelSettings = decode(body)?;
+    Ok(model_page::Current {
+        base_url: s.base_url,
+        model: s.model,
+        has_key: s.has_key,
+        key_last4: s.key_last4,
+        source: s.source.map(|src| match src {
+            ModelSettingsSource::Env => model_page::Source::Env,
+            ModelSettingsSource::Settings => model_page::Source::Settings,
+        }),
+    })
+}
+
+pub mod model_body {
+    use super::model_page::Put;
+    /// Missing field: leave; `null`: clear (falls back to env).
+    pub fn put(p: &Put) -> String {
+        let mut m = serde_json::Map::new();
+        if let Some(u) = &p.base_url {
+            m.insert(
+                "baseUrl".into(),
+                u.clone().map_or(serde_json::Value::Null, Into::into),
+            );
+        }
+        if let Some(model) = &p.model {
+            m.insert(
+                "model".into(),
+                model.clone().map_or(serde_json::Value::Null, Into::into),
+            );
+        }
+        if let Some(k) = &p.key {
+            m.insert(
+                "key".into(),
+                k.clone().map_or(serde_json::Value::Null, Into::into),
+            );
+        }
+        serde_json::Value::Object(m).to_string()
+    }
 }
 
 pub mod search_body {
@@ -726,6 +784,7 @@ impl CardApi for HttpApi {
         Ok((r.ok, r.error))
     }
 
+
     fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
         decode_review_rules(&self.get(paths::REVIEW_RULES)?)
     }
@@ -742,6 +801,20 @@ impl CardApi for HttpApi {
         let body = self.delete(&paths::review_rule(id))?;
         decode_approval_id(&body)
     }
+
+    fn model_settings(&self) -> Result<model_page::Current, ApiError> {
+        decode_model(&self.get(paths::MODEL_SETTINGS)?)
+    }
+
+    fn put_model(&self, put: &model_page::Put) -> Result<model_page::Current, ApiError> {
+        decode_model(&self.put_json(paths::MODEL_SETTINGS, model_body::put(put))?)
+    }
+
+    fn test_model(&self) -> Result<(bool, Option<String>), ApiError> {
+        let r: ModelTestResult = decode(&self.post(paths::MODEL_TEST, None)?)?;
+        Ok((r.ok, r.error))
+
+    }
 }
 
 /// Offline API for `--fake` and the gallery: accepts everything and keeps
@@ -753,7 +826,10 @@ pub struct FakeApi {
     mcp_servers: Mutex<Vec<McpServer>>,
     mcp_group: Mutex<std::collections::HashSet<(String, String)>>,
     search: Mutex<search::Current>,
+
     review_rules: Mutex<Vec<review_rules::Rule>>,
+    model: Mutex<model_page::Current>,
+
     schedules: Mutex<Vec<ScheduleEntry>>,
     unread: Mutex<Vec<Unread>>,
     bros: Mutex<Vec<Bro>>,
@@ -768,7 +844,10 @@ impl FakeApi {
             mcp_servers: Mutex::new(Vec::new()),
             mcp_group: Mutex::new(std::collections::HashSet::new()),
             search: Mutex::new(search::Current::default()),
+
             review_rules: Mutex::new(Vec::new()),
+            model: Mutex::new(model_page::Current::default()),
+
             schedules: Mutex::new(schedules),
             unread: Mutex::new(Vec::new()),
             bros: Mutex::new(Vec::new()),
@@ -779,6 +858,13 @@ impl FakeApi {
     pub fn with_chats(self, unread: Vec<Unread>, bros: Vec<Bro>) -> Self {
         *self.unread.lock().expect("fake unread lock") = unread;
         *self.bros.lock().expect("fake bros lock") = bros;
+        self
+    }
+
+    /// Seed the 模型 page for `--fake` screenshots or a review script.
+    #[allow(dead_code)]
+    pub fn with_model(self, cur: model_page::Current) -> Self {
+        *self.model.lock().expect("fake model lock") = cur;
         self
     }
 }
@@ -1270,6 +1356,7 @@ impl CardApi for FakeApi {
         })
     }
 
+
     fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
         Ok(self
             .review_rules
@@ -1292,6 +1379,82 @@ impl CardApi for FakeApi {
             return Err(ApiError::NotFound("规则不存在".into()));
         }
         Ok(format!("apr-del-{id}"))
+    }
+
+    fn model_settings(&self) -> Result<model_page::Current, ApiError> {
+        Ok(self.model.lock().expect("fake model lock").clone())
+    }
+
+    fn put_model(&self, put: &model_page::Put) -> Result<model_page::Current, ApiError> {
+        let mut cur = self.model.lock().expect("fake model lock");
+        if let Some(url) = &put.base_url {
+            match url {
+                None => cur.base_url = None,
+                Some(raw) => {
+                    let url = model_page::normalize_url(raw).to_string();
+                    if url.is_empty() {
+                        return Err(ApiError::BadRequest(model_page::NEED_URL.into()));
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        return Err(ApiError::BadRequest(model_page::BAD_URL.into()));
+                    }
+                    cur.base_url = Some(url);
+                }
+            }
+        }
+        if let Some(name) = &put.model {
+            match name {
+                None => cur.model = None,
+                Some(raw) => {
+                    let name = raw.trim().to_string();
+                    if name.is_empty() {
+                        return Err(ApiError::BadRequest(model_page::NEED_MODEL.into()));
+                    }
+                    cur.model = Some(name);
+                }
+            }
+        }
+        match &put.key {
+            Some(Some(k)) => {
+                if k.is_empty() {
+                    return Err(ApiError::BadRequest("密钥不能为空".into()));
+                }
+                if k.chars().any(char::is_whitespace) {
+                    return Err(ApiError::BadRequest("密钥里不能有空白".into()));
+                }
+                cur.has_key = true;
+                cur.key_last4 = Some(
+                    k.chars()
+                        .rev()
+                        .take(4)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect(),
+                );
+            }
+            Some(None) => {
+                cur.has_key = false;
+                cur.key_last4 = None;
+            }
+            None => {}
+        }
+        cur.source = if cur.base_url.is_none() && cur.model.is_none() && !cur.has_key {
+            None
+        } else {
+            Some(model_page::Source::Settings)
+        };
+        Ok(cur.clone())
+    }
+
+    fn test_model(&self) -> Result<(bool, Option<String>), ApiError> {
+        let cur = self.model.lock().expect("fake model lock");
+        Ok(if cur.base_url.is_some() && cur.model.is_some() {
+            (true, None)
+        } else {
+            (false, Some(model_page::NOT_SET.into()))
+        })
+
     }
 }
 
@@ -1424,8 +1587,11 @@ mod tests {
         assert_eq!(bodies::rename("Ada"), r#"{"name":"Ada"}"#);
         assert_eq!(paths::SEARCH_SETTINGS, "/api/settings/search");
         assert_eq!(paths::SEARCH_TEST, "/api/settings/search/test");
+
         assert_eq!(paths::REVIEW_RULES, "/api/settings/review-rules");
         assert_eq!(paths::review_rule("r1"), "/api/settings/review-rules/r1");
+        assert_eq!(paths::MODEL_SETTINGS, "/api/settings/model");
+        assert_eq!(paths::MODEL_TEST, "/api/settings/model/test");
     }
 
     #[test]
@@ -1443,6 +1609,7 @@ mod tests {
             "apr-1"
         );
         assert!(decode_approval_id(r#"{"id":"apr-1"}"#).is_err());
+
     }
 
     #[test]
@@ -1497,6 +1664,133 @@ mod tests {
             search_body::put(&Put::clear()),
             r#"{"key":null,"provider":null,"url":null}"#
         );
+    }
+
+    #[test]
+    fn model_source_env_settings_or_absent() {
+        let env = decode_model(
+            r#"{"baseUrl":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-2.5-flash","hasKey":true,"keyLast4":"ABCD","source":"env"}"#,
+        )
+        .unwrap();
+        assert_eq!(env.source, Some(model_page::Source::Env));
+        assert_eq!(
+            env.base_url.as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai")
+        );
+        assert_eq!(env.model.as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(env.key_last4.as_deref(), Some("ABCD"));
+        let saved = decode_model(
+            r#"{"baseUrl":"http://localhost:11434/v1","model":"llama3.2","hasKey":true,"keyLast4":"lama","source":"settings"}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.source, Some(model_page::Source::Settings));
+        let old = decode_model(
+            r#"{"baseUrl":"http://localhost:11434/v1","model":"llama3.2","hasKey":false,"keyLast4":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.source, None);
+        let none = decode_model(r#"{"baseUrl":null,"model":null,"hasKey":false,"keyLast4":null}"#)
+            .unwrap();
+        assert_eq!(none, model_page::Current::default());
+    }
+
+    #[test]
+    fn model_put_body_key_rules() {
+        use model_page::Put;
+        let p = |key| {
+            model_body::put(&Put {
+                base_url: Some(Some("https://api.groq.com/openai/v1".into())),
+                model: Some(Some("llama".into())),
+                key,
+            })
+        };
+        assert_eq!(
+            p(None),
+            r#"{"baseUrl":"https://api.groq.com/openai/v1","model":"llama"}"#
+        );
+        assert_eq!(
+            p(Some(None)),
+            r#"{"baseUrl":"https://api.groq.com/openai/v1","key":null,"model":"llama"}"#
+        );
+        assert_eq!(
+            p(Some(Some("k1".into()))),
+            r#"{"baseUrl":"https://api.groq.com/openai/v1","key":"k1","model":"llama"}"#
+        );
+        assert_eq!(
+            model_body::put(&Put {
+                base_url: None,
+                model: None,
+                key: Some(None)
+            }),
+            r#"{"key":null}"#
+        );
+    }
+
+    #[test]
+    fn fake_model_put_and_test() {
+        let api = FakeApi::new(Vec::new());
+        assert_eq!(
+            api.model_settings().unwrap(),
+            model_page::Current::default()
+        );
+        assert_eq!(
+            api.test_model().unwrap(),
+            (false, Some(model_page::NOT_SET.into()))
+        );
+        let saved = api
+            .put_model(&model_page::Put {
+                base_url: Some(Some("https://api.groq.com/openai/v1/".into())),
+                model: Some(Some("llama-3.1-8b-instant".into())),
+                key: Some(Some("gsk_xxxx".into())),
+            })
+            .unwrap();
+        assert_eq!(
+            saved.base_url.as_deref(),
+            Some("https://api.groq.com/openai/v1")
+        );
+        assert_eq!(saved.key_last4.as_deref(), Some("xxxx"));
+        assert_eq!(saved.source, Some(model_page::Source::Settings));
+        assert_eq!(api.test_model().unwrap(), (true, None));
+        let cleared_key = api
+            .put_model(&model_page::Put {
+                base_url: None,
+                model: None,
+                key: Some(None),
+            })
+            .unwrap();
+        assert!(!cleared_key.has_key);
+        assert_eq!(
+            api.test_model().unwrap(),
+            (true, None),
+            "url + model is enough; key is optional"
+        );
+        let without_key = api
+            .put_model(&model_page::Put {
+                base_url: Some(Some("http://localhost:11434/v1".into())),
+                model: Some(Some("llama3.2".into())),
+                key: None,
+            })
+            .unwrap();
+        assert!(!without_key.has_key);
+        assert_eq!(api.test_model().unwrap(), (true, None));
+        assert!(matches!(
+            api.put_model(&model_page::Put {
+                base_url: Some(Some("not-a-url".into())),
+                model: None,
+                key: None,
+            }),
+            Err(ApiError::BadRequest(m)) if m == model_page::BAD_URL
+        ));
+        let seeded = FakeApi::new(Vec::new()).with_model(model_page::Current {
+            base_url: Some("https://api.groq.com/openai/v1".into()),
+            model: Some("llama".into()),
+            has_key: true,
+            key_last4: Some("SEED".into()),
+            source: Some(model_page::Source::Env),
+        });
+        let cur = seeded.model_settings().unwrap();
+        assert_eq!(cur.key_last4.as_deref(), Some("SEED"));
+        assert_eq!(cur.source, Some(model_page::Source::Env));
     }
 
     #[test]

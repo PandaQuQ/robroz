@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use robroz_policy::{blocking_effect, meter, tier, OverQuota, SideEffect, Tier};
@@ -8,6 +9,8 @@ use uuid::Uuid;
 
 use crate::progress;
 use crate::sandbox::{container_name, result_rel, ContainerPhase, RunRequest, Sandbox};
+use crate::steps::StepRunner;
+use crate::watchdog::{Watchdog, WatchdogConfig, DEAD_RUN_FAILURE};
 
 /// Short, scoped access to the database. `pump` only holds it for SQL and never
 /// across a sandbox (docker) call, so the HTTP handlers are not stalled.
@@ -46,6 +49,7 @@ pub struct PumpConfig<'a> {
     pub mcp: Option<Arc<dyn crate::mcp_tools::McpRuntime>>,
 }
 
+#[derive(Clone)]
 struct TaskRow {
     id: String,
     group_id: String,
@@ -63,6 +67,7 @@ enum Outcome {
     /// Done without the work, with the task's `failure` (e.g. over the GET
     /// quota). No delivery, never blocked.
     Failed(String),
+    /// Exited without a result, or vanished: `done` + [`DEAD_RUN_FAILURE`].
     Dead,
     Done,
 }
@@ -93,27 +98,137 @@ pub fn pump(
 }
 
 /// One pass. Reads under the lock, drops it for docker, re-locks to write.
+/// The model step runs inline on the calling thread, so one call finishes the
+/// whole start. Tests use this; the binary uses [`pump_offloaded`].
 pub fn pump_with(
     db: &impl Db,
     sandbox: &mut dyn Sandbox,
     cfg: &PumpConfig<'_>,
 ) -> rusqlite::Result<()> {
+    pump_inner(db, sandbox, cfg, None)
+}
+
+/// State that outlives one pump pass when steps run off the pump thread: the
+/// steps in flight and the [`Watchdog`] that watches them.
+pub(crate) struct Offload {
+    steps: StepRunner<StepDone>,
+    watchdog: Watchdog,
+}
+
+impl Offload {
+    pub(crate) fn new(cfg: WatchdogConfig) -> Self {
+        Self {
+            steps: StepRunner::new(),
+            watchdog: Watchdog::new(cfg),
+        }
+    }
+
+    /// One Watchdog pass at `now` over the database and the steps in flight.
+    pub(crate) fn watchdog_once(&mut self, conn: &Connection, now: Instant) -> rusqlite::Result<()> {
+        let steps: Vec<(String, Instant)> = self
+            .steps
+            .in_flight()
+            .map(|(id, at)| (id.to_string(), at))
+            .collect();
+        self.watchdog.run_once(conn, &steps, now).map(|_| ())
+    }
+}
+
+/// A step that finished off the pump thread, with what pump needs to go on.
+struct StepDone {
+    started: Started,
+    reply: Reply,
+}
+
+/// What the off-thread mode needs: a shareable DB for progress lines, an
+/// owned model, and the state kept between passes.
+struct OffloadCtx<'s> {
+    db: Arc<Mutex<Connection>>,
+    /// `None` without a live model: nothing to hand off this pass, but steps
+    /// from earlier passes are still drained and never collected as dead.
+    model: Option<Arc<dyn robroz_model::Model>>,
+    state: &'s mut Offload,
+}
+
+/// One pass where the model and its tool calls run on their own threads. The
+/// pump thread only claims tasks, hands the step off, starts containers for
+/// steps that finished, and collects exits. `cfg.model` must be `model`.
+pub(crate) fn pump_offloaded(
+    db: &Arc<Mutex<Connection>>,
+    sandbox: &mut dyn Sandbox,
+    cfg: &PumpConfig<'_>,
+    model: Option<Arc<dyn robroz_model::Model>>,
+    state: &mut Offload,
+) -> rusqlite::Result<()> {
+    let ctx = OffloadCtx {
+        db: db.clone(),
+        model,
+        state,
+    };
+    pump_inner(&**db, sandbox, cfg, Some(ctx))
+}
+
+fn pump_inner(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    cfg: &PumpConfig<'_>,
+    mut offload: Option<OffloadCtx<'_>>,
+) -> rusqlite::Result<()> {
+    if let Some(off) = offload.as_mut() {
+        for (_, done) in off.state.steps.drain() {
+            let still_running = db.with(|conn| is_live(conn, &done.started.task.id))?;
+            if !still_running {
+                eprintln!(
+                    "pump: {} moved while its step ran; dropping the reply",
+                    done.started.task.id
+                );
+                continue;
+            }
+            finish_start(db, sandbox, cfg, &done.started, Some(done.reply))?;
+        }
+    }
+
     let queued = db.with(|conn| load_tasks(conn, "queued"))?;
     for task in queued {
-        start_task(db, sandbox, cfg, &task)?;
+        start_task(db, sandbox, cfg, offload.as_mut(), &task)?;
     }
 
     let running = db.with(|conn| load_tasks(conn, "running"))?;
     for task in running {
-        collect_task(db, sandbox, cfg, &task)?;
+        let watchdog = match offload.as_ref() {
+            // No container yet: its step is still running.
+            Some(off) if off.state.steps.is_running(&task.id) => continue,
+            Some(off) => Some(&off.state.watchdog),
+            None => None,
+        };
+        collect_task(db, sandbox, cfg, watchdog, &task)?;
     }
     Ok(())
+}
+
+fn is_live(conn: &Connection, task_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE id = ?1 AND state = 'running' AND container_up = 1",
+        [task_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+}
+
+/// A claimed task, between the claim and `docker run`.
+struct Started {
+    task: TaskRow,
+    claimed_at: String,
+    mcp_resume: bool,
+    control_dir: PathBuf,
+    group_dir: PathBuf,
 }
 
 fn start_task(
     db: &impl Db,
     sandbox: &mut dyn Sandbox,
     cfg: &PumpConfig<'_>,
+    offload: Option<&mut OffloadCtx<'_>>,
     task: &TaskRow,
 ) -> rusqlite::Result<()> {
     let Some(group_dir) = ensure_dir(&cfg.volumes_root.join(&task.group_id)) else {
@@ -185,23 +300,99 @@ fn start_task(
     if claimed == 0 {
         return Ok(());
     }
-    let mut reply_progress = None;
-    if cfg.model.is_some() {
-        let mut tools = cfg.tools.clone();
-        if let Some(mcp) = cfg.mcp.clone() {
-            let servers =
-                db.with(|conn| crate::mcp::ready_servers_for_group(conn, &task.group_id))?;
-            crate::mcp_tools::register_tools(&mut tools, &servers, mcp);
+    let started = Started {
+        task: task.clone(),
+        claimed_at,
+        mcp_resume,
+        control_dir,
+        group_dir,
+    };
+    let Some(model) = cfg.model else {
+        return finish_start(db, sandbox, cfg, &started, None);
+    };
+    let mut tools = cfg.tools.clone();
+    if let Some(mcp) = cfg.mcp.clone() {
+        let servers = db.with(|conn| crate::mcp::ready_servers_for_group(conn, &task.group_id))?;
+        crate::mcp_tools::register_tools(&mut tools, &servers, mcp);
+    }
+    let offload = offload.and_then(|off| off.model.clone().map(|model| (off, model)));
+    match offload {
+        None => {
+            let mut on_progress = |line: &str| {
+                if let Err(err) = db.with(|conn| progress::set_progress(conn, &task.id, line)) {
+                    eprintln!("pump: progress for {}: {err}", task.id);
+                }
+            };
+            let reply = write_reply(
+                model,
+                &started.control_dir,
+                &task.id,
+                &task.prompt,
+                memory_section.as_deref(),
+                cfg.get_limit,
+                &tools,
+                &mut on_progress,
+            );
+            finish_start(db, sandbox, cfg, &started, Some(reply))
         }
-        let reply = write_reply(
-            db,
-            &control_dir,
-            &task.id,
-            &task.prompt,
-            memory_section.as_deref(),
-            cfg,
-            &tools,
-        );
+        Some((off, model)) => {
+            // The slow part leaves the pump thread; a later pass picks it up.
+            let shared = off.db.clone();
+            let get_limit = cfg.get_limit;
+            let task_id = task.id.clone();
+            let spawned = off.state.steps.spawn(&task.id, move || {
+                let mut on_progress = |line: &str| {
+                    if let Err(err) = shared.with(|conn| progress::set_progress(conn, &task_id, line)) {
+                        eprintln!("pump: progress for {task_id}: {err}");
+                    }
+                };
+                let reply = write_reply(
+                    &*model,
+                    &started.control_dir,
+                    &started.task.id,
+                    &started.task.prompt,
+                    memory_section.as_deref(),
+                    get_limit,
+                    &tools,
+                    &mut on_progress,
+                );
+                StepDone { started, reply }
+            });
+            if !spawned {
+                // Could not hand it off: put the claim back, try next pass.
+                let reverted_at = newer_than(&task.updated_at);
+                db.with(|conn| {
+                    conn.execute(
+                        "UPDATE tasks SET state = 'queued', container_up = 0, updated_at = ?1, progress = NULL
+                         WHERE id = ?2 AND state = 'running'",
+                        params![reverted_at, task.id],
+                    )
+                })?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// After the model step (or right away without a model): record the reply,
+/// block or fail on it if needed, otherwise `docker run`.
+fn finish_start(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    cfg: &PumpConfig<'_>,
+    started: &Started,
+    reply: Option<Reply>,
+) -> rusqlite::Result<()> {
+    let Started {
+        task,
+        claimed_at,
+        mcp_resume,
+        control_dir,
+        group_dir,
+    } = started;
+    let (claimed_at, mcp_resume) = (claimed_at.as_str(), *mcp_resume);
+    let mut reply_progress = None;
+    if let Some(reply) = reply {
         reply_progress = reply.progress.clone();
         db.with(|conn| {
             conn.execute(
@@ -210,8 +401,8 @@ fn start_task(
             )
         })?;
         if let Some(pending) = reply.pending {
-            let updated_at = newer_than(&claimed_at);
-            if let Err(err) = crate::mcp_tools::save_pending(&control_dir, &pending) {
+            let updated_at = newer_than(claimed_at);
+            if let Err(err) = crate::mcp_tools::save_pending(control_dir, &pending) {
                 eprintln!("pump: save mcp pending for {}: {err}", task.id);
                 db.with(|conn| {
                     write_outcome(
@@ -232,7 +423,7 @@ fn start_task(
             return Ok(());
         }
         if mcp_resume {
-            let _ = crate::mcp_tools::remove_pending(&control_dir);
+            let _ = crate::mcp_tools::remove_pending(control_dir);
             db.with(|conn| {
                 conn.execute(
                     "UPDATE tasks SET intent_kind = NULL, intent_line = NULL, intent_hash = NULL WHERE id = ?1",
@@ -241,7 +432,7 @@ fn start_task(
             })?;
         }
         if reply.over_quota {
-            let updated_at = newer_than(&claimed_at);
+            let updated_at = newer_than(claimed_at);
             db.with(|conn| {
                 write_outcome(
                     conn,
@@ -256,7 +447,7 @@ fn start_task(
             return Ok(());
         }
     } else if !cfg.echo_prompt {
-        let path = robroz_runner::reply_path(&control_dir);
+        let path = robroz_runner::reply_path(control_dir);
         let _ = std::fs::remove_file(&path);
         if let Err(err) = std::fs::write(&path, crate::model_settings::NOT_CONFIGURED) {
             eprintln!("pump: write needs-setup reply for {}: {err}", task.id);
@@ -273,8 +464,8 @@ fn start_task(
     let started = sandbox.start(&RunRequest {
         name: &name,
         image: cfg.image,
-        group_dir: &group_dir,
-        control_dir: &control_dir,
+        group_dir,
+        control_dir,
         task_id: &task.id,
     });
     if let Err(err) = started {
@@ -282,7 +473,7 @@ fn start_task(
             "pump: start {} failed: {}; task stays queued",
             task.id, err.message
         );
-        let reverted_at = newer_than(&claimed_at);
+        let reverted_at = newer_than(claimed_at);
         db.with(|conn| {
             conn.execute(
                 "UPDATE tasks SET state = 'queued', container_up = 0, updated_at = ?1, progress = NULL
@@ -302,6 +493,7 @@ fn collect_task(
     db: &impl Db,
     sandbox: &mut dyn Sandbox,
     cfg: &PumpConfig<'_>,
+    watchdog: Option<&Watchdog>,
     task: &TaskRow,
 ) -> rusqlite::Result<()> {
     let name = container_name(&task.id);
@@ -317,17 +509,20 @@ fn collect_task(
         ContainerPhase::Running => {
             let group_dir = group_volume(cfg.volumes_root, &task.group_id);
             if let Some(text) = read_progress(&group_dir, &task.id) {
-                db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
+                // Keep the Watchdog's hint up until the runner says something new.
+                if !watchdog.is_some_and(|w| w.holds_hint(&task.id, &text)) {
+                    db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
+                }
             }
             return Ok(());
         }
         ContainerPhase::Exited { code } => code,
         // The container vanished mid-run (host or docker restart, manual rm).
         // Never re-queue: the run may have half-changed the volume, and a rerun
-        // would repeat it. Mark it a dead run and leave it for a person.
+        // would repeat it. End it as a dead run: `done` with 「没写出结果」.
         ContainerPhase::Missing => {
             eprintln!(
-                "pump: container for {} is gone; marking interrupted, not rerunning",
+                "pump: container for {} is gone; ending as {DEAD_RUN_FAILURE}, not rerunning",
                 task.id
             );
             let updated_at = newer_than(&task.updated_at);
@@ -380,8 +575,8 @@ fn collect_task(
     } else if let Some(over) = over_quota {
         Outcome::Failed(over.failure())
     } else if bogus_block || code != 0 || !result_file.is_file() {
-        // Container is gone and there is no successful result. Stay running
-        // with containerUp false so the card uses the dead-run line. Not blocked.
+        // Container is gone and there is no successful result: a dead run,
+        // ended as `done` with 「没写出结果」. Not blocked, not re-queued.
         Outcome::Dead
     } else if tier(SideEffect::WorkspaceWrite) != Tier::Allow {
         Outcome::Blocked(None)
@@ -460,11 +655,13 @@ fn write_outcome(
                 params![get_count, updated_at, task.id, failure],
             )?;
         }
+        // Compare-and-set on `running`: a late writer cannot end it twice.
+        // No delivery, never re-queued; same shape as `Failed`.
         Outcome::Dead => {
             conn.execute(
-                "UPDATE tasks SET container_up = 0, get_count = ?1, updated_at = ?2, progress = NULL
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
-                params![get_count, updated_at, task.id],
+                params![get_count, updated_at, task.id, DEAD_RUN_FAILURE],
             )?;
         }
         Outcome::Done => {
@@ -544,19 +741,22 @@ fn system_extra(memory: Option<String>, skill: Option<String>) -> Option<String>
 /// person sees why; the reason is also returned so the delivery can say the
 /// task was not done. Old replies are removed first so a retry never reuses one.
 /// The reply's last `robroz-progress:` line is returned for the status card.
+/// Runs on the pump thread or on a step thread: it touches the database only
+/// through `on_progress`.
+#[allow(clippy::too_many_arguments)]
 fn write_reply(
-    db: &impl Db,
+    model: &dyn robroz_model::Model,
     control_dir: &Path,
     task_id: &str,
     prompt: &str,
     memory_section: Option<&str>,
-    cfg: &PumpConfig<'_>,
+    get_limit: u64,
     tools: &crate::tools::ToolRegistry,
+    on_progress: &mut dyn FnMut(&str),
 ) -> Reply {
-    let model = cfg.model.expect("write_reply requires a model");
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
-    let mut ctx = crate::tools::ToolCtx::new(cfg.get_limit);
+    let mut ctx = crate::tools::ToolCtx::new(get_limit);
     let resume = crate::mcp_tools::pending_is_approved(control_dir);
     if resume {
         if let Ok(pending) = crate::mcp_tools::load_approved(control_dir) {
@@ -564,12 +764,7 @@ fn write_reply(
             ctx.needs_setup = pending.needs_setup.clone();
         }
     }
-    let mut on_using = |name: &str| {
-        let line = format!("在用 {name}");
-        if let Err(err) = db.with(|conn| progress::set_progress(conn, task_id, &line)) {
-            eprintln!("pump: progress for {task_id}: {err}");
-        }
-    };
+    let mut on_using = |name: &str| on_progress(&format!("在用 {name}"));
     let (mut text, failure, over_quota, pending) = if resume {
         match crate::mcp_tools::load_approved(control_dir) {
             Ok(pending) => {

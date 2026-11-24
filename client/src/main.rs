@@ -35,7 +35,10 @@ use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::mcp::{self, Book as McpBook};
 use robroz_ui::cards::memories::Book;
+
 use robroz_ui::cards::review_rules::{self, Page as ReviewRulesPage, Rule as ReviewRule};
+use robroz_ui::cards::model::{self as model_page, Current as ModelCurrent, Page as ModelPage};
+
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
 use robroz_ui::cards::skills::Book as SkillBook;
@@ -142,7 +145,10 @@ enum Page {
     Skills,
     Mcp,
     Search,
+
+    Model,
     ReviewRules,
+
 }
 
 #[derive(Debug, Clone)]
@@ -155,9 +161,16 @@ enum Message {
     SearchLoaded(Result<SearchCurrent, ApiError>),
     SearchSaved(Result<SearchCurrent, ApiError>),
     SearchTested(Result<(bool, Option<String>), ApiError>),
+
     OpenReviewRules,
     ReviewRulesLoaded(Result<Vec<ReviewRule>, ApiError>),
     ReviewRuleProposed(Result<String, ApiError>),
+    /// 模型 page (sidebar, or 「去设置」 on a delivery).
+    OpenModel,
+    ModelLoaded(Result<ModelCurrent, ApiError>),
+    ModelSaved(Result<ModelCurrent, ApiError>),
+    ModelTested(Result<(bool, Option<String>), ApiError>),
+
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     SkillsLoaded(Result<Vec<Skill>, ApiError>),
     /// PATCH (edit) or POST (new) answered.
@@ -336,8 +349,12 @@ struct App {
     mcp: McpBook,
     /// 联网搜索 page (robroz#76).
     search: SearchPage,
+
     /// 放行规则 page.
     review_rules: ReviewRulesPage,
+    /// 模型 page (robroz#102).
+    model_settings: ModelPage,
+
     mode: Mode,
     width: f32,
     loaded: bool,
@@ -435,7 +452,10 @@ impl App {
             skills: SkillBook::default(),
             mcp: McpBook::default(),
             search: SearchPage::default(),
+
             review_rules: ReviewRulesPage::default(),
+            model_settings: ModelPage::default(),
+
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
@@ -1209,6 +1229,43 @@ impl App {
         Task::none()
     }
 
+    fn on_model_action(&mut self, action: Action) -> Task<Message> {
+        let page = &mut self.model_settings;
+        match action {
+            Action::ModelPick { preset } => {
+                if page.busy {
+                    return Task::none();
+                }
+                page.pick(preset);
+            }
+            Action::ModelUrl { text } => page.set_url(text),
+            Action::ModelName { text } => page.set_model(text),
+            Action::ModelKey { text } => page.key.draft = text,
+            Action::ModelClearKey => {
+                if !page.busy {
+                    page.clear_key();
+                }
+            }
+            Action::ModelCancelKey => page.cancel_key(),
+            Action::ModelSave => {
+                if page.busy {
+                    return Task::none();
+                }
+                let Some(put) = page.to_send() else {
+                    return Task::none();
+                };
+                page.busy = true;
+                page.test = None;
+                return Task::perform(
+                    call(&self.api, move |api| api.put_model(&put)),
+                    Message::ModelSaved,
+                );
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::MemoryAddOpen
@@ -1273,9 +1330,18 @@ impl App {
             | Action::SearchClearKey
             | Action::SearchCancelKey
             | Action::SearchSave => self.on_search_action(action),
+
             Action::ReviewDraft { .. } | Action::ReviewAdd | Action::ReviewDelete { .. } => {
                 self.on_review_action(action)
             }
+            Action::ModelPick { .. }
+            | Action::ModelUrl { .. }
+            | Action::ModelName { .. }
+            | Action::ModelKey { .. }
+            | Action::ModelClearKey
+            | Action::ModelCancelKey
+            | Action::ModelSave => self.on_model_action(action),
+
             Action::ToggleInstruction { card } => {
                 let ui = self.ui.entry(card).or_default();
                 ui.more_open = !ui.more_open;
@@ -1452,6 +1518,34 @@ impl App {
             Message::SearchTested(result) => match result {
                 Ok((ok, error)) => self.search.tested(ok, error),
                 Err(err) => self.search.tested(false, Some(err.reason())),
+            },
+            Message::OpenModel => {
+                self.page = Page::Model;
+                self.narrow_open = true;
+                self.model_settings.test = None;
+                self.model_settings.note = None;
+                return Task::perform(
+                    call(&self.api, |api| api.model_settings()),
+                    Message::ModelLoaded,
+                );
+            }
+            Message::ModelLoaded(result) => match result {
+                Ok(cur) => self.model_settings.load(cur),
+                Err(err) => self.model_settings.note = Some(err.reason()),
+            },
+            Message::ModelSaved(result) => match result {
+                Ok(cur) => {
+                    self.model_settings.saved(cur);
+                    return Task::perform(
+                        call(&self.api, |api| api.test_model()),
+                        Message::ModelTested,
+                    );
+                }
+                Err(err) => self.model_settings.save_failed(&err.reason()),
+            },
+            Message::ModelTested(result) => match result {
+                Ok((ok, error)) => self.model_settings.tested(ok, error),
+                Err(err) => self.model_settings.tested(false, Some(err.reason())),
             },
             Message::OpenSkills => {
                 self.page = Page::Skills;
@@ -2173,6 +2267,14 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Skills))
             .on_press(Message::OpenSkills);
+        let model_nav = button(text(model_page::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::Model))
+            .on_press(Message::OpenModel);
         let search = button(text(search_page::TITLE).size(t.type_.row_name))
             .width(Fill)
             .height(Length::Fixed(
@@ -2203,6 +2305,7 @@ impl App {
                 routines,
                 memories,
                 skills,
+                model_nav,
                 search,
                 mcp,
                 review_rules
@@ -2257,6 +2360,16 @@ impl App {
                 )
                 .padding(t.metrics.stream_padding)
                 .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
+        if self.page == Page::Model {
+            return scrollable(
+                container(view::model_panel(t, &self.model_settings).map(Message::Ui))
+                    .padding(t.metrics.stream_padding)
+                    .width(Fill),
             )
             .height(Fill)
             .width(Fill)
@@ -2546,23 +2659,43 @@ fn progress_line_height(size: f32) -> f32 {
     (size * 1.5).round()
 }
 
+fn delivery_setup(card: &DeliveryCard) -> Vec<(Message, &'static str, &'static str)> {
+    let mut out = Vec::new();
+    if card.needs_model_setup {
+        out.push((
+            Message::OpenModel,
+            model_page::GO_SETUP,
+            model_page::NEEDS_SETUP_HINT,
+        ));
+    }
+    if card.needs_search_setup {
+        out.push((
+            Message::OpenSearch,
+            search_page::GO_SETUP,
+            search_page::NEEDS_SETUP_HINT,
+        ));
+    }
+    out
+}
+
 fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a, Message> {
     // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
     if let Some(failure) = &card.failure {
         let gray = robroz_card::palette(robroz_card::Tone::Gray);
         let line = text(model::failure_line(failure));
-        let body: Element<'a, Message> = if card.needs_search_setup {
-            row![
-                line,
-                space::horizontal(),
-                button(text(search_page::GO_SETUP).size(t.type_.button))
-                    .style(view::nav_button_style(*t, false))
-                    .on_press(Message::OpenSearch),
-            ]
-            .align_y(Alignment::Center)
-            .into()
-        } else {
+        let setup = delivery_setup(card);
+        let body: Element<'a, Message> = if setup.is_empty() {
             line.into()
+        } else {
+            let mut r = row![line, space::horizontal()];
+            for (msg, label, _) in setup {
+                r = r.push(
+                    button(text(label).size(t.type_.button))
+                        .style(view::nav_button_style(*t, false))
+                        .on_press(msg),
+                );
+            }
+            r.align_y(Alignment::Center).into()
         };
         return container(body)
             .padding(view::status_card_padding(t))
@@ -2587,11 +2720,11 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
                 .style(view::card_style(*t)),
         );
     }
-    if card.needs_search_setup {
+    for (msg, label, _) in delivery_setup(card) {
         head = head.push(
-            button(text(search_page::GO_SETUP).size(t.type_.button))
+            button(text(label).size(t.type_.button))
                 .style(view::nav_button_style(*t, false))
-                .on_press(Message::OpenSearch),
+                .on_press(msg),
         );
     }
     // Display only: plain text, not a link or button.
@@ -2601,12 +2734,8 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
         .size(t.type_.mono)
         .color(color(t.palette.text2));
     let mut body = column![head, path_line].spacing(6);
-    if card.needs_search_setup {
-        body = body.push(
-            text(search_page::NEEDS_SETUP_HINT)
-                .size(t.type_.foot)
-                .color(color(t.palette.text2)),
-        );
+    for (_, _, hint) in delivery_setup(card) {
+        body = body.push(text(hint).size(t.type_.foot).color(color(t.palette.text2)));
     }
     container(body)
         .padding(view::card_padding(t))

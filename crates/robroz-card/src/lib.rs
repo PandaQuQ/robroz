@@ -14,8 +14,22 @@ pub struct Appearance {
     pub action: Option<&'static str>,
 }
 
+/// The dead-run line. The host ends a dead run as `done` with exactly this
+/// `failure`; older data may still have it as `running` with no container.
+pub const NO_RESULT: &str = "没写出结果";
+
+/// The grey line for a `done` task that carries a `failure`. A dead run shows
+/// [`NO_RESULT`] as it is; every other reason reads 「没做成：原因」.
+pub fn failure_line(failure: &str) -> String {
+    if failure == NO_RESULT {
+        NO_RESULT.to_string()
+    } else {
+        format!("没做成：{failure}")
+    }
+}
+
 /// `container_up` is ignored except for a live `running` card.
-/// A dead run stays `Running` and uses the same gray as queued.
+/// A dead run in old data is `Running` and uses the same gray as queued.
 pub fn appearance(state: TaskState, container_up: bool) -> Appearance {
     match state {
         TaskState::Queued => Appearance {
@@ -45,7 +59,7 @@ pub fn status_line(state: TaskState, container_up: bool) -> &'static str {
     match state {
         TaskState::Queued => "排队",
         TaskState::Running if container_up => "进行",
-        TaskState::Running => "没写出结果",
+        TaskState::Running => NO_RESULT,
         TaskState::Done => "完成",
         TaskState::Blocked => "卡住",
     }
@@ -115,6 +129,13 @@ mod tests {
             appearance(TaskState::Blocked, false),
             Appearance { tone: Tone::Amber, action: Some("去私聊接管") }
         );
+    }
+
+    #[test]
+    fn failure_line_keeps_the_dead_run_line() {
+        assert_eq!(failure_line("没写出结果"), "没写出结果");
+        assert_eq!(failure_line(NO_RESULT), status_line(TaskState::Running, false));
+        assert_eq!(failure_line("模型没回：超时"), "没做成：模型没回：超时");
     }
 
     #[test]

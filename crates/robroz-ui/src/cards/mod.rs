@@ -9,7 +9,10 @@ pub mod confirm;
 pub mod interact;
 pub mod mcp;
 pub mod memories;
+
 pub mod review_rules;
+pub mod model;
+
 pub mod routines;
 pub mod search;
 pub mod secret;
