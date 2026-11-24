@@ -2,7 +2,8 @@
 //!
 //! Pick Brave (key) or SearXNG (address). The key box is masked and never
 //! filled from the host: after a save it only shows 「已填 · 末4位」 with
-//! 「换一个」 and 「清除」. Every save is followed by one test call, shown in
+//! 「清除」. Clicking it marks the key for deletion (「保存后删除」 / 「撤销」)
+//! until the next save. Every save is followed by one test call, shown in
 //! place as 「能用了」 or 「连不上：原因」.
 //!
 //! `source` is optional on the host: 「来自环境变量」 shows only when it is
@@ -15,7 +16,7 @@ pub const BRAVE: &str = "Brave";
 pub const SEARXNG: &str = "SearXNG";
 pub const KEY_PLACEHOLDER: &str = "API 密钥";
 pub const URL_PLACEHOLDER: &str = "SearXNG 地址，如 http://127.0.0.1:8888";
-pub use secret::{CLEAR, REPLACE};
+pub use secret::{CLEAR, PENDING_CLEAR, UNDO};
 pub const SAVE: &str = "保存";
 pub const CANCEL: &str = "取消";
 pub const FROM_ENV: &str = "来自环境变量";
@@ -144,7 +145,7 @@ pub struct Page {
     pub provider: Option<Provider>,
     pub url: String,
     /// Masked key shared with the MCP secret row. 清除 still wipes the
-    /// whole search settings (provider, url and key), not only the key.
+    /// whole search settings (provider, url and key) on save, not only the key.
     pub key: MaskedKey,
     pub busy: bool,
     pub note: Option<String>,
@@ -165,7 +166,7 @@ impl Page {
         self.current.as_ref().and_then(|c| c.source) == Some(Source::Env)
     }
 
-    /// A stored key is shown as 「已填 · 末4位」 (unless being replaced or cleared).
+    /// A stored key is shown as 「已填 · 末4位」 (unless marked for deletion).
     pub fn shows_stored_key(&self) -> bool {
         self.key.shows_stored() && self.provider == Some(Provider::Brave)
     }
@@ -173,10 +174,6 @@ impl Page {
     pub fn pick(&mut self, p: Provider) {
         self.provider = Some(p);
         self.note = None;
-    }
-
-    pub fn replace_key(&mut self) {
-        self.key.replace();
     }
 
     pub fn clear_key(&mut self) {
@@ -357,11 +354,12 @@ mod tests {
         assert_eq!(p.to_send().unwrap().key, None, "stored key: leave as-is");
         p.clear_key();
         assert!(!p.shows_stored_key());
+        assert_eq!(PENDING_CLEAR, "保存后删除");
+        assert_eq!(UNDO, "撤销");
         assert!(p.to_send().unwrap().clear);
         p.cancel_key();
-        p.replace_key();
-        p.key.draft = "newkey99".into();
-        assert_eq!(p.to_send().unwrap().key, Some(Some("newkey99".into())));
+        assert!(p.shows_stored_key());
+        assert_eq!(p.to_send().unwrap().key, None);
     }
 
     #[test]

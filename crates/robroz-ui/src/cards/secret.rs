@@ -1,5 +1,7 @@
 //! Masked secret input. The host never sends the value back: after a save
-//! the field only shows 「已填 · 末4位」, with 「换一个」 and 「清除」.
+//! the field only shows 「已填 · 末4位」, with a single 「清除」 action.
+//! Clicking it marks the key to be deleted on the next save, and the row
+//! shows grey 「保存后删除」 plus 「撤销」.
 //!
 //! Shared by the 联网搜索 settings page and MCP secret rows.
 
@@ -11,8 +13,9 @@ pub fn filled(last4: Option<&str>) -> String {
     }
 }
 
-pub const REPLACE: &str = "换一个";
 pub const CLEAR: &str = "清除";
+pub const PENDING_CLEAR: &str = "保存后删除";
+pub const UNDO: &str = "撤销";
 
 /// Local state for one secret. `draft` is only the text just typed; a
 /// stored key is never copied into it.
@@ -21,7 +24,6 @@ pub struct MaskedKey {
     pub has_key: bool,
     pub last4: Option<String>,
     pub draft: String,
-    pub replacing: bool,
     pub clearing: bool,
 }
 
@@ -36,23 +38,15 @@ impl MaskedKey {
 
     /// Show the stored label instead of a text box.
     pub fn shows_stored(&self) -> bool {
-        self.has_key && !self.replacing && !self.clearing
-    }
-
-    pub fn replace(&mut self) {
-        self.replacing = true;
-        self.clearing = false;
-        self.draft.clear();
+        self.has_key && !self.clearing
     }
 
     pub fn clear(&mut self) {
         self.clearing = true;
-        self.replacing = false;
         self.draft.clear();
     }
 
     pub fn cancel(&mut self) {
-        self.replacing = false;
         self.clearing = false;
         self.draft.clear();
     }
@@ -84,19 +78,27 @@ mod tests {
     }
 
     #[test]
-    fn stored_key_is_not_sent_until_replaced_or_cleared() {
+    fn clear_is_pending_until_cancelled_or_sent() {
         let mut k = MaskedKey::from_stored(true, Some("WXYZ".into()));
         assert!(k.shows_stored());
         assert_eq!(k.to_send(), None);
-        k.replace();
-        assert!(!k.shows_stored());
-        assert_eq!(k.to_send(), None);
-        k.draft = "  new-key  ".into();
-        assert_eq!(k.to_send(), Some(Some("new-key".into())));
         k.clear();
+        assert!(!k.shows_stored());
         assert_eq!(k.to_send(), Some(None));
         k.cancel();
         assert!(k.shows_stored());
         assert_eq!(k.to_send(), None);
+        assert_eq!(CLEAR, "清除");
+        assert_eq!(PENDING_CLEAR, "保存后删除");
+        assert_eq!(UNDO, "撤销");
+    }
+
+    #[test]
+    fn typed_key_is_sent_when_not_clearing() {
+        let mut k = MaskedKey::default();
+        k.draft = "  new-key  ".into();
+        assert_eq!(k.to_send(), Some(Some("new-key".into())));
+        k.clear();
+        assert_eq!(k.to_send(), Some(None));
     }
 }

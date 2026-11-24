@@ -177,7 +177,7 @@ impl Gallery {
                     "approval · approved",
                     approval(
                         ApprovalState::Approved {
-                            by: None,
+                            by: Some("我".into()),
                             at: at(2),
                         },
                         "后端",
