@@ -67,7 +67,7 @@ cargo deny check licenses bans sources   # 需要先装 cargo-deny
 | [`docs/api.md`](docs/api.md) | 所有 HTTP 接口：请求、返回、状态码、原文报错、代码位置；事件（卡片）类型和字段。 |
 | [`docs/reference-features.md`](docs/reference-features.md) | 参考产品功能清单和净室规则。 |
 | [`docs/roadmap-phase2.md`](docs/roadmap-phase2.md) | 第二期路线图。 |
-| [`docs/design/multi-agent.md`](docs/design/multi-agent.md) | Router、Thread 订阅、异步工具与 Watchdog 的设计草案（非契约）。 |
+| [`docs/design/multi-agent.md`](docs/design/multi-agent.md) | Router、Thread 订阅、异步工具与 Watchdog 的已接受设计（非契约）。 |
 | [`docs/concepts.md`](docs/concepts.md) | 术语表、bro 的名字、任务状态、状态卡字段、卡片类型、未读。 |
 | [`docs/permissions.md`](docs/permissions.md) | 三级权限、阻塞行和接管标记、resume、审批卡、`waitingFor`、`failure`、模型工具调用的限制。 |
 | [`docs/memory-and-skills.md`](docs/memory-and-skills.md) | 记忆和技能的规则、拼进提示（4000 / 8000 字符）、bro 怎么提议、确认卡。 |
