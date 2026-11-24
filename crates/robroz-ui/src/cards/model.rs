@@ -34,12 +34,9 @@ pub const NEEDS_SETUP_HINT: &str = "这次还没设置模型";
 /// Hint under the OpenRouter preset.
 pub const OPENROUTER_HINT: &str = "免费模型的名字以 :free 结尾";
 
-/// Host `/test` returns this as `error` on 401/403, once the key-optional
-/// PR lands. Show it after 「已保存，但连不上：」, never a raw 401.
-///
-/// TODO: switch to `robroz_contract::MODEL_TEST_BAD_KEY` when that constant
-/// is in the contract crate. Do not edit the contract from this client PR.
-pub const MODEL_TEST_BAD_KEY: &str = "密钥不对或没填";
+/// Host `/test` returns this as `error` on 401/403. Show it after
+/// 「已保存，但连不上：」, never a raw 401.
+pub use robroz_contract::MODEL_TEST_BAD_KEY;
 
 pub fn key_filled(last4: Option<&str>) -> String {
     secret::filled(last4)
