@@ -1,6 +1,7 @@
 //! `POST /api/groups/{id}/say`: one call for what the person typed.
 //! Stores a text message, then queues a task when someone should act:
-//! in a DM, its bro; in a group, the member named by a leading `@名字`.
+//! in a DM, its bro; in a group, the member named by a leading `@名字`, and
+//! then every member gets one turn in order (see [`crate::turns`]).
 //! `/messages` and `/tasks` stay as they are.
 
 use axum::extract::{Path as AxumPath, State};
@@ -12,14 +13,15 @@ use rusqlite::{params, Connection};
 
 use crate::{bros, db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState};
 
-/// Who should act on `body` in `group_id`, and on what prompt.
+/// Who should act on `body` in `group_id`, and on what prompt, and whether
+/// this is a group (where every member then gets a turn, see [`crate::turns`]).
 fn assignee(
     conn: &Connection,
     group_id: &str,
     body: &str,
-) -> rusqlite::Result<Option<(String, String)>> {
+) -> rusqlite::Result<(Option<(String, String)>, bool)> {
     if let Some(bot) = bros::dm_owner(conn, group_id)? {
-        return Ok(Some((bot, body.to_string())));
+        return Ok((Some((bot, body.to_string())), false));
     }
     let mut stmt = conn.prepare(
         "SELECT b.id, b.name FROM memberships m JOIN bots b ON b.id = m.bot_id WHERE m.group_id = ?1",
@@ -27,12 +29,13 @@ fn assignee(
     let members: Vec<(String, String)> = stmt
         .query_map([group_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(route_mention(
+    let routed = route_mention(
         body,
         members
             .iter()
             .map(|(id, name)| (id.as_str(), name.as_str())),
-    ))
+    );
+    Ok((routed, true))
 }
 
 pub(crate) async fn say(
@@ -61,7 +64,8 @@ pub(crate) async fn say(
             "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![message.id, group_id, message.kind.as_str(), message.body, now],
         )?;
-        let task = match assignee(&tx, &group_id, &text)? {
+        let (routed, in_group) = assignee(&tx, &group_id, &text)?;
+        let task = match routed {
             None => None,
             Some((bot, prompt)) => {
                 let task = Task {
@@ -78,6 +82,20 @@ pub(crate) async fn say(
                 Some(task)
             }
         };
+        if in_group {
+            let mentioned = task
+                .as_ref()
+                .map(|t| (t.assignee_bot_id.as_str(), t.id.as_str()));
+            crate::turns::open_round(
+                &tx,
+                &group_id,
+                &message.id,
+                &text,
+                mentioned,
+                crate::turns::PERSON_DEPTH,
+                &now,
+            )?;
+        }
         tx.commit()?;
         Ok(Some(Said { message, task }))
     })();

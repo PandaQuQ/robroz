@@ -28,11 +28,11 @@ const UNREAD_SQL: &str = "SELECT
   + (SELECT COUNT(*) FROM choices WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM approvals WHERE group_id = ?1 AND created_at > ?2
        AND (review_state IS NULL OR review_state = 'blocked'))
-  + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2)";
+  + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2 AND turn_hidden = 0)";
 
 const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
     SELECT MAX(created_at) AS at FROM messages WHERE group_id = ?1
-    UNION ALL SELECT MAX(updated_at) FROM tasks WHERE group_id = ?1
+    UNION ALL SELECT MAX(updated_at) FROM tasks WHERE group_id = ?1 AND turn_hidden = 0
     UNION ALL SELECT MAX(created_at) FROM deliveries WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM choices WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM approvals
