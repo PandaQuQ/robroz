@@ -3,7 +3,7 @@
 robroz is dual-licensed.
 
 1. **Open source: GNU AGPL-3.0-only.** The code in this repository is licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (SPDX: `AGPL-3.0-only`). Anyone may use, study, modify and share it, including for commercial purposes, as long as they follow the AGPL.
-2. **Commercial licence.** If you cannot or do not want to meet the AGPL's obligations, for example because you want to ship a modified robroz without publishing your source code, you can buy a separate commercial licence from the copyright holder, Bin Ma (PandaQuQ).
+2. **Commercial licence.** If you cannot or do not want to meet the AGPL's obligations, for example because you want to ship a modified robroz without publishing your source code, you can buy a separate commercial licence from the copyright holder, PandaQuQ.
 
 The copyright holder can offer both because every contributor signs the [Contributor License Agreement](CLA.md).
 
@@ -39,7 +39,7 @@ For commercial licensing, contact the author through GitHub: <https://github.com
 robroz 采用双许可：
 
 1. **开源许可：AGPL-3.0-only。** 任何人都可以使用、学习、修改和分享，包括商用，前提是遵守 AGPL：保留版权和许可证声明；分发软件（包括改过的版本）时要同时提供完整源码；基于 robroz 的作品整体也必须用 AGPL-3.0；**第 13 条：把改过的 robroz 通过网络给别人用（比如做成在线服务），也必须向这些用户免费提供改过的完整源码**，不分发安装包也不能免除。
-2. **商业授权。** 想闭源使用、私下修改后对外提供服务、或者和 AGPL 不兼容的代码合在一起，需要向著作权人 Bin Ma（PandaQuQ）单独购买商业授权。
+2. **商业授权。** 想闭源使用、私下修改后对外提供服务、或者和 AGPL 不兼容的代码合在一起，需要向著作权人 PandaQuQ单独购买商业授权。
 
 原样使用，或者愿意把全部改动按 AGPL-3.0 公开的，即使是商用也不需要商业授权。所有贡献者都签了[贡献者许可协议](CLA.md)，所以著作权人可以同时提供这两种许可。
 
