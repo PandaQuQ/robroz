@@ -21,7 +21,7 @@ It is for people who want several AI agents in one workspace they control, and w
 
 <!-- TODO(screenshot): main window -->
 
-The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Works today
 
