@@ -147,6 +147,7 @@ cargo deny check advisories   # reported, does not block merging
 - Every contributor must sign the [Contributor License Agreement](CLA.md) once: tick the CLA checkbox in the pull request template, or add the CLA line from `CLA.md` to the pull request body. Pull requests without it are not merged.
 - Commit messages and pull request titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): …`, `fix(client): …`, `docs: …`. Pull requests are squash-merged with the title as the commit message.
 - The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states and `botId` / `botName` are frozen.
+- `main` is protected: changes land only through a pull request, and the five CI checks (`host`, `cla`, `client (ubuntu-latest)`, `e2e`, `cargo-deny`) must pass before merge. No one can bypass this, admins included.
 - No force-push. If your branch is behind, merge `main` into it.
 - Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens.
 - Keep `README.md` and `README.zh-CN.md` in sync; change both in the same pull request.

@@ -1,0 +1,152 @@
+name: Release
+
+# Builds release binaries when a `v*` tag is pushed and attaches them, with
+# SHA256 checksums, to a draft GitHub Release. The draft stays private until
+# a maintainer publishes it by hand. Binaries are not code-signed.
+#
+# A separate job builds the runner image (linux/amd64) from runner/Dockerfile
+# (context is the repository root) and pushes it to
+# ghcr.io/pandaquq/robroz-runner:<tag>. The draft release does not wait for
+# that job, so host and client assets still upload if the image push fails.
+# There is no `latest` tag yet.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            packages: "-p robroz-client -p robroz-host"
+            bins: "robroz-client robroz-host"
+          - os: windows-latest
+            target: windows-x86_64
+            packages: "-p robroz-client"
+            bins: "robroz-client"
+          - os: macos-latest
+            target: macos-aarch64
+            packages: "-p robroz-client"
+            bins: "robroz-client"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binaries
+        run: cargo build --release --locked ${{ matrix.packages }}
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          mkdir -p dist
+          for bin in ${{ matrix.bins }}; do
+            name="${bin}-${version}-${{ matrix.target }}"
+            stage="stage/${name}"
+            mkdir -p "${stage}"
+            cp "target/release/${bin}${ext}" "${stage}/"
+            cp LICENSE README.md "${stage}/"
+            if [ "${{ runner.os }}" = "macOS" ] && [ "${bin}" = "robroz-client" ]; then
+              # Wrap the client in a minimal .app bundle. The icon is added
+              # once the client icon PR lands.
+              app="${stage}/robroz.app/Contents"
+              mkdir -p "${app}/MacOS" "${app}/Resources"
+              mv "${stage}/${bin}" "${app}/MacOS/${bin}"
+              cat > "${app}/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>robroz</string>
+            <key>CFBundleDisplayName</key><string>robroz</string>
+            <key>CFBundleIdentifier</key><string>io.github.pandaquq.robroz</string>
+            <key>CFBundleExecutable</key><string>${bin}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version#v}</string>
+            <key>CFBundleVersion</key><string>${version#v}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+            fi
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              (cd stage && 7z a -tzip "../dist/${name}.zip" "${name}" > /dev/null)
+            elif [ "${{ runner.os }}" = "macOS" ]; then
+              (cd stage && zip -qry "../dist/${name}.zip" "${name}")
+            else
+              tar -C stage -czf "dist/${name}.tar.gz" "${name}"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            --title "robroz ${GITHUB_REF_NAME}" \
+            --notes "Draft build for ${GITHUB_REF_NAME}. Binaries are not code-signed. Check files against SHA256SUMS.txt."
+
+  runner-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lowercase image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/robroz-runner" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runner/Dockerfile
+          push: true
+          platforms: linux/amd64
+          # Attestation needs id-token: write. Keep this job's permissions to
+          # contents: read and packages: write only.
+          provenance: false
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/PandaQuQ/robroz
+            org.opencontainers.image.url=https://github.com/PandaQuQ/robroz
+            org.opencontainers.image.title=robroz-runner
+            org.opencontainers.image.description=Task runner image for robroz host sandboxes
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
