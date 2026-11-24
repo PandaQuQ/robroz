@@ -72,12 +72,24 @@ pub fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .scale_factor(App::scale_factor)
-        .window(window::Settings {
-            size: Size::new(size.0, size.1),
-            icon: window_icon(),
-            ..window::Settings::default()
-        })
+        .window(window_settings(size))
         .run()
+}
+
+fn window_settings(size: (f32, f32)) -> window::Settings {
+    window::Settings {
+        size: Size::new(size.0, size.1),
+        icon: window_icon(),
+        // Matches StartupWMClass=robroz in client/packaging/robroz.desktop so
+        // the Linux taskbar uses the app icon instead of the default.
+        // `PlatformSpecific` only has `application_id` on Linux.
+        #[cfg(target_os = "linux")]
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: String::from("robroz"),
+            ..window::settings::PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    }
 }
 
 /// The 512px brand icon, decoded from the embedded PNG. `None` (default icon)

@@ -1,6 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=robroz
+Comment=Self-hosted multi-agent workspace
 Exec=robroz-client
 Icon=robroz
+StartupWMClass=robroz
 Categories=Development;
