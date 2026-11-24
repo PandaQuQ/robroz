@@ -71,6 +71,7 @@ pub fn main() -> iced::Result {
         .title("robroz")
         .subscription(App::subscription)
         .theme(App::theme)
+        .default_font(view::regular())
         .scale_factor(App::scale_factor)
         .window(window_settings(size))
         .run()
@@ -2965,18 +2966,52 @@ fn item_view<'a>(
     }
 }
 
-/// Frozen status card: palette from `robroz-card`, outline from the skin.
+/// Fill and text colour of a status card. Only a running card has a fill
+/// (the spec's ink, `#2c2f33` on dark); every other state is a plain bro card
+/// with a small status dot, not a saturated bar.
+fn status_colors(
+    t: &Skin,
+    card: &StatusCard,
+) -> (robroz_ui::theme::Rgb, robroz_ui::theme::Rgb, bool) {
+    if card.tone == robroz_card::Tone::Ink {
+        (t.chat.running_fill, t.chat.running_text, true)
+    } else {
+        (t.chat.bro_bg, t.palette.text, false)
+    }
+}
+
+/// The dot for a card that has no fill: green done, amber stuck, grey
+/// otherwise (queued, dead run, waiting on approval).
+fn status_dot_kind(card: &StatusCard) -> robroz_ui::cards::status::Dot {
+    use robroz_ui::cards::status::Dot;
+    match card.tone {
+        robroz_card::Tone::Green => Dot::Done,
+        robroz_card::Tone::Amber => Dot::Stuck,
+        _ => Dot::Void,
+    }
+}
+
+/// Status card: bro name (with a status dot unless the card is running),
+/// then Step n of m, the status word and the take-over button on the right.
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::Wrapping;
-    let fill = match (t.chat.running_fill, card.tone) {
-        (Some(f), robroz_card::Tone::Ink) => f,
-        _ => card.palette.fill,
+    let (fill, fg, filled) = status_colors(t, card);
+    let name = progress_cell(t, card, width);
+    let head: Element<'a, Message> = if filled {
+        name
+    } else {
+        row![
+            view::status_dot(t, status_dot_kind(card)).map(Message::Ui),
+            name
+        ]
+        .spacing(t.metrics.dot_gap + 4.0)
+        .align_y(Alignment::Center)
+        .width(Fill)
+        .into()
     };
-    let mut line = row![progress_cell(t, card, width)]
-        .spacing(12)
-        .align_y(Alignment::Center);
+    let mut line = row![head].spacing(12).align_y(Alignment::Center);
     if let Some(step) = visible_step_progress(t, card, width) {
-        let rgb = robroz_ui::cards::status::progress_rgb(fill, card.palette.text);
+        let rgb = robroz_ui::cards::status::progress_rgb(fill, fg);
         line = line.push(
             text(model::display(step).into_owned())
                 .color(color(rgb))
@@ -2985,19 +3020,25 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Me
     }
     line = line.push(text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None));
     if let Some(action) = card.action {
+        let [pad_v, pad_h] = view::TAKE_OVER_PAD;
         line = line.push(
             button(text(model::display(action).into_owned()).size(t.type_.button))
-                .height(Length::Fixed(
-                    t.controls.touch_target.max(t.controls.button_h),
-                ))
+                .padding(Padding::from([pad_v, pad_h]))
                 .style(button::secondary)
                 .on_press(Message::TakeOver(card.task_id.clone())),
         );
     }
+    let (filled_style, plain_style) = (view::status_card_style(*t, fill, fg), view::card_style(*t));
     container(line)
         .padding(view::status_card_padding(t))
         .width(Fill)
-        .style(view::status_card_style(*t, fill, card.palette.text))
+        .style(move |th| {
+            if filled {
+                filled_style(th)
+            } else {
+                plain_style(th)
+            }
+        })
         .into()
 }
 
@@ -3023,7 +3064,10 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
         + 12.0;
     if let Some(action) = card.action {
         needed +=
-            text_w(&model::display(action), t.type_.button) + 2.0 * t.controls.card_pad_h + 12.0;
+            text_w(&model::display(action), t.type_.button) + 2.0 * view::TAKE_OVER_PAD[1] + 12.0;
+    }
+    if card.tone != robroz_card::Tone::Ink {
+        needed += t.metrics.dot + t.metrics.dot_gap + 4.0 + 12.0;
     }
     (needed <= inner).then_some(raw)
 }
@@ -3048,18 +3092,15 @@ fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, 
     let right = unit(&model::display(&card.status_line)) * t.type_.body * t.type_.unit_width
         + card.action.map_or(0.0, |a| {
             unit(&model::display(a)) * t.type_.button * t.type_.unit_width
-                + 2.0 * t.controls.card_pad_h
+                + 2.0 * view::TAKE_OVER_PAD[1]
                 + 12.0
         })
         + 12.0;
     let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
     let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
-    let fill = match (t.chat.running_fill, card.tone) {
-        (Some(f), robroz_card::Tone::Ink) => f,
-        _ => card.palette.fill,
-    };
-    let rgb = robroz_ui::cards::status::progress_rgb(fill, card.palette.text);
+    let (fill, fg, _) = status_colors(t, card);
+    let rgb = robroz_ui::cards::status::progress_rgb(fill, fg);
     let line = text(fitted)
         .size(size)
         .line_height(LineHeight::Absolute(progress_line_height(size).into()))
@@ -3097,8 +3138,13 @@ fn delivery_setup(card: &DeliveryCard) -> Vec<(Message, Text, Text)> {
 fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a, Message> {
     // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
     if let Some(failure) = &card.failure {
-        let gray = robroz_card::palette(robroz_card::Tone::Gray);
-        let line = text(model::display(&model::failure_line(failure)).into_owned());
+        // Not done: a plain bro card with a grey dot, no grey fill.
+        let line = row![
+            view::status_dot(t, robroz_ui::cards::status::Dot::Void).map(Message::Ui),
+            text(model::display(&model::failure_line(failure)).into_owned()),
+        ]
+        .spacing(t.metrics.dot_gap + 4.0)
+        .align_y(Alignment::Center);
         let setup = delivery_setup(card);
         let body: Element<'a, Message> = if setup.is_empty() {
             line.into()
@@ -3116,7 +3162,7 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
         return container(body)
             .padding(view::status_card_padding(t))
             .width(Fill)
-            .style(view::status_card_style(*t, gray.fill, gray.text))
+            .style(view::card_style(*t))
             .into();
     }
     let path = view::display_path(
@@ -3194,6 +3240,36 @@ mod tests {
             progress: None,
             step_progress: Some(robroz_contract::host_text::router_step_progress(2, 3)),
         }
+    }
+
+    #[test]
+    fn only_a_running_status_card_has_a_fill() {
+        use robroz_card::Tone;
+        use robroz_ui::cards::status::Dot;
+        use robroz_ui::{Mode, Skin};
+        for mode in [Mode::Light, Mode::Dark] {
+            let t = Skin::for_mode(mode);
+            let mut card = live_step_card();
+            let (fill, fg, filled) = super::status_colors(&t, &card);
+            assert!(filled);
+            assert_eq!((fill, fg), (t.chat.running_fill, t.chat.running_text));
+            for (tone, dot) in [
+                (Tone::Green, Dot::Done),
+                (Tone::Amber, Dot::Stuck),
+                (Tone::Gray, Dot::Void),
+            ] {
+                card.tone = tone;
+                let (fill, fg, filled) = super::status_colors(&t, &card);
+                assert!(!filled, "{tone:?} is a plain card");
+                assert_eq!((fill, fg), (t.chat.bro_bg, t.palette.text));
+                assert_eq!(super::status_dot_kind(&card), dot);
+            }
+        }
+    }
+
+    #[test]
+    fn take_over_button_padding_is_6_by_12() {
+        assert_eq!(robroz_ui::view::TAKE_OVER_PAD, [6.0, 12.0]);
     }
 
     #[test]

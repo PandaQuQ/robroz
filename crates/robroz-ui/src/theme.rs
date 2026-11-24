@@ -236,9 +236,10 @@ pub struct Chat {
     /// A bro's bubble and cards: fill and 1px border.
     pub bro_bg: Rgb,
     pub bro_border: Rgb,
-    /// Running status card fill where it differs from the frozen
-    /// `robroz-card` palette (dark only).
-    pub running_fill: Option<Rgb>,
+    /// Running status card: the only status card with a fill. Every other
+    /// state is a bro card with a small status dot.
+    pub running_fill: Rgb,
+    pub running_text: Rgb,
     /// Chat accent: avatar ring and approval card outline. Brighter than
     /// the brand orange on dark.
     pub accent: Rgb,
@@ -469,15 +470,14 @@ fn fonts() -> Type {
 const UNIT_WIDTH: f32 = 0.56;
 
 fn chat(mode: Mode) -> Chat {
-    let (own_bg, own_text, own_chip, bro_bg, bro_border, running_fill, accent, pb, pt) = match mode
-    {
+    let (own_bg, own_text, own_chip, bro_bg, bro_border, running, accent, pb, pt) = match mode {
         Mode::Light => (
             [0x1f, 0x21, 0x24],
             [0xf4, 0xf1, 0xea],
             [0x6b, 0x6d, 0x70],
             [0xfb, 0xf9, 0xf4],
             [0xe3, 0xde, 0xd3],
-            None,
+            ([0x1f, 0x21, 0x24], [0xf4, 0xf1, 0xea]),
             [0xc8, 0x57, 0x2a],
             [0x1f, 0x21, 0x24],
             [0xf4, 0xf1, 0xea],
@@ -488,7 +488,7 @@ fn chat(mode: Mode) -> Chat {
             [0xa9, 0xa6, 0xa0],
             [0x23, 0x25, 0x28],
             [0x2f, 0x32, 0x36],
-            Some([0x2c, 0x2f, 0x33]),
+            ([0x2c, 0x2f, 0x33], [0xec, 0xe8, 0xdf]),
             [0xe0, 0x74, 0x3f],
             [0xec, 0xe8, 0xdf],
             [0x1f, 0x21, 0x24],
@@ -500,7 +500,8 @@ fn chat(mode: Mode) -> Chat {
         own_chip,
         bro_bg,
         bro_border,
-        running_fill,
+        running_fill: running.0,
+        running_text: running.1,
         accent,
         primary_bg: pb,
         primary_text: pt,
@@ -666,7 +667,9 @@ mod tests {
         assert_eq!(d.chat.own_bg, [0xec, 0xe8, 0xdf]);
         assert_eq!(d.chat.own_text, [0x1f, 0x21, 0x24]);
         assert_eq!(d.chat.bro_bg, [0x23, 0x25, 0x28]);
-        assert_eq!(d.chat.running_fill, Some([0x2c, 0x2f, 0x33]));
+        assert_eq!(d.chat.running_fill, [0x2c, 0x2f, 0x33]);
+        assert_eq!(d.chat.running_text, [0xec, 0xe8, 0xdf]);
+        assert_eq!(l.running_fill, [0x1f, 0x21, 0x24]);
         assert_eq!(d.chat.accent, [0xe0, 0x74, 0x3f]);
         assert_eq!(d.palette.window, [0x17, 0x18, 0x1a]);
         assert_eq!(d.palette.sidebar, [0x1d, 0x1e, 0x21]);

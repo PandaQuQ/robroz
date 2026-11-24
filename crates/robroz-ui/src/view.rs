@@ -307,10 +307,38 @@ fn faded(c: Rgb, alpha: f32) -> Color {
     c
 }
 
+/// The UI font family. macOS and Windows name their Chinese-capable system
+/// UI font so every glyph of a CJK string comes from one font; left to the
+/// generic family, the text engine falls back glyph by glyph and mixes
+/// weights and even picks look-alike wrong characters (「发送」 → 「发遞」).
+/// Elsewhere (Linux) it stays the generic sans-serif.
+pub const fn ui_family() -> font::Family {
+    #[cfg(target_os = "macos")]
+    {
+        font::Family::Name("PingFang SC")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        font::Family::Name("Microsoft YaHei UI")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        font::Family::SansSerif
+    }
+}
+
+/// Regular-weight UI font; also the application's default font.
+pub const fn regular() -> Font {
+    Font {
+        family: ui_family(),
+        ..Font::DEFAULT
+    }
+}
+
 pub fn bold() -> Font {
     Font {
         weight: font::Weight::Bold,
-        ..Font::DEFAULT
+        ..regular()
     }
 }
 
@@ -494,6 +522,10 @@ pub fn card_padding(t: &Skin) -> Padding {
 }
 
 // ---------- Pieces ----------
+
+pub fn status_dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
+    dot(t, d)
+}
 
 fn dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
     let c = color(t.dot(d));
@@ -788,6 +820,21 @@ fn btn<'a>(
     leading: Leading,
     on_press: Option<Action>,
 ) -> Element<'a, Action> {
+    btn_padded(t, label, look, leading, on_press, t.controls.button_px)
+}
+
+/// Padding of a 「去私聊接管」 / Take over in DM button: 6 vertical, 12
+/// horizontal, on every platform.
+pub const TAKE_OVER_PAD: [f32; 2] = [6.0, 12.0];
+
+fn btn_padded<'a>(
+    t: &Skin,
+    label: String,
+    look: Look,
+    leading: Leading,
+    on_press: Option<Action>,
+    pad_h: f32,
+) -> Element<'a, Action> {
     let t = *t;
     let enabled = on_press.is_some();
     let strong = matches!(
@@ -842,7 +889,7 @@ fn btn<'a>(
         content = content.push(
             text(label.clone())
                 .size(t.type_.button)
-                .font(if strong { bold() } else { Font::DEFAULT })
+                .font(if strong { bold() } else { regular() })
                 .color(fg_color),
         );
         let c = t.palette;
@@ -877,7 +924,7 @@ fn btn<'a>(
         };
         container(content)
             .height(Length::Fixed(t.controls.button_h))
-            .padding(Padding::from([0.0, t.controls.button_px]))
+            .padding(Padding::from([0.0, pad_h]))
             .align_y(Alignment::Center)
             .style(move |_| container::Style {
                 background: bg.map(Background::Color),
@@ -1221,7 +1268,7 @@ pub fn approval<'a>(
         col = col
             .push(body(t, status::NEEDS_OWNER_LINE.as_str()))
             .push(gap(t.metrics.body_gap))
-            .push(btn(
+            .push(btn_padded(
                 t,
                 status::TAKE_OVER.into(),
                 Look::Secondary,
@@ -1229,6 +1276,7 @@ pub fn approval<'a>(
                 Some(Action::TakeOver {
                     card: card.id.clone(),
                 }),
+                TAKE_OVER_PAD[1],
             ));
     } else {
         // A call card's host summary already starts with 「调用」, so the
