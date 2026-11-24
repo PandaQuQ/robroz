@@ -1,14 +1,14 @@
 //! English copy: one entry per [`Key`], the comment above each is the
 //! Chinese source (`zh.rs`).
 //!
-//! Copy owner: the designer. Approved entries are marked with the batch
-//! they came in (`[approved, batch 1]`, `[approved, batch 2]` or
-//! `[approved, settings row]`).
+//! Copy owner: the designer. Every entry is approved and marked with the
+//! batch it came in (`[approved, batch 1]`, `[approved, batch 2]`,
+//! `[approved, batch 3]` for the host strings from
+//! `robroz_contract::host_text`, `[approved, settings row]` or
+//! `[approved, disconnected state]`).
 //! Edit the strings here only; keep each `{0}`, `{1}` placeholder that the
 //! Chinese has. The Settings language row (`SettingsLanguage`, `LocaleName*`)
-//! is approved too; the option names stay native in both files.
-//! `[draft]`: host strings from `robroz_contract::host_text` the designer
-//! hasn't reviewed yet.
+//! keeps the option names native in both files.
 
 use super::Key;
 
@@ -93,220 +93,218 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::CardBriefing => "Briefing",
         // 去私聊接管  [approved, batch 2]
         Key::CardTakeOver => "Take over in DM",
-        // 这个 Bot 不在群里  [draft]
+        // 这个 Bot 不在群里  [approved, batch 3]
         Key::HostBotNotInGroup => "That bro isn't in this group",
-        // 请填写内容  [draft]
+        // 请填写内容  [approved, batch 3]
         Key::HostNeedText => "Enter some text",
-        // 请填写名称  [draft]
+        // 请填写名称  [approved, batch 3]
         Key::HostNeedName => "Enter a name",
-        // 请填写标题  [draft]
+        // 请填写标题  [approved, batch 3]
         Key::HostNeedTitle => "Enter a title",
-        // 请填写说明  [draft]
+        // 请填写说明  [approved, batch 3]
         Key::HostNeedInstruction => "Enter the instructions",
-        // 请填写地址  [draft]
+        // 请填写地址  [approved, batch 3]
         Key::HostNeedUrl => "Enter a URL",
-        // 请填写模型名  [draft]
+        // 请填写模型名  [approved, batch 3]
         Key::HostNeedModelName => "Enter a model name",
-        // 请填写启动命令  [draft]
+        // 请填写启动命令  [approved, batch 3]
         Key::HostNeedCommand => "Enter a start command",
-        // 请填写密钥名称  [draft]
+        // 请填写密钥名称  [approved, batch 3]
         Key::HostNeedSecretName => "Enter a secret name",
-        // 新增密钥时请填写值  [draft]
+        // 新增密钥时请填写值  [approved, batch 3]
         Key::HostNeedSecretValue => "Enter a value for the new secret",
-        // 请填写规则  [draft]
+        // 请填写规则  [approved, batch 3]
         Key::HostNeedRule => "Enter a rule",
-        // 请填写要做什么  [draft]
-        Key::HostNeedAction => "Say what to do",
-        // 请填写 SearXNG 地址  [draft]
+        // 请填写要做什么  [approved, batch 3]
+        Key::HostNeedAction => "Describe what to do",
+        // 请填写 SearXNG 地址  [approved, batch 3]
         Key::HostNeedSearxngUrl => "Enter the SearXNG URL",
-        // 请求格式不正确  [draft]
+        // 请求格式不正确  [approved, batch 3]
         Key::HostBadRequestFormat => "The request isn't in the right format",
-        // 请求体不是 JSON  [draft]
+        // 请求体不是 JSON  [approved, batch 3]
         Key::HostBodyNotJson => "The request body isn't JSON",
-        // 请求体无效  [draft]
+        // 请求体无效  [approved, batch 3]
         Key::HostBodyInvalid => "The request body is invalid",
-        // 没有要改的内容  [draft]
+        // 没有要改的内容  [approved, batch 3]
         Key::HostNothingToChange => "Nothing to change",
-        // 数据库错误  [draft]
+        // 数据库错误  [approved, batch 3]
         Key::HostDatabaseError => "Database error",
-        // 已经答过了  [draft]
+        // 已经答过了  [approved, batch 3]
         Key::HostAlreadyAnswered => "Already answered",
-        // since 不是合法时间  [draft]
+        // since 不是合法时间  [approved, batch 3]
         Key::HostSinceInvalid => "since isn't a valid time",
-        // readAt 不是合法时间  [draft]
+        // readAt 不是合法时间  [approved, batch 3]
         Key::HostReadAtInvalid => "readAt isn't a valid time",
-        // 地址要以 http:// 或 https:// 开头  [draft]
+        // 地址要以 http:// 或 https:// 开头  [approved, batch 3]
         Key::HostUrlNeedsHttp => "The URL must start with http:// or https://",
-        // 密钥不能为空  [draft]
+        // 密钥不能为空  [approved, batch 3]
         Key::HostKeyEmpty => "The key can't be empty",
-        // 密钥里不能有空白  [draft]
+        // 密钥里不能有空白  [approved, batch 3]
         Key::HostKeyHasWhitespace => "The key can't contain spaces",
-        // 参数无效  [draft]
+        // 参数无效  [approved, batch 3]
         Key::HostArgsInvalid => "Invalid arguments",
-        // scope 只能是 user 或 bot:<botId>  [draft]
+        // scope 只能是 user 或 bot:<botId>  [approved, batch 3]
         Key::HostBadScope => "scope must be user or bot:<botId>",
-        // status 只能是 pending、kept 或 rejected  [draft]
+        // status 只能是 pending、kept 或 rejected  [approved, batch 3]
         Key::HostBadStatus => "status must be pending, kept or rejected",
-        // kind 只能是 profile、habit 或 project  [draft]
+        // kind 只能是 profile、habit 或 project  [approved, batch 3]
         Key::HostBadMemoryKind => "kind must be profile, habit or project",
-        // kind 只能是 text、image 或 file  [draft]
+        // kind 只能是 text、image 或 file  [approved, batch 3]
         Key::HostBadMessageKind => "kind must be text, image or file",
-        // cron 格式不对  [draft]
-        Key::HostBadCron => "The cron format isn't right",
-        // transport 只能是 stdio 或 http  [draft]
+        // cron 格式不对  [approved, batch 3]
+        Key::HostBadCron => "Invalid cron format",
+        // transport 只能是 stdio 或 http  [approved, batch 3]
         Key::HostBadTransport => "transport must be stdio or http",
-        // provider 只能是 brave 或 searxng  [draft]
+        // provider 只能是 brave 或 searxng  [approved, batch 3]
         Key::HostBadSearchProvider => "provider must be brave or searxng",
-        // 缺少或错误的令牌  [draft]
-        Key::HostTokenRejected => "Token missing or wrong",
-        // 名字太长  [draft]
-        Key::HostNameTooLong => "Name is too long",
-        // 名称最多 80 个字  [draft]
-        Key::HostNameMax80 => "Names can be at most 80 characters",
-        // 名称只能一行  [draft]
-        Key::HostNameOneLine => "Names must be one line",
-        // 标题太长，最多 80 个字  [draft]
-        Key::HostTitleTooLong => "Title is too long (max 80 characters)",
-        // 说明太长，最多 8000 个字  [draft]
-        Key::HostInstructionTooLong => "Instructions are too long (max 8000 characters)",
-        // 内容太长，最多 2000 个字  [draft]
-        Key::HostMemoryTooLong => "Too long (max 2000 characters)",
-        // 说明只能一行，最多 200 字  [draft]
-        Key::HostSummaryOneLine => "The description must be one line, max 200 characters",
-        // 规则只能一行，最多 200 字  [draft]
-        Key::HostRuleOneLine => "Rules must be one line, max 200 characters",
-        // 启动命令无效  [draft]
+        // 缺少或错误的令牌  [approved, batch 3]
+        Key::HostTokenRejected => "Missing or wrong token",
+        // 名字太长  [approved, batch 3]
+        Key::HostNameTooLong => "Name too long",
+        // 名称最多 80 个字  [approved, batch 3]
+        Key::HostNameMax80 => "Name: max 80 characters",
+        // 名称只能一行  [approved, batch 3]
+        Key::HostNameOneLine => "Name: one line only",
+        // 标题太长，最多 80 个字  [approved, batch 3]
+        Key::HostTitleTooLong => "Title: max 80 characters",
+        // 说明太长，最多 8000 个字  [approved, batch 3]
+        Key::HostInstructionTooLong => "Instructions: max 8000 characters",
+        // 内容太长，最多 2000 个字  [approved, batch 3]
+        Key::HostMemoryTooLong => "Max 2000 characters",
+        // 说明只能一行，最多 200 字  [approved, batch 3]
+        Key::HostSummaryOneLine => "Description: one line, max 200 characters",
+        // 规则只能一行，最多 200 字  [approved, batch 3]
+        Key::HostRuleOneLine => "Rule: one line, max 200 characters",
+        // 启动命令无效  [approved, batch 3]
         Key::HostCommandInvalid => "Invalid start command",
-        // 密钥名称最多 64 个字  [draft]
-        Key::HostSecretNameMax => "Secret names can be at most 64 characters",
-        // 密钥名称里不能有空白  [draft]
+        // 密钥名称最多 64 个字  [approved, batch 3]
+        Key::HostSecretNameMax => "Secret name: max 64 characters",
+        // 密钥名称里不能有空白  [approved, batch 3]
         Key::HostSecretNameWhitespace => "Secret names can't contain spaces",
-        // bro 不存在  [draft]
+        // bro 不存在  [approved, batch 3]
         Key::HostBroNotFound => "Bro not found",
-        // 任务不存在  [draft]
+        // 任务不存在  [approved, batch 3]
         Key::HostTaskNotFound => "Task not found",
-        // 审批卡不存在  [draft]
+        // 审批卡不存在  [approved, batch 3]
         Key::HostApprovalNotFound => "Approval card not found",
-        // 审批卡不见了  [draft]
+        // 审批卡不见了  [approved, batch 3]
         Key::HostApprovalVanished => "The approval card is gone",
-        // 确认卡不存在  [draft]
+        // 确认卡不存在  [approved, batch 3]
         Key::HostConfirmCardNotFound => "Confirm card not found",
-        // 选项卡不存在  [draft]
+        // 选项卡不存在  [approved, batch 3]
         Key::HostChoiceCardNotFound => "Choice card not found",
-        // 规则不存在  [draft]
+        // 规则不存在  [approved, batch 3]
         Key::HostRuleNotFound => "Rule not found",
-        // 例行任务不存在  [draft]
+        // 例行任务不存在  [approved, batch 3]
         Key::HostRoutineNotFound => "Routine not found",
-        // 这个群还没启用这台服务器  [draft]
+        // 这个群还没启用这台服务器  [approved, batch 3]
         Key::HostMcpNotEnabledInGroup => "This server isn't enabled in this group yet",
-        // 私聊里只能有一个 bro  [draft]
+        // 私聊里只能有一个 bro  [approved, batch 3]
         Key::HostDmOneBro => "A DM can only have one bro",
-        // 这个动作只能由宿主机发出  [draft]
+        // 这个动作只能由宿主机发出  [approved, batch 3]
         Key::HostActionHostOnly => "Only the host can send this action",
-        // 批准失败，无法写入继续标记  [draft]
+        // 批准失败，无法写入继续标记  [approved, batch 3]
         Key::HostApproveContinueMarkerFailed => {
             "Couldn't approve: couldn't save the continue marker"
         }
-        // 批准失败，无法写入接管标记  [draft]
+        // 批准失败，无法写入接管标记  [approved, batch 3]
         Key::HostApproveTakeoverMarkerFailed => {
             "Couldn't approve: couldn't save the takeover marker"
         }
-        // 这次不能恢复  [draft]
-        Key::HostCantResume => "This one can't be resumed",
-        // 选项需要 2 到 4 个  [draft]
-        Key::HostChoiceOptionCount => "Choices need 2 to 4 options",
-        // 推荐项最多一个  [draft]
+        // 这次不能恢复  [approved, batch 3]
+        Key::HostCantResume => "This task can't be resumed",
+        // 选项需要 2 到 4 个  [approved, batch 3]
+        Key::HostChoiceOptionCount => "Needs 2 to 4 options",
+        // 推荐项最多一个  [approved, batch 3]
         Key::HostChoiceOneRecommended => "At most one option can be recommended",
-        // 选项不能为空  [draft]
+        // 选项不能为空  [approved, batch 3]
         Key::HostChoiceOptionEmpty => "Options can't be empty",
-        // 选项重复  [draft]
+        // 选项重复  [approved, batch 3]
         Key::HostChoiceDuplicate => "Duplicate option",
-        // 至少选一个  [draft]
+        // 至少选一个  [approved, batch 3]
         Key::HostChoicePickAtLeastOne => "Pick at least one",
-        // 只能选一个  [draft]
+        // 只能选一个  [approved, batch 3]
         Key::HostChoicePickOnlyOne => "Pick only one",
-        // 没有这个选项  [draft]
+        // 没有这个选项  [approved, batch 3]
         Key::HostChoiceNoSuchOption => "No such option",
-        // 已经选过了  [draft]
+        // 已经选过了  [approved, batch 3]
         Key::HostChoiceAlreadyPicked => "Already picked",
-        // 模型密钥里不能有空白  [draft]
+        // 模型密钥里不能有空白  [approved, batch 3]
         Key::HostModelKeyHasWhitespace => "The model key can't contain spaces",
-        // ROBROZ_MODEL_KEY 和 ROBROZ_MODEL_KEY_FILE 只能设一个  [draft]
+        // ROBROZ_MODEL_KEY 和 ROBROZ_MODEL_KEY_FILE 只能设一个  [approved, batch 3]
         Key::HostModelEnvKeyConflict => {
             "Set only one of ROBROZ_MODEL_KEY and ROBROZ_MODEL_KEY_FILE"
         }
-        // ROBROZ_MODEL_KEY_FILE 是空的  [draft]
+        // ROBROZ_MODEL_KEY_FILE 是空的  [approved, batch 3]
         Key::HostModelEnvKeyFileEmpty => "ROBROZ_MODEL_KEY_FILE is empty",
-        // ROBROZ_MODEL_KEY_FILE 读不出来：{0}  [draft]
+        // ROBROZ_MODEL_KEY_FILE 读不出来：{0}  [approved, batch 3]
         Key::HostModelEnvKeyFileUnreadable => "Can't read ROBROZ_MODEL_KEY_FILE: {0}",
-        // 连不上：{0}  [draft]
+        // 连不上：{0}  [approved, batch 3]
         Key::HostCantConnect => "Can't connect: {0}",
-        // 连接中断：{0}  [draft]
+        // 连接中断：{0}  [approved, batch 3]
         Key::HostConnectionLost => "Connection lost: {0}",
-        // 地址无效：{0}  [draft]
+        // 地址无效：{0}  [approved, batch 3]
         Key::HostUrlInvalid => "Invalid URL: {0}",
-        // 搜索服务返回 {0}  [draft]
+        // 搜索服务返回 {0}  [approved, batch 3]
         Key::HostSearchServiceStatus => "Search service returned {0}",
-        // 搜索返回的不是 JSON  [draft]
+        // 搜索返回的不是 JSON  [approved, batch 3]
         Key::HostSearchNotJson => "The search reply isn't JSON",
-        // 搜索返回里没有 web.results  [draft]
+        // 搜索返回里没有 web.results  [approved, batch 3]
         Key::HostSearchNoWebResults => "The search reply has no web.results",
-        // 搜索返回里没有 results  [draft]
+        // 搜索返回里没有 results  [approved, batch 3]
         Key::HostSearchNoResults => "The search reply has no results",
-        // 不支持的搜索服务：{0}  [draft]
+        // 不支持的搜索服务：{0}  [approved, batch 3]
         Key::HostSearchProviderUnsupported => "Unsupported search service: {0}",
-        // 模型和工具还没回，已等 {0} 分钟  [draft]
+        // 模型和工具还没回，已等 {0} 分钟  [approved, batch 3]
         Key::HostStepTimeoutHint => "No reply from the model or tools for {0} min",
-        // {0} 分钟没有新进度  [draft]
+        // {0} 分钟没有新进度  [approved, batch 3]
         Key::HostStallHint => "No new progress for {0} min",
-        // {0}/{1} 步  [approved]
+        // {0}/{1} 步  [approved, batch 3]
         Key::HostRouterStep => "Step {0} of {1}",
-        // 已写入结果  [draft]
+        // 已写入结果  [approved, batch 3]
         Key::HostDeliveryWritten => "Result written",
-        // 未执行  [draft]
+        // 未执行  [approved, batch 3]
         Key::HostDeliveryNotRun => "Didn't run",
-        // 这个任务  [draft]
+        // 这个任务  [approved, batch 3]
         Key::HostGateFallbackLine => "this task",
-        // MCP 工具  [draft]
+        // MCP 工具  [approved, batch 3]
         Key::HostDeniedMcpFallback => "an MCP tool",
-        // 模型没回：{0}  [draft]
+        // 模型没回：{0}  [approved, batch 3]
         Key::HostModelNoReply => "No reply from the model: {0}",
-        // 等待批准：{0}  [draft]
+        // 等待批准：{0}  [approved, batch 3]
         Key::HostWaitingApproval => "Waiting for approval: {0}",
-        // 出网超额  [draft]
-        Key::HostOutboundOverQuota => "Over the outbound limit",
-        // 无法保存审批状态：{0}  [draft]
+        // 出网超额  [approved, batch 3]
+        Key::HostOutboundOverQuota => "Outbound request limit reached",
+        // 无法保存审批状态：{0}  [approved, batch 3]
         Key::HostSaveApprovalStateFailed => "Couldn't save the approval state: {0}",
-        // 无法继续已批准的调用：{0}  [draft]
+        // 无法继续已批准的调用：{0}  [approved, batch 3]
         Key::HostResumeApprovedCallFailed => "Couldn't continue the approved call: {0}",
-        // 无法写入审批状态：{0}  [draft]
+        // 无法写入审批状态：{0}  [approved, batch 3]
         Key::HostPendingWriteFailed => "Couldn't write the approval state: {0}",
-        // 找不到待批准的调用：{0}  [draft]
+        // 找不到待批准的调用：{0}  [approved, batch 3]
         Key::HostPendingNotFound => "Couldn't find the call waiting for approval: {0}",
-        // 待批准状态损坏：{0}  [draft]
-        Key::HostPendingCorrupt => "The pending approval state is damaged: {0}",
-        // 调用还没有被批准  [draft]
+        // 待批准状态损坏：{0}  [approved, batch 3]
+        Key::HostPendingCorrupt => "The pending approval state is corrupted: {0}",
+        // 调用还没有被批准  [approved, batch 3]
         Key::HostPendingNotApproved => "The call hasn't been approved yet",
-        // 待批准状态缺少 messages  [draft]
+        // 待批准状态缺少 messages  [approved, batch 3]
         Key::HostPendingMissingMessages => "The pending approval state is missing messages",
-        // 待批准状态缺少 remaining  [draft]
+        // 待批准状态缺少 remaining  [approved, batch 3]
         Key::HostPendingMissingRemaining => "The pending approval state is missing remaining",
-        // tool call 缺少 id  [draft]
+        // tool call 缺少 id  [approved, batch 3]
         Key::HostPendingCallMissingId => "tool call is missing id",
-        // tool call 缺少 name  [draft]
+        // tool call 缺少 name  [approved, batch 3]
         Key::HostPendingCallMissingName => "tool call is missing name",
-        // message 缺少 role  [draft]
+        // message 缺少 role  [approved, batch 3]
         Key::HostPendingMessageMissingRole => "message is missing role",
-        // 未知的 message role：{0}  [draft]
+        // 未知的 message role：{0}  [approved, batch 3]
         Key::HostPendingUnknownRole => "Unknown message role: {0}",
-        // 符合放行规则  [draft]
+        // 符合放行规则  [approved, batch 3]
         Key::HostReviewAllowFallback => "Matches an allow rule",
-        // 模型和工具还没回，已等   [draft]
+        // 模型和工具还没回，已等   [approved, batch 3]
         Key::HostStepTimeoutPrefix => "No reply from the model or tools for ",
-        //  分钟  [draft]
+        //  分钟  [approved, batch 3]
         Key::HostMinutesSuffix => " min",
-        //  分钟没有新进度  [draft]
-        Key::HostStallSuffix => " min without new progress",
 
         // ---- Card status, footnotes and approval buttons (cards/status.rs) ----
         // 去私聊接管  [approved, batch 1]
@@ -587,6 +585,14 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientThemeLight => "Light",
         // 选一个聊天  [approved, batch 2]
         Key::ClientPickChat => "Pick a chat",
+        // 连不上宿主  [approved, disconnected state]
+        Key::ClientHostUnreachable => "Can't reach the host",
+        // 连接被拒绝  [approved, disconnected state]
+        Key::ClientConnectionRefused => "Connection refused",
+        // 超时  [approved, disconnected state]
+        Key::ClientTimedOut => "Timed out",
+        // 找不到主机  [approved, disconnected state]
+        Key::ClientHostNotFound => "Host not found",
         // 语言  [approved, settings row]
         Key::SettingsLanguage => "Language",
         // English  [approved, settings row; native name in both files]

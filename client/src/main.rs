@@ -18,6 +18,7 @@ mod api;
 mod conn;
 mod event_decode;
 mod gallery;
+mod host_state;
 mod model;
 mod prefs;
 mod source;
@@ -53,6 +54,7 @@ use robroz_ui::{Mode, Skin};
 use api::{ApiError, CardApi, FakeApi, HttpApi};
 use conn::Conn;
 use gallery::Gallery;
+use host_state::HostState;
 use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
 use source::stream::{self, StreamItem};
 use source::{
@@ -252,6 +254,8 @@ enum Message {
         result: Result<McpServer, ApiError>,
     },
     Tick,
+    /// Ask the host for the groups again after the first listing failed.
+    RetryLoad,
     Loaded(Result<Vec<GroupTab>, SourceError>),
     Polled(Result<Polled, SourceError>),
     TakeOver(String),
@@ -361,6 +365,8 @@ struct App {
     mode: Mode,
     width: f32,
     loaded: bool,
+    /// The latest attempt at the first group listing failed.
+    load_failed: bool,
     in_flight: bool,
     has_more: bool,
     error: Option<String>,
@@ -465,6 +471,7 @@ impl App {
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
+            load_failed: false,
             in_flight: gallery.is_none(),
             has_more: gallery.is_none(),
             error: None,
@@ -494,6 +501,11 @@ impl App {
             app,
             Task::batch([Task::perform(load, Message::Loaded), shot]),
         )
+    }
+
+    /// Whether the host has answered the first group listing.
+    fn host_state(&self) -> HostState {
+        HostState::of(self.loaded, self.load_failed)
     }
 
     fn skin(&self) -> Skin {
@@ -1978,6 +1990,7 @@ impl App {
                         }
                         self.groups = groups;
                         self.loaded = true;
+                        self.load_failed = false;
                         self.error = None;
                         let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
                         // `--fake` + `ROBROZ_OPEN=<group>`: open that chat
@@ -1995,7 +2008,17 @@ impl App {
                         }
                         return Task::batch(tasks);
                     }
-                    Err(err) => self.error = Some(err.0),
+                    Err(err) => {
+                        self.load_failed = !self.loaded;
+                        self.error = Some(err.0);
+                    }
+                }
+            }
+            Message::RetryLoad => {
+                if !self.in_flight && self.host_state().retries() {
+                    self.in_flight = true;
+                    let load = blocking(&self.source, |s| s.groups());
+                    return Task::perform(load, Message::Loaded);
                 }
             }
             Message::Polled(result) => {
@@ -2240,6 +2263,9 @@ impl App {
             let every = stream::poll_interval(self.stream_up, self.interval);
             subs.push(iced::time::every(every).map(|_| Message::Tick));
         }
+        if self.host_state().retries() && self.gallery.is_none() {
+            subs.push(iced::time::every(self.interval).map(|_| Message::RetryLoad));
+        }
         if self.loaded && self.gallery.is_none() {
             subs.push(iced::time::every(UNREAD_EVERY).map(|_| Message::UnreadTick));
         }
@@ -2281,7 +2307,8 @@ impl App {
         }
         let main: Element<'_, Message> = if t.narrow {
             // Phone: one screen at a time.
-            if self.narrow_open && self.page == Page::Group {
+            if !self.host_state().shows_sidebar() || (self.narrow_open && self.page == Page::Group)
+            {
                 self.page_view(&t)
             } else if self.narrow_open {
                 let back = button(text(Text::ViewBackToChats).size(t.type_.row_name))
@@ -2312,25 +2339,36 @@ impl App {
             (Some(_), true) => Text::ClientLive.as_str(),
             (Some(_), false) => Text::ClientPolling.as_str(),
         };
-        let status = match &self.error {
-            Some(err) => err.clone(),
-            None => format!("{}{live}", self.origin),
+        // While the host has never answered, the main pane already shows
+        // why; the footer keeps only the theme toggle and drops the raw
+        // "Can't reach the host … io: … (os error …)" line.
+        let status = if self.host_state() == HostState::Unreachable {
+            None
+        } else {
+            Some(match &self.error {
+                Some(err) => err.clone(),
+                None => format!("{}{live}", self.origin),
+            })
         };
-        let footer = row![
-            text(status)
-                .size(t.type_.foot)
-                .color(color(t.palette.text3)),
-            space::horizontal(),
-            button(
-                text(match self.mode {
-                    Mode::Light => Text::ClientThemeDark.as_str(),
-                    Mode::Dark => Text::ClientThemeLight.as_str(),
-                })
-                .size(t.type_.foot),
-            )
-            .style(view::nav_button_style(t, false))
-            .on_press(Message::ToggleTheme),
-        ]
+        let theme = button(
+            text(match self.mode {
+                Mode::Light => Text::ClientThemeDark.as_str(),
+                Mode::Dark => Text::ClientThemeLight.as_str(),
+            })
+            .size(t.type_.foot),
+        )
+        .style(view::nav_button_style(t, false))
+        .on_press(Message::ToggleTheme);
+        let footer = match status {
+            Some(status) => row![
+                text(status)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3)),
+                space::horizontal(),
+                theme,
+            ],
+            None => row![space::horizontal(), theme],
+        }
         .align_y(Alignment::Center);
         container(column![
             main,
@@ -2374,6 +2412,15 @@ impl App {
     }
 
     fn group_list(&self, t: &Skin, width: Length) -> Element<'_, Message> {
+        if !self.host_state().shows_sidebar() {
+            // Nothing to list until the host answers: no empty-account hint.
+            return container(space::horizontal())
+                .width(width)
+                .height(Fill)
+                .padding(8)
+                .style(view::sidebar_style(*t))
+                .into();
+        }
         let selected = (self.page == Page::Group)
             .then_some(self.selected.as_deref())
             .flatten();
@@ -2469,6 +2516,37 @@ impl App {
     }
 
     fn page_view(&self, t: &Skin) -> Element<'_, Message> {
+        let state = self.host_state();
+        if !state.shows_sidebar() {
+            // Before the host answers: blank while waiting, or 「连不上宿主」
+            // with the address on a lighter line below, and a short reason
+            // 12px to the right when we have one.
+            let notice = state.notice().map(|key| {
+                let mut detail = row![text(self.origin.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text3))]
+                .spacing(12)
+                .align_y(Alignment::Center);
+                if let Some(reason) = self.error.as_deref().and_then(host_state::connect_reason) {
+                    detail = detail.push(
+                        text(reason)
+                            .size(t.type_.foot)
+                            .color(color(t.palette.text3)),
+                    );
+                }
+                column![
+                    text(key).size(t.type_.body).color(color(t.palette.text)),
+                    detail,
+                ]
+                .spacing(4)
+                .align_x(Alignment::Center)
+            });
+            return container(
+                notice.map_or_else(|| Element::from(space::horizontal()), Element::from),
+            )
+            .center(Fill)
+            .into();
+        }
         if self.page == Page::Memories {
             return scrollable(
                 container(view::memories_panel(t, &self.memories, now_unix()).map(Message::Ui))
