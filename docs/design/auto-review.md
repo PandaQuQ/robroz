@@ -1,9 +1,10 @@
 # Auto-review
 
-Status: **Draft**. This is a design proposal, not an accepted contract. Existing
-behaviour below is taken from `main` at `22a0279`. If this document disagrees
-with the code or with [api.md](../api.md), [permissions.md](../permissions.md),
-or [concepts.md](../concepts.md), the code wins.
+Status: **Accepted**. Existing behaviour below is taken from `main` at
+`91efdde`. If a description of current code disagrees with the tree or with
+[api.md](../api.md), [permissions.md](../permissions.md), or
+[concepts.md](../concepts.md), the code wins. The decisions in this document
+are the accepted design for the review layer.
 
 Auto-review is a host-side gate in front of risky actions. It layers on top of
 the existing three-tier permission policy. It does not replace that policy, and
@@ -28,6 +29,43 @@ it does not add a fifth task `state`.
    captcha go through the owner's DM and then `blocked`). A blocked action uses
    the existing `blocked`（卡住）state. There is no fifth `state`.
 
+## Decisions
+
+1. **Expiry.** Approval cards expire after 24 hours by default. The TTL is
+   configurable. Expiry applies to approval cards, including task approval
+   cards, MCP call cards, and rule add/delete cards. An expired card is settled
+   as denied, and that is final. Takeover cards (「去私聊接管」) never expire.
+   Memory and skill confirm cards are unchanged and still do not expire. The
+   `failure` copy on an expired task card is 「审批已过期」. Answering after
+   expiry returns 409「已经过期了」.
+2. **Rule matching.** The review model is given the pending action and the
+   original text of every confirmed rule. It returns `allow` or `block` plus a
+   one-sentence reason. There is no regex or wildcard matching. If the review
+   itself errors or times out, it is retried once; if it still fails, the
+   action is blocked. Review never default-allows.
+3. **Adding and deleting a rule.** `POST` and `DELETE /api/settings/review-rules`
+   do not change the rule list. Each call only creates a confirm card and
+   returns **202** with that pending approval id. The rule is added or removed
+   only after the owner confirms the card with the existing
+   `POST /api/approvals/{id}/approve`. Deny leaves the list unchanged.
+   Unconfirmed rules are not returned by `GET`. A bro who calls these endpoints
+   only creates a card. Auth is the existing API token.
+4. **Confirm card.** Rule add and delete reuse the existing approval-card
+   event and the [#68](https://github.com/PandaQuQ/robroz/pull/68) confirm-card
+   layout. The title is 「添加放行规则」 or 「删除规则」. The body is the rule
+   sentence, verbatim. A grey line states whether this is an add or a delete.
+   Delete uses a red button labelled 「删除规则」. Answered with the existing
+   `/approve` and `/deny` endpoints.
+5. **What expires.** Only approval cards, as in decision 1. Takeover is not an
+   approval card and does not expire.
+6. **`ApprovalAction`.** Two new values are added, and no existing value
+   changes: `rule_add` and `rule_delete`. See [Rollout](#rollout) for the
+   serde names and the required ship order. A client that does not recognise a
+   value must render a generic card, once `#[serde(other)]` is in place.
+
+Captcha is unchanged: it still goes through takeover and
+`POST /api/tasks/{id}/resume`. A sentence rule cannot auto-allow it.
+
 ## Relationship with the three-tier permissions
 
 The three tiers live in `robroz_policy::tier(SideEffect)` and are unchanged.
@@ -41,27 +79,22 @@ Check order:
 2. If the tier already forbids the action (over quota, or a non-GET outbound
    call), the existing outcome stands: the task becomes `done` with `failure`,
    not `blocked`. Auto-review is not consulted.
-3. If the action is in auto-review's scope and no confirmed allow rule matches,
-   the host blocks it and asks the owner. If a confirmed rule matches, the host
-   allows it and continues, writing the same takeover or continue markers that a
-   manual approve would write today.
+3. If the action is in auto-review's scope, the review model sees the pending
+   action and all confirmed rule texts. A match allows and continues, writing
+   the same takeover or continue markers that a manual approve would write
+   today. Otherwise the host blocks and asks the owner.
 
 | Action class | Three-tier | Auto-review |
 | --- | --- | --- |
 | In-container workspace read and write (`WorkspaceRead` / `WorkspaceWrite`) | `Allow`. No notification. Success writes `tasks/{taskId}/result.txt`. | Not reviewed. Stays automatic. |
 | Read-only internet: outbound GET, `web_search` / `web_fetch`, MCP tools marked `readOnlyHint: true` (`Outbound`) | `Metered`. GET only, counted per task up to `ROBROZ_GET_LIMIT` (default 8). Over quota or non-GET: `done` with `failure`, no delivery card, not `blocked`. | Not reviewed. The quota already limits the action. |
-| External write, including `robroz-action:external` and MCP tools that are not read-only (`ExternalWrite`) | `Takeover`. Task becomes `blocked`, `waitingFor` is `approval`. The host already issues a task or `call` approval card. | Reviewed before the write runs. A matching allow rule allows and continues (no card). Otherwise the approval card goes to the owner's DM; the group status card only shows 「等你批准」. |
-| Captcha (`robroz-action:captcha`, `Captcha`) | `Takeover`. Task becomes `blocked`, `waitingFor` is `takeover`. No approval card: the owner must complete the captcha in the DM, then `POST /api/tasks/{id}/resume`. | A sentence rule cannot auto-allow a captcha (someone has to fill it). The takeover flow is unchanged. |
+| External write, including `robroz-action:external` and MCP tools that are not read-only (`ExternalWrite`) | `Takeover`. Task becomes `blocked`, `waitingFor` is `approval`. The host already issues a task or `call` approval card. | Reviewed before the write runs. A matching allow rule allows and continues (no card). Otherwise the approval card goes to the owner's DM; the group status card shows 「等你批准」 and 「已发到主人私聊」, with no buttons. |
+| Captcha (`robroz-action:captcha`, `Captcha`) | `Takeover`. Task becomes `blocked`, `waitingFor` is `takeover`. No approval card: the owner must complete the captcha in the DM, then `POST /api/tasks/{id}/resume`. | A sentence rule cannot auto-allow a captcha. The takeover flow is unchanged, and the card does not expire. |
 | Host-side shell, pull request merge, sending a message, deleting, and spending | Not a `SideEffect` when the host or bro initiates them outside the container prompt. Bros can already ask with `POST /api/groups/{id}/approvals` (`action` is `delete`, `send`, or `spend`); answering that card does not make the host perform the action. There is no first-class host shell or merge tool on `main` today. | Reviewed before any such action *runs*. A matching rule allows; otherwise an approval card goes to the owner's DM. When host shell or merge tools are added, they use this gate. Existing `send` / `delete` / `spend` / `call` verbs are reused where they already fit. |
-
-A matching allow rule for an `ExternalWrite` must do what today's
-`POST /api/approvals/{id}/approve` already does: append the takeover hash or
-write the MCP continue marker, then return the task to `queued` so pump can
-continue. It does not invent a new continue path.
 
 ## What already exists on `main`
 
-Verified on `22a0279`. Unmerged work is marked planned.
+Verified on `91efdde`.
 
 - **Task states** (frozen, [concepts.md](../concepts.md)): `queued`（排队）,
   `running`（在跑）, `blocked`（卡住，要人）, `done`（结束）. Failure is not a
@@ -87,46 +120,49 @@ Verified on `22a0279`. Unmerged work is marked planned.
   with no button. The conversation list preview is 「{botName}：等你批准」.
 - **[#68](https://github.com/PandaQuQ/robroz/pull/68) (merged)**: confirm cards
   for memory and skill proposals, answered with the same approve / deny
-  endpoints, in the owner's conversation.
-- **MCP call approval UI**: the host already emits `call` cards. On `main` the
-  client renders them with the generic approval card (「批准」「拒绝」). The
-  dedicated MCP call approval card in
-  [#103](https://github.com/PandaQuQ/robroz/pull/103) is **not on `main`** and
-  is planned. The MCP settings page and stdio command approval
-  (`POST /api/mcp/servers/{id}/approve-command`, button 「批准运行」) already
-  exist; that is a different card, on the settings page, not this gate.
+  endpoints.
+- **[#103](https://github.com/PandaQuQ/robroz/pull/103) (merged)**: the client
+  renders MCP `call` approval cards with a dedicated layout (the 「调用」 tag is
+  not repeated; the host summary already starts with 「调用」). Other approval
+  kinds keep the generic card (「批准」「拒绝」). The MCP settings page and
+  stdio command approval (`POST /api/mcp/servers/{id}/approve-command`, button
+  「批准运行」) are a different card, on the settings page, not this gate.
 - **Today's gap**: approval events are stored and streamed in the *task's
   group*, so the interactive card currently appears in the group thread next to
   the status card. Auto-review moves the interactive card to the owner's DM.
-  Cards do not yet expire.
+  Cards do not yet expire, and approval events have no `reason` field.
 
 ## State flow
 
 Reuse the frozen states and the existing endpoints. No new `state`, no new
 `waitingFor` value, no change to `POST /api/tasks/{id}/resume`.
 
-1. A risky action is about to run. The host reviews it (allow rules, then a
-   card if needed). Review returns allow or block.
-2. **Allow** (a confirmed rule matched, or the owner approved the card): the
-   action runs. For an in-flight task this is the same continue path as today
-   (markers, then `queued`, then pump).
-3. **Block** (no matching rule): the task, if any, becomes `blocked` with
-   `waitingFor` set to `approval`. In the *group*, the status card shows
-   「等你批准」 and has no button. The approval card is created in the owner's
-   DM with that bro (`POST /api/bros/{id}/dm` already opens or returns that
-   conversation). Group messages cannot approve it.
+1. A risky action is about to run. The host reviews it (confirmed rules, then a
+   card if needed). Review returns allow or block, plus a one-sentence reason.
+2. **Allow** (the model matched a confirmed rule, or the owner approved the
+   card): the action runs. For an in-flight task this is the same continue path
+   as today (markers, then `queued`, then pump).
+3. **Block** (no match, or review failed after the retry): the task, if any,
+   becomes `blocked` with `waitingFor` set to `approval`. In the *group*, the
+   status card shows 「等你批准」 and 「已发到主人私聊」, and has no button. The
+   approval card is created in the owner's DM with that bro
+   (`POST /api/bros/{id}/dm` already opens or returns that conversation). The
+   card reuses the [#103](https://github.com/PandaQuQ/robroz/pull/103) approval
+   card, plus a grey line for `reason` (why it was blocked). Group messages
+   cannot approve it.
 4. **Owner approves** (`POST /api/approvals/{id}/approve`): same as today's
    approve path. The card records `decision: approved`, `answeredAt`, and
    optional `answeredBy`.
 5. **Owner denies** (`POST /api/approvals/{id}/deny`): same as today's deny
    path. The task becomes `done` with `failure`「你拒绝了：…」. The action does
    not run. The bro must not retry, reword, or work around it in this task.
-6. **Card expires** (proposed; cards have no expiry on `main`): the host
-   settles the unanswered card as denied. The task becomes `done` with
-   `failure` (proposed copy: 「审批已过期」). Answering after expiry is 409
-   (proposed: 「已经过期了」). This is also final: no retry, no workaround.
+6. **Card expires** (24 hours by default, configurable): the host settles the
+   unanswered approval card as denied. The task becomes `done` with `failure`
+   「审批已过期」. Answering after expiry is 409「已经过期了」. This is also
+   final: no retry, no workaround.
 7. Captcha stays on `waitingFor: takeover` and `POST /api/tasks/{id}/resume`.
-   Auto-review does not issue a card and does not auto-allow it.
+   Auto-review does not issue a card, does not auto-allow it, and does not
+   expire it.
 
 A bro-issued `delete` / `send` / `spend` card that does not drive a task still
 follows rules 3–6: the card goes to the owner's DM, and a deny or expiry is
@@ -135,75 +171,107 @@ action (unchanged).
 
 ## Client
 
-- **Group thread**: show only the existing status treatment, 「等你批准」. Do
-  not show the interactive approval card in the group. Do not treat any group
-  message as an answer.
-- **Owner DM**: the approval card itself, including approve and deny. Until
-  #103 lands, `call` cards use the generic approval card already on `main`.
-  After #103, the dedicated MCP call card is used in the DM. Planned: a group
-  card that is waiting must not grow a second copy of the buttons.
-- **Confirm cards (#68)**: reuse for confirming a new allow rule. The confirm
-  card is also posted only in the owner's DM.
-- **Settings — allow rules** (planned): a new page, next to the existing left-nav
-  pages (routines, memory, skills, web search, MCP). List rules, add a
-  one-sentence rule, and delete a rule. Adding a rule does not activate it:
-  the page proposes the rule, a confirm card appears in the owner's DM, and
-  the rule counts only after the owner approves that card. Bros have no
-  settings UI for this and cannot confirm a rule.
+### Allow-rules settings page
+
+A new left-nav entry, 「放行规则」, directly under 「MCP」.
+
+- The top of the page has one input and an 「添加」 button. Clicking it does
+  not add the rule. It creates a confirm card in the owner's DM; the owner
+  must confirm before the rule appears in the list.
+- Each listed rule is one row: the original sentence, a grey line under it
+  「添加于 {日期}」 (from `createdAt`), and a 「删除」 text button on the
+  right. There is no toggle and no edit. To change a rule, delete it and add
+  it again, each with its own confirm card.
+- Deleting also creates a confirm card. The confirm card's action button is
+  red and labelled 「删除规则」. The rule stays in the list until that card is
+  approved.
+- Empty state: 「还没有放行规则。有风险的操作都会先问你。」
+
+### Cards in chat
+
+- **Group thread**: show only 「等你批准」 and 「已发到主人私聊」. No approve
+  or deny buttons.
+- **Owner DM, blocked action**: reuse the [#103](https://github.com/PandaQuQ/robroz/pull/103)
+  approval card, plus a grey line for `reason` (why it was blocked).
+- **Owner DM, add or delete a rule**: reuse the [#68](https://github.com/PandaQuQ/robroz/pull/68)
+  confirm-card layout on an approval event whose `action` is `rule_add` or
+  `rule_delete`. Title 「添加放行规则」 or 「删除规则」; body is the rule
+  sentence, verbatim; grey line states add or delete.
 
 ## New API (additive only)
 
 No existing fields change. No existing endpoint changes its request, response,
-or status mapping. The endpoints below are **proposed**, for the backend
-(超稳后端工程师) to confirm. Naming follows `/api/settings/search`,
-`/api/settings/model`, `GET` / `POST` / `DELETE` for collections, and the
-existing `POST /api/approvals/{id}/approve` and `/deny`.
+or status mapping. Auth is the existing API token, the same as the rest of
+`/api/settings/*`.
 
-### Proposed: allow rules
+### Allow rules
 
-`ReviewRule` (proposed): `id`, `text` (one sentence, trimmed, non-empty, one
-line), `status` (`pending` until confirmed, `kept` once confirmed, same words
-as memories and skills), `createdAt`, `updatedAt`, and `confirmId` when a
-confirm card is still unanswered.
+`ReviewRule`: `id`, `text` (the original sentence, trimmed, non-empty, one
+line), `createdAt` (used to render 「添加于 {日期}」). Only confirmed rules
+have this shape in the list. Unconfirmed proposals are not listed.
 
 | Method | Path | Role |
 | --- | --- | --- |
-| `GET` | `/api/settings/review-rules` | List confirmed and pending rules. Proposed response: `{"rules":[ReviewRule]}`. |
-| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Proposed: 201 the `pending` rule, and a confirm card in the owner's DM. The rule is not active until that card is approved. Deny leaves it inactive (`rejected`, not listed as `kept`). |
-| `DELETE` | `/api/settings/review-rules/{id}` | Remove a rule. Proposed: deleting a `pending` rule also closes its confirm card as `denied`. Deleting a `kept` rule takes effect immediately. Bros must not be able to add, edit, or delete rules; see open questions for the shared-token limit. |
+| `GET` | `/api/settings/review-rules` | List confirmed rules only. Response: `{"rules":[ReviewRule]}`. |
+| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Returns **202** and the pending approval id (body: `{"id":"<approvalId>"}`). Creates a `rule_add` card in the owner's DM. The rule is not listed and is not used in review until that card is approved. |
+| `DELETE` | `/api/settings/review-rules/{id}` | Propose deleting a confirmed rule. Returns **202** and the pending approval id, same body as `POST`. Creates a `rule_delete` card in the owner's DM. The rule stays listed until that card is approved. 404 if the id is not a confirmed rule. |
 
-There is no edit endpoint. To change a rule, the owner deletes it and proposes
-a new one (which needs its own confirm card).
+A bro who calls `POST` or `DELETE` gets the same 202 and a card; the list still
+does not change until the owner confirms. There is no edit endpoint.
 
-Rule confirmation reuses `POST /api/approvals/{confirmId}/approve` and `/deny`.
-How the confirm card is typed is proposed, not decided: either a `confirm`
-event with a new `subject` (needs a coordinated client, because unknown
-`ConfirmSubject` values fail to parse today), or a new event `type` (old
-clients already skip unknown types). Prefer the form that keeps old event JSON
-valid and does not change existing fields. Backend to confirm.
-
-### Existing: approval decision
+### Approval decision
 
 Keep `POST /api/approvals/{id}/approve` and `/deny` as the only way to answer
 an approval or confirm card. Do not add a parallel decision API. Request body,
 `answeredBy`, 404「审批卡不存在」, and 409「已经答过了」 stay as they are.
+After expiry, answering returns 409「已经过期了」.
 
-### Proposed: expiry
+### Additive fields
 
-Approval cards have no `expiresAt` on `main`. Proposed additive optional field
-`expiresAt` (RFC 3339, same style as `createdAt` / `answeredAt`) on approval
-events, omitted on cards that do not expire so old JSON stays valid. When the
-timestamp is reached and `decision` is still `null`, the host settles the card
-as denied (rule 6 above). A late approve or deny returns 409. The default TTL
-is not set here; see open questions.
+- `expiresAt` (RFC 3339, same style as `createdAt` / `answeredAt`): optional
+  on approval events, omitted on cards that do not expire so old JSON stays
+  valid. Set on task approval cards, MCP call cards, and rule add/delete
+  cards. Absent on takeover, and on memory and skill confirm cards.
+- `reason` (string, optional): on a blocked action's approval card, the
+  one-sentence reason from the review model. Shown as grey text on the DM
+  card. Omitted when there is no reason (old JSON stays valid).
 
-`expiresAt` is a new optional field. It is not a change to any existing field.
+Both are new optional fields. They are not changes to any existing field.
+
+### `ApprovalAction`
+
+Two new values, additive only, on `crates/robroz-contract/src/lib.rs`
+`ApprovalAction` (today: `delete`, `send`, `spend`, `call`, with
+`#[serde(rename_all = "lowercase")]`, and no `#[serde(other)]`).
+
+The JSON names must be `rule_add` and `rule_delete`. Because of
+`rename_all = "lowercase"`, a variant named `RuleAdd` would serialise as
+`ruleadd`. The new variants need explicit `#[serde(rename = "rule_add")]` and
+`#[serde(rename = "rule_delete")]`.
+
+## Rollout
+
+Verified on `main` at `91efdde`, `crates/robroz-contract/src/lib.rs` (the
+`ApprovalAction` enum). There is no `#[serde(other)]` today, so an unknown
+`action` value fails the whole event parse; the client does not fall back to a
+generic card.
+
+The review-layer PR must add `#[serde(other)] Unknown` (or equivalent) to
+`ApprovalAction` and ship that in at least one release *before* any host emits
+`rule_add` or `rule_delete`. Already-shipped clients will still fail to parse
+those events until they are updated. Emitting the new values in the same
+release as the catch-all is not enough for clients that are already out.
+
+Until that catch-all has shipped, rule add/delete cards must not be emitted.
+Host shell and merge, when added, keep using existing verbs (`call`, `send`,
+`delete`, `spend`) until any further action values are accepted and shipped
+the same way.
 
 ## Authorization
 
 The only inputs that can allow a risky action are:
 
-- a confirmed allow rule that matches this action, or
+- a confirmed allow rule that the review model matched, or
 - the owner tapping approve on the card in their DM.
 
 These never count, even if they look like an instruction to allow:
@@ -211,35 +279,9 @@ These never count, even if they look like an instruction to allow:
 - group messages, including `/say` and @-mentions
 - words from another bro
 - a web page, search result, or any tool output
-- a rule that is still `pending`, or that a bro proposed but the owner has not
-  confirmed
+- a rule that has not been confirmed, including one a bro proposed
 
 The host uses a single shared token and cannot tell which person called an
 API (`answeredBy` is client-reported and not verified). That does not weaken
-the rule: a call that is not the owner's confirm on the card does not activate
-a rule and does not approve an action.
-
-## Open questions
-
-For the backend and PM to confirm.
-
-1. Default TTL for an approval card, and whether rule-confirm cards expire
-   too (memory and skill confirm cards do not expire today).
-2. Exact `failure` copy for an expired task card. This draft proposes
-   「审批已过期」.
-3. How a one-sentence rule is matched (the host interprets the sentence at
-   review time, versus a structured pattern). This draft assumes the reviewer
-   interprets the sentence and returns only allow or block. The algorithm is
-   not specified here.
-4. The host token is shared, so a raw `DELETE /api/settings/review-rules/{id}`
-   cannot be proven to be the owner. Is the settings page plus “bros must not
-   call this” enough, or should deleting a `kept` rule also require a confirm
-   card?
-5. Confirm-card shape for a new rule (new `confirm` `subject` versus a new
-   event `type`).
-6. Whether `expiresAt` applies to every action approval, including today's
-   task and MCP cards, or only to cards issued after this design lands.
-7. New `ApprovalAction` values for host shell or merge, when those tools
-   exist. Extending that enum needs a coordinated client, as `call` did.
-   Until then, reuse `send` / `delete` / `spend` / `call` where they already
-   fit.
+the rule: `POST` and `DELETE` on review rules only create a card, and only the
+owner's confirm on that card adds or removes a rule or allows an action.
