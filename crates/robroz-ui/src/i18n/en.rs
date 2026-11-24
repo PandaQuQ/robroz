@@ -597,6 +597,26 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientTokenRejected => "The host rejected the token. Check `ROBROZ_TOKEN`.",
         // 连不上宿主。  [approved, disconnected state]
         Key::ClientCantReachHost => "Can't reach host.",
+        // 地址  [approved, connection form]
+        Key::ConnHostLabel => "Host",
+        // 令牌  [approved, connection form]
+        Key::ConnTokenLabel => "Token",
+        // 连接  [approved, connection form]
+        Key::ConnConnect => "Connect",
+        // 连接中…  [approved, connection form]
+        Key::ConnConnecting => "Connecting…",
+        // 显示  [approved, connection form; UI to confirm]
+        Key::ConnShow => "Show",
+        // 隐藏  [approved, connection form; UI to confirm]
+        Key::ConnHide => "Hide",
+        // 清除  [approved, connection form; UI to confirm]
+        Key::ConnClear => "Clear",
+        // 由 `ROBROZ_HOST` 设置  [approved, connection form; UI to confirm zh]
+        Key::ConnSetByHost => "Set by `ROBROZ_HOST`",
+        // 由 `ROBROZ_TOKEN` 设置  [approved, connection form; UI to confirm zh]
+        Key::ConnSetByToken => "Set by `ROBROZ_TOKEN`",
+        // 未加密，远程请用 HTTPS。  [approved, connection form]
+        Key::ConnUnencryptedHint => "Unencrypted. Use HTTPS for remote hosts.",
         // Language / 语言  [approved, settings row]
         Key::SettingsLanguage => "Language / 语言",
         // English  [approved, settings row; native name in both files]

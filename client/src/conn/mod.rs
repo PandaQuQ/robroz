@@ -16,9 +16,8 @@ use std::fmt;
 use std::time::Duration;
 
 mod config;
-// Public API for the connection form (a follow-up PR). Unused in this binary
-// until that form lands, so the names would otherwise warn.
-#[allow(unused_imports, dead_code)]
+pub(crate) mod form;
+
 pub use config::{load, save, ConnConfig, ConnError, SaveError, Source, TokenEdit, TokenState};
 
 pub const DEFAULT_HOST: &str = "http://127.0.0.1:8790";
