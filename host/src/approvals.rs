@@ -509,8 +509,11 @@ fn settle_task(
     failure: Option<&str>,
 ) -> rusqlite::Result<()> {
     // Denied is done without the work: say so, so the card is not a green "done".
+    // A task split by the Router ends whole: 「没写出结果」.
+    let routed = decision == ApprovalDecision::Denied && crate::router::clear(conn, task_id)?;
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
+        ApprovalDecision::Denied if routed => ("done", Some(robroz_card::NO_RESULT.to_string())),
         ApprovalDecision::Denied if failure.is_some() => ("done", failure.map(String::from)),
         ApprovalDecision::Denied => {
             let prompt: String =
@@ -625,6 +628,11 @@ pub(crate) fn settle(
             match decision {
                 ApprovalDecision::Approved => {
                     crate::mcp_tools::queue_approved(&tx, task_id, hash, &now)?;
+                }
+                ApprovalDecision::Denied if crate::router::clear(&tx, task_id)? => {
+                    // A split task ends whole: 「没写出结果」, no 「未执行」 delivery.
+                    crate::router::end_denied(&tx, task_id, hash, &now)?;
+                    let _ = crate::mcp_tools::remove_pending(&control_root.join(task_id));
                 }
                 ApprovalDecision::Denied => {
                     let failure = match how.failure {

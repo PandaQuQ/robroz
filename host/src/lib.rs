@@ -27,6 +27,7 @@ mod progress;
 mod proposals;
 mod pump;
 pub mod review;
+mod router;
 mod routines;
 mod sandbox;
 mod say;
@@ -74,6 +75,9 @@ pub struct Host {
     offload: Option<Arc<Mutex<pump::Offload>>>,
     /// Test hook: review with this instead of the configured model.
     reviewer: Option<Arc<dyn review::Reviewer>>,
+    /// Test hook: let a [`Host::with_model`] fake split tasks too. A model
+    /// from the settings or env always uses the Router.
+    router_with_override: bool,
 }
 
 impl Host {
@@ -96,6 +100,7 @@ impl Host {
             mcp: crate::mcp_tools::real_mcp(),
             offload: None,
             reviewer: None,
+            router_with_override: false,
         })
     }
 
@@ -116,6 +121,13 @@ impl Host {
     /// leaves this unset so each pump reads the latest settings and env.
     pub fn with_model(mut self, model: Option<Arc<dyn robroz_model::Model>>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Let the [`Host::with_model`] fake go through the Router ([`router`]).
+    /// Off by default so tests with scripted models see no split call.
+    pub fn with_router(mut self, on: bool) -> Self {
+        self.router_with_override = on;
         self
     }
 
@@ -235,6 +247,11 @@ impl Host {
             }
         };
         let echo_prompt = matches!(slot, Slot::Echo);
+        let router = match &slot {
+            Slot::Override => self.router_with_override,
+            Slot::Live(_) => true,
+            Slot::Echo | Slot::Missing => false,
+        };
         let model: Option<Arc<dyn robroz_model::Model>> = match slot {
             Slot::Override => self.model.clone(),
             Slot::Live(model) => Some(Arc::new(model)),
@@ -249,6 +266,7 @@ impl Host {
             echo_prompt,
             tools: &tools,
             mcp: Some(self.mcp.clone()),
+            router,
         };
         match &self.offload {
             Some(offload) => {
@@ -510,6 +528,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     review::migrate(conn)?;
     turns::migrate(conn)?;
     conn.execute_batch(follow_ups::SCHEMA)?;
+    conn.execute_batch(router::SCHEMA)?;
     Ok(())
 }
 
@@ -5202,6 +5221,7 @@ mod tests {
                 echo_prompt: false,
                 tools: crate::tools::ToolRegistry::empty(),
                 mcp: None,
+                router: false,
             },
         )
         .unwrap();

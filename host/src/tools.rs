@@ -158,7 +158,9 @@ impl ToolRegistry {
     pub fn invoke_approved(&self, call: &ToolCall, ctx: &mut ToolCtx) -> String {
         match self.invoke_inner(call, ctx, true) {
             InvokeOutcome::Text(text) => text,
-            InvokeOutcome::NeedsApproval { .. } => "调用失败：这个工具还需要批准".to_string(),
+            InvokeOutcome::NeedsApproval { .. } => {
+                robroz_contract::host_text::TOOL_STILL_NEEDS_APPROVAL.to_string()
+            }
         }
     }
 
@@ -179,7 +181,10 @@ impl ToolRegistry {
         }
         let text = match tool.call(&args, ctx) {
             Ok(text) => clip_result(text),
-            Err(err) => format!("调用失败：{err}"),
+            Err(err) => format!(
+                "{}{err}",
+                robroz_contract::host_text::TOOL_CALL_FAILED_PREFIX
+            ),
         };
         InvokeOutcome::Text(text)
     }
