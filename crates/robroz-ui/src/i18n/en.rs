@@ -891,6 +891,14 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpApproveFailed => "Approval failed: {0}",
         // 连不上：{0}  [approved, batch 2]
         Key::CannotConnect => "Can't connect: {0}",
+        // 令牌  [approved, provisional: mobile spike wording, UI to confirm]
+        Key::MobileTokenLabel => "Token",
+        // 连接  [approved, provisional: mobile spike wording, UI to confirm]
+        Key::MobileConnect => "Connect",
+        // 关于  [approved, provisional: mobile spike wording, UI to confirm]
+        Key::MobileAbout => "About",
+        // 版本 {0}  [approved, provisional: mobile spike wording, UI to confirm]
+        Key::MobileVersion => "Version {0}",
         // 没保存：{0}  [approved, batch 2]
         Key::NotSaved => "Not saved: {0}",
         // {0} 个工具  [approved, batch 2]

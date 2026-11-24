@@ -1,0 +1,83 @@
+name: Mobile
+
+# v0.2 spike: the Slint mobile client in `mobile/`. Android builds an APK
+# signed with a throwaway key; iOS builds an UNSIGNED `.ipa` that the owner
+# signs and sideloads himself (no Apple account, no signing here).
+# Path-filtered so the desktop CI jobs are unaffected.
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android platform and NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006"
+      - name: Install cargo-apk
+        run: cargo install cargo-apk --locked
+      - name: Build the APK
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
+        run: |
+          # A throwaway key made for this run; nothing is stored in the repo.
+          keytool -genkeypair -keystore "$RUNNER_TEMP/spike.jks" \
+            -storepass spikepass -keypass spikepass -alias spike \
+            -keyalg RSA -keysize 2048 -validity 30 -dname "CN=robroz spike"
+          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/spike.jks"
+          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=spikepass
+          cargo apk build --release --lib -p robroz-mobile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robroz-android-apk
+          path: target/release/apk/robroz.apk
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build the app with code signing off
+        working-directory: mobile/ios
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild \
+            -project robroz.xcodeproj \
+            -scheme robroz \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package the unsigned .ipa
+        run: |
+          app="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/robroz.app"
+          test -d "$app"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/robroz-unsigned.ipa" Payload)
+          unzip -l robroz-unsigned.ipa | head -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robroz-ios-unsigned-ipa
+          path: robroz-unsigned.ipa
+          if-no-files-found: error

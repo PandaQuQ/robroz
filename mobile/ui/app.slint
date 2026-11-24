@@ -1,0 +1,315 @@
+import { LineEdit, ListView, Button, AboutSlint, ScrollView } from "std-widgets.slint";
+
+// Colours: crates/robroz-tokens brand values (paper, ink, orange). Status card
+// colours are never picked here; Rust passes the robroz-card palette.
+global Brand {
+    out property <color> paper: #f4f1ea;
+    out property <color> ink: #16181d;
+    out property <color> orange: #c8551f;
+    out property <color> muted: #6f6c66;
+    out property <color> rule: #d9d5cb;
+}
+
+// Every string comes from the robroz-ui i18n keys, set from Rust.
+export global Tr {
+    in property <string> title-chats;
+    in property <string> empty-chats;
+    in property <string> label-host;
+    in property <string> label-token;
+    in property <string> connect;
+    in property <string> back;
+    in property <string> settings;
+    in property <string> language;
+    in property <string> about;
+    in property <string> version;
+}
+
+export struct SessionRow {
+    id: string,
+    name: string,
+    unread: int,
+}
+
+// kind: 0 own bubble (right), 1 bro bubble (left, with the bro's name),
+// 2 status card (left, under the bro).
+export struct ChatRow {
+    kind: int,
+    name: string,
+    text: string,
+    status: string,
+    step: string,
+    progress: string,
+    fill: color,
+    text-color: color,
+}
+
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: true;
+    callback clicked();
+    min-height: 48px;
+    border-radius: 10px;
+    background: root.primary ? Brand.orange : Brand.paper;
+    border-width: root.primary ? 0px : 1px;
+    border-color: Brand.rule;
+    Text {
+        text: root.text;
+        color: root.primary ? white : Brand.ink;
+        font-size: 16px;
+        font-weight: 600;
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    in property <bool> secret: false;
+    in property <string> placeholder;
+    spacing: 6px;
+    Text { text: root.label; color: Brand.muted; font-size: 13px; }
+    LineEdit {
+        text <=> root.value;
+        placeholder-text: root.placeholder;
+        input-type: root.secret ? InputType.password : InputType.text;
+        font-size: 16px;
+        height: 48px;
+    }
+}
+
+component Header inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> back-text;
+    in property <bool> has-back: false;
+    in property <bool> has-settings: false;
+    callback back();
+    callback settings();
+    height: 52px;
+    alignment: space-between;
+    HorizontalLayout {
+        alignment: start;
+        if root.has-back: Rectangle {
+            width: 120px;
+            Text {
+                x: 0px;
+                width: parent.width;
+                text: root.back-text;
+                color: Brand.orange;
+                font-size: 16px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.back(); } }
+        }
+        if !root.has-back: Text {
+            text: root.title;
+            color: Brand.ink;
+            font-size: 24px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+    if root.has-settings: Rectangle {
+        width: 52px;
+        Text { text: "⚙"; font-size: 22px; color: Brand.muted; }
+        TouchArea { clicked => { root.settings(); } }
+    }
+}
+
+export component MainWindow inherits Window {
+    // 0 connect, 1 sessions, 2 card, 3 settings
+    in-out property <int> screen: 0;
+    in-out property <string> host-url;
+    in-out property <string> token;
+    in property <string> error;
+    in property <bool> busy: false;
+    in property <[SessionRow]> sessions;
+    in property <[ChatRow]> chat;
+    in property <string> chat-title;
+    in property <string> chat-note;
+    in property <string> lang-name;
+    in property <string> version-text;
+    callback connect();
+    callback open-session(string, string);
+    callback back();
+    callback open-settings();
+    callback toggle-language();
+
+    background: Brand.paper;
+    preferred-width: 390px;
+    preferred-height: 844px;
+
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-bottom: 20px;
+        padding-top: 20px + root.safe-area-insets.top;
+        spacing: 14px;
+
+        if root.screen == 0: VerticalLayout {
+            spacing: 16px;
+            alignment: start;
+            Header { title: "robroz"; has-settings: true; settings => { root.open-settings(); } }
+            Field {
+                label: Tr.label-host;
+                value <=> root.host-url;
+                placeholder: "https://…";
+            }
+            Field {
+                label: Tr.label-token;
+                value <=> root.token;
+                secret: true;
+            }
+            Pill {
+                text: Tr.connect;
+                clicked => { root.connect(); }
+            }
+            if root.error != "": Text {
+                text: root.error;
+                color: Brand.muted;
+                wrap: word-wrap;
+                font-size: 14px;
+            }
+        }
+
+        if root.screen == 1: VerticalLayout {
+            spacing: 8px;
+            Header { title: Tr.title-chats; has-settings: true; settings => { root.open-settings(); } }
+            if root.sessions.length == 0: Text {
+                text: Tr.empty-chats;
+                color: Brand.muted;
+                wrap: word-wrap;
+            }
+            ListView {
+                for s in root.sessions: Rectangle {
+                    height: 64px;
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Brand.rule; }
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: s.name;
+                            color: Brand.ink;
+                            font-size: 17px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if s.unread > 0: Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 14px;
+                            background: Brand.orange;
+                            Text { text: s.unread; color: white; font-size: 13px; }
+                        }
+                    }
+                    TouchArea { clicked => { root.open-session(s.id, s.name); } }
+                }
+            }
+        }
+
+        if root.screen == 2: VerticalLayout {
+            spacing: 10px;
+            Header { has-back: true; back-text: Tr.back; back => { root.back(); } }
+            Text { text: root.chat-title; color: Brand.ink; font-size: 20px; font-weight: 700; overflow: elide; }
+            if root.chat-note != "": Text { text: root.chat-note; color: Brand.muted; wrap: word-wrap; }
+            ScrollView {
+                // Never scroll sideways: rows wrap to the screen width.
+                viewport-width: self.width;
+                VerticalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for row in root.chat: HorizontalLayout {
+                        alignment: row.kind == 0 ? end : start;
+                        // Bubbles and cards never pass ~75% / 85% of the screen.
+                        VerticalLayout {
+                            spacing: 3px;
+                            max-width: row.kind == 2 ? root.width * 0.85 : root.width * 0.75;
+                            if row.kind == 1: Text {
+                                text: row.name;
+                                color: Brand.muted;
+                                font-size: 12px;
+                            }
+                            if row.kind < 2: Rectangle {
+                                background: row.kind == 0 ? Brand.orange : white;
+                                border-radius: 16px;
+                                border-width: row.kind == 0 ? 0px : 1px;
+                                border-color: Brand.rule;
+                                VerticalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    padding-top: 10px;
+                                    padding-bottom: 10px;
+                                    Text {
+                                        text: row.text;
+                                        color: row.kind == 0 ? white : Brand.ink;
+                                        font-size: 16px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            if row.kind == 2: Rectangle {
+                                background: row.fill;
+                                border-radius: 14px;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text {
+                                            text: row.name;
+                                            color: row.text-color;
+                                            font-size: 16px;
+                                            font-weight: 700;
+                                            vertical-alignment: top;
+                                            min-width: self.preferred-width;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        // "Step n of m" sits left of the status word, no separator.
+                                        if row.step != "": Text {
+                                            text: row.step;
+                                            color: row.text-color;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.status;
+                                            color: row.text-color;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: right;
+                                            wrap: word-wrap;
+                                            horizontal-stretch: 0;
+                                        }
+                                    }
+                                    if row.progress != "": Text {
+                                        text: row.progress;
+                                        color: row.text-color;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.screen == 3: VerticalLayout {
+            spacing: 14px;
+            Header { has-back: true; back-text: Tr.back; back => { root.back(); } }
+            Text { text: Tr.settings; color: Brand.ink; font-size: 24px; font-weight: 700; }
+            Text { text: Tr.language; color: Brand.muted; font-size: 13px; }
+            Pill { text: root.lang-name; primary: false; clicked => { root.toggle-language(); } }
+            Rectangle { vertical-stretch: 1; }
+            // About: the Slint attribution slot, at the very bottom of Settings.
+            Text { text: Tr.about; color: Brand.muted; font-size: 13px; }
+            Text { text: root.version-text; color: Brand.ink; font-size: 15px; }
+            Rectangle {
+                height: 160px;
+                AboutSlint { }
+            }
+        }
+    }
+}

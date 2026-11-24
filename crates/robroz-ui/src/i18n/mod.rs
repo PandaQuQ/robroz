@@ -222,6 +222,7 @@ impl From<Key> for Cow<'static, str> {
     }
 }
 
+#[cfg(feature = "gui")]
 impl<'a> iced::widget::text::IntoFragment<'a> for Key {
     fn into_fragment(self) -> iced::widget::text::Fragment<'a> {
         Cow::Borrowed(self.as_str())

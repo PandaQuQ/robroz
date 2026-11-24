@@ -13,8 +13,11 @@ pub mod cards;
 pub mod conversations;
 pub mod i18n;
 pub mod theme;
+#[cfg(feature = "gui")]
 pub mod view;
+#[cfg(feature = "gui")]
 mod widgets;
 
 pub use theme::{Mode, Skin};
+#[cfg(feature = "gui")]
 pub use view::Action;
