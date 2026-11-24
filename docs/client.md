@@ -32,10 +32,10 @@
 
 - `queued`：灰色「排队」。
 - `running` 且 `containerUp`：「进行」。有 `progress` 时在 bro 名下面左对齐加一行浅灰小字，超长用「…」，没有就不占位。
-- `running` 且 `containerUp` 为 false：灰色「没写出结果」，没有动作。
+- `running` 且 `containerUp` 为 false：灰色「没写出结果」，没有动作。只在旧数据里出现；宿主机现在把运行失败结束成 `done` + `failure`「没写出结果」，这种卡照样显示灰色「没写出结果」，不加「没做成：」（`robroz_card::failure_line`）。
 - `blocked` 且 `waitingFor` 为 `approval`：不算卡住，灰色「等你批准」，没有按钮，去答旁边那张审批卡。
 - `blocked` 且 `waitingFor` 为 `takeover` 或没有这个字段（旧宿主机）：琥珀色「卡住」加「去私聊接管」。这个按钮现在只打日志，还没接上。
-- `done`：完成；带 `failure` 时显示灰色「没做成：原因」，不显示绿色完成，没有按钮。
+- `done`：完成；带 `failure` 时显示灰色「没做成：原因」（`failure` 为「没写出结果」时只显示「没写出结果」），不显示绿色完成，没有按钮。
 
 ### 会话列表预览
 
