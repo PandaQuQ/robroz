@@ -6,7 +6,7 @@ attachment (PR B, group and DM) is built; see Implementation status. The
 internal Router (PR C) is accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `41edf6f`. This document
+Existing behaviour below is taken from `main` at `5705a18` plus [#130](https://github.com/PandaQuQ/robroz/pull/130). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -52,7 +52,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`41edf6f`). There is no Router session and no Worker pool.
+Verified on `main` at `5705a18` plus #130. There is no Router session and no Worker pool.
 
 - A person creates work with `POST /api/groups/{id}/say` (`host/src/say.rs`).
   In a DM, every message becomes a new task for that bro (unchanged). In a
@@ -541,7 +541,7 @@ not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `41edf6f` (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+Verified on `main` at `5705a18` plus #130 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
 `host/src/pump.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
@@ -654,7 +654,7 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `41edf6f` on
+robroz behaviour cited above was checked against the tree at `5705a18` plus #130 on
 `main`, in particular `host/src/say.rs`, `host/src/turns.rs`,
 `host/src/pump.rs`, `host/src/unread.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
