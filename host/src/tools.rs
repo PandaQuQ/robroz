@@ -21,7 +21,7 @@ pub const MAX_TOOL_RESULT_CHARS: usize = 16_000;
 const TRUNCATED_MARK: &str = "\n…（已截断）";
 
 /// Why a tool-calling loop stopped without a text reply.
-pub const ROUND_LIMIT_FAILURE: &str = "工具调用超过 8 轮";
+pub const ROUND_LIMIT_FAILURE: &str = robroz_contract::host_text::TOOL_ROUND_LIMIT;
 
 /// Metadata an MCP tool attaches so a Takeover call can raise an approval card.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,11 +226,17 @@ impl CompleteError {
     /// The task's `failure` text, and the result the runner will write.
     pub fn failure_text(&self) -> String {
         match self {
-            CompleteError::Model(err) => format!("模型没回：{err}"),
+            CompleteError::Model(err) => {
+                format!("{}{err}", robroz_contract::host_text::MODEL_NO_REPLY_PREFIX)
+            }
             CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
             CompleteError::OverQuota(over) => over.failure(),
             CompleteError::NeedsApproval(pending) => {
-                format!("等待批准：{}", pending.display_name)
+                format!(
+                    "{}{}",
+                    robroz_contract::host_text::WAITING_APPROVAL_PREFIX,
+                    pending.display_name
+                )
             }
         }
     }

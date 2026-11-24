@@ -69,12 +69,12 @@ const SELECT: &str =
 /// Newest change first; rowid breaks ties within the same millisecond.
 const ORDER: &str = "ORDER BY skills.updated_at DESC, skills.rowid DESC";
 
-const BAD_SCOPE: &str = "scope 只能是 user 或 bot:<botId>";
-const BAD_STATUS: &str = "status 只能是 pending、kept 或 rejected";
-const BAD_SLUG: &str = "slug 只能是小写字母、数字和连字符";
-const SLUG_TAKEN: &str = "这个 slug 已经有了";
-const NOT_FOUND: &str = "技能不存在";
-const GROUP_NOT_FOUND: &str = "群不存在";
+const BAD_SCOPE: &str = robroz_contract::host_text::BAD_SCOPE;
+const BAD_STATUS: &str = robroz_contract::host_text::BAD_STATUS;
+const BAD_SLUG: &str = robroz_contract::host_text::BAD_SLUG;
+const SLUG_TAKEN: &str = robroz_contract::host_text::SLUG_TAKEN;
+const NOT_FOUND: &str = robroz_contract::host_text::SKILL_NOT_FOUND;
+const GROUP_NOT_FOUND: &str = robroz_contract::host_text::GROUP_NOT_FOUND;
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         column,
@@ -213,10 +213,10 @@ pub(crate) fn prompt_section_with(skills: &[Skill], max_chars: usize) -> Option<
 pub(crate) fn clean_title(raw: &str) -> Result<String, &'static str> {
     let text = raw.trim();
     if text.is_empty() {
-        return Err("请填写标题");
+        return Err(robroz_contract::host_text::NEED_TITLE);
     }
     if text.chars().count() > SKILL_TITLE_MAX {
-        return Err("标题太长，最多 80 个字");
+        return Err(robroz_contract::host_text::TITLE_TOO_LONG);
     }
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
@@ -224,10 +224,10 @@ pub(crate) fn clean_title(raw: &str) -> Result<String, &'static str> {
 pub(crate) fn clean_instruction(raw: &str) -> Result<String, &'static str> {
     let text = raw.trim();
     if text.is_empty() {
-        return Err("请填写说明");
+        return Err(robroz_contract::host_text::NEED_INSTRUCTION);
     }
     if text.chars().count() > SKILL_INSTRUCTION_MAX {
-        return Err("说明太长，最多 8000 个字");
+        return Err(robroz_contract::host_text::INSTRUCTION_TOO_LONG);
     }
     Ok(text.to_string())
 }
@@ -245,7 +245,10 @@ fn is_unique_violation(err: &rusqlite::Error) -> bool {
 
 fn body_error(rejection: JsonRejection) -> Response {
     let _ = rejection;
-    error_response(StatusCode::BAD_REQUEST, "请求格式不正确")
+    error_response(
+        StatusCode::BAD_REQUEST,
+        robroz_contract::host_text::BAD_REQUEST_FORMAT,
+    )
 }
 
 type ListQuery = std::collections::HashMap<String, String>;
@@ -348,7 +351,10 @@ pub(crate) async fn update_skill(
         Err(rejection) => return body_error(rejection),
     };
     if body.title.is_none() && body.instruction.is_none() && body.scope.is_none() {
-        return error_response(StatusCode::BAD_REQUEST, "没有要改的内容");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NOTHING_TO_CHANGE,
+        );
     }
     let title = match body.title.as_deref().map(clean_title).transpose() {
         Ok(title) => title,

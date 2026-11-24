@@ -38,7 +38,7 @@ pub const ENV_APPROVAL_TTL: &str = "ROBROZ_APPROVAL_TTL_SECS";
 pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// `reason` when there are rules but no model to check them with.
-pub const NO_MODEL_REASON: &str = "还没设置模型，没法自动审核";
+pub const NO_MODEL_REASON: &str = robroz_contract::host_text::REVIEW_NO_MODEL_REASON;
 
 pub(crate) const PENDING: &str = "pending";
 pub(crate) const ALLOWED: &str = "allowed";

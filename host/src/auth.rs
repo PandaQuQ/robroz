@@ -112,7 +112,7 @@ async fn check_bearer(State(token): State<ApiToken>, request: Request, next: Nex
     (
         StatusCode::UNAUTHORIZED,
         [(header::WWW_AUTHENTICATE, "Bearer")],
-        Json(serde_json::json!({ "error": "缺少或错误的令牌" })),
+        Json(serde_json::json!({ "error": robroz_contract::host_text::TOKEN_REJECTED })),
     )
         .into_response()
 }

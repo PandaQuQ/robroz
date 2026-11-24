@@ -221,14 +221,17 @@ impl Tool for McpHostTool {
 
 /// One-line card summary: `调用 {server}.{tool}` plus a compact argument list.
 pub fn approval_summary(server: &str, tool: &str, args: &Value) -> String {
-    let mut s = format!("调用 {server}.{tool}");
+    let mut s = format!(
+        "{}{server}.{tool}",
+        robroz_contract::host_text::MCP_CALL_SUMMARY_PREFIX
+    );
     let compact = match args {
         Value::Null => None,
         Value::Object(map) if map.is_empty() => None,
         other => Some(other.to_string()),
     };
     if let Some(args) = compact {
-        s.push('：');
+        s.push_str(robroz_contract::host_text::MCP_CALL_ARGS_SEPARATOR);
         s.push_str(&args);
     }
     let s = s.replace(['\n', '\r'], " ");
@@ -283,14 +286,24 @@ pub fn save_pending(control_dir: &Path, pending: &PendingApproval) -> Result<(),
         &path,
         serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| format!("无法写入审批状态：{e}"))
+    .map_err(|e| {
+        format!(
+            "{}{e}",
+            robroz_contract::host_text::PENDING_WRITE_FAILED_PREFIX
+        )
+    })
 }
 
 pub fn mark_approved(control_dir: &Path) -> Result<(), String> {
     let path = pending_path(control_dir);
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("找不到待批准的调用：{e}"))?;
-    let mut value: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("待批准状态损坏：{e}"))?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{}{e}",
+            robroz_contract::host_text::PENDING_NOT_FOUND_PREFIX
+        )
+    })?;
+    let mut value: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("{}{e}", robroz_contract::host_text::PENDING_CORRUPT_PREFIX))?;
     value["decision"] = json!("approved");
     std::fs::write(
         &path,
@@ -311,10 +324,16 @@ pub fn pending_is_approved(control_dir: &Path) -> bool {
 
 pub fn load_approved(control_dir: &Path) -> Result<PendingApproval, String> {
     let path = pending_path(control_dir);
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("找不到待批准的调用：{e}"))?;
-    let value: Value = serde_json::from_str(&raw).map_err(|e| format!("待批准状态损坏：{e}"))?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{}{e}",
+            robroz_contract::host_text::PENDING_NOT_FOUND_PREFIX
+        )
+    })?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("{}{e}", robroz_contract::host_text::PENDING_CORRUPT_PREFIX))?;
     if value.get("decision").and_then(Value::as_str) != Some("approved") {
-        return Err("调用还没有被批准".into());
+        return Err(robroz_contract::host_text::PENDING_NOT_APPROVED.into());
     }
     parse_pending(&value)
 }
@@ -341,14 +360,14 @@ fn parse_pending(value: &Value) -> Result<PendingApproval, String> {
     let messages = value
         .get("messages")
         .and_then(Value::as_array)
-        .ok_or("待批准状态缺少 messages")?
+        .ok_or(robroz_contract::host_text::PENDING_MISSING_MESSAGES)?
         .iter()
         .map(message_from_json)
         .collect::<Result<Vec<_>, _>>()?;
     let remaining = value
         .get("remaining")
         .and_then(Value::as_array)
-        .ok_or("待批准状态缺少 remaining")?
+        .ok_or(robroz_contract::host_text::PENDING_MISSING_REMAINING)?
         .iter()
         .map(call_from_json)
         .collect::<Result<Vec<_>, _>>()?;
@@ -384,12 +403,12 @@ fn call_from_json(value: &Value) -> Result<ToolCall, String> {
         id: value
             .get("id")
             .and_then(Value::as_str)
-            .ok_or("tool call 缺少 id")?
+            .ok_or(robroz_contract::host_text::PENDING_CALL_MISSING_ID)?
             .to_string(),
         name: value
             .get("name")
             .and_then(Value::as_str)
-            .ok_or("tool call 缺少 name")?
+            .ok_or(robroz_contract::host_text::PENDING_CALL_MISSING_NAME)?
             .to_string(),
         arguments: value
             .get("arguments")
@@ -425,7 +444,7 @@ fn message_from_json(value: &Value) -> Result<ChatMessage, String> {
     let role = value
         .get("role")
         .and_then(Value::as_str)
-        .ok_or("message 缺少 role")?;
+        .ok_or(robroz_contract::host_text::PENDING_MESSAGE_MISSING_ROLE)?;
     match role {
         "system" => Ok(ChatMessage::System(
             value
@@ -472,7 +491,10 @@ fn message_from_json(value: &Value) -> Result<ChatMessage, String> {
                 .unwrap_or_default()
                 .to_string(),
         }),
-        other => Err(format!("未知的 message role：{other}")),
+        other => Err(format!(
+            "{}{other}",
+            robroz_contract::host_text::PENDING_UNKNOWN_ROLE_PREFIX
+        )),
     }
 }
 
@@ -500,7 +522,7 @@ pub fn finish_denied(
         )?;
         conn.execute(
             "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure)
-             VALUES (?1, ?2, ?3, '未执行', ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?8, ?4, ?5, ?6, ?7)",
             params![
                 crate::new_id(),
                 group_id,
@@ -508,7 +530,8 @@ pub fn finish_denied(
                 crate::sandbox::result_rel(task_id),
                 briefing,
                 now,
-                failure
+                failure,
+                robroz_contract::host_text::DELIVERY_NOT_RUN
             ],
         )?;
     }

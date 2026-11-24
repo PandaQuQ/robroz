@@ -57,10 +57,10 @@ fn list(conn: &Connection) -> rusqlite::Result<Vec<ReviewRule>> {
 pub fn validate(text: &str) -> Result<String, &'static str> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("请填写规则");
+        return Err(robroz_contract::host_text::NEED_RULE);
     }
     if text.contains('\n') || text.contains('\r') || text.chars().count() > REVIEW_RULE_MAX {
-        return Err("规则只能一行，最多 200 字");
+        return Err(robroz_contract::host_text::RULE_ONE_LINE);
     }
     Ok(text.to_string())
 }
@@ -141,7 +141,10 @@ pub(crate) async fn delete_rule(
             )
             .optional()?;
         let Some(text) = text else {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "规则不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::RULE_NOT_FOUND,
+            )));
         };
         Ok(Ok(raise(&conn, "rule_delete", &text, Some(&rule_id))?))
     })();
