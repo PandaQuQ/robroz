@@ -3,10 +3,11 @@
 # requests that change this file or the converter script.
 #
 # Each run uploads `shots-<os>` with:
-#   app-<page>-<lang>.png     window content at 1280x800, from ROBROZ_SHOT
-#   os-<page>-<lang>.png      the whole runner screen (window chrome, taskbar
-#                             or Dock icon)
-#   os-disconnected.png       the client with no host reachable (not fake)
+#   app-<page>-<lang>-<theme>.png  window content at 1280x800, from ROBROZ_SHOT
+#   os-<page>-<lang>-<theme>.png   the whole runner screen (window chrome,
+#                                  taskbar or Dock icon)
+# where page is main, model (settings) or nohost (can't reach the host),
+# lang is en or zh, and theme is light or dark.
 name: shots
 
 on:
@@ -44,6 +45,31 @@ jobs:
       - name: Build client
         run: cargo build --release --locked -p robroz-client
 
+      # macos-latest boots at 1024x768, which squeezes the 1280x800 window.
+      # Try to switch the display to 1920x1080; keep going if it can't.
+      - name: Display resolution (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install displayplacer || true
+          displayplacer list || true
+          id=$(displayplacer list 2>/dev/null | awk '/Persistent screen id/ {print $4; exit}')
+          if [ -n "$id" ]; then
+            displayplacer "id:$id res:1920x1080 scaling:off origin:(0,0) degree:0" \
+              || displayplacer "id:$id res:1920x1080" || echo "could not change resolution"
+          fi
+          system_profiler SPDisplaysDataType | grep -i resolution || true
+
+      # windows-latest also boots at 1024x768. Set-DisplayResolution ships
+      # with Windows Server; keep going if it is missing.
+      - name: Display resolution (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop }
+          catch { Write-Host "could not change resolution: $_" }
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.SystemInformation]::VirtualScreen
+
       - name: Screenshots
         shell: bash
         env:
@@ -56,46 +82,46 @@ jobs:
             if [ "$OS_NAME" = macos ]; then
               screencapture -x "$1" || echo "screencapture failed for $1"
             else
+              # GDI+ needs a Windows path, not the /d/a/... one bash uses.
+              local win
+              win=$(cygpath -w "$1")
               powershell -NoProfile -Command "
                 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
                 \$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
                 \$bmp = New-Object System.Drawing.Bitmap \$b.Width, \$b.Height
                 \$g = [System.Drawing.Graphics]::FromImage(\$bmp)
                 \$g.CopyFromScreen(\$b.Left, \$b.Top, 0, 0, \$bmp.Size)
-                \$bmp.Save('$1', [System.Drawing.Imaging.ImageFormat]::Png)
+                \$bmp.Save('$win', [System.Drawing.Imaging.ImageFormat]::Png)
               " || echo "screen capture failed for $1"
             fi
           }
-          for lang in en zh; do
-            for page in main model; do
-              name="$page-$lang"
-              p=""; [ "$page" = model ] && p=model
-              # ROBROZ_SHOT writes the window content and exits after the
-              # delay; the OS shot is taken while the window is still up.
-              ROBROZ_LANG=$lang ROBROZ_PAGE=$p ROBROZ_WINDOW=1280x800 \
-              ROBROZ_SHOT_DELAY=8000 ROBROZ_SHOT="shots/app-$name.rgba" \
-                "$BIN" --fake > "shots/log-$name.txt" 2>&1 &
-              pid=$!
-              sleep 6
-              osshot "$PWD/shots/os-$name.png"
-              wait $pid || echo "client exited non-zero for $name"
-              cat "shots/log-$name.txt"
-              if [ -f "shots/app-$name.rgba" ]; then
-                # The shot's real size can differ from 1280x800 (screen
-                # size, scale factor); the client prints it.
-                wh=$(sed -n 's/^shot \([0-9]*\)x\([0-9]*\) .*/\1 \2/p' "shots/log-$name.txt" | tail -1)
-                python scripts/rgba2png.py "shots/app-$name.rgba" $wh "shots/app-$name.png"
-                rm "shots/app-$name.rgba"
-              fi
+          # page: main = first chat, model = Model settings, nohost = the
+          # "can't reach the host" page (fake-only ROBROZ_PAGE knob).
+          for theme in light dark; do
+            for lang in en zh; do
+              for page in main model nohost; do
+                name="$page-$lang-$theme"
+                p=""; [ "$page" != main ] && p=$page
+                # ROBROZ_SHOT writes the window content and exits after the
+                # delay; the OS shot is taken while the window is still up.
+                ROBROZ_THEME=$theme ROBROZ_LANG=$lang ROBROZ_PAGE=$p ROBROZ_WINDOW=1280x800 \
+                ROBROZ_SHOT_DELAY=8000 ROBROZ_SHOT="shots/app-$name.rgba" \
+                  "$BIN" --fake > "shots/log-$name.txt" 2>&1 &
+                pid=$!
+                sleep 6
+                osshot "$PWD/shots/os-$name.png"
+                wait $pid || echo "client exited non-zero for $name"
+                cat "shots/log-$name.txt"
+                if [ -f "shots/app-$name.rgba" ]; then
+                  # The shot's real size can differ from 1280x800 (screen
+                  # size, scale factor); the client prints it.
+                  wh=$(sed -n 's/^shot \([0-9]*\)x\([0-9]*\) .*/\1 \2/p' "shots/log-$name.txt" | tail -1)
+                  python scripts/rgba2png.py "shots/app-$name.rgba" $wh "shots/app-$name.png"
+                  rm "shots/app-$name.rgba"
+                fi
+              done
             done
           done
-          # Disconnected: real mode, nothing listening on the host port.
-          ROBROZ_HOST=http://127.0.0.1:1 ROBROZ_WINDOW=1280x800 \
-            "$BIN" > shots/log-disconnected.txt 2>&1 &
-          pid=$!
-          sleep 10
-          osshot "$PWD/shots/os-disconnected.png"
-          kill $pid 2>/dev/null || true
           ls -la shots
           ls shots/*.png > /dev/null
 

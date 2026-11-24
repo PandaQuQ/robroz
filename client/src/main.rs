@@ -2019,6 +2019,18 @@ impl App {
             Message::Tick => return self.poll(),
             Message::Loaded(result) => {
                 self.in_flight = false;
+                // `--fake` + `ROBROZ_PAGE=nohost`: treat the demo load as failed and
+                // show the "can't reach the host" page (platform
+                // screenshots, see `.github/workflows/shots.yml`).
+                let result =
+                    if self.fake && std::env::var("ROBROZ_PAGE").is_ok_and(|v| v == "nohost") {
+                        Err(SourceError(Text::ClientConnectFailed.fill(&[
+                            &"http://127.0.0.1:8790",
+                            &"io: Connection refused (os error 111)",
+                        ])))
+                    } else {
+                        result
+                    };
                 match result {
                     Ok(groups) => {
                         for g in &groups {
