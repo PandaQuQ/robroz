@@ -32,6 +32,7 @@ The desktop client UI is currently in Chinese; English UI is in progress (Englis
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
 - **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
   <!-- TODO(screenshot): approval card -->
+- **Bigger tasks in steps.** A bro can split a bigger task into up to three steps and work through them in order. You still see one card, which shows "Step 2 of 3", and get one answer at the end.
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
@@ -40,7 +41,6 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
-- An internal Router inside one bro (at most three sub-steps, one status card, one delivery).
 - Cancelling a timed-out step or stopping the container.
 
 ## Quick start

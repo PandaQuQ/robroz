@@ -47,6 +47,9 @@ pub struct PumpConfig<'a> {
     pub tools: &'a crate::tools::ToolRegistry,
     /// MCP servers enabled for a task's group. `None` skips MCP registration.
     pub mcp: Option<Arc<dyn crate::mcp_tools::McpRuntime>>,
+    /// Let the bro's model split visible tasks into steps first
+    /// ([`crate::router`]). Off without a model, and for hidden group turns.
+    pub router: bool,
 }
 
 #[derive(Clone)]
@@ -60,6 +63,8 @@ struct TaskRow {
     get_count: i64,
     /// A group turn that has not spoken yet ([`crate::turns`]).
     turn_hidden: bool,
+    /// Split by the Router: it has a row in `router_plans`.
+    routed: bool,
 }
 
 /// What pump decided for an exited container, written back under the lock.
@@ -95,6 +100,7 @@ pub fn pump(
             echo_prompt: true,
             tools: crate::tools::ToolRegistry::empty(),
             mcp: None,
+            router: false,
         },
     )
 }
@@ -255,8 +261,11 @@ fn start_task(
         false => match db.with(|conn| crate::follow_ups::fold(conn, &task.id))? {
             None => task,
             Some(prompt) => {
+                // New text joined the task: split it again from scratch.
+                db.with(|conn| crate::router::clear(conn, &task.id))?;
                 folded = TaskRow {
                     prompt,
+                    routed: false,
                     ..task.clone()
                 };
                 &folded
@@ -292,12 +301,18 @@ fn start_task(
     // Memories and skills are loaded in the same lock, before the claim, so a
     // load error leaves the task queued.
     let claimed_at = newer_than(&task.updated_at);
-    let first = if cfg.model.is_some() {
-        progress::THINKING
-    } else {
-        progress::STARTED
-    };
-    let (claimed, memory_section) = db.with(|conn| -> rusqlite::Result<_> {
+    // Hidden group turns never split: each would cost an extra model call.
+    let routing = cfg.router && cfg.model.is_some() && !task.turn_hidden;
+    let (claimed, memory_section, route) = db.with(|conn| -> rusqlite::Result<_> {
+        let route = match routing {
+            true => Route::On(crate::router::load(conn, &task.id)?),
+            false => Route::Off,
+        };
+        let first = match &route {
+            Route::On(Some(plan)) => plan.progress(plan.next()),
+            _ if cfg.model.is_some() => progress::THINKING.to_string(),
+            _ => progress::STARTED.to_string(),
+        };
         let section = if cfg.model.is_some() {
             system_extra(
                 crate::memories::prompt_section(&crate::memories::kept_for(conn, &task.assignee_bot_id)?),
@@ -320,7 +335,7 @@ fn start_task(
                 params![claimed_at, task.id, first],
             )?
         };
-        Ok((claimed, section))
+        Ok((claimed, section, route))
     })?;
     if claimed == 0 {
         return Ok(());
@@ -348,6 +363,12 @@ fn start_task(
                     eprintln!("pump: progress for {}: {err}", task.id);
                 }
             };
+            let mut on_plan = |plan: &crate::router::Plan| {
+                let at = crate::now_rfc3339();
+                if let Err(err) = db.with(|conn| crate::router::save(conn, &task.id, plan, &at)) {
+                    eprintln!("pump: save plan for {}: {err}", task.id);
+                }
+            };
             let reply = write_reply(
                 model,
                 &started.control_dir,
@@ -356,7 +377,9 @@ fn start_task(
                 memory_section.as_deref(),
                 cfg.get_limit,
                 &tools,
+                route,
                 &mut on_progress,
+                &mut on_plan,
             );
             finish_start(db, sandbox, cfg, &started, Some(reply))
         }
@@ -373,6 +396,14 @@ fn start_task(
                         eprintln!("pump: progress for {task_id}: {err}");
                     }
                 };
+                let mut on_plan = |plan: &crate::router::Plan| {
+                    let at = crate::now_rfc3339();
+                    if let Err(err) =
+                        shared.with(|conn| crate::router::save(conn, &task_id, plan, &at))
+                    {
+                        eprintln!("pump: save plan for {task_id}: {err}");
+                    }
+                };
                 let reply = write_reply(
                     &*model,
                     &started.control_dir,
@@ -381,7 +412,9 @@ fn start_task(
                     memory_section.as_deref(),
                     get_limit,
                     &tools,
+                    route,
                     &mut on_progress,
+                    &mut on_plan,
                 );
                 StepDone { started, reply }
             });
@@ -460,6 +493,24 @@ fn finish_start(
     let mut reply_progress = None;
     if let Some(reply) = reply {
         reply_progress = reply.progress.clone();
+        if reply.router_failed {
+            // A step failed: the whole task ends with 「没写出结果」, nothing delivered.
+            if mcp_resume {
+                let _ = crate::mcp_tools::remove_pending(control_dir);
+            }
+            let updated_at = newer_than(claimed_at);
+            return db.with(|conn| {
+                write_outcome(
+                    conn,
+                    task,
+                    &Outcome::Dead,
+                    reply.get_count as i64,
+                    &updated_at,
+                    &crate::sandbox::result_rel(&task.id),
+                    &[],
+                )
+            });
+        }
         db.with(|conn| {
             conn.execute(
                 "UPDATE tasks SET get_count = ?1, needs_setup = ?2, failure = COALESCE(?3, failure) WHERE id = ?4",
@@ -581,7 +632,8 @@ fn collect_task(
         // Still going: pass on what the runner last wrote, if it changed.
         ContainerPhase::Running => {
             let group_dir = group_volume(cfg.volumes_root, &task.group_id);
-            if let Some(text) = read_progress(&group_dir, &task.id) {
+            // A split task keeps its step progress; the runner's lines don't replace it.
+            if let Some(text) = read_progress(&group_dir, &task.id).filter(|_| !task.routed) {
                 // Keep the Watchdog's hint up until the runner says something new.
                 if !watchdog.is_some_and(|w| w.holds_hint(&task.id, &text)) {
                     db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
@@ -711,6 +763,10 @@ fn write_outcome(
     rel: &str,
     proposals: &[robroz_contract::Proposal],
 ) -> rusqlite::Result<()> {
+    // The task ends (or fails) here; only a block keeps its Router plan.
+    if !matches!(outcome, Outcome::Blocked(_)) {
+        crate::router::clear(conn, &task.id)?;
+    }
     match outcome {
         Outcome::Blocked(stop) => {
             let tx = conn.unchecked_transaction()?;
@@ -794,7 +850,8 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
         ""
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing, get_count, turn_hidden FROM tasks
+        "SELECT id, group_id, assignee_bot_id, prompt, updated_at, briefing, get_count, turn_hidden,
+                EXISTS(SELECT 1 FROM router_plans r WHERE r.task_id = tasks.id) FROM tasks
          WHERE state = ?1{live_only} ORDER BY created_at, id"
     ))?;
     let rows = stmt.query_map([state], |row| {
@@ -807,6 +864,7 @@ fn load_tasks(conn: &Connection, state: &str) -> rusqlite::Result<Vec<TaskRow>> 
             briefing: row.get::<_, i64>(5)? != 0,
             get_count: row.get(6)?,
             turn_hidden: row.get::<_, i64>(7)? != 0,
+            routed: row.get::<_, i64>(8)? != 0,
         })
     })?;
     rows.collect()
@@ -849,7 +907,9 @@ fn write_reply(
     memory_section: Option<&str>,
     get_limit: u64,
     tools: &crate::tools::ToolRegistry,
+    route: Route,
     on_progress: &mut dyn FnMut(&str),
+    on_plan: &mut dyn FnMut(&crate::router::Plan),
 ) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
@@ -861,8 +921,132 @@ fn write_reply(
             ctx.needs_setup = pending.needs_setup.clone();
         }
     }
-    let mut on_using = |name: &str| on_progress(&robroz_contract::host_text::using_tool(name));
-    let (mut text, failure, over_quota, pending) = if resume {
+    // An approved MCP call with no plan resumes a single Worker, as before.
+    let mut plan = match route {
+        Route::On(Some(plan)) => Some(plan),
+        Route::On(None) if !resume => {
+            let plan = crate::router::split(model, task_id, prompt);
+            if let Some(plan) = &plan {
+                on_plan(plan);
+            }
+            plan
+        }
+        _ => None,
+    };
+    let mut router_failed = false;
+    let (mut text, failure, over_quota, pending) = match plan.as_mut() {
+        None => {
+            let mut on_using =
+                |name: &str| on_progress(&robroz_contract::host_text::using_tool(name));
+            model_step(
+                model,
+                control_dir,
+                task_id,
+                prompt,
+                memory_section,
+                tools,
+                &mut ctx,
+                resume,
+                &mut on_using,
+            )
+        }
+        Some(plan) => {
+            let mut resume_step = resume;
+            let mut stopped = None;
+            while !plan.is_finished() {
+                let index = plan.next();
+                // Step progress is the whole line: no tool names on top of it.
+                on_progress(&plan.progress(index));
+                let step = crate::router::step_prompt(prompt, plan, index);
+                let (text, failure, over, pending) = model_step(
+                    model,
+                    control_dir,
+                    task_id,
+                    &step,
+                    memory_section,
+                    tools,
+                    &mut ctx,
+                    resume_step,
+                    &mut |_: &str| {},
+                );
+                resume_step = false;
+                if pending.is_some() {
+                    stopped = Some((String::new(), None, false, pending));
+                    break;
+                }
+                if failure.is_some() || over {
+                    eprintln!(
+                        "pump: step {} of {} for {task_id} failed: {}",
+                        index + 1,
+                        plan.steps.len(),
+                        failure.as_deref().unwrap_or_default()
+                    );
+                    router_failed = true;
+                    stopped = Some((String::new(), failure, over, None));
+                    break;
+                }
+                plan.results.push(text);
+                on_plan(plan);
+            }
+            stopped.unwrap_or_else(|| (plan.merged(), None, false, None))
+        }
+    };
+    if ctx.needs_setup.as_deref() == Some("search") && !text.contains(crate::search::NOT_CONFIGURED)
+    {
+        if text.is_empty() {
+            text = crate::search::NOT_CONFIGURED.to_string();
+        } else {
+            text = format!("{}\n{text}", crate::search::NOT_CONFIGURED);
+        }
+    }
+    let progress = match &plan {
+        Some(plan) => Some(plan.progress(plan.steps.len() - 1)),
+        None => robroz_runner::last_progress(&text).map(str::to_string),
+    };
+    let silent = pending.is_none() && plan.is_none() && crate::turns::is_silent(&text);
+    if pending.is_none() && !router_failed {
+        if let Err(err) = std::fs::write(&path, text) {
+            eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
+        }
+    }
+    Reply {
+        failure,
+        progress,
+        get_count: ctx.used,
+        needs_setup: ctx.needs_setup,
+        over_quota,
+        pending,
+        silent,
+        router_failed,
+    }
+}
+
+/// Whether a start may use the Router, and the saved plan if it has one.
+enum Route {
+    Off,
+    On(Option<crate::router::Plan>),
+}
+
+/// One model call (with tool calls) for `prompt`, or the resumed MCP loop.
+/// A failed call becomes the text and the failure.
+#[allow(clippy::too_many_arguments)]
+fn model_step(
+    model: &dyn robroz_model::Model,
+    control_dir: &Path,
+    task_id: &str,
+    prompt: &str,
+    memory_section: Option<&str>,
+    tools: &crate::tools::ToolRegistry,
+    ctx: &mut crate::tools::ToolCtx,
+    resume: bool,
+    on_using: &mut dyn FnMut(&str),
+) -> (
+    String,
+    Option<String>,
+    bool,
+    Option<crate::tools::PendingApproval>,
+) {
+    if resume {
         match crate::mcp_tools::load_approved(control_dir) {
             Ok(pending) => {
                 match crate::tools::complete_resume(
@@ -870,8 +1054,8 @@ fn write_reply(
                     pending.messages,
                     &pending.remaining,
                     tools,
-                    &mut ctx,
-                    &mut on_using,
+                    ctx,
+                    on_using,
                     pending.round,
                 ) {
                     Ok(text) => (text, None, false, None),
@@ -905,14 +1089,7 @@ fn write_reply(
             }
         }
     } else {
-        match crate::tools::complete(
-            model,
-            prompt,
-            memory_section,
-            tools,
-            &mut ctx,
-            &mut on_using,
-        ) {
+        match crate::tools::complete(model, prompt, memory_section, tools, ctx, on_using) {
             Ok(text) => (text, None, false, None),
             Err(crate::tools::CompleteError::NeedsApproval(pending)) => {
                 (String::new(), None, false, Some(*pending))
@@ -924,30 +1101,6 @@ fn write_reply(
                 (text.clone(), Some(text), over, None)
             }
         }
-    };
-    if ctx.needs_setup.as_deref() == Some("search") && !text.contains(crate::search::NOT_CONFIGURED)
-    {
-        if text.is_empty() {
-            text = crate::search::NOT_CONFIGURED.to_string();
-        } else {
-            text = format!("{}\n{text}", crate::search::NOT_CONFIGURED);
-        }
-    }
-    let progress = robroz_runner::last_progress(&text).map(str::to_string);
-    let silent = pending.is_none() && crate::turns::is_silent(&text);
-    if pending.is_none() {
-        if let Err(err) = std::fs::write(&path, text) {
-            eprintln!("pump: write reply for {task_id}: {err}; runner will echo");
-        }
-    }
-    Reply {
-        failure,
-        progress,
-        get_count: ctx.used,
-        needs_setup: ctx.needs_setup,
-        over_quota,
-        pending,
-        silent,
     }
 }
 
@@ -961,6 +1114,8 @@ struct Reply {
     pending: Option<crate::tools::PendingApproval>,
     /// The reply asks to stay silent on a group turn ([`crate::turns::is_silent`]).
     silent: bool,
+    /// A Router step failed: the task ends with 「没写出结果」 and no delivery.
+    router_failed: bool,
 }
 
 fn block_mcp_task(

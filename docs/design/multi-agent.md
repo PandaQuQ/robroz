@@ -3,11 +3,11 @@
 Status: **Accepted**. Group turns (PR A) shipped in
 [#129](https://github.com/PandaQuQ/robroz/pull/129) (`41edf6f`). Follow-up
 attachment (PR B, group and DM) and bros waking bros (with a depth cap)
-are built; see Implementation status. The internal Router (PR C) is
-accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
+are built, and so is the internal Router (PR C,
+[#140](https://github.com/PandaQuQ/robroz/pull/140)). See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `7536c31` plus [#132](https://github.com/PandaQuQ/robroz/pull/132). This document
+Existing behaviour below is taken from `main` at `d4352ec` plus [#140](https://github.com/PandaQuQ/robroz/pull/140). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -53,7 +53,11 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` at `7536c31` plus #132. There is no Router session and no Worker pool.
+Verified on `main` at `d4352ec` plus #140. There is no Router session and no
+Worker pool. Inside one task, a bro's internal Router may split the work into
+two or three Worker steps that run in order on the same task (see
+[Implementation status](#implementation-status)); they share one status card
+and one delivery.
 
 - A person creates work with `POST /api/groups/{id}/say` (`host/src/say.rs`).
   In a DM, every message becomes a new task for that bro (unchanged). In a
@@ -110,8 +114,8 @@ Verified on `main` at `7536c31` plus #132. There is no Router session and no Wor
 ### How to change it
 
 Group turns (PR A) shipped in #129 (`41edf6f`). The internal Router (PR C)
-is still accepted design and is not built on `main`. The order and done
-standards are in [Implementation status](#implementation-status).
+shipped in #140. The order and done standards are in
+[Implementation status](#implementation-status).
 
 Keep the existing `@name` and DM paths as a deterministic fast path: the person
 already named the assignee, so the host does not ask a model to re-route that
@@ -486,7 +490,7 @@ merges. It is not a schedule.
 | Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
 | Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done (PR B, #130) | A DM `/say`, or a group `@name`, to a bro with a visible `queued` / `running` / `blocked` task there joins it (`host/src/follow_ups.rs`); the task's next step sees it. |
 | A bro's message also wakes the other bros, with a round cap on recorded `depth` | Done (#132) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. A person's `/say` opens round 0 (`PERSON_DEPTH`); a bro's clean reply opens a round one level deeper for the other bros, up to `MAX_BRO_DEPTH = 2`. |
-| Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
+| Router and Worker as an internal dispatch layer inside one bro | Done (PR C, #140) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」 (`router_step_progress`). See [Implementation status](#implementation-status). |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
 | New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | After PR C | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
 | Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Done (#118) | Hints go in the existing `progress` field. Defaults: `ROBROZ_STEP_TIMEOUT_SECS` 600, `ROBROZ_STALL_SECS` 900. Does not change state except for the dead-task rule, and does not cancel the step. |
@@ -507,9 +511,9 @@ merges. It is not a schedule.
 These replace the open questions in the draft. They follow Grok Bot's group
 behaviour: every bro in the room sees the message and gets one turn; a bro
 that has nothing to add stays silent; whoever does the work speaks for
-themselves. Group turns (PR A) shipped in #129 (`41edf6f`). Follow-up
-attachment (PR B) and the internal Router (PR C) are accepted design, not
-built on `main`. The PR order and done standards are in
+themselves. Group turns (PR A) shipped in #129 (`41edf6f`), follow-up
+attachment (PR B) in #130, and the internal Router (PR C) in #140. The PR
+order and done standards are in
 [Implementation status](#implementation-status).
 
 1. **Group turns and follow-ups.** A group message gives every bro in the
@@ -534,7 +538,12 @@ built on `main`. The PR order and done standards are in
    are not room members, they report to that bro, and that bro speaks. Group
    messages use the existing `@` routing plus the turn-taking rule above.
    `botId` / `botName` keep their current meaning. No new required fields.
-3. **Dead tasks.** A dead task (`running` and `containerUp` false) ends as
+3. **Router steps.** The Router splits one task into at most three
+   Worker steps with the bro's own model. The steps share one status card
+   and one merged delivery. Any problem with the split falls back to one
+   Worker, exactly as before. A failed or denied step ends the task as
+   `done` + 「没写出结果」 with no requeue.
+4. **Dead tasks.** A dead task (`running` and `containerUp` false) ends as
    `done` + `failure`. The card shows 「没写出结果」. There is no
    auto-requeue; a rerun is the user's choice. There is no fifth task state.
 
@@ -546,8 +555,8 @@ not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `7536c31` plus #132 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
-`host/src/pump.rs`, `host/src/unread.rs`).
+Verified on `main` at `d4352ec` plus #140 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+`host/src/pump.rs`, `host/src/router.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
   `41edf6f`): group turns. Every person's group `/say` opens a round with
@@ -638,25 +647,46 @@ Verified on `main` at `7536c31` plus #132 (`host/src/turns.rs`, `host/src/follow
   **Done when (met in #132):** a bro's reply wakes the other bros one level deeper, the
   speaker is never re-woken, and nothing opens past `MAX_BRO_DEPTH`.
 
-- Not yet (PR C, after A and B): the per-bro Router and Workers.
-  Router and Worker stay an internal dispatch layer *inside one bro*.
-  Group behaviour from PR A and PR B is unchanged.
+- Done (PR C, [#140](https://github.com/PandaQuQ/robroz/pull/140)): the
+  per-bro Router (`host/src/router.rs`, called from the pump's model phase).
+  Router and Worker stay an internal dispatch layer *inside one bro*. Group
+  behaviour from PR A and PR B is unchanged.
 
-  1. The bro's model splits the task into Workers, at most three steps
-     per task.
-  2. Each step is a sub-step inside the task: one status card, and one
-     merged delivery at the end. The contract is unchanged.
-  3. The Router uses the bro's own configured model. If the model errors
-     or cannot split the work, fall back to one Worker, behaving exactly
-     as today.
-  4. `progress` shows a line of the form 「2/3 步」.
-  5. If any step fails, the whole card ends as `done` + `failure`
-     「没写出结果」, with no requeue.
+  1. Before a visible task's model phase, the bro's own configured model is
+     asked once to split the task into steps, as JSON (`{"steps":[...]}`).
+     At most three steps are kept (`MAX_STEPS`); extra steps are dropped.
+  2. The steps run in order inside the same task, each as a normal model and
+     tool loop. Each step sees the task prompt and the results of the
+     earlier steps. Then one container run writes the merged result (the
+     step results joined by a blank line): one status card, one delivery.
+     The contract fields are unchanged.
+  3. The task falls back to one Worker, exactly as before, if the split
+     call errors, there is no model (or `ROBROZ_MODEL=echo`), the answer
+     cannot be parsed, or it has fewer than two steps. That Worker is not a
+     step and shows no 「n/m 步」. Hidden group-turn tasks are never split.
+  4. While a step runs and the container is up, `progress` is exactly
+     `router_step_progress(n, m)` (「2/3 步」); the client shows it as
+     "Step n of m". The runner's `robroz-progress:` lines do not replace it.
+     A Watchdog hint can still replace it while a step is slow, as for any
+     task. When a step is blocked on an MCP approval, `progress` follows
+     the usual rules (「在用 {server}.{tool}」 or 「已发到主人私聊」), not
+     「n/m 步」.
+  5. If any step fails (a model error or the quota), or its approval is
+     denied or expires, the whole task ends as `done` + `failure`
+     「没写出结果」 (`robroz_card::NO_RESULT`), with no requeue and no
+     partial delivery.
+  6. The plan and the finished step results are stored in SQLite
+     (`router_plans`, an additive table). After an approved MCP call the
+     same step continues, then the remaining steps, also after a host
+     restart. The plan is dropped when the task ends. A follow-up that
+     sends a running task back to `queued` (PR B) splits it again from
+     scratch.
+  7. No step is cancelled on timeout in this PR.
 
-  **Done when:** a task can be split into at most three sub-steps with
-  one status card and one delivery; a failed or impossible split falls
-  back to one Worker; a failed step ends the task as 「没写出结果」 and
-  does not requeue.
+  **Done when (met in #140):** a task can be split into at most three
+  sub-steps with one status card and one delivery; a failed or impossible
+  split falls back to one Worker; a failed step ends the task as
+  「没写出结果」 and does not requeue.
 
 - Not yet (after PR C): a timeout that *cancels* a still-running step or
   stops the container (#118 only hints).
