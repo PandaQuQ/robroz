@@ -14,10 +14,15 @@ iced = { version = "0.14.0", features = ["tokio", "canvas"] }
 serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt"] }
-# Plain HTTP to the local host only; no TLS stack, so no extra system deps.
-ureq = { version = "3", default-features = false }
+# rustls (same as the host) so a remote ROBROZ_HOST can be https://; no system TLS deps.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 # Decodes the embedded PNG for the window icon (iced is built without its `image` feature).
 png = "0.18"
+# OS keychain for the saved host token; falls back to a 0600 file if unavailable.
+# macOS Keychain, Windows Credential Manager, and on Linux the Secret Service over
+# pure-Rust zbus (persists across reboots; no OpenSSL, no libdbus). Without a
+# Secret Service the token falls back to a 0600 file.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
 
 [dev-dependencies]
 robroz-host = { path = "../host" }

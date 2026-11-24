@@ -165,7 +165,9 @@ pub fn read_once(
         .map_err(|e| Text::ClientConnectFailed.fill(&[&conn.base(), &e]))?;
     let status = response.status().as_u16();
     if status != 200 {
-        return Err(Text::ClientHttpStatus.fill(&[&"GET", &path(group_id), &status]));
+        let url = conn.url(&path(group_id));
+        let body = response.into_body().read_to_string().unwrap_or_default();
+        return Err(crate::conn::error_text("GET", &url, status, &body));
     }
     if !sink(StreamItem::Connected) {
         return Ok(true);
