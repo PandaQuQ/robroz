@@ -210,7 +210,7 @@ mod host {
         assert_eq!(host_text_in(En, "这条会改生产数据"), "这条会改生产数据");
         assert_eq!(host_text_in(En, "Ada"), "Ada");
         // A bare prefix with nothing after it is not rewritten.
-        assert_eq!(host_text_in(En, "在用 "), "在用 ");
+        assert_eq!(host_text_in(En, "在用 "), "Using ");
     }
 }
 
@@ -245,4 +245,59 @@ fn language_names_are_native_in_both_locales() {
         assert_eq!(Locale::En.native_name(), "English");
         assert_eq!(Locale::Zh.native_name(), "中文");
     }
+}
+
+#[test]
+fn every_contract_host_string_maps_to_english() {
+    use robroz_contract::host_text::HOST_UI_STRINGS;
+    for &(name, text) in HOST_UI_STRINGS {
+        let mapped = host_text_in(Locale::En, text);
+        assert_ne!(mapped.as_ref(), text, "unmapped {name}: {text}");
+        assert!(!mapped.contains('{'), "unfilled template {name}: {mapped}");
+        assert!(
+            !mapped
+                .chars()
+                .any(|c| ('\u{3400}'..='\u{9FFF}').contains(&c)),
+            "Chinese left in {name}: {mapped}"
+        );
+        assert_eq!(host_text_in(Locale::Zh, text), text);
+    }
+}
+
+#[test]
+fn contract_prefixes_suffixes_and_hint_functions_map() {
+    use robroz_contract::host_text as ht;
+    for &(name, text) in ht::HOST_UI_STRINGS {
+        if name.ends_with("_PREFIX") && name != "WATCHDOG_STEP_TIMEOUT_PREFIX" {
+            let source = format!("{text}unchanged-value");
+            let mapped = host_text_in(Locale::En, &source);
+            assert_ne!(mapped.as_ref(), source, "{name}");
+            assert!(mapped.contains("unchanged-value"), "{name}: {mapped}");
+        }
+    }
+    for n in [0, 1, 7, 180] {
+        assert_eq!(
+            host_text_in(Locale::En, &ht::step_timeout_hint(n)),
+            format!("No reply from the model or tools for {n} min")
+        );
+        assert_eq!(
+            host_text_in(Locale::En, &ht::stall_hint(n)),
+            format!("No new progress for {n} min")
+        );
+    }
+    assert_eq!(
+        host_text_in(Locale::En, &ht::using_tool("web_search")),
+        "Using web_search"
+    );
+    assert_eq!(
+        host_text_in(
+            Locale::En,
+            &format!(
+                "{}{}",
+                ht::CANT_CONNECT_PREFIX,
+                robroz_contract::MODEL_TEST_BAD_KEY
+            )
+        ),
+        "Can't connect: key is wrong or missing"
+    );
 }

@@ -1,15 +1,15 @@
 //! Map Chinese text the host sends to the active locale.
 //!
-//! The host keeps writing its own strings (the contract is frozen). Where a
-//! string is a public constant, it is compared against that constant, never
-//! a copy of its text. Host-crate strings the client cannot import (the
-//! client does not depend on `robroz-host`) are matched by their exact text;
-//! the client's integration tests pin the public ones. Anything not listed
-//! here passes through unchanged.
+//! Every host-written client string is a constant in
+//! `robroz_contract::host_text` (listed in `HOST_UI_STRINGS`) or at the
+//! contract root. They are compared against those constants, never against a
+//! copy of their text. `robroz-card` lines are compared against its own
+//! functions. Anything not listed here passes through unchanged.
 
 use std::borrow::Cow;
 
 use robroz_card::NO_RESULT;
+use robroz_contract::host_text as ht;
 use robroz_contract::{
     TaskState, APPROVAL_EXPIRED_REASON, APPROVAL_SENT_TO_OWNER_DM_NOTICE, MODEL_TEST_BAD_KEY,
     SETTINGS_APPROVAL_BOT_NAME,
@@ -17,9 +17,195 @@ use robroz_contract::{
 
 use super::{locale, Key, Locale};
 
+/// Whole `host_text` strings, compared with `==`.
+pub(super) const WHOLE: &[(&str, Key)] = &[
+    (ht::GROUP_NOT_FOUND, Key::HostGroupNotFound),
+    (ht::BOT_NOT_IN_GROUP, Key::HostBotNotInGroup),
+    (ht::NEED_TEXT, Key::HostNeedText),
+    (ht::NEED_NAME, Key::HostNeedName),
+    (ht::NEED_TITLE, Key::HostNeedTitle),
+    (ht::NEED_INSTRUCTION, Key::HostNeedInstruction),
+    (ht::NEED_URL, Key::HostNeedUrl),
+    (ht::NEED_MODEL_NAME, Key::HostNeedModelName),
+    (ht::NEED_COMMAND, Key::HostNeedCommand),
+    (ht::NEED_SECRET_NAME, Key::HostNeedSecretName),
+    (ht::NEED_SECRET_VALUE, Key::HostNeedSecretValue),
+    (ht::NEED_RULE, Key::HostNeedRule),
+    (ht::NEED_ACTION, Key::HostNeedAction),
+    (ht::NEED_SEARXNG_URL, Key::HostNeedSearxngUrl),
+    (ht::BAD_REQUEST_FORMAT, Key::HostBadRequestFormat),
+    (ht::BODY_NOT_JSON, Key::HostBodyNotJson),
+    (ht::BODY_INVALID, Key::HostBodyInvalid),
+    (ht::NOTHING_TO_CHANGE, Key::HostNothingToChange),
+    (ht::DATABASE_ERROR, Key::HostDatabaseError),
+    (ht::ALREADY_ANSWERED, Key::HostAlreadyAnswered),
+    (ht::SINCE_INVALID, Key::HostSinceInvalid),
+    (ht::READ_AT_INVALID, Key::HostReadAtInvalid),
+    (ht::URL_NEEDS_HTTP, Key::HostUrlNeedsHttp),
+    (ht::KEY_EMPTY, Key::HostKeyEmpty),
+    (ht::KEY_HAS_WHITESPACE, Key::HostKeyHasWhitespace),
+    (ht::ARGS_INVALID, Key::HostArgsInvalid),
+    (ht::BAD_SCOPE, Key::HostBadScope),
+    (ht::BAD_STATUS, Key::HostBadStatus),
+    (ht::BAD_MEMORY_KIND, Key::HostBadMemoryKind),
+    (ht::BAD_MESSAGE_KIND, Key::HostBadMessageKind),
+    (ht::BAD_SLUG, Key::HostBadSlug),
+    (ht::BAD_CRON, Key::HostBadCron),
+    (ht::BAD_TRANSPORT, Key::HostBadTransport),
+    (ht::BAD_SEARCH_PROVIDER, Key::HostBadSearchProvider),
+    (ht::TOKEN_REJECTED, Key::HostTokenRejected),
+    (ht::NAME_TOO_LONG, Key::HostNameTooLong),
+    (ht::NAME_MAX_80, Key::HostNameMax80),
+    (ht::NAME_ONE_LINE, Key::HostNameOneLine),
+    (ht::NAME_TAKEN, Key::HostNameTaken),
+    (ht::TITLE_TOO_LONG, Key::HostTitleTooLong),
+    (ht::INSTRUCTION_TOO_LONG, Key::HostInstructionTooLong),
+    (ht::MEMORY_TOO_LONG, Key::HostMemoryTooLong),
+    (ht::SUMMARY_ONE_LINE, Key::HostSummaryOneLine),
+    (ht::RULE_ONE_LINE, Key::HostRuleOneLine),
+    (ht::COMMAND_INVALID, Key::HostCommandInvalid),
+    (ht::SECRET_NAME_MAX, Key::HostSecretNameMax),
+    (ht::SECRET_NAME_WHITESPACE, Key::HostSecretNameWhitespace),
+    (ht::SLUG_TAKEN, Key::HostSlugTaken),
+    (ht::BRO_NOT_FOUND, Key::HostBroNotFound),
+    (ht::UNKNOWN_BRO, Key::HostUnknownBro),
+    (ht::TASK_NOT_FOUND, Key::HostTaskNotFound),
+    (ht::APPROVAL_NOT_FOUND, Key::HostApprovalNotFound),
+    (ht::APPROVAL_VANISHED, Key::HostApprovalVanished),
+    (ht::CONFIRM_CARD_NOT_FOUND, Key::HostConfirmCardNotFound),
+    (ht::CHOICE_CARD_NOT_FOUND, Key::HostChoiceCardNotFound),
+    (ht::MEMORY_NOT_FOUND, Key::HostMemoryNotFound),
+    (ht::SKILL_NOT_FOUND, Key::HostSkillNotFound),
+    (ht::RULE_NOT_FOUND, Key::HostRuleNotFound),
+    (ht::ROUTINE_NOT_FOUND, Key::HostRoutineNotFound),
+    (ht::MCP_SERVER_NOT_FOUND, Key::HostMcpNotFound),
+    (ht::MCP_NOT_ENABLED_IN_GROUP, Key::HostMcpNotEnabledInGroup),
+    (ht::MCP_STDIO_ONLY_APPROVE, Key::HostStdioOnlyApprove),
+    (ht::DM_ONE_BRO, Key::HostDmOneBro),
+    (ht::ACTION_NOT_SUPPORTED, Key::HostUnsupportedAction),
+    (ht::ACTION_HOST_ONLY, Key::HostActionHostOnly),
+    (
+        ht::APPROVE_CONTINUE_MARKER_FAILED,
+        Key::HostApproveContinueMarkerFailed,
+    ),
+    (
+        ht::APPROVE_TAKEOVER_MARKER_FAILED,
+        Key::HostApproveTakeoverMarkerFailed,
+    ),
+    (ht::RESUME_NO_INTENT, Key::HostResumeNoIntent),
+    (ht::RESUME_MARKER_FAILED, Key::HostResumeMarkerFailed),
+    (ht::RESUME_NEEDS_APPROVAL, Key::HostResumeNeedsApproval),
+    (ht::CANT_RESUME, Key::HostCantResume),
+    (ht::CHOICE_OPTION_COUNT, Key::HostChoiceOptionCount),
+    (ht::CHOICE_ONE_RECOMMENDED, Key::HostChoiceOneRecommended),
+    (ht::CHOICE_OPTION_EMPTY, Key::HostChoiceOptionEmpty),
+    (ht::CHOICE_DUPLICATE, Key::HostChoiceDuplicate),
+    (ht::CHOICE_PICK_AT_LEAST_ONE, Key::HostChoicePickAtLeastOne),
+    (ht::CHOICE_PICK_ONLY_ONE, Key::HostChoicePickOnlyOne),
+    (ht::CHOICE_NO_SUCH_OPTION, Key::HostChoiceNoSuchOption),
+    (ht::CHOICE_ALREADY_PICKED, Key::HostChoiceAlreadyPicked),
+    (ht::MODEL_NOT_CONFIGURED, Key::HostModelNotConfigured),
+    (ht::MODEL_KEY_HAS_WHITESPACE, Key::HostModelKeyHasWhitespace),
+    (ht::MODEL_ENV_KEY_CONFLICT, Key::HostModelEnvKeyConflict),
+    (ht::MODEL_ENV_KEY_FILE_EMPTY, Key::HostModelEnvKeyFileEmpty),
+    (ht::SEARCH_NOT_CONFIGURED, Key::HostSearchNotConfigured),
+    (ht::SEARCH_NOT_JSON, Key::HostSearchNotJson),
+    (ht::SEARCH_NO_WEB_RESULTS, Key::HostSearchNoWebResults),
+    (ht::SEARCH_NO_RESULTS, Key::HostSearchNoResults),
+    (ht::PROGRESS_STARTED, Key::HostProgressStarted),
+    (ht::PROGRESS_THINKING, Key::HostProgressThinking),
+    (ht::PROGRESS_IN_SANDBOX, Key::HostProgressInSandbox),
+    (ht::DELIVERY_WRITTEN, Key::HostDeliveryWritten),
+    (ht::DELIVERY_NOT_RUN, Key::HostDeliveryNotRun),
+    (ht::GATE_FALLBACK_LINE, Key::HostGateFallbackLine),
+    (ht::DENIED_MCP_FALLBACK, Key::HostDeniedMcpFallback),
+    (ht::TOOL_ROUND_LIMIT, Key::HostToolRoundLimit),
+    (ht::OUTBOUND_OVER_QUOTA, Key::HostOutboundOverQuota),
+    (ht::PENDING_NOT_APPROVED, Key::HostPendingNotApproved),
+    (
+        ht::PENDING_MISSING_MESSAGES,
+        Key::HostPendingMissingMessages,
+    ),
+    (
+        ht::PENDING_MISSING_REMAINING,
+        Key::HostPendingMissingRemaining,
+    ),
+    (ht::PENDING_CALL_MISSING_ID, Key::HostPendingCallMissingId),
+    (
+        ht::PENDING_CALL_MISSING_NAME,
+        Key::HostPendingCallMissingName,
+    ),
+    (
+        ht::PENDING_MESSAGE_MISSING_ROLE,
+        Key::HostPendingMessageMissingRole,
+    ),
+    (ht::REVIEW_NO_MODEL_REASON, Key::HostReviewNoModel),
+    (ht::REVIEW_FAILED_REASON, Key::HostReviewFailed),
+    (ht::REVIEW_NO_MATCH_REASON, Key::HostReviewNoMatch),
+    (ht::REVIEW_ALLOW_FALLBACK, Key::HostReviewAllowFallback),
+];
+
+/// `host_text` `*_PREFIX` + runtime text; the text is mapped again and goes
+/// into `{0}`.
+pub(super) const PREFIXES: &[(&str, Key)] = &[
+    (
+        ht::MODEL_ENV_KEY_FILE_UNREADABLE_PREFIX,
+        Key::HostModelEnvKeyFileUnreadable,
+    ),
+    (ht::CANT_CONNECT_PREFIX, Key::HostCantConnect),
+    (ht::CONNECTION_LOST_PREFIX, Key::HostConnectionLost),
+    (ht::URL_INVALID_PREFIX, Key::HostUrlInvalid),
+    (
+        ht::SEARCH_SERVICE_STATUS_PREFIX,
+        Key::HostSearchServiceStatus,
+    ),
+    (
+        ht::SEARCH_PROVIDER_UNSUPPORTED_PREFIX,
+        Key::HostSearchProviderUnsupported,
+    ),
+    (ht::PROGRESS_USING_PREFIX, Key::HostProgressUsing),
+    (ht::GATE_PREFIX, Key::HostExternalWrite),
+    (ht::DENIED_PREFIX, Key::HostDeniedFailure),
+    (ht::MODEL_NO_REPLY_PREFIX, Key::HostModelNoReply),
+    (ht::WAITING_APPROVAL_PREFIX, Key::HostWaitingApproval),
+    (
+        ht::SAVE_APPROVAL_STATE_FAILED_PREFIX,
+        Key::HostSaveApprovalStateFailed,
+    ),
+    (
+        ht::RESUME_APPROVED_CALL_FAILED_PREFIX,
+        Key::HostResumeApprovedCallFailed,
+    ),
+    (ht::PENDING_WRITE_FAILED_PREFIX, Key::HostPendingWriteFailed),
+    (ht::PENDING_NOT_FOUND_PREFIX, Key::HostPendingNotFound),
+    (ht::PENDING_CORRUPT_PREFIX, Key::HostPendingCorrupt),
+    (ht::PENDING_UNKNOWN_ROLE_PREFIX, Key::HostPendingUnknownRole),
+];
+
+/// Tool-call failures the host writes into a tool result shown on a card.
+/// Not in `host_text` (it is model-facing text that also reaches the card),
+/// so this one prefix is matched by its text.
+const CALL_FAILED_PREFIX: &str = "调用失败：";
+
 /// Whole strings, compared with `==`.
 fn exact(s: &str) -> Option<Key> {
-    // Contract and robroz-card constants.
+    if let Some((_, key)) = WHOLE.iter().find(|(text, _)| *text == s) {
+        return Some(*key);
+    }
+    // Fragments are also mappable on their own (`HOST_UI_STRINGS`). A
+    // complete watchdog sentence is handled by `watchdog` below.
+    for (text, key) in [
+        (ht::WATCHDOG_STEP_TIMEOUT_PREFIX, Key::HostStepTimeoutPrefix),
+        (ht::WATCHDOG_STEP_TIMEOUT_SUFFIX, Key::HostMinutesSuffix),
+        (ht::WATCHDOG_STALL_SUFFIX, Key::HostStallSuffix),
+        (ht::MCP_CALL_SUMMARY_PREFIX, Key::ViewCallPrefix),
+        (ht::MCP_CALL_ARGS_SEPARATOR, Key::ViewCallArgsSep),
+    ] {
+        if text == s {
+            return Some(key);
+        }
+    }
+    // Contract root and robroz-card constants.
     if s == APPROVAL_SENT_TO_OWNER_DM_NOTICE {
         return Some(Key::HostSentToOwnerDm);
     }
@@ -54,56 +240,28 @@ fn exact(s: &str) -> Option<Key> {
     if Some(s) == robroz_card::appearance(TaskState::Blocked, false).action {
         return Some(Key::CardTakeOver);
     }
-    // Host-crate strings (not importable from the client).
-    let key = match s {
-        // host/src/progress.rs
-        "开始干活" => Key::HostProgressStarted,
-        "在想怎么回" => Key::HostProgressThinking,
-        "在沙箱里跑" => Key::HostProgressInSandbox,
-        // host/src/review
-        "自动审核没有成功，需要你批准" => Key::HostReviewFailed,
-        "没有放行规则允许这个操作" => Key::HostReviewNoMatch,
-        "还没设置模型，没法自动审核" => Key::HostReviewNoModel,
-        // host/src/tools.rs
-        "工具调用超过 8 轮" => Key::HostToolRoundLimit,
-        "调用失败：这个工具还需要批准" => Key::HostToolNeedsApproval,
-        // host/src/model_settings.rs, host/src/search.rs
-        "还没设置模型" => Key::HostModelNotConfigured,
-        "还没设置联网搜索" => Key::HostSearchNotConfigured,
-        // host/src/lib.rs, host/src/approvals.rs
-        "不支持这个动作" => Key::HostUnsupportedAction,
-        "请先回答审批卡" => Key::HostResumeNeedsApproval,
-        "恢复失败，找不到卡住记录" => Key::HostResumeNoIntent,
-        "恢复失败，无法写入接管标记" => Key::HostResumeMarkerFailed,
-        // host/src/mcp.rs
-        "这个名字已经有了" => Key::HostNameTaken,
-        "MCP 服务器不存在" => Key::HostMcpNotFound,
-        "群不存在" => Key::HostGroupNotFound,
-        "只有 stdio 服务器需要批准启动命令" => Key::HostStdioOnlyApprove,
-        // host/src/memories.rs, host/src/skills.rs
-        "这个 bro 不存在" => Key::HostUnknownBro,
-        "记忆不存在" => Key::HostMemoryNotFound,
-        "技能不存在" => Key::HostSkillNotFound,
-        "这个 slug 已经有了" => Key::HostSlugTaken,
-        "slug 只能是小写字母、数字和连字符" => Key::HostBadSlug,
-        _ => return None,
-    };
-    Some(key)
+    // host/src/tools.rs tool result (model-facing, not in `host_text`).
+    if s.strip_prefix(CALL_FAILED_PREFIX) == Some("这个工具还需要批准") {
+        return Some(Key::HostToolNeedsApproval);
+    }
+    None
 }
 
-/// `prefix` + host value; the value is mapped again and goes into `{0}`.
-const PREFIXES: [(&str, Key); 5] = [
-    // host/src/pump.rs: the tool a bro is using right now.
-    ("在用 ", Key::HostProgressUsing),
-    // host/src/approvals.rs: a denied task's failure.
-    ("你拒绝了：", Key::HostDeniedFailure),
-    // host/src/approvals.rs: the summary of an external-write approval.
-    ("要对外写入：", Key::HostExternalWrite),
-    // host/src/tools.rs
-    ("调用失败：", Key::HostCallFailed),
-    // robroz-card `failure_line`: 「没做成：原因」.
-    ("没做成：", Key::HostFailedBecause),
-];
+/// Watchdog hints: `step_timeout_hint(n)` / `stall_hint(n)`; `n` goes into
+/// `{0}`.
+fn watchdog(s: &str) -> Option<(Key, &str)> {
+    let is_number = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    if let Some(n) = s
+        .strip_prefix(ht::WATCHDOG_STEP_TIMEOUT_PREFIX)
+        .and_then(|r| r.strip_suffix(ht::WATCHDOG_STEP_TIMEOUT_SUFFIX))
+        .filter(|n| is_number(n))
+    {
+        return Some((Key::HostStepTimeoutHint, n));
+    }
+    s.strip_suffix(ht::WATCHDOG_STALL_SUFFIX)
+        .filter(|n| is_number(n))
+        .map(|n| (Key::HostStallHint, n))
+}
 
 /// `s` in the active locale when it is a known host string; otherwise `s`
 /// unchanged. Chinese is the host's own language, so it always passes
@@ -120,13 +278,43 @@ pub fn host_text_in(locale: Locale, s: &str) -> Cow<'_, str> {
     if let Some(key) = exact(s) {
         return Cow::Borrowed(super::text_in(locale, key));
     }
-    for (prefix, key) in PREFIXES {
+    if let Some((key, n)) = watchdog(s) {
+        return Cow::Owned(key.fill_in(locale, &[&n]));
+    }
+    // An MCP summary contains user arguments. Translate only its fixed
+    // prefix and separator, never an argument or tool name.
+    if let Some(rest) = s.strip_prefix(ht::MCP_CALL_SUMMARY_PREFIX) {
+        let prefix = super::text_in(locale, Key::ViewCallPrefix);
+        let tail = match rest.split_once(ht::MCP_CALL_ARGS_SEPARATOR) {
+            Some((tool, args)) => {
+                let sep = super::text_in(locale, Key::ViewCallArgsSep);
+                format!("{tool}{sep}{args}")
+            }
+            None => rest.to_string(),
+        };
+        return Cow::Owned(format!("{prefix}{tail}"));
+    }
+    // robroz-card `failure_line`: 「没做成：原因」 (its prefix, from the card
+    // crate itself).
+    let failed = robroz_card::failure_line("");
+    let prefixes = PREFIXES.iter().copied().chain([
+        (CALL_FAILED_PREFIX, Key::HostCallFailed),
+        (failed.as_str(), Key::HostFailedBecause),
+    ]);
+    for (prefix, key) in prefixes {
         if let Some(rest) = s.strip_prefix(prefix) {
             if rest.is_empty() {
                 continue;
             }
             let inner = host_text_in(locale, rest);
             return Cow::Owned(key.fill_in(locale, &[&inner]));
+        }
+    }
+    // A bare prefix is still a known fragment; don't leak its Chinese
+    // when shown alone (the contract's coverage test exercises this too).
+    for (prefix, key) in PREFIXES {
+        if s == *prefix {
+            return Cow::Owned(key.fill_in(locale, &[&""]));
         }
     }
     Cow::Borrowed(s)

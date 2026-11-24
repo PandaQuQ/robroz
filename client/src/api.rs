@@ -2551,7 +2551,11 @@ mod tests {
             assert_eq!(api.say(&group.id, "@路人 帮忙").unwrap().task, None);
             let err = api.say(&group.id, "  ").unwrap_err();
             assert!(matches!(err, ApiError::BadRequest(_)));
-            assert_eq!(err.reason(), "请填写内容");
+            // The host's own constant, shown in the active (default) language.
+            assert_eq!(err.reason(), "Enter some text");
+            assert!(
+                matches!(&err, ApiError::BadRequest(r) if r == robroz_contract::host_text::NEED_TEXT)
+            );
             assert!(matches!(
                 api.say("no-such-group", "hi"),
                 Err(ApiError::NotFound(_))

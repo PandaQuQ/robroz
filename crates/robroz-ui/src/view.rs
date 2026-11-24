@@ -516,9 +516,10 @@ fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element
             .color(color(t.palette.text))
             .into();
     };
-    // The host writes 「调用 server.tool：args」; only the words around the
-    // tool name are translated.
-    let prefix: &str = if parts.prefix == "调用 " {
+    // The host writes `MCP_CALL_SUMMARY_PREFIX` server.tool
+    // `MCP_CALL_ARGS_SEPARATOR` args; only the words around the tool name
+    // are translated.
+    let prefix: &str = if parts.prefix == robroz_contract::host_text::MCP_CALL_SUMMARY_PREFIX {
         Key::ViewCallPrefix.as_str()
     } else {
         parts.prefix
@@ -536,8 +537,8 @@ fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element
     .spacing(0)
     .align_y(Alignment::Center);
     if let Some(args) = parts.args {
-        let cols = call_args_cols(t, inner, parts.prefix, parts.tool);
-        let args = match args.strip_prefix('：') {
+        let cols = call_args_cols(t, inner, prefix, parts.tool);
+        let args = match args.strip_prefix(robroz_contract::host_text::MCP_CALL_ARGS_SEPARATOR) {
             Some(rest) => format!("{}{rest}", Key::ViewCallArgsSep),
             None => args.to_string(),
         };
