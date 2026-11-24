@@ -13,6 +13,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
+use robroz_ui::i18n::Key as Text;
+
 use robroz_contract::Event;
 use robroz_ui::cards::ApprovalExtras;
 
@@ -160,10 +162,10 @@ pub fn read_once(
     }
     let response = req
         .call()
-        .map_err(|e| format!("连不上宿主机 {}: {e}", conn.base()))?;
+        .map_err(|e| Text::ClientConnectFailed.fill(&[&conn.base(), &e]))?;
     let status = response.status().as_u16();
     if status != 200 {
-        return Err(format!("GET {} 返回 {status}", path(group_id)));
+        return Err(Text::ClientHttpStatus.fill(&[&"GET", &path(group_id), &status]));
     }
     if !sink(StreamItem::Connected) {
         return Ok(true);
@@ -171,7 +173,7 @@ pub fn read_once(
     let reader = BufReader::new(response.into_body().into_reader());
     let mut parser = Parser::default();
     for line in reader.lines() {
-        let line = line.map_err(|e| format!("实时推送断开: {e}"))?;
+        let line = line.map_err(|e| Text::ClientStreamDroppedBecause.fill(&[&e]))?;
         let item = match parser.line(&line) {
             Line::Frame(frame) => {
                 if let Some(id) = frame.id {
@@ -218,7 +220,7 @@ pub fn run(
         });
         let reason = match result {
             Ok(true) => return,
-            Ok(false) => "实时推送断开".to_string(),
+            Ok(false) => Text::ClientStreamDropped.to_string(),
             Err(e) => e,
         };
         if connected {

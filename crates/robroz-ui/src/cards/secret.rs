@@ -5,17 +5,18 @@
 //!
 //! Shared by the 联网搜索 settings page and MCP secret rows.
 
+use crate::i18n::Key;
 /// Shown next to a stored key, with the last four characters when known.
 pub fn filled(last4: Option<&str>) -> String {
     match last4 {
-        Some(l) if !l.is_empty() => format!("已填 · {l}"),
-        _ => "已填".into(),
+        Some(l) if !l.is_empty() => format!("{} · {l}", Key::SecretFilled),
+        _ => Key::SecretFilled.into(),
     }
 }
 
-pub const CLEAR: &str = "清除";
-pub const PENDING_CLEAR: &str = "保存后删除";
-pub const UNDO: &str = "撤销";
+pub const CLEAR: Key = Key::SecretClear;
+pub const PENDING_CLEAR: Key = Key::SecretPendingClear;
+pub const UNDO: Key = Key::SecretUndo;
 
 /// Local state for one secret. `draft` is only the text just typed; a
 /// stored key is never copied into it.
@@ -72,6 +73,7 @@ mod tests {
 
     #[test]
     fn filled_label_uses_last4_when_present() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(filled(Some("WXYZ")), "已填 · WXYZ");
         assert_eq!(filled(Some("")), "已填");
         assert_eq!(filled(None), "已填");
@@ -79,6 +81,7 @@ mod tests {
 
     #[test]
     fn clear_is_pending_until_cancelled_or_sent() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut k = MaskedKey::from_stored(true, Some("WXYZ".into()));
         assert!(k.shows_stored());
         assert_eq!(k.to_send(), None);

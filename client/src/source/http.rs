@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use robroz_contract::{Event, Groups};
 use robroz_ui::cards::ApprovalExtras;
+use robroz_ui::i18n::Key as Text;
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
 use crate::conn::Conn;
@@ -62,21 +63,26 @@ impl HttpSource {
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, SourceError> {
         let url = self.conn.url(path);
-        let mut response = self
-            .conn
-            .get(path)
-            .call()
-            .map_err(|err| SourceError(format!("连不上宿主机 {}: {err}", self.conn.base())))?;
+        let mut response = self.conn.get(path).call().map_err(|err| {
+            SourceError(Text::ClientConnectFailed.fill(&[&self.conn.base(), &err]))
+        })?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|err| SourceError(format!("读 {url} 失败: {err}")))?;
+            .map_err(|err| SourceError(Text::ClientReadFailed.fill(&[&url, &err])))?;
         if status != 200 {
-            return Err(SourceError(format!("GET {url} 返回 {status}: {body}")));
+            return Err(SourceError(format!(
+                "{}: {body}",
+                Text::ClientHttpStatus.fill(&[&"GET", &url, &status])
+            )));
         }
-        serde_json::from_str::<T>(&body)
-            .map_err(|err| SourceError(format!("GET {url} 与契约不符: {err}")))
+        serde_json::from_str::<T>(&body).map_err(|err| {
+            SourceError(format!(
+                "GET {url} {}",
+                Text::ClientDecodeFailed.fill(&[&err])
+            ))
+        })
     }
 
     /// `GET /api/groups/{id}/events[?since=…]` as the contract's [`Events`].

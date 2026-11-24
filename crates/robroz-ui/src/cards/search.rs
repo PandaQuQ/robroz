@@ -10,47 +10,49 @@
 //! `env`. When it is absent nothing is shown and nothing is guessed.
 
 use super::secret::{self, MaskedKey};
+use crate::i18n::Key;
 
-pub const TITLE: &str = "联网搜索";
+pub const TITLE: Key = Key::SearchTitle;
 pub const BRAVE: &str = "Brave";
 pub const SEARXNG: &str = "SearXNG";
-pub const KEY_PLACEHOLDER: &str = "API 密钥";
-pub const URL_PLACEHOLDER: &str = "SearXNG 地址，如 http://127.0.0.1:8888";
+pub const KEY_PLACEHOLDER: Key = Key::SearchKeyPlaceholder;
+pub const URL_PLACEHOLDER: Key = Key::SearchUrlPlaceholder;
 pub use secret::{CLEAR, PENDING_CLEAR, UNDO};
-pub const SAVE: &str = "保存";
-pub const CANCEL: &str = "取消";
-pub const FROM_ENV: &str = "来自环境变量";
-pub const NOT_SET: &str = "还没设置联网搜索";
-pub const TESTING: &str = "试连中…";
-pub const WORKS: &str = "能用了";
-pub const NEED_KEY: &str = "请填写 key";
-pub const NEED_URL: &str = "请填写地址";
+pub const SAVE: Key = Key::SearchSave;
+pub const CANCEL: Key = Key::SearchCancel;
+pub const FROM_ENV: Key = Key::SearchFromEnv;
+pub const NOT_SET: Key = Key::SearchNotSet;
+pub const TESTING: Key = Key::SearchTesting;
+pub const WORKS: Key = Key::SearchWorks;
+pub const NEED_KEY: Key = Key::SearchNeedKey;
+pub const NEED_URL: Key = Key::SearchNeedUrl;
 /// Delivery entry when a task needed search (`needsSetup: "search"`).
-pub const GO_SETUP: &str = "去设置";
+pub const GO_SETUP: Key = Key::SearchGoSetup;
 /// Shown under the delivery path when `needsSetup` is `"search"` and there is no failure.
-pub const NEEDS_SETUP_HINT: &str = "这次没联网搜索：还没设置";
+pub const NEEDS_SETUP_HINT: Key = Key::SearchNeedsSetupHint;
 
 pub fn key_filled(last4: Option<&str>) -> String {
     secret::filled(last4)
 }
 
-/// Drop a leading 「连不上：」 so a later prefix is not doubled.
+/// Drop a leading 「连不上：」 (the host's, or this locale's) so a later
+/// prefix is not doubled.
 pub fn strip_connect_prefix(reason: &str) -> &str {
-    reason.strip_prefix("连不上：").unwrap_or(reason)
+    super::model::strip_connect_prefix(reason)
 }
 
 pub fn cannot_connect(reason: &str) -> String {
-    format!("连不上：{}", strip_connect_prefix(reason))
+    super::model::cannot_connect(reason)
 }
 
 /// PUT succeeded, then the test failed.
 pub fn saved_but_unreachable(reason: &str) -> String {
-    format!("已保存，但连不上：{}", strip_connect_prefix(reason))
+    Key::SavedButUnreachable.fill(&[&crate::i18n::host_text(strip_connect_prefix(reason))])
 }
 
 /// The save itself failed. Keep a host 「连不上：」 rather than doubling it.
 pub fn failed(reason: &str) -> String {
-    format!("没保存：{reason}")
+    Key::NotSaved.fill(&[&crate::i18n::host_text(reason)])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +279,7 @@ mod tests {
 
     #[test]
     fn env_label_only_when_source_is_env() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.load(env_brave());
         assert!(p.from_env());
@@ -294,6 +297,7 @@ mod tests {
 
     #[test]
     fn after_save_shows_page_config() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.load(env_brave());
         p.pick(Provider::Searxng);
@@ -309,15 +313,16 @@ mod tests {
         });
         assert!(!p.from_env());
         assert_eq!(p.provider, Some(Provider::Searxng));
-        assert_eq!(p.test_line().as_deref(), Some(TESTING));
+        assert_eq!(p.test_line().as_deref(), Some(TESTING.as_str()));
         p.tested(true, None);
-        assert_eq!(p.test_line().as_deref(), Some(WORKS));
+        assert_eq!(p.test_line().as_deref(), Some(WORKS.as_str()));
         p.tested(false, Some("超时".into()));
         assert_eq!(p.test_line().as_deref(), Some("已保存，但连不上：超时"));
     }
 
     #[test]
     fn connect_copy_says_whether_it_was_saved() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(
             strip_connect_prefix("连不上：io: Connection refused"),
             "io: Connection refused"
@@ -343,10 +348,11 @@ mod tests {
 
     #[test]
     fn key_rules() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.pick(Provider::Brave);
         assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(NEED_KEY));
+        assert_eq!(p.note.as_deref(), Some(NEED_KEY.as_str()));
         p.key.draft = "abcd1234".into();
         assert_eq!(p.to_send().unwrap().key, Some(Some("abcd1234".into())));
 
@@ -367,6 +373,6 @@ mod tests {
         let mut p = Page::default();
         p.pick(Provider::Searxng);
         assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(NEED_URL));
+        assert_eq!(p.note.as_deref(), Some(NEED_URL.as_str()));
     }
 }

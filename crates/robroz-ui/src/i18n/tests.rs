@@ -1,0 +1,220 @@
+use std::collections::BTreeSet;
+
+use super::*;
+
+fn placeholders(s: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('{') {
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
+        let inner = &rest[start + 1..start + len];
+        if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+            out.insert(inner.to_string());
+        }
+        rest = &rest[start + len + 1..];
+    }
+    out
+}
+
+#[test]
+fn default_locale_is_english() {
+    assert_eq!(Locale::default(), Locale::En);
+    // A fresh test thread with no override sees the app default.
+    std::thread::spawn(|| assert_eq!(locale(), Locale::En))
+        .join()
+        .unwrap();
+    assert_eq!(super::super::cards::review_rules::ADD.as_str(), "Add");
+}
+
+#[test]
+fn every_key_has_text_in_both_locales() {
+    // `en::text` / `zh::text` are exhaustive matches, so a missing key does
+    // not compile; this checks that no entry is left empty.
+    assert!(!Key::ALL.is_empty());
+    for key in Key::ALL {
+        for l in Locale::ALL {
+            assert!(!text_in(l, *key).is_empty(), "{key:?} is empty in {l}");
+        }
+    }
+}
+
+#[test]
+fn both_locales_use_the_same_placeholders() {
+    for key in Key::ALL {
+        assert_eq!(
+            placeholders(text_in(Locale::En, *key)),
+            placeholders(text_in(Locale::Zh, *key)),
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn key_list_has_no_duplicates() {
+    let set: std::collections::HashSet<_> = Key::ALL.iter().collect();
+    assert_eq!(set.len(), Key::ALL.len());
+}
+
+#[test]
+fn scoped_override_is_per_thread_and_restores() {
+    assert_eq!(locale(), Locale::En);
+    {
+        let _zh = scoped(Locale::Zh);
+        assert_eq!(locale(), Locale::Zh);
+        assert_eq!(Key::ReviewRulesAdd.as_str(), "添加");
+        std::thread::spawn(|| assert_eq!(locale(), Locale::En))
+            .join()
+            .unwrap();
+    }
+    assert_eq!(locale(), Locale::En);
+}
+
+#[test]
+fn chinese_keeps_the_original_wording() {
+    let _zh = scoped(Locale::Zh);
+    assert_eq!(Key::ReviewRulesDrop.as_str(), "不用");
+    assert_eq!(Key::ReviewRulesDeleteAction.as_str(), "删除规则");
+    assert_eq!(
+        Key::ReviewRulesTooLong.fill(&[&200, &5]),
+        "最多 200 字，还要删掉 5 字"
+    );
+    assert_eq!(Key::StatusKindUnknown.as_str(), "操作");
+}
+
+#[test]
+fn english_batch_one_copy() {
+    let _en = scoped(Locale::En);
+    assert_eq!(Key::ReviewRulesTitle.as_str(), "Allow rules");
+    assert_eq!(Key::ReviewRulesDrop.as_str(), "Not now");
+    assert_eq!(
+        Key::ReviewRulesTooLong.fill(&[&200, &5]),
+        "Max 200 characters. Remove 5 more."
+    );
+    assert_eq!(
+        Key::ReviewRulesBlockedReasonPrefix.as_str(),
+        "Blocked because: "
+    );
+    assert_eq!(Key::StatusKindUnknown.as_str(), "Action");
+}
+
+#[test]
+fn locale_codes_parse() {
+    assert_eq!(Locale::parse("en"), Some(Locale::En));
+    assert_eq!(Locale::parse("en_GB.UTF-8"), Some(Locale::En));
+    assert_eq!(Locale::parse("zh"), Some(Locale::Zh));
+    assert_eq!(Locale::parse(" zh-CN\n"), Some(Locale::Zh));
+    assert_eq!(Locale::parse("fr"), None);
+    for l in Locale::ALL {
+        assert_eq!(Locale::parse(l.code()), Some(l));
+        assert_ne!(l.other(), l);
+    }
+}
+
+#[test]
+fn month_day_per_locale() {
+    let _en = scoped(Locale::En);
+    assert_eq!(month_day(11, 20), "Nov 20");
+    assert_eq!(month_day(1, 3), "Jan 3");
+    let _zh = scoped(Locale::Zh);
+    assert_eq!(month_day(11, 20), "11月20日");
+}
+
+mod host {
+    use super::super::host::host_text_in;
+    use super::super::Locale::{En, Zh};
+    use robroz_contract::{
+        TaskState, APPROVAL_EXPIRED_REASON, APPROVAL_SENT_TO_OWNER_DM_NOTICE, MODEL_TEST_BAD_KEY,
+        SETTINGS_APPROVAL_BOT_NAME,
+    };
+
+    #[test]
+    fn contract_constants_map_to_english() {
+        assert_eq!(
+            host_text_in(En, APPROVAL_SENT_TO_OWNER_DM_NOTICE),
+            "Sent to owner's DM"
+        );
+        assert_eq!(
+            host_text_in(En, APPROVAL_EXPIRED_REASON),
+            "Approval expired"
+        );
+        assert_eq!(host_text_in(En, SETTINGS_APPROVAL_BOT_NAME), "Settings");
+        assert_eq!(
+            host_text_in(En, MODEL_TEST_BAD_KEY),
+            "key is wrong or missing"
+        );
+        assert_eq!(
+            host_text_in(En, robroz_card::NO_RESULT),
+            "Finished with no result"
+        );
+    }
+
+    #[test]
+    fn robroz_card_copy_maps_to_english() {
+        assert_eq!(
+            host_text_in(En, robroz_card::status_line(TaskState::Queued, false)),
+            "Queued"
+        );
+        assert_eq!(
+            host_text_in(En, robroz_card::status_line(TaskState::Running, true)),
+            "Running"
+        );
+        assert_eq!(
+            host_text_in(En, robroz_card::status_line(TaskState::Done, false)),
+            "Done"
+        );
+        assert_eq!(
+            host_text_in(
+                En,
+                robroz_card::appearance(TaskState::Blocked, false)
+                    .action
+                    .unwrap()
+            ),
+            "Take over in DM"
+        );
+        assert_eq!(
+            host_text_in(En, &robroz_card::failure_line("工具调用超过 8 轮")),
+            "Didn't get done: Tool calls went past 8 rounds"
+        );
+        assert_eq!(
+            host_text_in(En, &robroz_card::failure_line(robroz_card::NO_RESULT)),
+            "Finished with no result"
+        );
+    }
+
+    #[test]
+    fn prefixes_map_and_keep_the_value() {
+        assert_eq!(host_text_in(En, "在用 web_search"), "Using web_search");
+        assert_eq!(
+            host_text_in(En, "你拒绝了：发送周报"),
+            "You denied: 发送周报"
+        );
+        assert_eq!(
+            host_text_in(En, "要对外写入：git push"),
+            "External write: git push"
+        );
+    }
+
+    #[test]
+    fn chinese_and_unknown_strings_pass_through() {
+        assert_eq!(
+            host_text_in(Zh, APPROVAL_SENT_TO_OWNER_DM_NOTICE),
+            APPROVAL_SENT_TO_OWNER_DM_NOTICE
+        );
+        assert_eq!(host_text_in(Zh, "在用 web_search"), "在用 web_search");
+        assert_eq!(host_text_in(En, "这条会改生产数据"), "这条会改生产数据");
+        assert_eq!(host_text_in(En, "Ada"), "Ada");
+        // A bare prefix with nothing after it is not rewritten.
+        assert_eq!(host_text_in(En, "在用 "), "在用 ");
+    }
+}
+
+#[test]
+fn placeholder_looking_user_text_is_not_interpreted() {
+    assert_eq!(
+        fill_template("{0}: {1}", &[&"value with {1}", &"tail"]),
+        "value with {1}: tail"
+    );
+    assert_eq!(fill_template("literal {0", &[]), "literal {0");
+}

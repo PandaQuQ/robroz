@@ -8,9 +8,8 @@ description = "robroz shared UI: cards, routines list and the skin interface; no
 
 [dependencies]
 robroz-contract = { path = "../robroz-contract" }
+robroz-card = { path = "../robroz-card" }
 robroz-tokens = { path = "../robroz-tokens" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 iced = { version = "0.14.0", features = ["canvas"] }
 
-[dev-dependencies]
-robroz-card = { path = "../robroz-card" }

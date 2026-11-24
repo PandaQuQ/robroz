@@ -8,31 +8,32 @@
 //! test call, shown as 「能用了」 or 「已保存，但连不上：原因」.
 
 use super::secret::{self, MaskedKey};
+use crate::i18n::Key;
 
-pub const TITLE: &str = "模型";
-pub const SAVE: &str = "保存";
-pub const FROM_ENV: &str = "来自环境变量";
-pub const NOT_SET: &str = "还没设置模型";
-pub const TESTING: &str = "试连中…";
-pub const WORKS: &str = "能用了";
-pub const LABEL_PRESET: &str = "服务商";
-pub const LABEL_URL: &str = "地址";
-pub const LABEL_MODEL: &str = "模型名";
-pub const LABEL_KEY: &str = "密钥（选填）";
+pub const TITLE: Key = Key::ModelTitle;
+pub const SAVE: Key = Key::ModelSave;
+pub const FROM_ENV: Key = Key::ModelFromEnv;
+pub const NOT_SET: Key = Key::ModelNotSet;
+pub const TESTING: Key = Key::ModelTesting;
+pub const WORKS: Key = Key::ModelWorks;
+pub const LABEL_PRESET: Key = Key::ModelLabelPreset;
+pub const LABEL_URL: Key = Key::ModelLabelUrl;
+pub const LABEL_MODEL: Key = Key::ModelLabelModel;
+pub const LABEL_KEY: Key = Key::ModelLabelKey;
 /// Address placeholder is empty so it does not repeat the label.
 pub const URL_PLACEHOLDER: &str = "";
 /// Key placeholder is empty so it does not repeat the label.
 pub const KEY_PLACEHOLDER: &str = "";
 pub use secret::{CLEAR, PENDING_CLEAR, UNDO};
-pub const NEED_URL: &str = "请填写地址";
-pub const BAD_URL: &str = "地址要以 http:// 或 https:// 开头";
-pub const NEED_MODEL: &str = "请填写模型名";
+pub const NEED_URL: Key = Key::ModelNeedUrl;
+pub const BAD_URL: Key = Key::ModelBadUrl;
+pub const NEED_MODEL: Key = Key::ModelNeedModel;
 /// Delivery entry when a task needed a model (`needsSetup: "model"`).
-pub const GO_SETUP: &str = "去设置";
+pub const GO_SETUP: Key = Key::ModelGoSetup;
 /// Shown under the delivery path when `needsSetup` is `"model"` and there is no failure.
-pub const NEEDS_SETUP_HINT: &str = "这次还没设置模型";
+pub const NEEDS_SETUP_HINT: Key = Key::ModelNeedsSetupHint;
 /// Hint under the OpenRouter preset.
-pub const OPENROUTER_HINT: &str = "免费模型的名字以 :free 结尾";
+pub const OPENROUTER_HINT: Key = Key::ModelOpenrouterHint;
 
 /// Host `/test` returns this as `error` on 401/403. Show it after
 /// 「已保存，但连不上：」, never a raw 401.
@@ -42,13 +43,22 @@ pub fn key_filled(last4: Option<&str>) -> String {
     secret::filled(last4)
 }
 
-/// Drop a leading 「连不上：」 so a later prefix is not doubled.
+/// Drop a leading 「连不上：」 (the host's, or this locale's) so a later
+/// prefix is not doubled.
 pub fn strip_connect_prefix(reason: &str) -> &str {
-    reason.strip_prefix("连不上：").unwrap_or(reason)
+    let ours = Key::CannotConnect.as_str().trim_end_matches("{0}");
+    reason
+        .strip_prefix(
+            Key::CannotConnect
+                .fill_in(crate::i18n::Locale::Zh, &[&""])
+                .as_str(),
+        )
+        .or_else(|| reason.strip_prefix(ours))
+        .unwrap_or(reason)
 }
 
 pub fn cannot_connect(reason: &str) -> String {
-    format!("连不上：{}", strip_connect_prefix(reason))
+    Key::CannotConnect.fill(&[&crate::i18n::host_text(strip_connect_prefix(reason))])
 }
 
 fn is_raw_auth_error(reason: &str) -> bool {
@@ -70,11 +80,11 @@ pub fn saved_but_unreachable(reason: &str) -> String {
     } else {
         reason
     };
-    format!("已保存，但连不上：{reason}")
+    Key::SavedButUnreachable.fill(&[&crate::i18n::host_text(reason)])
 }
 
 pub fn failed(reason: &str) -> String {
-    format!("没保存：{reason}")
+    Key::NotSaved.fill(&[&crate::i18n::host_text(reason)])
 }
 
 /// Frontend-only shortcuts. The host does not know these names.
@@ -99,11 +109,11 @@ impl Preset {
 
     pub fn label(self) -> &'static str {
         match self {
-            Preset::Gemini => "Gemini（推荐）",
+            Preset::Gemini => Key::ModelPresetGemini.as_str(),
             Preset::Groq => "Groq",
             Preset::OpenRouter => "OpenRouter",
             Preset::Ollama => "Ollama",
-            Preset::Custom => "自定义",
+            Preset::Custom => Key::ModelPresetCustom.as_str(),
         }
     }
 
@@ -375,6 +385,7 @@ mod tests {
 
     #[test]
     fn gemini_is_first_and_recommended() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(Preset::ALL[0], Preset::Gemini);
         assert_eq!(Preset::Gemini.label(), "Gemini（推荐）");
         assert_eq!(
@@ -442,6 +453,7 @@ mod tests {
 
     #[test]
     fn env_label_only_when_source_is_env() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.load(env_gemini());
         assert!(p.from_env());
@@ -459,10 +471,11 @@ mod tests {
 
     #[test]
     fn save_then_test_and_pending_key_clear() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.pick(Preset::Ollama);
         assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(NEED_MODEL));
+        assert_eq!(p.note.as_deref(), Some(NEED_MODEL.as_str()));
         p.set_model("llama3.2".into());
         assert_eq!(p.note.take(), None);
         let without_key = p.to_send().unwrap();
@@ -487,9 +500,9 @@ mod tests {
             source: Some(Source::Settings),
         });
         assert!(!p.from_env());
-        assert_eq!(p.test_line().as_deref(), Some(TESTING));
+        assert_eq!(p.test_line().as_deref(), Some(TESTING.as_str()));
         p.tested(true, None);
-        assert_eq!(p.test_line().as_deref(), Some(WORKS));
+        assert_eq!(p.test_line().as_deref(), Some(WORKS.as_str()));
         p.tested(false, Some("超时".into()));
         assert_eq!(p.test_line().as_deref(), Some("已保存，但连不上：超时"));
 
@@ -504,15 +517,16 @@ mod tests {
 
     #[test]
     fn bad_or_empty_url_is_rejected() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut p = Page::default();
         p.model = "m".into();
         p.key.draft = "k".into();
         p.url = "not-a-url".into();
         assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(BAD_URL));
+        assert_eq!(p.note.as_deref(), Some(BAD_URL.as_str()));
         p.url.clear();
         assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(NEED_URL));
+        assert_eq!(p.note.as_deref(), Some(NEED_URL.as_str()));
         assert_eq!(
             saved_but_unreachable("连不上：io: refused"),
             "已保存，但连不上：io: refused"
