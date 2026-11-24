@@ -150,7 +150,6 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostReviewAllowFallback => ht::REVIEW_ALLOW_FALLBACK,
         Key::HostStepTimeoutPrefix => ht::WATCHDOG_STEP_TIMEOUT_PREFIX,
         Key::HostMinutesSuffix => ht::WATCHDOG_STEP_TIMEOUT_SUFFIX,
-        Key::HostStallSuffix => ht::WATCHDOG_STALL_SUFFIX,
 
         // ---- Card status, footnotes and approval buttons (cards/status.rs) ----
         Key::StatusTakeOver => "去私聊接管",
@@ -300,6 +299,10 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientThemeDark => "深色",
         Key::ClientThemeLight => "浅色",
         Key::ClientPickChat => "选一个聊天",
+        Key::ClientHostUnreachable => "连不上宿主",
+        Key::ClientConnectionRefused => "连接被拒绝",
+        Key::ClientTimedOut => "超时",
+        Key::ClientHostNotFound => "找不到主机",
         Key::SettingsLanguage => "语言",
         Key::LocaleNameEn => "English",
         Key::LocaleNameZh => "中文",

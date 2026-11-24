@@ -8,11 +8,11 @@ Card colours, status lines and actions come from `robroz-card`; layout and sizes
 
 ## Layout
 
-- Left: the conversation list, titled Chats (「聊天」). On the same heading row, Add a bro (「引入一个 bro」) creates a bro and opens its DM. Below that are groups and DMs, newest activity first, with unread counts. An empty list shows No bros yet. Add your first one. (「还没有 bro，引入第一个」). Under the list are seven buttons, in order: Routines, Memories, Skills, Model, Web search, MCP, Allow rules. Right: the open conversation's message stream, or the matching page.
+- Left: the conversation list, titled Chats (「聊天」). On the same heading row, Add a bro (「引入一个 bro」) creates a bro and opens its DM. Below that are groups and DMs, newest activity first, with unread counts. An empty list shows No bros yet. Add your first one. (「还没有 bro，引入第一个」). That hint only appears once the host has listed the groups. Under the list are seven buttons, in order: Routines, Memories, Skills, Model, Web search, MCP, Allow rules. Right: the open conversation's message stream, or the matching page.
 - When the window is no wider than 480px, the list and the conversation each take the whole window. Open a chat to see it; ‹ Chats (「‹ 聊天」) goes back.
 - The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set (comma-separated `id` or `id=name` items), only those groups are shown.
 - Opening a conversation marks it read (`POST /api/groups/{id}/read`). Unread counts come from `GET /api/unread`.
-- If the host cannot be reached, the client keeps what is already on screen, retries after a while, and shows an error in the bottom bar.
+- If the host has never answered, the sidebar stays empty and the main pane centres Can't reach the host (「连不上宿主」), with the host address on a lighter line below it and a short reason next to the address when there is one (Connection refused, Timed out, or Host not found). The footer keeps only the theme toggle. The client retries on the poll interval. After the host has answered once, a later failure keeps what is already on screen and shows the error in the bottom bar.
 - `--fake` / `ROBROZ_FAKE=1` plays a scripted run offline. `--gallery` lays out every card state for design review. Fake and gallery runs do not read or write the saved language file.
 - Every line from the composer goes to `POST /api/groups/{id}/say`. In a DM the whole message goes to that bro, or attaches as a follow-up if the bro already has an open task. In a group, every bro gets a turn; a leading `@name` or `＠name` gives that bro the first turn. The composer hint in a group is Message the group, or @name a bro.
 
