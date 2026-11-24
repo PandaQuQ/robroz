@@ -8,7 +8,7 @@ are built, and so are the internal Router (PR C,
 cancel ([#143](https://github.com/PandaQuQ/robroz/pull/143)). See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `e94e31e` plus [#143](https://github.com/PandaQuQ/robroz/pull/143). This document
+Existing behaviour below is taken from `main` at `339b5e9` plus [#143](https://github.com/PandaQuQ/robroz/pull/143). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -54,7 +54,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` at `e94e31e` plus #143. There is no separate Router session in the
+Verified on `main` at `339b5e9` plus #143. There is no separate Router session in the
 room and no shared Worker pool. Inside one task, a bro's internal Router may split the work into
 two or three Worker steps that run in order on the same task (see
 [Implementation status](#implementation-status)); they share one status card
@@ -563,7 +563,7 @@ not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `e94e31e` plus #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+Verified on `main` at `339b5e9` plus #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
 `host/src/pump.rs`, `host/src/router.rs`, `host/src/timeouts.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
