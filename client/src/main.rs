@@ -72,8 +72,28 @@ pub fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .scale_factor(App::scale_factor)
-        .window_size(size)
+        .window(window::Settings {
+            size: Size::new(size.0, size.1),
+            icon: window_icon(),
+            ..window::Settings::default()
+        })
         .run()
+}
+
+/// The 512px brand icon, decoded from the embedded PNG. `None` (default icon)
+/// if it cannot be decoded, which must never stop the client from starting.
+fn window_icon() -> Option<window::Icon> {
+    static ICON_PNG: &[u8] = include_bytes!("../../assets/brand/icon-512.png");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(ICON_PNG))
+        .read_info()
+        .ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    window::icon::from_rgba(buf, info.width, info.height).ok()
 }
 
 fn has_flag(flag: &str) -> bool {
@@ -3025,7 +3045,12 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
 
 #[cfg(test)]
 mod tests {
-    use super::pick_name;
+    use super::{pick_name, window_icon};
+
+    #[test]
+    fn embedded_window_icon_decodes() {
+        assert!(window_icon().is_some());
+    }
 
     #[test]
     fn user_name_env_then_hostname_then_robroz() {
