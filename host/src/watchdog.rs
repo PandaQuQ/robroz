@@ -24,7 +24,7 @@ use crate::progress;
 use crate::pump::newer_than;
 
 /// `failure` on a dead run that the host ended. The card text, verbatim.
-pub const DEAD_RUN_FAILURE: &str = "没写出结果";
+pub const DEAD_RUN_FAILURE: &str = robroz_card::NO_RESULT;
 
 /// Default for `ROBROZ_STEP_TIMEOUT_SECS`.
 pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(10 * 60);

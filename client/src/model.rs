@@ -89,9 +89,10 @@ pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
     }
 }
 
-/// The grey line for a task the host says did not get done.
+/// The grey line for a task the host says did not get done. A dead run reads
+/// 「没写出结果」, anything else 「没做成：原因」 (from `robroz-card`).
 pub fn failure_line(failure: &str) -> String {
-    format!("没做成：{failure}")
+    robroz_card::failure_line(failure)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -692,6 +693,23 @@ mod tests {
         assert_ne!(cards[0].palette, expected(TaskState::Done, false).2);
         assert_eq!(cards[0].action, None);
         assert_eq!(preview(&ev), "Ada：没做成：模型没回：模型服务返回 500");
+    }
+
+    #[test]
+    fn dead_run_ended_as_done_still_reads_no_result() {
+        let mut ev = status("t5", "Cy", TaskState::Done, false);
+        if let Event::Status { failure, .. } = &mut ev {
+            *failure = Some("没写出结果".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&status("t5", "Cy", TaskState::Running, true));
+        feed.apply(&ev);
+        let cards = status_cards(&feed);
+        assert_eq!(cards[0].status_line, "没写出结果");
+        assert_eq!(cards[0].tone, Tone::Gray);
+        assert_eq!(cards[0].palette, expected(TaskState::Running, false).2);
+        assert_eq!(cards[0].action, None);
+        assert_eq!(preview(&ev), "Cy：没写出结果");
     }
 
     #[test]

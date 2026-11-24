@@ -336,7 +336,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `running` | true | 进行 |
 | `running` | false | 没写出结果（只出现在旧数据里：宿主机现在把运行失败直接结束成 `done` + `failure`「没写出结果」，Watchdog 也会把剩下的这种任务这样结束） |
 | `blocked` | false | 卡住 |
-| `done` | false | 完成（带 `failure` 时客户端显示成「没做成」） |
+| `done` | false | 完成（带 `failure` 时客户端显示成「没做成：原因」；`failure` 为「没写出结果」时原样显示「没写出结果」） |
 
 ### failure
 
