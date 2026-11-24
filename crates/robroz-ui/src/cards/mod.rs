@@ -10,8 +10,8 @@ pub mod interact;
 pub mod mcp;
 pub mod memories;
 
-pub mod review_rules;
 pub mod model;
+pub mod review_rules;
 
 pub mod routines;
 pub mod search;
@@ -139,11 +139,13 @@ pub enum ActionKind {
     Send,
     Spend,
     Call,
+
     /// Propose adding an allow rule. Not on the contract enum yet.
     RuleAdd,
     /// Propose deleting an allow rule. Not on the contract enum yet.
     RuleDelete,
-    /// An `action` this client does not know. Shown as a generic card.
+    /// An action value this client does not recognise. Shown with the
+    /// generic verb 「操作」.
     Unknown,
 }
 
@@ -258,6 +260,7 @@ impl ApprovalCard {
                 at,
             },
         };
+
         let kind = match extras.and_then(|e| e.action) {
             Some(ClientApprovalAction::RuleAdd) => ActionKind::RuleAdd,
             Some(ClientApprovalAction::RuleDelete) => ActionKind::RuleDelete,
@@ -267,6 +270,7 @@ impl ApprovalCard {
                 ApprovalAction::Send => ActionKind::Send,
                 ApprovalAction::Spend => ActionKind::Spend,
                 ApprovalAction::Call => ActionKind::Call,
+                ApprovalAction::Unknown => ActionKind::Unknown,
             },
         };
         Some(Self {
@@ -370,6 +374,8 @@ mod tests {
             task_id: None,
             mcp_server: None,
             mcp_tool: None,
+            reason: None,
+            expires_at: None,
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";
@@ -476,6 +482,8 @@ mod tests {
             task_id: Some("t1".into()),
             mcp_server: server.map(Into::into),
             mcp_tool: tool.map(Into::into),
+            reason: None,
+            expires_at: None,
         }
     }
 
@@ -536,6 +544,8 @@ mod tests {
             task_id: None,
             mcp_server: None,
             mcp_tool: None,
+            reason: None,
+            expires_at: None,
         }
     }
 
@@ -597,5 +607,30 @@ mod tests {
         let card = ApprovalCard::from_event_with(&ev, Some(&unk)).unwrap();
         assert_eq!(card.kind, ActionKind::Unknown);
         assert!(!card.is_rule());
+    }
+
+    #[test]
+    fn unknown_action_is_a_generic_card() {
+        let event = Event::Approval {
+            id: "a-future".into(),
+            bot_id: "bot-doc".into(),
+            bot_name: "文档哥".into(),
+            action: ApprovalAction::Unknown,
+            summary: "新增一条规则".into(),
+            path: None,
+            decision: None,
+            created_at: "2026-11-24T12:00:00Z".into(),
+            answered_at: None,
+            answered_by: None,
+            task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
+            reason: None,
+            expires_at: None,
+        };
+        let card = ApprovalCard::from_event(&event).unwrap();
+        assert_eq!(card.kind, ActionKind::Unknown);
+        assert_eq!(status::action_kind_label(card.kind), "操作");
+        assert_eq!(card.summary, "新增一条规则");
     }
 }

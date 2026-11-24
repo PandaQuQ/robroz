@@ -52,7 +52,9 @@ pub fn action_kind_label(kind: ActionKind) -> &'static str {
         ActionKind::Send => "发送",
         ActionKind::Spend => "付款",
         ActionKind::Call => "调用",
-        ActionKind::RuleAdd | ActionKind::RuleDelete | ActionKind::Unknown => "",
+
+        ActionKind::Unknown => "操作",
+        ActionKind::RuleAdd | ActionKind::RuleDelete => "",
     }
 }
 
@@ -470,6 +472,7 @@ mod tests {
         assert_eq!(action_kind_label(ActionKind::Send), "发送");
         assert_eq!(action_kind_label(ActionKind::Spend), "付款");
         assert_eq!(action_kind_label(ActionKind::Call), "调用");
+        assert_eq!(action_kind_label(ActionKind::Unknown), "操作");
         assert_eq!(channel_label(DraftChannel::Email), "邮件");
         assert_eq!(channel_label(DraftChannel::Message), "消息");
         assert_eq!(confirm_label(2), "确认（2）");

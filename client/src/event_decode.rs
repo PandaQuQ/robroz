@@ -125,9 +125,16 @@ mod tests {
         let card = ApprovalCard::from_event_with(&event, Some(&extras)).unwrap();
         assert_eq!(card.kind, ActionKind::Unknown);
         assert_eq!(card.reason.as_deref(), Some("要改生产"));
-        // Raw contract parse of the original JSON would fail.
+        // #[serde(other)] on ApprovalAction: unknown values parse as Unknown.
         let raw = approval_json("shell", "");
-        assert!(serde_json::from_str::<Event>(&raw).is_err());
+        let raw_event: Event = serde_json::from_str(&raw).unwrap();
+        assert!(matches!(
+            raw_event,
+            Event::Approval {
+                action: ApprovalAction::Unknown,
+                ..
+            }
+        ));
     }
 
     #[test]

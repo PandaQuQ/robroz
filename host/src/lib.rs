@@ -2515,6 +2515,8 @@ mod tests {
         assert_eq!(card["path"], "target/");
         assert_eq!(card["decision"], Value::Null);
         assert_eq!(card["answeredAt"], Value::Null);
+        assert!(card.get("reason").is_none(), "host does not emit reason yet: {card}");
+        assert!(card.get("expiresAt").is_none(), "host does not emit expiresAt yet: {card}");
         let id = card["id"].as_str().unwrap().to_string();
 
         let since = card["createdAt"].as_str().unwrap().to_string();
@@ -2562,8 +2564,9 @@ mod tests {
             let (status, _) = post_approval(&app, &group_id, json!({ "botId": "bot-ada", "action": "send", "summary": summary })).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{summary:?}");
         }
-        let resp = call(&app, post(&format!("/api/groups/{group_id}/approvals"), json!({ "botId": "bot-ada", "action": "nuke", "summary": "x" }))).await;
-        assert!(resp.status().is_client_error(), "unknown action is rejected");
+        let (status, body) = read_json(call(&app, post(&format!("/api/groups/{group_id}/approvals"), json!({ "botId": "bot-ada", "action": "nuke", "summary": "x" }))).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body, json!({ "error": "不支持这个动作" }), "unknown action is rejected");
         let (status, _) = decide(&app, "nope", "approve").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 

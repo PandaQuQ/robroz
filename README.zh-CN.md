@@ -64,7 +64,7 @@ cargo run -p robroz-client                                  # 另开一个终端
 | [docs/architecture.md](docs/architecture.md) | 各部分分工、容器、外观层 |
 | [docs/reference-features.md](docs/reference-features.md) | 参考产品和净室规则 |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | 第二期路线图 |
-| [docs/design/multi-agent.md](docs/design/multi-agent.md) | 设计草案：Router、Thread 订阅、异步工具与 Watchdog |
+| [docs/design/multi-agent.md](docs/design/multi-agent.md) | 已接受设计：Router、Thread 订阅、异步工具与 Watchdog（非契约） |
 
 bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot（`botId` / `botName`）。私聊就是只有你和一个 bro 的群。
 

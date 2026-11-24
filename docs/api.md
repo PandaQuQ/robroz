@@ -323,7 +323,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` | 每个任务恰好一张，`id` 等于 `taskId`。 |
 | `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` | 任务写出结果时一张。`summary` 通常是「已写入结果」；MCP 工具审批被拒绝时是「未执行」。`path` 是群目录里的相对路径 `tasks/{taskId}/result.txt`。`briefing` 为 true 表示例行任务的结果（简报）。 |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | 选项卡。`options` 是 `[{"id","label","primary"}]`。`choice` 未回答时 `null`，回答后是选中的 `id` 数组。 |
-| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。 |
+| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；客户端遇到不认识的值会解析成通用卡，不会整条失败。`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。`reason` 是被拦或已结算的原因，过期时固定为契约常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）；`expiresAt` 是过期时间（RFC 3339，格式同 `createdAt`）。两者都是可选字段，没有时省略，旧 JSON 不变。本版本宿主机还不填写这两个字段。 |
 | `confirm` | `id` `botId` `botName` `subject` `taskId` `decision` `createdAt` `answeredAt` `answeredBy` | 记忆：`memoryId` `kind` `text` `scope`；技能：`slug` `title` `instruction` `scope` | 确认卡，`subject` 是 `memory` 或 `skill`。显示的内容是这条记忆 / 技能**现在**的样子。 |
 
 ### 任务状态和标签
@@ -350,6 +350,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 | `crates/robroz-policy/src/lib.rs`（`OverQuota::failure`） |
 | 出网用了非 GET | 「出网只允许 GET：用了 <方法>」 | 没有 | 同上 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」 | 有，交付卡也带同样的 `failure`，结果里也写这句 | `host/src/tools.rs:ROUND_LIMIT_FAILURE` |
+| 运行失败（容器非 0 退出、没写出结果、中途消失） | 「没写出结果」 | 没有 | `host/src/pump.rs`（`Outcome::Dead`）、`host/src/watchdog.rs`（`DEAD_RUN_FAILURE`） |
 
 ### waitingFor
 
@@ -364,6 +365,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 - 宿主机自己报：开跑时「开始干活」（接了模型时是「在想怎么回」），容器起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。MCP 工具用展示名 `{server}.{tool}`。等审批时这行仍显示。
 - bro 报：prompt 或模型回复里一行 `robroz-progress:<文字>`，取最后一行。
+- Watchdog 也可能写「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改状态，见上面「pump 做什么」。
 - 规范成一行：连续空白变一个空格，去掉首尾空白，最多 60 个字符（超了截到 59 个加「…」）。文字没变不更新 `updatedAt`。
 
 ### needsSetup
@@ -373,7 +375,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 - `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。
 - `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。结果文件是「还没设置模型」，不把 prompt 原样写成结果。
 
-客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型设置页还在后面做。
+客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型见 [client.md 的「模型页」](client.md#模型页)。
 
 ---
 
@@ -486,13 +488,13 @@ bro 在删除、发送或花钱之前问人。`host/src/approvals.rs:create_appr
 | 请求字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `botId` | string | 是 | 必须是群成员。 |
-| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 别的值 axum 返回 422 纯文本。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
+| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 不认识的值返回 400「不支持这个动作」。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
 | `summary` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字。 |
 | `path` | string | 否 | 只用来展示，去掉空白后为空当没填。 |
 
 - 201 `approval` 事件（不带 `taskId`）。
 - 404「群不存在」；400「这个 Bot 不在群里」。
-- 400「请填写要做什么」/「说明只能一行，最多 200 字」。
+- 400「请填写要做什么」/「说明只能一行，最多 200 字」/「不支持这个动作」。
 
 ```sh
 curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/json' \
