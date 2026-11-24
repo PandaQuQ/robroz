@@ -67,28 +67,33 @@ impl Plan {
 /// Text sent only to the model: asks for the split as JSON.
 pub(crate) fn split_prompt(task_prompt: &str) -> String {
     format!(
-        "你是任务拆分器。把下面的任务拆成最多 {MAX_STEPS} 个按顺序执行的步骤。\
-         任务简单、一步就能做完时只给 1 步。\n\
-         只回一个 JSON 对象，不要别的文字：{{\"steps\":[\"第一步要做什么\",\"第二步要做什么\"]}}\n\n\
-         任务：\n{task_prompt}\n"
+        "You split tasks into steps. Split the task below into at most {MAX_STEPS} steps \
+         that run in order. If the task is simple and one step is enough, give 1 step. \
+         Write each step in the language of the task.\n\
+         Reply with one JSON object and nothing else: \
+         {{\"steps\":[\"what step 1 does\",\"what step 2 does\"]}}\n\n\
+         Task:\n{task_prompt}\n"
     )
 }
 
 /// Text sent only to the model: one Worker step.
 pub(crate) fn step_prompt(task_prompt: &str, plan: &Plan, index: usize) -> String {
     let mut text = format!(
-        "{task_prompt}\n\n这个任务分成 {} 步，现在只做第 {} 步：{}\n",
+        "{task_prompt}\n\nThis task is split into {} steps. Do only step {} now: {}\n",
         plan.steps.len(),
         index + 1,
         plan.steps[index]
     );
     if index > 0 {
-        text.push_str("\n前面几步的结果：\n");
+        text.push_str("\nResults of the earlier steps:\n");
         for (i, result) in plan.results.iter().take(index).enumerate() {
-            text.push_str(&format!("第 {} 步：\n{}\n", i + 1, result.trim()));
+            text.push_str(&format!("Step {}:\n{}\n", i + 1, result.trim()));
         }
     }
-    text.push_str("\n只做这一步，直接给出这一步的结果。\n");
+    text.push_str(
+        "\nDo only this step and give its result directly. \
+         Reply in the language the user wrote in.\n",
+    );
     text
 }
 

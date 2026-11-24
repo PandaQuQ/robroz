@@ -9,7 +9,7 @@
 | 工具 | 做什么 |
 | --- | --- |
 | `web_search` | 用选好的服务搜索公开网页。 |
-| `web_fetch` | 用 GET 读一个页面，转成纯文本。只允许 http / https，拒绝解析到内网、回环和链路本地地址的目标。结果最多 16000 个字符，超出截断加「…（已截断）」。 |
+| `web_fetch` | 用 GET 读一个页面，转成纯文本。只允许 http / https，拒绝解析到内网、回环和链路本地地址的目标。结果最多 16000 个字符，超出截断加 `…(truncated)`。 |
 
 - 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#permission-tiers)。
 - 服务由 robroz 用户自己选、自己填，密钥不必交给别人：[Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
@@ -76,7 +76,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 - `readOnlyHint: true`：计数（Metered），按一次出网 GET 计次，直接调用，不出审批卡。
 - 其余：接管（Takeover），先出审批卡（`action` 为 `call`），卡上带可选字段 `mcpServer`、`mcpTool` 和参数摘要，以及 `taskId`。批准、拒绝走现有的 `POST /api/approvals/{id}/approve` 和 `/deny`，答过一次再答是 409。等待期间任务是 `blocked`（`waitingFor` 为 `approval`），不加新状态。不要用 `POST /api/tasks/{id}/resume` 代替答卡，那样会 409「请先回答审批卡」。
 - 批准后任务回到 `queued`，接着执行这次调用，把结果交回模型继续；这次调用也计一次出网 GET。拒绝则不执行，任务 `done`，交付卡 `summary` 为「未执行」，带 `failure`「你拒绝了：{server}.{tool}」，不是成功交付。
-- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上「…（已截断）」。
+- 工具结果和其它宿主工具一样，超过 16000 个字符会截断，末尾加上 `…(truncated)`。
 - 每次列工具和每次调用都单独连一次服务器，超时 10 秒（`robroz_mcp::MCP_TIMEOUT`）。已批准的 stdio 服务器每次都会重新启动一次命令：群里启用了它，这个群的每个接了模型的任务开始时都会启动一次。还没批准启动命令的服务器在注册时跳过，不会启动进程。
 - 密钥：`hasKey` 为 true 的每条密钥在列工具和调用时都会带上（stdio 作环境变量，HTTP 作请求头）；没填值的那条不带。`keyLast4` 只用于显示，不影响调用。
 - 调用出错不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。

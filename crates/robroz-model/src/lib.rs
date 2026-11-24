@@ -25,7 +25,8 @@ pub const ENV_KEY_FILE: &str = "ROBROZ_MODEL_KEY_FILE";
 
 /// Told to every bro before the task prompt.
 pub const SYSTEM_PROMPT: &str =
-    "你是 robroz 里的一个 bro，替用户完成交给你的任务。直接给出结果，简洁，用用户的语言。";
+    "You are a bro in robroz. Do the task the user gave you and give the result directly, briefly. \
+     Reply in the language the user wrote in.";
 
 /// A model call. `Send + Sync` so the pump thread can own one.
 pub trait Model: Send + Sync {
@@ -427,10 +428,10 @@ mod tests {
             body["messages"][1],
             serde_json::json!({ "role": "user", "content": "写周报" })
         );
-        let with = request_body("m1", "写周报", Some("你记得这些：\n[habit] 周五交周报"));
+        let with = request_body("m1", "写周报", Some("You remember:\n[habit] 周五交周报"));
         assert_eq!(
             with["messages"][0]["content"],
-            format!("{SYSTEM_PROMPT}\n\n你记得这些：\n[habit] 周五交周报")
+            format!("{SYSTEM_PROMPT}\n\nYou remember:\n[habit] 周五交周报")
         );
         assert_eq!(
             request_body("m1", "写周报", Some(""))["messages"][0]["content"],

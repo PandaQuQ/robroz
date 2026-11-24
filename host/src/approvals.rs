@@ -366,7 +366,7 @@ fn insert_bro_card(
         let mut action =
             crate::review::describe(action_text(body.action), &summary, None, None, None);
         if let Some(p) = &path {
-            action.push_str(&format!("\n路径：{p}"));
+            action.push_str(&format!("\nPath: {p}"));
         }
         let review = ToReview {
             action,

@@ -115,7 +115,7 @@ pub(crate) fn kept_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Vec<
 /// values. Over this, oldest whole memories are dropped; a line is never cut.
 pub(crate) const MEMORY_PROMPT_MAX: usize = 4000;
 
-const MEMORY_PROMPT_HEADER: &str = "你记得这些：";
+const MEMORY_PROMPT_HEADER: &str = "You remember:";
 
 /// One line per memory. Newlines in the text are flattened so the paragraph
 /// stays one memory per line.
@@ -807,12 +807,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             section,
-            "你记得这些：\n[project] 新项目\n[habit] 周五交周报\n[profile] 叫 Panda"
+            "You remember:\n[project] 新项目\n[habit] 周五交周报\n[profile] 叫 Panda"
         );
         let wrapped = sample(MemoryKind::Habit, "第一行\n  第二行");
         assert_eq!(
             prompt_section(&[wrapped]).as_deref(),
-            Some("你记得这些：\n[habit] 第一行 第二行")
+            Some("You remember:\n[habit] 第一行 第二行")
         );
     }
 
@@ -822,16 +822,16 @@ mod tests {
         let newer = sample(MemoryKind::Habit, "新");
         let older = sample(MemoryKind::Habit, "旧");
         let line_len = "[habit] 新".chars().count();
-        let header_len = "你记得这些：".chars().count();
+        let header_len = "You remember:".chars().count();
         let one = header_len + 1 + line_len;
         let two = one + 1 + "[habit] 旧".chars().count();
         assert_eq!(
             prompt_section_with(&[newer.clone(), older.clone()], two).as_deref(),
-            Some("你记得这些：\n[habit] 新\n[habit] 旧")
+            Some("You remember:\n[habit] 新\n[habit] 旧")
         );
         assert_eq!(
             prompt_section_with(&[newer.clone(), older.clone()], two - 1).as_deref(),
-            Some("你记得这些：\n[habit] 新")
+            Some("You remember:\n[habit] 新")
         );
         assert_eq!(prompt_section_with(&[newer, older], one - 1), None);
         assert!(
@@ -901,7 +901,7 @@ mod tests {
         let section = prompt_section(&kept_for(&conn, "ada").unwrap()).unwrap();
         assert_eq!(
             section,
-            "你记得这些：\n[habit] ada-new\n[habit] shared\n[habit] ada-old"
+            "You remember:\n[habit] ada-new\n[habit] shared\n[habit] ada-old"
         );
         assert!(
             !section.contains("bob")
@@ -911,7 +911,7 @@ mod tests {
         );
         assert_eq!(
             prompt_section(&kept_for(&conn, "carol").unwrap()).as_deref(),
-            Some("你记得这些：\n[habit] shared")
+            Some("You remember:\n[habit] shared")
         );
     }
 }

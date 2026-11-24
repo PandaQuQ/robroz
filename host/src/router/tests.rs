@@ -42,10 +42,10 @@ fn a_step_sees_the_task_and_earlier_results() {
     };
     let first = step_prompt("写周报", &plan, 0);
     assert!(first.starts_with("写周报"), "{first}");
-    assert!(first.contains("第 1 步：查资料"), "{first}");
+    assert!(first.contains("Do only step 1 now: 查资料"), "{first}");
     assert!(!first.contains("资料 A"), "{first}");
     let third = step_prompt("写周报", &plan, 2);
-    assert!(third.contains("第 3 步：润色"), "{third}");
+    assert!(third.contains("Do only step 3 now: 润色"), "{third}");
     assert!(
         third.contains("资料 A") && third.contains("草稿 B"),
         "{third}"
@@ -356,7 +356,11 @@ async fn a_task_split_into_three_runs_three_steps_and_delivers_once() {
     );
     let prompts = h.model.prompts();
     assert_eq!(prompts.len(), 3);
-    assert!(prompts[0].contains("第 1 步：查资料"), "{}", prompts[0]);
+    assert!(
+        prompts[0].contains("Do only step 1 now: 查资料"),
+        "{}",
+        prompts[0]
+    );
     assert!(
         prompts[2].contains("资料 A") && prompts[2].contains("草稿 B"),
         "{}",

@@ -33,7 +33,7 @@ pub const MAX_SEARCH_COUNT: u32 = 10;
 
 /// Longest `web_fetch` body, in characters, including the truncation marker.
 pub const MAX_FETCH_CHARS: usize = 16_000;
-const TRUNCATED_MARK: &str = "\n…（已截断）";
+const TRUNCATED_MARK: &str = "\n…(truncated)";
 
 /// Returned to the model (and shown on the delivery) when search is not set up.
 pub const NOT_CONFIGURED: &str = robroz_contract::host_text::SEARCH_NOT_CONFIGURED;
@@ -362,7 +362,7 @@ fn provider_from(cfg: &EffectiveConfig) -> Result<Box<dyn SearchProvider>, Strin
 
 fn format_hits(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
-        return "没有找到结果。".into();
+        return "No results found.".into();
     }
     hits.iter()
         .enumerate()
@@ -592,14 +592,14 @@ impl Tool for WebSearch {
         "web_search"
     }
     fn description(&self) -> &str {
-        "搜索公开网页，返回标题、链接和摘要。"
+        "Search the public web. Returns titles, links and snippets."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "搜索词" },
-                "count": { "type": "integer", "description": "返回条数，默认 5，最多 10", "minimum": 1, "maximum": MAX_SEARCH_COUNT }
+                "query": { "type": "string", "description": "Search terms" },
+                "count": { "type": "integer", "description": "Number of results, default 5, at most 10", "minimum": 1, "maximum": MAX_SEARCH_COUNT }
             },
             "required": ["query"]
         })
@@ -613,7 +613,7 @@ impl Tool for WebSearch {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "请提供 query".to_string())?;
+            .ok_or_else(|| "query is required".to_string())?;
         let count = args
             .get("count")
             .and_then(Value::as_u64)
@@ -645,13 +645,13 @@ impl Tool for WebFetch {
         "web_fetch"
     }
     fn description(&self) -> &str {
-        "用 GET 读取一个 http 或 https 页面，返回纯文本。"
+        "Read an http or https page with GET. Returns plain text."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "url": { "type": "string", "description": "要读取的 http 或 https 地址" }
+                "url": { "type": "string", "description": "The http or https address to read" }
             },
             "required": ["url"]
         })
@@ -665,7 +665,7 @@ impl Tool for WebFetch {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "请提供 url".to_string())?;
+            .ok_or_else(|| "url is required".to_string())?;
         let url = parse_public_http_url(raw)?;
         if let Err(over) = ctx.charge_get() {
             return Err(over.failure());
@@ -914,7 +914,7 @@ mod tests {
         }]);
         assert!(text.contains("1. Rust"));
         assert!(text.contains("https://www.rust-lang.org/"));
-        assert_eq!(format_hits(&[]), "没有找到结果。");
+        assert_eq!(format_hits(&[]), "No results found.");
     }
 
     #[test]
