@@ -31,15 +31,16 @@ it does not add a fifth task `state`.
 
 ## Decisions
 
-1. **Expiry.** Approval cards expire after 24 hours by default. The TTL is
-   configurable. Expiry applies to approval cards, including task approval
-   cards, MCP call cards, and rule add/delete cards. An expired card is settled
-   as `decision: denied` with `reason` set to the exact string 「审批已过期」
-   (`APPROVAL_EXPIRED_REASON` in the contract; planned, added by the backend).
+1. **Expiry.** Approval cards expire after 24 hours by default
+   (`ROBROZ_APPROVAL_TTL_SECS`, default 86400). The TTL is configurable.
+   Expiry applies to task approval cards, MCP `call` cards, bro-issued
+   approval cards, and rule add/delete confirm cards. An expired card is
+   settled as `decision: denied` with `reason` set to the exact string
+   「审批已过期」 (`APPROVAL_EXPIRED_REASON` in the contract).
    `answeredBy` is left unset: the owner never clicked. That is final, and no
-   new decision or task state is added. Takeover cards (「去私聊接管」) never
-   expire. Memory and skill confirm cards are unchanged and still do not
-   expire. The `failure` copy on an expired task card is also 「审批已过期」.
+   new decision or task state is added. Memory and skill confirm cards, and
+   takeover cards (「去私聊接管」), never expire. The `failure` copy on an
+   expired task card is also 「审批已过期」.
    A later approve or deny returns 409「已经答过了」, the same path as a card
    that was already answered elsewhere: the client locks the buttons, refetches
    the card, and shows the expired presentation. There is no separate 409 copy
@@ -50,24 +51,29 @@ it does not add a fifth task `state`.
    itself errors or times out, it is retried once; if it still fails, the
    action is blocked. Review never default-allows.
 3. **Adding and deleting a rule.** `POST` and `DELETE /api/settings/review-rules`
-   do not change the rule list. Each call only creates a confirm card and
-   returns **202** `{"approvalId":"..."}`. The rule is added or removed
-   only after the owner confirms the card with the existing
-   `POST /api/approvals/{id}/approve`. Deny leaves the list unchanged.
-   Unconfirmed rules are not returned by `GET`. A bro who calls these endpoints
-   only creates a card. Auth is the existing API token.
+   do not change the rule list. Each call only creates a confirm card, shown
+   on the settings page (`GET /api/approvals/{id}`, `botId`
+   `SETTINGS_APPROVAL_BOT_ID` `"settings"`), and returns **202**
+   `{"approvalId":"..."}`. The card is not a stream event and is not sent
+   to any chat. The rule is added or removed only after the owner confirms
+   the card with the existing `POST /api/approvals/{id}/approve`. Deny
+   leaves the list unchanged. Unconfirmed rules are not returned by `GET`.
+   A bro who calls these endpoints only creates a card. Auth is the
+   existing API token. A bro proposing a rule in conversation, with the
+   card in that bro's DM with the owner, is not built.
 4. **Confirm card.** Rule add and delete reuse the existing approval-card
    event and the [#68](https://github.com/PandaQuQ/robroz/pull/68) confirm-card
    layout. The title is 「添加放行规则」 or 「删除规则」. The body is the rule
    sentence, verbatim. A grey line states whether this is an add or a delete.
    Delete uses a red button labelled 「删除规则」. Answered with the existing
    `/approve` and `/deny` endpoints.
-5. **What expires.** Only approval cards, as in decision 1. Takeover is not an
-   approval card and does not expire.
+5. **What expires.** Task approval cards, MCP `call` cards, bro-issued
+   approval cards, and rule confirm cards, as in decision 1. Memory and
+   skill confirm cards, and takeover, never expire.
 6. **`ApprovalAction`.** Two new values are added, and no existing value
    changes: `rule_add` and `rule_delete`. See [Rollout](#rollout) for the
-   serde names and the required ship order. A client that does not recognise a
-   value must render a generic card, once `#[serde(other)]` is in place.
+   serde names. A client that does not recognise a value renders a generic
+   card (`#[serde(other)] Unknown`, already in the contract).
 
 Captcha is unchanged: it still goes through takeover and
 `POST /api/tasks/{id}/resume`. A sentence rule cannot auto-allow it.
@@ -135,8 +141,9 @@ Verified on `91efdde`.
   「批准运行」) are a different card, on the settings page, not this gate.
 - **Today's gap**: approval events are stored and streamed in the *task's
   group*, so the interactive card currently appears in the group thread next to
-  the status card. Auto-review moves the interactive card to the owner's DM.
-  Cards do not yet expire, and approval events have no `reason` field.
+  the status card. Auto-review moves the interactive card to the owner's DM
+  (not yet shipped). Expiry and `reason` have since landed; see
+  [Implementation status](#implementation-status).
 
 ## State flow
 
@@ -186,8 +193,11 @@ action (unchanged).
 A new left-nav entry, 「放行规则」, directly under 「MCP」.
 
 - The top of the page has one input and an 「添加」 button. Clicking it does
-  not add the rule. It creates a confirm card in the owner's DM; the owner
-  must confirm before the rule appears in the list.
+  not add the rule. It returns 202 `{"approvalId":"..."}` and the confirm
+  card is shown on the settings page, read with `GET /api/approvals/{id}`
+  (`botId` `SETTINGS_APPROVAL_BOT_ID`, `"settings"`). The owner must
+  confirm before the rule appears in the list. The card is not sent to
+  any chat. A bro proposing a rule in conversation is not built.
 - Each listed rule is one row: the original sentence, a grey line under it
   「添加于 {日期}」 (from `createdAt`), and a 「删除」 text button on the
   right. There is no toggle and no edit. To change a rule, delete it and add
@@ -203,10 +213,11 @@ A new left-nav entry, 「放行规则」, directly under 「MCP」.
   or deny buttons.
 - **Owner DM, blocked action**: reuse the [#103](https://github.com/PandaQuQ/robroz/pull/103)
   approval card, plus a grey line for `reason` (why it was blocked).
-- **Owner DM, add or delete a rule**: reuse the [#68](https://github.com/PandaQuQ/robroz/pull/68)
-  confirm-card layout on an approval event whose `action` is `rule_add` or
-  `rule_delete`. Title 「添加放行规则」 or 「删除规则」; body is the rule
-  sentence, verbatim; grey line states add or delete.
+- **Settings page, add or delete a rule**: reuse the [#68](https://github.com/PandaQuQ/robroz/pull/68)
+  confirm-card layout on an `approval` object whose `action` is `rule_add` or
+  `rule_delete`. The card is not a stream event. Title 「添加放行规则」 or
+  「删除规则」; body is the rule sentence, verbatim; grey line states add or
+  delete.
 - **Owner DM, expired card**: the stored decision is `denied`, but the card
   must not say 「我已拒绝」 or 「已拒绝」, and must not use the red denied
   dot — the owner never clicked. Top-right: a grey dot and 「已过期」.
@@ -230,8 +241,8 @@ have this shape in the list. Unconfirmed proposals are not listed.
 | Method | Path | Role |
 | --- | --- | --- |
 | `GET` | `/api/settings/review-rules` | List confirmed rules only. Response: `{"rules":[ReviewRule]}`. |
-| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Returns **202** `{"approvalId":"..."}`. Creates a `rule_add` card in the owner's DM. The rule is not listed and is not used in review until that card is approved. |
-| `DELETE` | `/api/settings/review-rules/{id}` | Propose deleting a confirmed rule. Returns **202** and the pending approval id, same body as `POST`. Creates a `rule_delete` card in the owner's DM. The rule stays listed until that card is approved. 404 if the id is not a confirmed rule. |
+| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Returns **202** `{"approvalId":"..."}`. Creates a `rule_add` card shown only on the settings page (`GET /api/approvals/{id}`). The rule is not listed and is not used in review until that card is approved. |
+| `DELETE` | `/api/settings/review-rules/{id}` | Propose deleting a confirmed rule. Returns **202** and the pending approval id, same body as `POST`. Creates a `rule_delete` card, same destination as `POST`. The rule stays listed until that card is approved. 404 if the id is not a confirmed rule. |
 
 A bro who calls `POST` or `DELETE` gets the same 202 and a card; the list still
 does not change until the owner confirms. There is no edit endpoint.
@@ -249,23 +260,25 @@ expired presentation). There is no new 409 copy and no separate client branch.
 
 - `expiresAt` (RFC 3339, same style as `createdAt` / `answeredAt`): optional
   on approval events, omitted on cards that do not expire so old JSON stays
-  valid. Set on task approval cards, MCP call cards, and rule add/delete
-  cards. Absent on takeover, and on memory and skill confirm cards.
+  valid. Set on task approval cards, MCP `call` cards, bro-issued approval
+  cards, and rule add/delete cards. Absent on takeover, and on memory and
+  skill confirm cards.
 - `reason` (string, optional): on a blocked action's approval card, the
   one-sentence reason from the review model, shown as grey text on the DM
-  card. When the card expired, `reason` is exactly 「审批已过期」. That
-  string is a planned contract constant, `APPROVAL_EXPIRED_REASON`, added
-  by the backend. The host writes the constant; the client compares
-  `reason == APPROVAL_EXPIRED_REASON` and must not hand-write the string.
-  Omitted when there is no reason (old JSON stays valid).
+  card. When the card expired, `reason` is exactly 「审批已过期」
+  (`APPROVAL_EXPIRED_REASON` in the contract). The host writes the
+  constant; the client compares `reason == APPROVAL_EXPIRED_REASON` and
+  must not hand-write the string. Omitted when there is no reason (old
+  JSON stays valid).
 
 Both are new optional fields. They are not changes to any existing field.
 
 ### `ApprovalAction`
 
 Two new values, additive only, on `crates/robroz-contract/src/lib.rs`
-`ApprovalAction` (today: `delete`, `send`, `spend`, `call`, with
-`#[serde(rename_all = "lowercase")]`, and no `#[serde(other)]`).
+`ApprovalAction` (now: `delete`, `send`, `spend`, `call`, `rule_add`,
+`rule_delete`, and `#[serde(other)] Unknown`, with
+`#[serde(rename_all = "lowercase")]`).
 
 The JSON names must be `rule_add` and `rule_delete`. Because of
 `rename_all = "lowercase"`, a variant named `RuleAdd` would serialise as
@@ -274,7 +287,7 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Implementation status
 
-On `main` after the auto-review PR (`feat/auto-review`):
+On `main` at `659662a` after [#123](https://github.com/PandaQuQ/robroz/pull/123):
 
 - Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
   `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
@@ -296,26 +309,32 @@ On `main` after the auto-review PR (`feat/auto-review`):
   「已发到主人私聊」 status (cards still appear in the task's group). Review of
   bro-issued `delete` / `send` / `spend` cards (they only expire). A bro
   proposing a rule in conversation, with the card in that bro's DM with the
-  owner: there is no bro path for proposing rules yet, so it is not built. The client's expired and rule-card layouts
+  owner: there is no bro path for proposing rules yet, so it is not
+  built. The client's expired and rule-card layouts
   ([#120](https://github.com/PandaQuQ/robroz/pull/120)).
 
 ## Rollout
 
-Verified on `main` at `0aed709` (the `ApprovalAction` enum is unchanged since `91efdde`), `crates/robroz-contract/src/lib.rs` (the
-`ApprovalAction` enum). There is no `#[serde(other)]` today, so an unknown
-`action` value fails the whole event parse; the client does not fall back to a
-generic card.
+`#[serde(other)] Unknown` on `ApprovalAction` shipped in
+[#121](https://github.com/PandaQuQ/robroz/pull/121) (`81eb2c2`).
+`rule_add` / `rule_delete` shipped in
+[#123](https://github.com/PandaQuQ/robroz/pull/123) (`659662a`).
+Verified on `main` at `659662a`, in `crates/robroz-contract/src/lib.rs`.
+An unknown `action` value now parses as `Unknown` and the client shows a
+generic card (label 「操作」). The host must never emit `Unknown`.
 
-The review-layer PR must add `#[serde(other)] Unknown` (or equivalent) to
-`ApprovalAction` and ship that in at least one release *before* any host emits
-`rule_add` or `rule_delete`. Already-shipped clients will still fail to parse
-those events until they are updated. Emitting the new values in the same
-release as the catch-all is not enough for clients that are already out.
+The accepted design still prefers shipping the `Unknown` fallback in at
+least one release before the host emits any new action values, so
+already-installed clients can parse them. That ordering does not apply
+now: robroz has never been released (0 tags, 0 GitHub Releases), and
+there are no installed old clients. The first formal release needs
+Panda's approval.
 
-Until that catch-all has shipped, rule add/delete cards must not be emitted.
-Host shell and merge, when added, keep using existing verbs (`call`, `send`,
-`delete`, `spend`) until any further action values are accepted and shipped
-the same way.
+When later action values are added after a formal release, keep
+`#[serde(other)]` and do not emit a new verb until clients that include
+it are out. Host shell and merge, when added, keep using existing verbs
+(`call`, `send`, `delete`, `spend`) until any further action values are
+accepted and shipped the same way.
 
 ## Authorization
 
