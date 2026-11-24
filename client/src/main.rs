@@ -2834,10 +2834,19 @@ fn row_view<'a>(
 
 /// Frozen status card: palette from `robroz-card`, outline from the skin.
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
-    let line = progress_cell(t, card, width);
-    let mut line = row![line, text(model::display(&card.status_line).into_owned())]
+    use iced::widget::text::Wrapping;
+    let mut line = row![progress_cell(t, card, width)]
         .spacing(12)
         .align_y(Alignment::Center);
+    if let Some(step) = visible_step_progress(t, card, width) {
+        let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
+        line = line.push(
+            text(model::display(step).into_owned())
+                .color(color(rgb))
+                .wrapping(Wrapping::None),
+        );
+    }
+    line = line.push(text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None));
     if let Some(action) = card.action {
         line = line.push(
             button(text(model::display(action).into_owned()).size(t.type_.button))
@@ -2857,6 +2866,33 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Me
             card.palette.text,
         ))
         .into()
+}
+
+/// Router step text left of the status word. Dropped when the card is too
+/// narrow so the status word is never wrapped or truncated. The bro name
+/// and status word are drawn at iced's default size (16), so the check
+/// uses the same size.
+fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Option<&'a str> {
+    let raw = card.step_progress.as_deref()?;
+    let text_w = |s: &str, size: f32| {
+        s.chars()
+            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+            .sum::<f32>()
+            * size
+            * t.type_.unit_width
+    };
+    const WORD: f32 = 16.0;
+    let inner = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
+    let mut needed = text_w(&card.bot_name, WORD)
+        + text_w(&model::display(raw), WORD)
+        + text_w(&model::display(&card.status_line), WORD)
+        + 12.0
+        + 12.0;
+    if let Some(action) = card.action {
+        needed +=
+            text_w(&model::display(action), t.type_.button) + 2.0 * t.controls.card_pad_h + 12.0;
+    }
+    (needed <= inner).then_some(raw)
 }
 
 /// Left side of a status card: the bro name, and under it, left-aligned,
@@ -3001,5 +3037,53 @@ mod tests {
         assert_eq!(pick_name(s("  "), s("")), "robroz");
         let long = "字".repeat(60);
         assert_eq!(pick_name(Some(long), None).chars().count(), 40);
+    }
+
+    fn live_step_card() -> crate::model::StatusCard {
+        use robroz_contract::TaskState;
+        let look = robroz_card::appearance(TaskState::Running, true);
+        crate::model::StatusCard {
+            task_id: "t".into(),
+            bot_name: "Ada".into(),
+            status_line: robroz_card::status_line(TaskState::Running, true).into(),
+            tone: look.tone,
+            palette: robroz_card::palette(look.tone),
+            action: look.action,
+            progress: None,
+            step_progress: Some(robroz_contract::host_text::router_step_progress(2, 3)),
+        }
+    }
+
+    #[test]
+    fn router_step_fits_on_a_desktop_card_and_is_dropped_when_narrow() {
+        use robroz_ui::i18n::{scoped, Locale};
+        use robroz_ui::{Mode, Skin};
+        let t = Skin::for_mode(Mode::Light);
+        let card = live_step_card();
+        let mut no_step = live_step_card();
+        no_step.step_progress = None;
+        assert_eq!(super::visible_step_progress(&t, &no_step, 800.0), None);
+
+        let _en = scoped(Locale::En);
+        assert_eq!(
+            super::visible_step_progress(&t, &card, 800.0)
+                .map(crate::model::display)
+                .as_deref(),
+            Some("Step 2 of 3")
+        );
+        assert_eq!(
+            super::visible_step_progress(&t, &card, 200.0),
+            None,
+            "drop the step rather than wrapping the status word"
+        );
+
+        let _zh = scoped(Locale::Zh);
+        assert_eq!(
+            super::visible_step_progress(&t, &card, 800.0)
+                .map(crate::model::display)
+                .as_deref(),
+            Some("2/3 步")
+        );
+        assert_eq!(super::visible_step_progress(&t, &card, 150.0), None);
     }
 }

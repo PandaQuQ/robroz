@@ -18,9 +18,14 @@ pub struct StatusCard {
     pub tone: Tone,
     pub palette: Palette,
     pub action: Option<&'static str>,
-    /// What the bro is doing right now, one line. Only on a live run
-    /// (`running` with the container up and no `failure`).
+    /// What the bro is doing right now, one line under the bro name.
+    /// Live run or a card blocked on approval; not used for Router step
+    /// progress, which sits left of the status word.
     pub progress: Option<String>,
+    /// Router `router_step_progress(n, m)` (`「{n}/{m} 步」`). Shown to the
+    /// left of the status word on a live run only. Raw host text;
+    /// [`display`] translates it when drawn.
+    pub step_progress: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,6 +373,14 @@ fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
                     robroz_card::status_line(*state, *container_up).to_string(),
                 ),
             };
+            let shown = progress_line(
+                *state,
+                *container_up,
+                failure.as_deref(),
+                *waiting_for,
+                progress,
+            );
+            let (progress, step_progress) = split_progress(*state, *container_up, shown);
             let card = StatusCard {
                 task_id: task_id.clone(),
                 bot_name: bot_name.clone(),
@@ -375,13 +388,8 @@ fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
                 tone: look.tone,
                 palette: robroz_card::palette(look.tone),
                 action: look.action,
-                progress: progress_line(
-                    *state,
-                    *container_up,
-                    failure.as_deref(),
-                    *waiting_for,
-                    progress,
-                ),
+                progress,
+                step_progress,
             };
             (Key::Task(task_id.clone()), Row::Status(card))
         }
@@ -450,6 +458,25 @@ fn progress_line(
         .collect::<Vec<_>>()
         .join(" ");
     (!line.is_empty()).then_some(line)
+}
+
+/// A live-run Router step goes left of the status word; everything else
+/// that `progress_line` accepted stays under the bro name.
+fn split_progress(
+    state: TaskState,
+    container_up: bool,
+    shown: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match shown {
+        Some(line)
+            if state == TaskState::Running
+                && container_up
+                && robroz_contract::host_text::parse_router_step_progress(&line).is_some() =>
+        {
+            (None, Some(line))
+        }
+        other => (other, None),
+    }
 }
 
 /// Plain label for an attachment row. Not a task state, so it lives here.
@@ -750,6 +777,107 @@ mod tests {
             status_cards(&feed)[0].progress.as_deref(),
             Some("在沙箱里跑")
         );
+        assert_eq!(status_cards(&feed)[0].step_progress, None);
+    }
+
+    fn card_progress(e: Event) -> (Option<String>, Option<String>) {
+        match to_row(&e, None).1 {
+            Row::Status(c) => (c.progress, c.step_progress),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn router_step_progress_sits_left_of_status_only_on_a_live_run() {
+        let step = robroz_contract::host_text::router_step_progress(2, 3);
+        assert_eq!(step, "2/3 步");
+        let live = with_progress(status("t", "Ada", TaskState::Running, true), Some(&step));
+        assert_eq!(card_progress(live.clone()), (None, Some(step.clone())));
+
+        // Ordinary progress and a finished or stuck card never take the slot.
+        let ordinary = with_progress(
+            status("t", "Ada", TaskState::Running, true),
+            Some("在沙箱里跑"),
+        );
+        assert_eq!(card_progress(ordinary), (Some("在沙箱里跑".into()), None));
+        for (state, up) in [
+            (TaskState::Queued, false),
+            (TaskState::Running, false),
+            (TaskState::Done, false),
+        ] {
+            assert_eq!(
+                card_progress(with_progress(status("t", "Ada", state, up), Some(&step))),
+                (None, None),
+                "{state:?} container_up={up}"
+            );
+        }
+        let mut failed = live;
+        if let Event::Status { failure, .. } = &mut failed {
+            *failure = Some("模型没回：模型服务返回 503".into());
+        }
+        assert_eq!(
+            card_progress(failed),
+            (None, None),
+            "a failed card does not keep the step text"
+        );
+
+        // A card blocked on approval keeps its progress under the bro name,
+        // even if the host text happens to look like a step.
+        let blocked = with_progress(
+            blocked_waiting(Some(WaitingFor::Approval)),
+            Some("在用 notes.write_note"),
+        );
+        assert_eq!(
+            card_progress(blocked),
+            (Some("在用 notes.write_note".into()), None)
+        );
+        let blocked_step = with_progress(blocked_waiting(Some(WaitingFor::Approval)), Some(&step));
+        assert_eq!(
+            card_progress(blocked_step),
+            (Some(step.clone()), None),
+            "approval-blocked progress stays under the name"
+        );
+        let sent = with_progress(
+            blocked_waiting(Some(WaitingFor::Approval)),
+            Some(robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE),
+        );
+        assert_eq!(
+            card_progress(sent),
+            (
+                Some(robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE.into()),
+                None
+            )
+        );
+        // Translated English is not a match; we parse the host form only.
+        assert_eq!(
+            card_progress(with_progress(
+                status("t", "Ada", TaskState::Running, true),
+                Some("Step 2 of 3"),
+            )),
+            (Some("Step 2 of 3".into()), None)
+        );
+    }
+
+    #[test]
+    fn router_step_progress_is_translated_on_the_card_and_in_the_list_preview() {
+        let ev = with_progress(
+            status("t", "Ada", TaskState::Running, true),
+            Some(&robroz_contract::host_text::router_step_progress(2, 3)),
+        );
+        {
+            let _en = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::En);
+            let (progress, step) = card_progress(ev.clone());
+            assert_eq!(progress, None);
+            assert_eq!(step.as_deref().map(display).as_deref(), Some("Step 2 of 3"));
+            assert_eq!(preview(&ev), "Ada: Step 2 of 3");
+        }
+        {
+            let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
+            let (progress, step) = card_progress(ev.clone());
+            assert_eq!(progress, None);
+            assert_eq!(step.as_deref().map(display).as_deref(), Some("2/3 步"));
+            assert_eq!(preview(&ev), "Ada：2/3 步");
+        }
     }
 
     #[test]
