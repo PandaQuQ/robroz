@@ -3,12 +3,13 @@
 //! Configured from the environment:
 //! - `ROBROZ_MODEL_BASE_URL`, e.g. `https://api.openai.com/v1`
 //! - `ROBROZ_MODEL`, e.g. `gpt-4o-mini`
-//! - `ROBROZ_MODEL_KEY` or `ROBROZ_MODEL_KEY_FILE` (not both)
+//! - `ROBROZ_MODEL_KEY` or `ROBROZ_MODEL_KEY_FILE` (not both; optional, e.g. local Ollama)
 //!
-//! No complete config (base URL, model name, and key) means no model. The
-//! host then either asks the user to set one up, or, when `ROBROZ_MODEL=echo`,
-//! keeps echoing the prompt for CI and e2e. The key never appears in `Debug`,
-//! errors or logs.
+//! No complete config (base URL and model name) means no model. The key is
+//! optional, for example when talking to a local Ollama. The host then either
+//! asks the user to set one up, or, when `ROBROZ_MODEL=echo`, keeps echoing
+//! the prompt for CI and e2e. The key never appears in `Debug`, errors or
+//! logs.
 
 mod chat;
 
@@ -48,6 +49,17 @@ pub trait Model: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError(pub String);
 
+impl ModelError {
+    fn from_http_status(status: u16) -> Self {
+        Self(format!("模型服务返回 {status}"))
+    }
+
+    /// Status code when the provider answered with a non-success HTTP status.
+    pub fn http_status(&self) -> Option<u16> {
+        self.0.strip_prefix("模型服务返回 ")?.parse().ok()
+    }
+}
+
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -75,24 +87,25 @@ pub struct ModelConfig {
     /// Without the trailing slash.
     pub base_url: String,
     pub model: String,
-    pub key: ModelKey,
+    pub key: Option<ModelKey>,
 }
 
 impl ModelConfig {
-    /// Trim a trailing slash on `base_url`. The key must be non-empty and
-    /// contain no whitespace.
+    /// Trim a trailing slash on `base_url`. An empty key is allowed (no
+    /// `Authorization` header). A non-empty key must not contain whitespace.
     pub fn new(
         base_url: impl Into<String>,
         model: impl Into<String>,
         key: impl Into<String>,
     ) -> Result<Self, String> {
         let key = key.into();
-        if key.is_empty() {
-            return Err("密钥不能为空".into());
-        }
-        if key.chars().any(char::is_whitespace) {
+        let key = if key.is_empty() {
+            None
+        } else if key.chars().any(char::is_whitespace) {
             return Err("模型密钥里不能有空白".into());
-        }
+        } else {
+            Some(ModelKey(key))
+        };
         let base_url = base_url.into().trim().trim_end_matches('/').to_string();
         if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
             return Err("地址要以 http:// 或 https:// 开头".into());
@@ -104,19 +117,21 @@ impl ModelConfig {
         Ok(Self {
             base_url,
             model,
-            key: ModelKey(key),
+            key,
         })
     }
 
-    pub fn last4(&self) -> String {
-        let key = self.key.expose();
+    pub fn last4(&self) -> Option<String> {
+        let key = self.key.as_ref()?.expose();
         let n = key.chars().count();
-        key.chars().skip(n.saturating_sub(4)).collect()
+        Some(key.chars().skip(n.saturating_sub(4)).collect())
     }
 }
 
 /// Read the config with `get` (env lookup) and `read_file` (for the key file).
-/// `Ok(None)`: no key, so no model. Errors name variables, never values.
+/// `Ok(None)`: no complete config (base URL and model name). A key is optional.
+/// `ROBROZ_MODEL=echo` with no base URL is not a model, so the host can keep
+/// echoing for CI and e2e. Errors name variables, never values.
 pub fn config_from(
     get: impl Fn(&str) -> Option<String>,
     read_file: impl Fn(&str) -> std::io::Result<String>,
@@ -128,29 +143,41 @@ pub fn config_from(
     };
     let key = match (set(ENV_KEY), set(ENV_KEY_FILE)) {
         (Some(_), Some(_)) => return Err(format!("{ENV_KEY} 和 {ENV_KEY_FILE} 只能设一个")),
-        (Some(key), None) => key,
-        (None, Some(file)) => read_file(&file)
-            .map_err(|err| format!("{ENV_KEY_FILE} 读不出来：{err}"))?
-            .trim()
-            .to_string(),
-        (None, None) => return Ok(None),
+        (Some(key), None) => Some(key),
+        (None, Some(file)) => {
+            let key = read_file(&file)
+                .map_err(|err| format!("{ENV_KEY_FILE} 读不出来：{err}"))?
+                .trim()
+                .to_string();
+            if key.is_empty() {
+                return Err(format!("{ENV_KEY_FILE} 是空的"));
+            }
+            Some(key)
+        }
+        (None, None) => None,
     };
-    if key.is_empty() {
-        return Err(format!("{ENV_KEY_FILE} 是空的"));
+    if let Some(key) = &key {
+        if key.chars().any(char::is_whitespace) {
+            return Err("模型密钥里不能有空白".into());
+        }
     }
-    if key.chars().any(char::is_whitespace) {
-        return Err("模型密钥里不能有空白".into());
+    let base_url = set(ENV_BASE_URL);
+    let model = set(ENV_MODEL);
+    match (base_url, model, key) {
+        (Some(base_url), Some(model), key) => {
+            if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+                return Err(format!("{ENV_BASE_URL} 要以 http:// 或 https:// 开头"));
+            }
+            Ok(Some(ModelConfig {
+                base_url: base_url.trim_end_matches('/').to_string(),
+                model,
+                key: key.map(ModelKey),
+            }))
+        }
+        (None, _, Some(_)) => Err(format!("设了密钥，还要设 {ENV_BASE_URL}")),
+        (Some(_), None, Some(_)) => Err(format!("设了密钥，还要设 {ENV_MODEL}")),
+        _ => Ok(None),
     }
-    let base_url = set(ENV_BASE_URL).ok_or_else(|| format!("设了密钥，还要设 {ENV_BASE_URL}"))?;
-    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
-        return Err(format!("{ENV_BASE_URL} 要以 http:// 或 https:// 开头"));
-    }
-    let model = set(ENV_MODEL).ok_or_else(|| format!("设了密钥，还要设 {ENV_MODEL}"))?;
-    Ok(Some(ModelConfig {
-        base_url: base_url.trim_end_matches('/').to_string(),
-        model,
-        key: ModelKey(key),
-    }))
 }
 
 /// [`config_from`] on the process environment.
@@ -228,14 +255,14 @@ impl OpenAiCompat {
 
     fn post(&self, body: serde_json::Value) -> Result<String, ModelError> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let mut response = self
+        let mut request = self
             .agent
             .post(&url)
-            .header(
-                "Authorization",
-                &format!("Bearer {}", self.config.key.expose()),
-            )
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+        if let Some(key) = &self.config.key {
+            request = request.header("Authorization", &format!("Bearer {}", key.expose()));
+        }
+        let mut response = request
             .send(body.to_string().as_bytes())
             // ureq transport errors carry no headers, so no key.
             .map_err(|err| ModelError(format!("连不上模型服务：{err}")))?;
@@ -247,7 +274,7 @@ impl OpenAiCompat {
             .read_to_string()
             .map_err(|err| ModelError(format!("读模型返回失败：{err}")))?;
         if !(200..300).contains(&status) {
-            return Err(ModelError(format!("模型服务返回 {status}")));
+            return Err(ModelError::from_http_status(status));
         }
         Ok(text)
     }
@@ -296,6 +323,41 @@ mod tests {
             config_from(env(&[(ENV_MODEL, "m"), (ENV_KEY, "  ")]), no_file),
             Ok(None)
         );
+        // Echo mode in CI and e2e: model name only, no base URL, no key.
+        assert_eq!(config_from(env(&[(ENV_MODEL, "echo")]), no_file), Ok(None));
+    }
+
+    #[test]
+    fn new_accepts_an_empty_key_and_rejects_whitespace() {
+        let cfg = ModelConfig::new("https://api.example.com/v1/", "m1", "").unwrap();
+        assert_eq!(cfg.base_url, "https://api.example.com/v1");
+        assert_eq!(cfg.model, "m1");
+        assert!(cfg.key.is_none());
+        assert_eq!(cfg.last4(), None);
+        assert_eq!(
+            ModelConfig::new("https://api.example.com/v1", "m1", "sk a").unwrap_err(),
+            "模型密钥里不能有空白"
+        );
+        let with_key = ModelConfig::new("https://api.example.com/v1", "m1", SECRET).unwrap();
+        assert_eq!(with_key.last4().as_deref(), Some("T123"));
+        assert!(!format!("{with_key:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn base_and_model_without_key_is_a_model() {
+        let cfg = config_from(
+            env(&[
+                (ENV_BASE_URL, "https://api.example.com/v1/"),
+                (ENV_MODEL, "m1"),
+            ]),
+            no_file,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cfg.base_url, "https://api.example.com/v1");
+        assert_eq!(cfg.model, "m1");
+        assert!(cfg.key.is_none());
+        assert_eq!(cfg.last4(), None);
     }
 
     #[test]
@@ -319,7 +381,7 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        assert_eq!(cfg.key.expose(), SECRET);
+        assert_eq!(cfg.key.as_ref().unwrap().expose(), SECRET);
 
         let mut both = with_key.clone();
         both.push((ENV_KEY_FILE, "/x"));
@@ -428,8 +490,12 @@ mod tests {
         OpenAiCompat::new(ModelConfig {
             base_url: url.into(),
             model: "m1".into(),
-            key: ModelKey(SECRET.into()),
+            key: Some(ModelKey(SECRET.into())),
         })
+    }
+
+    fn model_at_keyless(url: &str) -> OpenAiCompat {
+        OpenAiCompat::new(ModelConfig::new(url, "m1", "").unwrap())
     }
 
     #[test]
@@ -446,6 +512,23 @@ mod tests {
         );
         assert!(request.contains(&format!("Bearer {SECRET}")));
         assert!(request.contains("写周报"));
+    }
+
+    #[test]
+    fn no_key_omits_the_authorization_header() {
+        let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"好"}}]}"#);
+        assert_eq!(
+            model_at_keyless(&url).reply("写周报", None),
+            Ok("好".into())
+        );
+        let request = rx.recv().unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("authorization"), "{request}");
+        assert!(!lower.contains("bearer"), "{request}");
+        assert!(
+            request.starts_with("POST /v1/chat/completions "),
+            "{request}"
+        );
     }
 
     #[test]

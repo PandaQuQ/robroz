@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use robroz_contract::{ModelSettings, ModelSettingsSource, ModelTestResult};
+use robroz_contract::{ModelSettings, ModelSettingsSource, ModelTestResult, MODEL_TEST_BAD_KEY};
 use robroz_model::{ModelConfig, OpenAiCompat, ENV_BASE_URL, ENV_KEY, ENV_KEY_FILE, ENV_MODEL};
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -66,12 +66,15 @@ impl EffectiveConfig {
         out
     }
 
-    /// A complete OpenAI-compatible config, or `None` if any field is missing.
+    /// A complete OpenAI-compatible config, or `None` if the base URL or
+    /// model name is missing. The key is optional.
     pub fn live(&self) -> Result<Option<ModelConfig>, String> {
-        match (&self.base_url, &self.model, &self.key) {
-            (Some(base_url), Some(model), Some(key)) => {
-                Ok(Some(ModelConfig::new(base_url, model, key)?))
-            }
+        match (&self.base_url, &self.model) {
+            (Some(base_url), Some(model)) => Ok(Some(ModelConfig::new(
+                base_url,
+                model,
+                self.key.clone().unwrap_or_default(),
+            )?)),
             _ => Ok(None),
         }
     }
@@ -177,6 +180,14 @@ pub fn echo_mode(conn: &Connection) -> bool {
 /// fill the rest.
 pub fn env_key_conflict() -> Result<(), String> {
     env_key().map(|_| ())
+}
+
+fn test_failure_error(cfg: &EffectiveConfig, err: &robroz_model::ModelError) -> String {
+    if matches!(err.http_status(), Some(401 | 403)) {
+        MODEL_TEST_BAD_KEY.to_string()
+    } else {
+        format!("连不上：{}", cfg.redact(&err.to_string()))
+    }
 }
 
 pub async fn get_model(State(state): State<AppState>) -> Response {
@@ -297,7 +308,7 @@ pub async fn test_model(State(state): State<AppState>) -> Response {
                     },
                     Err(err) => ModelTestResult {
                         ok: false,
-                        error: Some(format!("连不上：{}", cfg.redact(&err.to_string()))),
+                        error: Some(test_failure_error(&cfg, &err)),
                     },
                 }
             }
@@ -721,6 +732,195 @@ mod tests {
         assert!(
             !body.to_string().contains("sk-test1111"),
             "test response must not echo the key: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_without_a_key_succeeds_and_has_key_is_false() {
+        let (_db, app, _host) = app();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/model",
+                json!({
+                    "baseUrl": "http://127.0.0.1:11434/v1",
+                    "model": "llama3",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["baseUrl"], "http://127.0.0.1:11434/v1");
+        assert_eq!(body["model"], "llama3");
+        assert_eq!(body["hasKey"], false, "{body}");
+        assert!(body["keyLast4"].is_null(), "{body}");
+        assert_eq!(body["source"], "settings");
+    }
+
+    #[tokio::test]
+    async fn test_without_a_key_omits_authorization() {
+        let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"pong"}}]}"#);
+        let (_db, app, _host) = app();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/model",
+                json!({
+                    "baseUrl": url,
+                    "model": "llama3",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["hasKey"], false, "{body}");
+        let (status, body) = http(&app, post("/api/settings/model/test")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true, "{body}");
+        let request = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("test called the server");
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("authorization"), "{request}");
+        assert!(!lower.contains("bearer"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn test_maps_401_and_403_to_bad_key() {
+        for status in [401_u16, 403] {
+            let (url, rx) = fake_server(status, r#"{"error":"unauthorized"}"#);
+            let (_db, app, _host) = app();
+            let (put_status, body) = http(
+                &app,
+                json_req(
+                    "PUT",
+                    "/api/settings/model",
+                    json!({
+                        "baseUrl": url,
+                        "model": "m-test",
+                        "key": "sk-wrong1111",
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(put_status, StatusCode::OK, "{body}");
+            let (test_status, body) = http(&app, post("/api/settings/model/test")).await;
+            assert_eq!(test_status, StatusCode::OK, "{body}");
+            assert_eq!(body["ok"], false, "{body}");
+            assert_eq!(body["error"], MODEL_TEST_BAD_KEY, "{body}");
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("test called the server");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_other_failures_keep_the_current_message() {
+        let (url, rx) = fake_server(500, r#"{"error":"boom"}"#);
+        let (_db, app, _host) = app();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/model",
+                json!({
+                    "baseUrl": url,
+                    "model": "m-test",
+                    "key": "sk-test1111",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = http(&app, post("/api/settings/model/test")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+        assert_eq!(body["error"], "连不上：模型服务返回 500", "{body}");
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("test called the server");
+    }
+
+    #[tokio::test]
+    async fn keyless_settings_are_used_by_the_next_task() {
+        let (url, rx) = fake_server(
+            200,
+            r#"{"choices":[{"message":{"content":"本地模型好了"}}]}"#,
+        );
+        let (_db, app, host) = app();
+        let volumes = host.volumes_root.clone();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "PUT",
+                "/api/settings/model",
+                json!({
+                    "baseUrl": url,
+                    "model": "llama3",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, group) = http(
+            &app,
+            json_req("POST", "/api/groups", json!({ "name": "模型" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{group}");
+        let group_id = group["id"].as_str().unwrap().to_string();
+        let (status, body) = http(
+            &app,
+            json_req(
+                "POST",
+                &format!("/api/groups/{group_id}/members"),
+                json!({ "botId": "bot-ada", "name": "Ada" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, task) = http(
+            &app,
+            json_req(
+                "POST",
+                &format!("/api/groups/{group_id}/tasks"),
+                json!({ "assigneeBotId": "bot-ada", "prompt": "你好" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{task}");
+        let task_id = task["id"].as_str().unwrap().to_string();
+
+        let mut sandbox = crate::sandbox::FakeSandbox::new();
+        host.pump_once(&mut sandbox).unwrap();
+        sandbox.finish(0);
+        host.pump_once(&mut sandbox).unwrap();
+
+        let request = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("model was called");
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("authorization"), "{request}");
+        assert!(!lower.contains("bearer"), "{request}");
+        let result = std::fs::read_to_string(
+            volumes
+                .join(&group_id)
+                .join(format!("tasks/{task_id}/result.txt")),
+        )
+        .unwrap();
+        assert_eq!(result, "本地模型好了", "{result}");
+        let (status, events) = http(&app, get(&format!("/api/groups/{group_id}/events"))).await;
+        assert_eq!(status, StatusCode::OK, "{events}");
+        let delivery = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"] == "delivery")
+            .expect("delivery");
+        assert!(
+            delivery.get("needsSetup").is_none() || delivery["needsSetup"].is_null(),
+            "{delivery}"
         );
     }
 
