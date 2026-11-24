@@ -83,9 +83,22 @@ ROBROZ_ADDR=0.0.0.0:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target
 
 ## 接模型
 
-没设置模型时，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。也可以在启动后用设置接口补齐（`GET` / `PUT /api/settings/model`），不用重启。CI 和 e2e 会显式设 `ROBROZ_MODEL=echo`，这时仍把 prompt 原样写成结果，这是测试开关，正式部署不要设。
+没设置模型时，任务交付「还没设置模型」(the model isn't set up yet)，交付卡带 `needsSetup:"model"`，客户端右边出现「去设置」(Go to settings)。地址和模型名都有了才算设置好，密钥可选。也可以在启动后用客户端或设置接口补齐（`GET` / `PUT /api/settings/model`），不用重启。CI 和 e2e 会显式设 `ROBROZ_MODEL=echo`，这时仍把 prompt 原样写成结果，这是测试开关，正式部署不要设。
 
-接任意 OpenAI 兼容的 `/chat/completions` 服务，可以设这三个环境变量，也可以之后在设置接口里填：
+### 在客户端填
+
+点左边的「模型」(Model)，或点交付卡上的「去设置」。
+
+- 三个框：「地址」(Address)、「模型名」(Model)、「密钥（选填）」(Key (optional))。每个服务商都显示密钥框，包括 Ollama。
+- 选一个服务商会填入对应的 OpenAI 兼容地址。模型名用该服务商的示例：Gemini `gemini-2.5-flash`，Groq `llama-3.3-70b-versatile`，OpenRouter `meta-llama/llama-3.3-70b-instruct:free`，Ollama `llama3.2`，自定义留空。选中 OpenRouter 时，模型名下面有一行灰字「免费模型的名字以 :free 结尾」(Free model names end with :free)。
+- 只要填了地址和模型名就可以保存。本地 Ollama 一类服务可以不填密钥。清除密钥不会清掉地址和模型名。
+- 保存后会自动试连。成功显示「能用了」(It works)。失败显示「已保存，但连不上：原因」(Saved, but can't connect: reason)：设置已经写入，只是这次连不上。若原因是「密钥不对或没填」(the key is wrong or missing)，说明服务商返回了 401 或 403：密钥填错了，或这个服务需要密钥而你没填。页面不会直接显示 401。
+
+字段、优先级和接口细节见 [configuration.md 的「模型」](configuration.md#模型) 和 [client.md 的「模型页」](client.md#模型页)。
+
+### 用环境变量
+
+接任意 OpenAI 兼容的 `/chat/completions` 服务，可以设这些环境变量（密钥可选）：
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
@@ -96,10 +109,10 @@ ROBROZ_MODEL_KEY_FILE="$HOME/.config/robroz/model-key" \
 ./target/debug/robroz-host
 ```
 
-- 密钥用 `ROBROZ_MODEL_KEY_FILE` 或 `ROBROZ_MODEL_KEY`，只能设一个，推荐文件。
-- 设了密钥就必须同时设 `ROBROZ_MODEL_BASE_URL` 和 `ROBROZ_MODEL`。地址要以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。
-- 配错时宿主机拒绝启动，报错里只有变量名，不会出现密钥。
-- 配好后启动日志是 `robroz-host: 模型 <模型名> @ <地址>`。
+- 密钥用 `ROBROZ_MODEL_KEY_FILE` 或 `ROBROZ_MODEL_KEY`，只能设一个，推荐文件。本地服务可以不设。
+- 地址要以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。
+- 只配了部分环境变量时照常启动，剩下的可以在设置页补。两个密钥变量都设、密钥文件是空的、或密钥里有空白时，宿主机拒绝启动；报错只写变量名，不写值。
+- 环境变量已经配齐一套模型时，启动日志是 `robroz-host: 环境变量里有模型 <模型名> @ <地址>，设置页保存的值优先`。打开测试开关时是 `robroz-host: 测试回显（ROBROZ_MODEL=echo）`。什么都没配时是 `robroz-host: 还没设置模型，任务会提示去设置`。
 
 联网搜索（Brave 或 SearXNG）可以用环境变量，也可以在宿主机跑起来后用设置接口填，见 [configuration.md 的「搜索」一节](configuration.md#搜索)。
 
@@ -171,7 +184,8 @@ curl -s $B/api/groups/$GID/events | jq -c '.events[] | {type, state, label, path
 ```
 
 - `status` 卡是任务状态，带 `botId`、`botName`、`state`、`label`、`containerUp`。
-- `delivery` 卡说明结果写好了，文件在群目录里：`./data/groups/<groupId>/tasks/<taskId>/result.txt`。没接模型时内容就是 prompt「写一句欢迎语」。
+- `delivery` 卡说明结果写好了，文件在群目录里：`./data/groups/<groupId>/tasks/<taskId>/result.txt`。没设置模型、也没有打开 `ROBROZ_MODEL=echo` 时，内容是「还没设置模型」，交付卡带 `needsSetup:"model"`。只有测试开关打开时，内容才是 prompt「写一句欢迎语」。
+- 状态卡上还可能看到：bro 名下面一行浅灰字「模型和工具还没回，已等 N 分钟」(Still waiting for the model and tools, N minutes) 或「N 分钟没有新进度」(No new progress for N minutes)，表示任务还在跑，只是提示，不会取消这一步，也不会停掉容器；灰色「没写出结果」(No result was written) 表示容器非 0 退出、没写出结果或容器中途消失，任务已经结束成 `done`，不会自动再跑，不能 resume。它不会显示成「没做成：没写出结果」。
 - 要实时收卡片，用 `GET /api/groups/{id}/stream`；只要变化的部分，`GET …/events?since=<RFC3339 时间>`。
 
 另一种开局方式是先建 bro，宿主机会顺带给它开一个私聊：
@@ -182,7 +196,7 @@ curl -s -X POST $B/api/bros -H "$J" -d '{"name":"bob"}'
 curl -s -X POST $B/api/groups/<dmGroupId>/say -H "$J" -d '{"body":"写一句欢迎语"}'
 ```
 
-其他接口（审批、选项卡、例行任务、记忆、技能、搜索设置、MCP 服务器）见 [api.md](api.md)。
+其他接口（审批、选项卡、例行任务、记忆、技能、搜索设置、模型设置、MCP 服务器）见 [api.md](api.md)。
 
 ## 跑测试
 

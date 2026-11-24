@@ -64,7 +64,7 @@ Everything is configured with environment variables on the host and the client (
 | [docs/architecture.md](docs/architecture.md) | Components, containers, theming layer |
 | [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Phase 2 roadmap |
-| [docs/design/multi-agent.md](docs/design/multi-agent.md) | Draft design: Router, Thread subscriptions, async tools and Watchdog |
+| [docs/design/multi-agent.md](docs/design/multi-agent.md) | Accepted design: Router, Thread subscriptions, async tools and Watchdog (not a contract) |
 
 "Bro" is the UI name for a bot: code, API and database still say bot (`botId` / `botName`). A DM is a group with only you and one bro.
 

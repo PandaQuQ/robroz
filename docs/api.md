@@ -350,6 +350,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 | `crates/robroz-policy/src/lib.rs`（`OverQuota::failure`） |
 | 出网用了非 GET | 「出网只允许 GET：用了 <方法>」 | 没有 | 同上 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」 | 有，交付卡也带同样的 `failure`，结果里也写这句 | `host/src/tools.rs:ROUND_LIMIT_FAILURE` |
+| 运行失败（容器非 0 退出、没写出结果、中途消失） | 「没写出结果」 | 没有 | `host/src/pump.rs`（`Outcome::Dead`）、`host/src/watchdog.rs`（`DEAD_RUN_FAILURE`） |
 
 ### waitingFor
 
@@ -364,6 +365,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 
 - 宿主机自己报：开跑时「开始干活」（接了模型时是「在想怎么回」），容器起来后「在沙箱里跑」，调用工具时「在用 <工具名>」。MCP 工具用展示名 `{server}.{tool}`。等审批时这行仍显示。
 - bro 报：prompt 或模型回复里一行 `robroz-progress:<文字>`，取最后一行。
+- Watchdog 也可能写「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改状态，见上面「pump 做什么」。
 - 规范成一行：连续空白变一个空格，去掉首尾空白，最多 60 个字符（超了截到 59 个加「…」）。文字没变不更新 `updatedAt`。
 
 ### needsSetup
@@ -373,7 +375,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 - `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。
 - `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。结果文件是「还没设置模型」，不把 prompt 原样写成结果。
 
-客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型设置页还在后面做。
+客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型见 [client.md 的「模型页」](client.md#模型页)。
 
 ---
 
