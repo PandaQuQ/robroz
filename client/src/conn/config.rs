@@ -346,12 +346,15 @@ fn load_token_file(dir: &Path) -> Option<String> {
 }
 
 fn store_secret(dir: &Path, secrets: &dyn Secrets, token: &str) -> io::Result<()> {
-    match secrets.set(token) {
-        Ok(()) => {
-            let _ = fs::remove_file(dir.join(TOKEN_FILE));
-            Ok(())
-        }
-        Err(_) => write_token_file(dir, token),
+    // Only trust the keychain once the value reads back. Otherwise keep the
+    // 0600 file, so a broken or volatile store never loses the token.
+    let stored =
+        secrets.set(token).is_ok() && matches!(secrets.get(), Ok(Some(ref v)) if v == token);
+    if stored {
+        let _ = fs::remove_file(dir.join(TOKEN_FILE));
+        Ok(())
+    } else {
+        write_token_file(dir, token)
     }
 }
 
@@ -422,6 +425,8 @@ mod tests {
     struct MemorySecrets {
         value: RefCell<Option<String>>,
         fail: bool,
+        /// `set` reports success but nothing is kept (a volatile or broken store).
+        forgetful: bool,
     }
 
     impl MemorySecrets {
@@ -429,6 +434,7 @@ mod tests {
             Self {
                 value: RefCell::new(None),
                 fail: false,
+                forgetful: false,
             }
         }
 
@@ -436,6 +442,15 @@ mod tests {
             Self {
                 value: RefCell::new(None),
                 fail: true,
+                forgetful: false,
+            }
+        }
+
+        fn forgetful() -> Self {
+            Self {
+                value: RefCell::new(None),
+                fail: false,
+                forgetful: true,
             }
         }
     }
@@ -452,7 +467,9 @@ mod tests {
             if self.fail {
                 return Err("no keychain".into());
             }
-            *self.value.borrow_mut() = Some(token.to_string());
+            if !self.forgetful {
+                *self.value.borrow_mut() = Some(token.to_string());
+            }
             Ok(())
         }
 
@@ -574,6 +591,28 @@ mod tests {
         assert_eq!(
             load_secret(&secrets, Some(&dir)).as_deref(),
             Some("file-token")
+        );
+    }
+
+    #[test]
+    fn unverified_keychain_write_keeps_the_0600_file() {
+        let dir = scratch();
+        let secrets = MemorySecrets::forgetful();
+        save_from(
+            DEFAULT_HOST,
+            TokenEdit::Set("must-survive".into()),
+            None,
+            false,
+            &dir,
+            &secrets,
+        )
+        .unwrap();
+        let path = dir.join(TOKEN_FILE);
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(), "must-survive");
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(
+            load_secret(&secrets, Some(&dir)).as_deref(),
+            Some("must-survive")
         );
     }
 
