@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -50,6 +52,9 @@ pub struct PumpConfig<'a> {
     /// Let the bro's model split visible tasks into steps first
     /// ([`crate::router`]). Off without a model, and for hidden group turns.
     pub router: bool,
+    /// Cancel a step that runs this long ([`crate::timeouts`]). `None` never
+    /// cancels.
+    pub step_timeout: Option<std::time::Duration>,
 }
 
 #[derive(Clone)]
@@ -101,6 +106,7 @@ pub fn pump(
             tools: crate::tools::ToolRegistry::empty(),
             mcp: None,
             router: false,
+            step_timeout: None,
         },
     )
 }
@@ -121,6 +127,8 @@ pub fn pump_with(
 pub(crate) struct Offload {
     steps: StepRunner<StepDone>,
     watchdog: Watchdog,
+    /// Cancel flag of each step in flight ([`crate::timeouts`]).
+    cancels: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl Offload {
@@ -128,6 +136,7 @@ impl Offload {
         Self {
             steps: StepRunner::new(),
             watchdog: Watchdog::new(cfg),
+            cancels: HashMap::new(),
         }
     }
 
@@ -187,7 +196,8 @@ fn pump_inner(
     mut offload: Option<OffloadCtx<'_>>,
 ) -> rusqlite::Result<()> {
     if let Some(off) = offload.as_mut() {
-        for (_, done) in off.state.steps.drain() {
+        for (id, done) in off.state.steps.drain() {
+            off.state.cancels.remove(&id);
             let still_running = db.with(|conn| is_live(conn, &done.started.task.id))?;
             if !still_running {
                 eprintln!(
@@ -198,6 +208,9 @@ fn pump_inner(
             }
             finish_start(db, sandbox, cfg, &done.started, Some(done.reply))?;
         }
+    }
+    if let Some(timeout) = cfg.step_timeout {
+        cancel_overdue(db, sandbox, cfg, offload.as_mut(), timeout)?;
     }
 
     // Group turns: start the next bro's turn once the earlier ones finished.
@@ -216,6 +229,77 @@ fn pump_inner(
             None => None,
         };
         collect_task(db, sandbox, cfg, watchdog, &task)?;
+    }
+    Ok(())
+}
+
+/// Stop every `running` task whose current step is past `timeout`: remove
+/// its container, then end it as `done` + 「没写出结果」 with no delivery and
+/// no requeue (a hidden group turn ends silent instead). A step still on its
+/// thread is told to stop before its next model or tool call; whatever it
+/// returns later is dropped, because the task is no longer running.
+fn cancel_overdue(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    cfg: &PumpConfig<'_>,
+    mut offload: Option<&mut OffloadCtx<'_>>,
+    timeout: std::time::Duration,
+) -> rusqlite::Result<()> {
+    let overdue = db.with(|conn| crate::timeouts::overdue(conn, Utc::now(), timeout))?;
+    if overdue.is_empty() {
+        return Ok(());
+    }
+    let running = db.with(|conn| load_tasks(conn, "running"))?;
+    for task in running.iter().filter(|t| overdue.contains(&t.id)) {
+        if let Some(flag) = offload
+            .as_mut()
+            .and_then(|off| off.state.cancels.get(&task.id))
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
+        let name = container_name(&task.id);
+        match sandbox.phase(&name) {
+            Ok(ContainerPhase::Missing) => {}
+            Ok(_) => {
+                if let Err(err) = sandbox.remove(&name) {
+                    // Not ended yet: the container may still be writing. Next pass retries.
+                    eprintln!("pump: stop timed-out {}: {}", task.id, err.message);
+                    continue;
+                }
+            }
+            Err(err) => {
+                eprintln!("pump: inspect timed-out {}: {}", task.id, err.message);
+                continue;
+            }
+        }
+        eprintln!(
+            "pump: {} step past {}s; container stopped, ending as {DEAD_RUN_FAILURE}, not re-queued",
+            task.id,
+            timeout.as_secs()
+        );
+        let _ = crate::mcp_tools::remove_pending(&cfg.control_root.join(&task.id));
+        let group_dir = group_volume(cfg.volumes_root, &task.group_id);
+        let _ = remove_intent(&group_dir, &task.id);
+        let _ = remove_progress(&group_dir, &task.id);
+        let _ = crate::proposals::remove(&group_dir, &task.id);
+        let updated_at = newer_than(&task.updated_at);
+        db.with(|conn| {
+            if task.turn_hidden {
+                crate::turns::end_silent(conn, &task.id, &updated_at)?;
+                crate::router::clear(conn, &task.id)?;
+                crate::timeouts::clear(conn, &task.id)
+            } else {
+                write_outcome(
+                    conn,
+                    task,
+                    &Outcome::Dead,
+                    task.get_count,
+                    &updated_at,
+                    &result_rel(&task.id),
+                    &[],
+                )
+            }
+        })?;
     }
     Ok(())
 }
@@ -335,6 +419,10 @@ fn start_task(
                 params![claimed_at, task.id, first],
             )?
         };
+        if claimed > 0 {
+            // A fresh clock: time spent queued or blocked on a card never counts.
+            crate::timeouts::start(conn, &task.id, &crate::now_rfc3339())?;
+        }
         Ok((claimed, section, route))
     })?;
     if claimed == 0 {
@@ -364,8 +452,7 @@ fn start_task(
                 }
             };
             let mut on_plan = |plan: &crate::router::Plan| {
-                let at = crate::now_rfc3339();
-                if let Err(err) = db.with(|conn| crate::router::save(conn, &task.id, plan, &at)) {
+                if let Err(err) = db.with(|conn| save_plan(conn, &task.id, plan)) {
                     eprintln!("pump: save plan for {}: {err}", task.id);
                 }
             };
@@ -378,6 +465,7 @@ fn start_task(
                 cfg.get_limit,
                 &tools,
                 route,
+                None,
                 &mut on_progress,
                 &mut on_plan,
             );
@@ -388,6 +476,8 @@ fn start_task(
             let shared = off.db.clone();
             let get_limit = cfg.get_limit;
             let task_id = task.id.clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let step_cancel = cancel.clone();
             let spawned = off.state.steps.spawn(&task.id, move || {
                 let mut on_progress = |line: &str| {
                     if let Err(err) =
@@ -397,10 +487,7 @@ fn start_task(
                     }
                 };
                 let mut on_plan = |plan: &crate::router::Plan| {
-                    let at = crate::now_rfc3339();
-                    if let Err(err) =
-                        shared.with(|conn| crate::router::save(conn, &task_id, plan, &at))
-                    {
+                    if let Err(err) = shared.with(|conn| save_plan(conn, &task_id, plan)) {
                         eprintln!("pump: save plan for {task_id}: {err}");
                     }
                 };
@@ -413,12 +500,15 @@ fn start_task(
                     get_limit,
                     &tools,
                     route,
+                    Some(step_cancel),
                     &mut on_progress,
                     &mut on_plan,
                 );
                 StepDone { started, reply }
             });
-            if !spawned {
+            if spawned {
+                off.state.cancels.insert(task.id.clone(), cancel);
+            } else {
                 // Could not hand it off: put the claim back, try next pass.
                 let reverted_at = newer_than(&task.updated_at);
                 db.with(|conn| {
@@ -608,8 +698,12 @@ fn finish_start(
         return Ok(());
     }
     // Key moment: the sandbox is up. The model's own progress line wins.
+    // The container run is a step of its own, with a fresh clock.
     let text = reply_progress.as_deref().unwrap_or(progress::IN_SANDBOX);
-    db.with(|conn| progress::set_progress(conn, &task.id, text))?;
+    db.with(|conn| {
+        progress::set_progress(conn, &task.id, text)?;
+        crate::timeouts::start(conn, &task.id, &crate::now_rfc3339())
+    })?;
     Ok(())
 }
 
@@ -764,6 +858,8 @@ fn write_outcome(
     proposals: &[robroz_contract::Proposal],
 ) -> rusqlite::Result<()> {
     // The task ends (or fails) here; only a block keeps its Router plan.
+    // No step is running any more either way; the next claim starts a clock.
+    crate::timeouts::clear(conn, &task.id)?;
     if !matches!(outcome, Outcome::Blocked(_)) {
         crate::router::clear(conn, &task.id)?;
     }
@@ -908,12 +1004,14 @@ fn write_reply(
     get_limit: u64,
     tools: &crate::tools::ToolRegistry,
     route: Route,
+    cancel: Option<Arc<AtomicBool>>,
     on_progress: &mut dyn FnMut(&str),
     on_plan: &mut dyn FnMut(&crate::router::Plan),
 ) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
     let _ = std::fs::remove_file(&path);
     let mut ctx = crate::tools::ToolCtx::new(get_limit);
+    ctx.cancel = cancel;
     let resume = crate::mcp_tools::pending_is_approved(control_dir);
     if resume {
         if let Ok(pending) = crate::mcp_tools::load_approved(control_dir) {
@@ -955,6 +1053,11 @@ fn write_reply(
             let mut stopped = None;
             while !plan.is_finished() {
                 let index = plan.next();
+                if ctx.cancelled() {
+                    router_failed = true;
+                    stopped = Some((String::new(), None, false, None));
+                    break;
+                }
                 // Step progress is the whole line: no tool names on top of it.
                 on_progress(&plan.progress(index));
                 let step = crate::router::step_prompt(prompt, plan, index);
@@ -1019,6 +1122,18 @@ fn write_reply(
         silent,
         router_failed,
     }
+}
+
+/// Save the plan after the split or a finished step, which starts the next
+/// step's clock. Only while the task still runs: a step that was cancelled
+/// meanwhile must not bring its plan back.
+fn save_plan(conn: &Connection, task_id: &str, plan: &crate::router::Plan) -> rusqlite::Result<()> {
+    if !is_live(conn, task_id)? {
+        return Ok(());
+    }
+    let at = crate::now_rfc3339();
+    crate::router::save(conn, task_id, plan, &at)?;
+    crate::timeouts::start(conn, task_id, &at)
 }
 
 /// Whether a start may use the Router, and the saved plan if it has one.

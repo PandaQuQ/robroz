@@ -38,6 +38,7 @@ mod skills;
 mod steps;
 mod stream;
 mod text;
+mod timeouts;
 mod tools;
 pub mod turns;
 mod unread;
@@ -78,6 +79,9 @@ pub struct Host {
     /// Test hook: let a [`Host::with_model`] fake split tasks too. A model
     /// from the settings or env always uses the Router.
     router_with_override: bool,
+    /// Cancel a step past this ([`timeouts`]). Set by
+    /// [`Host::with_offloaded_steps`] and [`Host::with_step_timeout`].
+    step_timeout: Option<std::time::Duration>,
 }
 
 impl Host {
@@ -101,6 +105,7 @@ impl Host {
             offload: None,
             reviewer: None,
             router_with_override: false,
+            step_timeout: None,
         })
     }
 
@@ -143,6 +148,15 @@ impl Host {
     /// start.
     pub fn with_offloaded_steps(mut self, cfg: watchdog::WatchdogConfig) -> Self {
         self.offload = Some(Arc::new(Mutex::new(pump::Offload::new(cfg))));
+        self.step_timeout = Some(cfg.step_timeout);
+        self
+    }
+
+    /// Cancel a step that runs longer than `timeout`: its container is
+    /// stopped and the task ends `done` + 「没写出结果」. `None` never cancels.
+    /// [`Host::with_offloaded_steps`] sets this from its Watchdog config.
+    pub fn with_step_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.step_timeout = timeout;
         self
     }
 
@@ -267,6 +281,7 @@ impl Host {
             tools: &tools,
             mcp: Some(self.mcp.clone()),
             router,
+            step_timeout: self.step_timeout,
         };
         match &self.offload {
             Some(offload) => {
@@ -529,6 +544,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     turns::migrate(conn)?;
     conn.execute_batch(follow_ups::SCHEMA)?;
     conn.execute_batch(router::SCHEMA)?;
+    conn.execute_batch(timeouts::SCHEMA)?;
     Ok(())
 }
 
@@ -5222,6 +5238,7 @@ mod tests {
                 tools: crate::tools::ToolRegistry::empty(),
                 mcp: None,
                 router: false,
+                step_timeout: None,
             },
         )
         .unwrap();

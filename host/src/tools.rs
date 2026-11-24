@@ -57,6 +57,9 @@ pub struct ToolCtx {
     pub limit: u64,
     pub needs_setup: Option<String>,
     pub over_quota: Option<robroz_policy::OverQuota>,
+    /// Set by the host when the step timed out ([`crate::timeouts`]): the
+    /// loop stops before its next model or tool call.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ToolCtx {
@@ -66,7 +69,15 @@ impl ToolCtx {
             limit,
             needs_setup: None,
             over_quota: None,
+            cancel: None,
         }
+    }
+
+    /// Whether the host cancelled this step.
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Charge one GET against the same meter the sandbox uses.
@@ -225,6 +236,8 @@ pub enum CompleteError {
     OverQuota(robroz_policy::OverQuota),
     /// The loop stopped so a person can approve a Takeover tool call.
     NeedsApproval(Box<PendingApproval>),
+    /// The host cancelled the step after its timeout.
+    Cancelled,
 }
 
 impl CompleteError {
@@ -236,6 +249,7 @@ impl CompleteError {
             }
             CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
             CompleteError::OverQuota(over) => over.failure(),
+            CompleteError::Cancelled => robroz_card::NO_RESULT.to_string(),
             CompleteError::NeedsApproval(pending) => {
                 format!(
                     "{}{}",
@@ -320,6 +334,9 @@ fn complete_loop(
     let defs = tools.definitions();
     let mut next_round = start_round;
     if let Some((call, rest)) = resume.take() {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         on_using(&tools.display_name_of(&call.name));
         let content = tools.invoke_approved(call, ctx);
         messages.push(ChatMessage::Tool {
@@ -333,6 +350,9 @@ fn complete_loop(
         next_round = start_round.saturating_add(1);
     }
     for round in next_round..=MAX_TOOL_ROUNDS {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         let turn = model.chat(&messages, &defs).map_err(CompleteError::Model)?;
         match turn {
             AssistantTurn::Text(text) => return Ok(text),
@@ -359,6 +379,9 @@ fn fill_calls(
     round: usize,
 ) -> Result<(), CompleteError> {
     for (index, call) in calls.iter().enumerate() {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         on_using(&tools.display_name_of(&call.name));
         match tools.invoke(call, ctx) {
             InvokeOutcome::Text(content) => {
