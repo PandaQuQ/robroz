@@ -1,25 +1,27 @@
 # Multi-agent design: Router, Thread subscriptions, and Watchdog
 
-Status: Draft  
+Status: **Accepted**  
 Author: PandaQuQ
 
-This is a design proposal only. It does not change code, the frozen contract, or
-any schedule. Nothing here is a commitment to a phase or a date. Where this
-document disagrees with [`docs/api.md`](../api.md),
+Existing behaviour below is taken from `main` at `0aed709`. This document
+does not itself change code or the frozen contract. Where a description of
+current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
+The decisions below are the accepted design.
 
 The three ideas below are adapted from the DeepSeek Harness team's writeup
 *Exploring Super-agent Design: Towards a More Autonomous Agent System*
 (2026-11-01) and from the behaviour described in the MIT-licensed prototype
 `dsh-superagent-prototype`. The published prototype is a research plugin, not an
-official DeepSeek product, and is not identical to the writeup. This proposal
+official DeepSeek product, and is not identical to the writeup. This document
 describes that behaviour in our own words, maps it onto robroz as it exists on
 `main`, and does not copy prototype code. Sources and licence notes are at the
 end.
 
 robroz is a single-machine, multi-bro IM workspace, not a single Super-agent
 facing the user. The mappings below keep that product shape: a person still
-addresses a named bro with `@name`, and existing task states stay frozen.
+addresses a named bro with `@name`; a group message with no `@` gives every
+bro in the room one turn; and the four task states stay frozen.
 
 ## 1. Router and Worker
 
@@ -46,7 +48,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`1acbae1`). There is no Router session and no Worker pool.
+Verified on `main` (`0aed709`). There is no Router session and no Worker pool.
 
 - A person creates work by naming a bro. `POST /api/groups/{id}/say`
   (`host/src/say.rs`) stores the message, then maybe inserts one `queued` task.
@@ -73,59 +75,59 @@ Verified on `main` (`1acbae1`). There is no Router session and no Worker pool.
 ### How to change it
 
 Keep the existing `@name` and DM paths as a deterministic fast path: the person
-already named the assignee, so the host should not ask a model to re-route
-that message.
+already named the assignee, so the host does not ask a model to re-route that
+message.
 
-Add a Router only where dispatch is missing or contested:
+Router and Worker are only an internal dispatch layer *inside one bro*. They
+are not room members, they do not appear in the member list, and they do not
+speak in the group. A Worker reports to the bro that dispatched it; that bro
+speaks. No agent speaks for another.
 
-- Unaddressed group messages, or messages that name a designated dispatcher
-  bro, go to a Router. The Router decides whether work is needed and which
-  bot should do it, then the host inserts a normal `queued` task for that
-  assignee. The first version can be host-native rules (no model). A later
-  version may call a lightweight model that is allowed only to return dispatch
-  decisions, not to run workspace tools or start a sandbox.
-- A Worker is the existing execution path for one task: model, tools, and
-  sandbox, already isolated per `taskId` under `ROBROZ_CONTROL/{taskId}` and
-  the group volume.
-- Workers report completion to the host, which already happens in
-  `collect_task`. For unaddressed work, only the Router (or the host on its
-  behalf) should post the user-visible reply. A delivery for a task the person
-  sent with `@name` may still appear as that bro, which matches today's IM
-  model. Workers must not each answer the same unaddressed message.
-- Do not give the Router a sandbox or write tools. Do not let Workers open
-  their own user-facing channel.
+Group messages keep today's `@` routing, plus turn-taking:
+
+- A group message with no `@` gives every bro in the room one turn. Each bro
+  decides to speak or stay silent. Nothing is answered on anyone else's
+  behalf.
+- If the message `@`-mentions a bro, that bro speaks first. Other bros may
+  still take their turn afterwards and may stay silent.
+- Do not introduce a group-level Router that picks one assignee and posts the
+  only user-visible reply.
+
+A Worker is the existing execution path for one task: model, tools, and
+sandbox, already isolated per `taskId` under `ROBROZ_CONTROL/{taskId}` and the
+group volume. Workers report completion to their bro (today, via the host in
+`collect_task`). They must not open their own user-facing channel. Do not give
+the internal Router a sandbox or write tools.
 
 ### Crates
 
-- `robroz-host`: dispatch in `say.rs`, any Router loop, and how
-  `pump.rs` records reports.
-- `robroz-policy`: optional, if dispatch rules should be unit-tested next to
-  the existing permission rules.
-- `robroz-model`: only if the Router uses a model call of its own.
+- `robroz-host`: turn-taking and follow-up attachment in `say.rs`, any
+  per-bro Router loop, and how `pump.rs` records reports.
+- `robroz-policy`: optional, if turn-taking or dispatch rules should be
+  unit-tested next to the existing permission rules.
+- `robroz-model`: only if a bro's internal Router uses a model call of its
+  own.
 - `robroz-runner`, `robroz-mcp`, `robroz-client`, `robroz-ui`, `robroz-card`:
   unchanged if cards and execution stay as they are.
 
 ### Contract impact
 
 The frozen task states `queued` / `running` / `blocked` / `done` do not need a
-fifth value for this split. `botId` / `botName` stay as they are.
+fifth value for this split. `botId` / `botName` keep their current meaning. No
+new required fields.
 
-**Needs Panda's approval before merge if implemented:**
+Giving every bro one turn on an unaddressed group message, and attaching
+follow-ups instead of always inserting a new task, changes when new task ids
+appear. That is an accepted behaviour change of `POST /api/groups/{id}/say`
+(see [Decisions](#decisions)). New optional fields are allowed; renaming or
+reinterpreting existing ones is not. Delivery events have no `botId` today
+(`Event::Delivery` in `crates/robroz-contract/src/lib.rs`); status, choice,
+and approval cards do. Replies in the group are posted as the bro that did
+the work.
 
-- Changing `/say` so an unaddressed group message can create a task. Today it
-  never does. That is a behaviour change of an existing endpoint, even if the
-  JSON shape of `Said` is unchanged.
-- Changing who is allowed to post a delivery or a conversational reply for
-  work the Router dispatched (for example, posting it without the worker
-  bot's identity, or suppressing a worker's own reply). Delivery events have
-  no `botId` today (`Event::Delivery` in `crates/robroz-contract/src/lib.rs`);
-  status, choice, and approval cards do. Any change to those existing fields'
-  meaning is a contract change. New optional fields are allowed; renaming or
-  reinterpreting existing ones is not, unless Panda agrees.
-
-**No contract change** if the first cut only adds an internal dispatcher that
-still creates the same `queued` task and the same cards after an explicit
-`@name` or a DM message, and leaves unaddressed group messages alone.
+**No contract change** if a first cut only adds an internal Router inside one
+bro that still creates the same `queued` task and the same cards after an
+explicit `@name` or a DM message, and does not yet implement turn-taking.
 
 ## 2. Thread subscription
 
@@ -180,20 +182,20 @@ in-flight task.
 Introduce Thread as a host-internal correlation, not as a new user-facing
 session.
 
-- The first Thread key is `(groupId, taskId)` for an open task (`queued`,
-  `running`, or `blocked`). A later key can be a choice or approval card, a
-  schedule, or an external source once those exist.
-- When the host creates a task, it subscribes that task to its Thread. A
-  later `/say` in a DM, or an `@name` of a bro that already has an open task
-  in that group, fans out to the subscribed task as an input instead of
-  always inserting a new task. If several tasks subscribe to the same Thread,
-  every subscriber receives the event. Workers do not message each other.
-- If the follow-up is outside the current task, the worker (or the host)
-  unsubscribes or hands the message back so the Router or the existing
-  `@name` path can open a new task.
-- A context-only subscription (for example another task in the same group)
-  may receive the event without being allowed to act or to resume a `done`
-  task.
+- The first Thread key is `(groupId, taskId)` for a still-open task
+  (`queued`, `running`, or `blocked`). A later key can be a choice or
+  approval card, a schedule, or an external source once those exist.
+- When a bro already has a still-open task in that group, a follow-up — a
+  later `/say` in a DM, or an `@name` of that same bro — attaches to that
+  task. The host does not insert a new task. Only genuinely new work creates
+  a task.
+- A follow-up attaches only to *that bro's* still-open task, not to another
+  bro's. Two bros do not both act on one follow-up. Workers do not message
+  each other.
+- If the follow-up is genuinely new work, outside the current task, the
+  existing `@name` or DM path may open a new task.
+- A `done` task is not still-open and is not resumed by a follow-up (`resume`
+  today only accepts `blocked`; see [`docs/permissions.md`](../permissions.md)).
 - Keep this intake on the host. Do not broadcast every group event into every
   worker's model context.
 
@@ -213,18 +215,18 @@ The same Subscription shape should be able to represent them later.
 
 ### Contract impact
 
-**Needs Panda's approval before merge if implemented:**
+Attaching a follow-up to an existing task is accepted (see
+[Decisions](#decisions)). `POST /api/groups/{id}/say` today, when it routes,
+always inserts a new task and returns it in `Said.task`. After this change,
+a follow-up may return the open task instead of a new one. Adding an optional
+field (for example `appendedToTaskId`) is allowed. Omitting or redefining
+`task`, when a client currently expects a new id, is not: keep returning the
+attached task in `Said.task` if that is the work the message belongs to, and
+do not change the field's meaning. No new required fields.
 
-- `POST /api/groups/{id}/say` today, when it routes, always inserts a new
-  task and returns it in `Said.task`. Attaching a follow-up to an existing
-  task changes when new task ids appear, and may return the open task instead
-  of a new one. That is a behaviour change of an existing endpoint. Adding an
-  optional field (for example `appendedToTaskId`) is allowed; omitting or
-  redefining `task` when a client currently expects a new id is not, unless
-  Panda agrees.
-- Automatically feeding a new DM message into a `blocked` or `running` task,
-  instead of queueing a sibling task, changes concurrency and recovery
-  behaviour that clients can already observe on the status card.
+A follow-up for a `blocked` or `running` task attaches to that task and does
+not create a sibling. It is not a `resume`. `resume` still only accepts
+`blocked`, and only after the person answers the card.
 
 **No contract change** if subscriptions are stored and used only inside the
 host, and `/say` continues to create a new task as it does now. That would
@@ -232,9 +234,7 @@ not yet solve the "every DM line is a new task" problem, so it is a
 book-keeping step, not the feature.
 
 Task states stay at the four frozen values. A follow-up does not add a fifth
-state. A `done` task should not resume just because a Thread event arrived,
-unless a later, approved rule says otherwise (`resume` today only accepts
-`blocked`; see [`docs/permissions.md`](../permissions.md)).
+state. A `done` task is not resumed just because a Thread event arrived.
 
 ## 3. Async tools and Watchdog
 
@@ -316,7 +316,9 @@ described separately:
 
 ### How to change it
 
-The new timeout can land first. The dead-run state change cannot land before Panda decides.
+A host-side timeout can land first. The accepted dead-task transition is
+described under Watchdog below; it must ship with the card-copy change, not
+ahead of it.
 
 **Async tools (and a non-blocking pump):**
 
@@ -337,26 +339,30 @@ The new timeout can land first. The dead-run state change cannot land before Pan
 - Add a periodic loop next to `tick` and `pump`, still inside `robroz-host`,
   not a user-facing bro and not a tool-using agent that may edit prompts or
   policy.
-- Check running work for: a container that has been up too long; a model or
-  tool loop that has been up too long; a live container whose `progress` has
-  not changed for a configured interval; and the existing "container is gone"
-  case.
-- On a timeout or a confirmed stall of a live loop or container, stop that
-  work. A new timeout that surfaces as today's `done` + `failure` (for
-  example 「模型没回：…」, already used when the model call fails) does
-  not change dead-run semantics and is not a contract change; it can ship
-  first.
+- Detect three conditions on running work: a timeout (a container, model
+  loop, or tool loop that has been up too long); a container that is gone;
+  and stuck progress (a live container whose `progress` has not changed for
+  a configured interval).
+- On a finding, write a log and a hint on the status card. The Watchdog does
+  not itself change task state, except for the dead-task rule below.
+- A host timeout that already surfaces as today's `done` + `failure` (for
+  example 「模型没回：…」, already used when the model call fails) stays a
+  host/pump path. It is not a Watchdog state change, does not change
+  dead-run semantics by itself, and can ship first.
 - Auto-requeue (putting a dead or stalled run back to `queued` and starting
   again) is out of scope. A Worker may already have written to the group
   volume; `pump.rs` already refuses to rerun a missing container for that
-  reason. The Watchdog must not resume a `blocked` task either.
-- Changing a dead run (`running`, `containerUp` false, no result file) to
-  `done` + `failure` would overturn the node 4 rule above. The Project
-  Manager recommends keeping the current behaviour until Panda decides.
-  If Panda approves the change:
-  - the state transition and the `robroz-card` grey branch and copy
-    (「没写出结果」) must ship in the same PR, never alone;
-  - the write must be a compare-and-set, applied only while the task is
+  reason. A rerun is the user's choice. The Watchdog must not resume a
+  `blocked` task either.
+- A dead task (`running` and `containerUp` false, no result file) ends as
+  `done` + `failure`. The card shows 「没写出结果」. This overturns the
+  node 4 rule above, and is accepted (see [Decisions](#decisions)). There
+  is no fifth state.
+  - The state transition and the `robroz-card` grey branch and copy
+    (「没写出结果」) must ship in the same PR, never alone. Today's client
+    shows `done` + `failure` as 「没做成：原因」; this case must not be
+    displayed that way.
+  - The write must be a compare-and-set, applied only while the task is
     still `running`, `containerUp` is false, and no result file exists, so
     a late result and the Watchdog cannot both write.
 
@@ -370,15 +376,15 @@ The new timeout can land first. The dead-run state change cannot land before Pan
   `call`.
 - `robroz-policy`: optional timeout and stall rules, so they can be tested
   without HTTP or Docker.
-- `robroz-contract` and `robroz-card`: only if a new optional field is
-  added, or if Panda approves ending a dead run as `done` + `failure`. In
-  that case `robroz-card` (the grey `Running` + `container_up == false`
-  branch and the 「没写出结果」 copy) must change in the same PR as the
-  host, never alone. A new timeout can use the existing grey
-  「没做成：原因」 path (`client/src/model.rs`,
-  [`docs/client.md`](../client.md),
+- `robroz-contract` and `robroz-card`: for the accepted dead-task change,
+  `robroz-card` (today the grey `Running` + `container_up == false` branch
+  and the 「没写出结果」 copy) must change in the same PR as the host, never
+  alone, so the card still shows 「没写出结果」 after the task is `done` +
+  `failure`. A new host timeout can use the existing grey 「没做成：原因」
+  path (`client/src/model.rs`, [`docs/client.md`](../client.md),
   [`docs/permissions.md`](../permissions.md)) without a new card type and
-  without touching that dead-run branch.
+  without waiting for that dead-task PR. Optional fields may be added;
+  no new required field.
 - `robroz-runner`: unchanged unless the runner must watch a cancel flag.
 
 ### Contract impact
@@ -386,69 +392,82 @@ The new timeout can land first. The dead-run state change cannot land before Pan
 Do not add a fifth task state. `failure` on a `done` status and delivery card
 is already the documented way to say the work did not succeed.
 
-**Needs Panda's approval before merge if implemented:**
+Ending a dead run (`running`, `containerUp` false, no result) as `done` +
+`failure`, with the card still showing 「没写出结果」, is accepted (see
+[Decisions](#decisions)). That overturns the node 4 rule cited above and
+reinterprets a documented state combination. The host change and the
+`robroz-card` grey branch and 「没写出结果」 copy must land in the same PR,
+never separately, and the update must be a compare-and-set as described
+above. Docs that state the current rule
+([`docs/concepts.md`](../concepts.md), [`docs/api.md`](../api.md),
+[`docs/permissions.md`](../permissions.md),
+[`docs/client.md`](../client.md), [`docs/architecture.md`](../architecture.md))
+must be updated in that same PR.
 
-- Ending a dead run (`running`, `containerUp` false, no result) as
-  `done` + `failure` instead of leaving it `running`. That overturns the
-  node 4 rule cited above and reinterprets a documented state combination.
-  The Project Manager recommends keeping the current behaviour for now. If
-  Panda approves, the host change and the `robroz-card` grey branch and
-  「没写出结果」 copy must land in the same PR, never separately, and the
-  update must be a compare-and-set as described above.
-- Any new required field, or any new meaning of `progress`, `containerUp`,
-  or `waitingFor`. Optional fields may be added (for example a stall reason
-  that is only present when set) without changing old JSON.
+No new required field, and no new meaning of `progress`, `containerUp`, or
+`waitingFor`. Optional fields may be added (for example a stall hint that is
+only present when set) without changing old JSON.
 
 Auto-requeue of a dead or stalled run would also be a contract change
 (`resume` is refused today, and dead runs are not re-queued). It is not
-proposed.
+proposed. A rerun is the user's choice.
 
 **No contract change** for: moving the model loop off the pump thread;
 adding a timeout that still surfaces as today's `done` + `failure`
 「模型没回：…」 on a call that already fails that way (this can be done
-first, after this document lands); and a Watchdog that only logs, or that
-stops a live loop, until the dead-run state-machine question above is
-decided.
+first, after this document lands); and a Watchdog that only logs and adds a
+card hint, until the dead-task PR lands.
 
 ## Next phase, and what we will not do
 
-This table is a recommendation for the next design and implementation pass
-after this document is reviewed. It is not a schedule.
+This table is the recommended implementation order after this document
+merges. It is not a schedule.
 
 | Item | In the next phase? | Why |
 | --- | --- | --- |
-| Host-native Router for cases with no `@name`, plus "Workers report, they do not all answer an unaddressed message" | Yes | This is the gap. Today's `@name` and DM paths already name an assignee and should stay as the fast path. |
-| Thread subscriptions so a follow-up can attach to an open task instead of always opening a sibling task | Yes | A DM or a second `@name` today starts a parallel task in the same group volume, with no link to the work already running. |
+| Router and Worker as an internal dispatch layer inside one bro | Yes | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths already name an assignee and stay as the fast path. |
+| Turn-taking on a group message with no `@`; the `@`-mentioned bro speaks first | Yes | Accepted. Each bro gets one turn and may stay silent. This changes `/say` behaviour (see [Decisions](#decisions)). |
+| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Yes | Accepted. A DM or a second `@name` today starts a parallel task in the same group volume, with no link to the work already running. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Yes | Containers are already detached; the model-and-tool loop on the single pump thread is what serialises work. |
-| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | Not a contract change (see section 3). Can ship as a small host PR after this document merges. |
-| Host Watchdog that logs missing containers and stuck progress, or that stops a live loop, without rewriting a dead run | Yes | There is no stall check today. Liveness of the container is not the same as progress. This can land without touching the node 4 rule. |
-| Ending a dead `running` task as `done` + `failure` | Only with Panda's approval | Overturns the node 4 rule. The Project Manager recommends keeping the current behaviour. If approved, it must ship in the same PR as the `robroz-card` grey branch and 「没写出结果」 copy, with a compare-and-set write, never alone. |
-| Auto-requeue of a dead or stalled run | No | The Worker may already have written to the group volume. This is why `pump` does not re-queue a missing container today. |
-| Changing `/say` so follow-ups do not always create a new task | Only with Panda's approval | Existing endpoint behaviour. Prefer an additive field if one is needed. |
-| A fifth task state | No | Frozen in `AGENTS.md` and `robroz-contract`. Use `done` + `failure`, or keep `running` / `blocked` as they are. |
+| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | A host/pump path, not a Watchdog state change. Not a contract change (see section 3). Can ship as a small host PR after this document merges. |
+| Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Yes | There is no stall check today. Liveness of the container is not the same as progress. The Watchdog does not change task state except for the dead-task rule. |
+| Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Yes | Accepted. Overturns the node 4 rule. Must ship in the same PR as the `robroz-card` copy, with a compare-and-set write, never alone. No auto-requeue. |
+| A group-level Router that picks one assignee for an unaddressed message and posts the only reply | No | Superseded by turn-taking. No agent speaks for another. |
+| Auto-requeue of a dead or stalled run | No | The Worker may already have written to the group volume. This is why `pump` does not re-queue a missing container today. A rerun is the user's choice. |
+| A fifth task state | No | Frozen in `AGENTS.md` and `robroz-contract`. Use `done` + `failure`. |
 | Storage and compute split (cloud-stateless loop plus an on-device daemon, as in the writeup's section 5) | No | robroz is a single-machine host plus local Docker. That split does not match the current product and is not needed to land Router, Threads, or a Watchdog. |
-| Speculative execution (start work before anyone asked, deliver only if it helps, as in the writeup's section 3.4) | No | It fights the existing permission model, the rule that unaddressed group messages do nothing, and the goal of spending as little human attention as possible. Silence is already the default. |
+| Speculative execution (start work before anyone asked, deliver only if it helps, as in the writeup's section 3.4) | No | It fights the existing permission model and the goal of spending as little human attention as possible. Silence remains the default when a bro chooses not to speak. |
 | A Watchdog that is itself a full-tool agent and may edit prompts or policy live | No | Too much authority for a recovery loop. Keep the Watchdog as host code with a fixed policy. |
-| Peer-to-peer messages between Workers | No | The prototype already avoids this: shared Threads fan out events to subscribers. |
+| Peer-to-peer messages between Workers | No | Workers report to their bro. They do not message each other. |
 | Copying prototype code, prompts, or long passages | No | Clean-room: behaviour from the public writeup and docs only. The prototype is MIT-licensed, which is compatible with reading it, but robroz remains AGPL-3.0-only and does not take that code. |
 | External Threads (GitHub, mail, webhooks) and two-level event filters for those sources | Not in this pass | There is no such intake on `main`. The Subscription shape should leave room for them, and the work itself belongs with those sources. |
 | Inline & Spill / chain of recall (writeup section 3.3) | Not in this pass | Useful later for long-running context; it is not one of the three ideas this document covers. |
 
-## Open questions
+## Decisions
 
-These need a decision before implementation PRs are opened, in addition to
-the contract items flagged above.
+These replace the open questions in the draft. They follow Grok Bot's group
+behaviour: every bro in the room sees the message and gets one turn; a bro
+that has nothing to add stays silent; whoever does the work speaks for
+themselves.
 
-1. Is the Router a host function, or a designated bro that people can see and
-   `@`? A hidden host function stays out of the member list; a visible bro
-   matches the rest of the IM model but must be prevented from executing.
-2. In a group with several bros, if two open tasks subscribe to the same
-   follow-up, do both act, or does the host pick one? Fan-out is the
-   prototype's rule; robroz may want a tighter default to avoid two deliveries.
-3. What is the first timeout budget for a model loop, a tool, and a
-   container? This document does not pick numbers.
-4. When a follow-up arrives for a `blocked` task, is it queued until the
-   person answers the card, or is it visible to the worker immediately?
+1. **Group turns and follow-ups.** A group message with no `@` gives every
+   bro in the room one turn. Each bro decides to speak or stay silent. If the
+   message `@`-mentions a bro, that bro speaks first. A follow-up attaches to
+   that bro's own still-open task (`queued`, `running`, or `blocked`); the
+   host does not create a new task. Only genuinely new work creates a task.
+2. **Who speaks, and where Router sits.** In a group, whoever does the work
+   replies themselves. No agent speaks for another. Router and Worker are
+   only an internal dispatch layer inside one bro: their background workers
+   are not room members, they report to that bro, and that bro speaks. Group
+   messages use the existing `@` routing plus the turn-taking rule above.
+   `botId` / `botName` keep their current meaning. No new required fields.
+3. **Dead tasks.** A dead task (`running` and `containerUp` false) ends as
+   `done` + `failure`. The card shows 「没写出结果」. There is no
+   auto-requeue; a rerun is the user's choice. There is no fifth task state.
+
+The first timeout budgets for a model loop, a tool, and a container are not
+chosen here. Pick values in the timeout PR. A follow-up on a `blocked` task
+attaches to that task and does not create a sibling; it is not a `resume`.
 
 ## Sources and attribution
 
@@ -468,7 +487,7 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `1acbae1` on
+robroz behaviour cited above was checked against the tree at `0aed709` on
 `main`, in particular `host/src/say.rs`, `host/src/pump.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/sandbox.rs`,
 `host/src/progress.rs`, `host/src/schedule.rs`,
