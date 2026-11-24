@@ -231,11 +231,11 @@ fn english_batch_two_copy() {
     assert_eq!(Key::ModelPresetPlaceholder.as_str(), "Choose a provider");
     assert_eq!(crate::cards::mcp::tool_count_text(Some(1)), "1 tool");
     assert_eq!(crate::cards::mcp::tool_count_text(Some(3)), "3 tools");
-    assert_eq!(Key::SettingsLanguage.as_str(), "Language");
+    assert_eq!(Key::SettingsLanguage.as_str(), "Language / 语言");
     let _zh = scoped(Locale::Zh);
     assert_eq!(crate::cards::mcp::tool_count_text(Some(1)), "1 个工具");
     assert_eq!(crate::cards::mcp::tool_count_text(Some(3)), "3 个工具");
-    assert_eq!(Key::SettingsLanguage.as_str(), "语言");
+    assert_eq!(Key::SettingsLanguage.as_str(), "Language / 语言");
 }
 
 #[test]
@@ -244,6 +244,9 @@ fn language_names_are_native_in_both_locales() {
         let _s = scoped(l);
         assert_eq!(Locale::En.native_name(), "English");
         assert_eq!(Locale::Zh.native_name(), "中文");
+        // Same bilingual label in both UIs, so the switch can be found
+        // when the current language is unreadable.
+        assert_eq!(Key::SettingsLanguage.as_str(), "Language / 语言");
     }
 }
 

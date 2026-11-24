@@ -133,7 +133,7 @@ impl Preset {
     /// Example model id used as the placeholder. Empty for custom / no pick.
     pub fn model_example(self) -> &'static str {
         match self {
-            Preset::Gemini => "gemini-2.5-flash",
+            Preset::Gemini => "gemini-3.8-flash",
             Preset::Groq => "llama-3.3-70b-versatile",
             Preset::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
             Preset::Ollama => "llama3.2",
@@ -378,7 +378,7 @@ mod tests {
     fn env_gemini() -> Current {
         Current {
             base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
-            model: Some("gemini-2.5-flash".into()),
+            model: Some("gemini-3.8-flash".into()),
             has_key: true,
             key_last4: Some("ABCD".into()),
             source: Some(Source::Env),
@@ -418,7 +418,7 @@ mod tests {
         assert!(KEY_PLACEHOLDER.is_empty());
         assert_ne!(LABEL_KEY, KEY_PLACEHOLDER);
         assert_eq!(LABEL_KEY, "密钥（选填）");
-        assert_eq!(Preset::Gemini.model_example(), "gemini-2.5-flash");
+        assert_eq!(Preset::Gemini.model_example(), "gemini-3.8-flash");
         assert_eq!(Preset::Groq.model_example(), "llama-3.3-70b-versatile");
         assert_eq!(
             Preset::OpenRouter.model_example(),
@@ -552,7 +552,7 @@ mod tests {
     fn empty_key_saves_and_ollama_keeps_the_key_field() {
         let mut p = Page::default();
         p.pick(Preset::Gemini);
-        p.set_model("gemini-2.5-flash".into());
+        p.set_model("gemini-3.8-flash".into());
         let put = p.to_send().expect("url + model is enough");
         assert_eq!(put.key, None);
         assert!(p.shows_key());

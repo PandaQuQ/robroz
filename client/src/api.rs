@@ -1887,7 +1887,7 @@ mod tests {
     #[test]
     fn model_source_env_settings_or_absent() {
         let env = decode_model(
-            r#"{"baseUrl":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-2.5-flash","hasKey":true,"keyLast4":"ABCD","source":"env"}"#,
+            r#"{"baseUrl":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-3.8-flash","hasKey":true,"keyLast4":"ABCD","source":"env"}"#,
         )
         .unwrap();
         assert_eq!(env.source, Some(model_page::Source::Env));
@@ -1895,7 +1895,7 @@ mod tests {
             env.base_url.as_deref(),
             Some("https://generativelanguage.googleapis.com/v1beta/openai")
         );
-        assert_eq!(env.model.as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(env.model.as_deref(), Some("gemini-3.8-flash"));
         assert_eq!(env.key_last4.as_deref(), Some("ABCD"));
         let saved = decode_model(
             r#"{"baseUrl":"http://localhost:11434/v1","model":"llama3.2","hasKey":true,"keyLast4":"lama","source":"settings"}"#,

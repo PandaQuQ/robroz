@@ -43,6 +43,14 @@ impl HostState {
     pub fn retries(self) -> bool {
         self == Self::Unreachable
     }
+
+    /// The Language row sits on this pane, so the language can still be
+    /// changed when the host has never answered (the Settings page lives
+    /// in the sidebar, which is hidden here). The control is the same
+    /// one as on the Model page.
+    pub fn shows_language_row(self) -> bool {
+        self == Self::Unreachable
+    }
 }
 
 /// Short reason shown next to the host address on the disconnected pane.
@@ -84,12 +92,14 @@ mod tests {
         assert_eq!(waiting, HostState::Waiting);
         assert!(!waiting.shows_sidebar());
         assert_eq!(waiting.notice(), None);
+        assert!(!waiting.shows_language_row());
 
         let down = HostState::of(false, true);
         assert_eq!(down, HostState::Unreachable);
         assert!(!down.shows_sidebar(), "no 「还没有 bro」 while unreachable");
         assert_eq!(down.notice(), Some(Text::ClientHostUnreachable));
         assert!(down.retries());
+        assert!(down.shows_language_row());
 
         // Once the host answered, a later failure keeps the account on
         // screen; the footer carries the error.
@@ -98,6 +108,7 @@ mod tests {
             assert_eq!(up, HostState::Answered);
             assert!(up.shows_sidebar());
             assert_eq!(up.notice(), None);
+            assert!(!up.shows_language_row());
             assert!(!up.retries());
         }
     }
@@ -188,5 +199,25 @@ mod tests {
             assert!(!zh.contains("io:"), "{zh}");
             assert!(!zh.contains("os error"), "{zh}");
         }
+    }
+
+    #[test]
+    fn disconnected_pane_renders_the_shared_language_row() {
+        // The pane in `page_view` must actually include the same Language
+        // row as the Model page; a flag on HostState is not enough.
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("state.shows_language_row()"),
+            "page_view must gate the Language row on HostState"
+        );
+        assert_eq!(
+            src.matches("self.language_row(t)").count(),
+            2,
+            "Model page and disconnected pane share language_row"
+        );
+        assert!(
+            src.contains("Message::SetLocale") && src.contains("prefs::save(locale)"),
+            "picking a language there persists through the same SetLocale path"
+        );
     }
 }
