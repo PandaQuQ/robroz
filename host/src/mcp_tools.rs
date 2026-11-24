@@ -993,7 +993,7 @@ mod tests {
             false,
         )
         .await;
-        let _task_id = post_task(&h, "写笔记").await;
+        let task_id = post_task(&h, "写笔记").await;
         let mut sandbox = crate::sandbox::FakeSandbox::new();
         h.host.pump_once(&mut sandbox).unwrap();
         let card = event_of(&dm_events(&h).await, "approval").clone();
@@ -1030,6 +1030,9 @@ mod tests {
         assert!(failure.contains("你拒绝了"), "{delivery}");
         assert!(failure.contains("notes.write_note"), "{delivery}");
         assert_eq!(delivery["summary"], "未执行", "{delivery}");
+        assert_eq!(delivery["taskId"], task_id, "{delivery}");
+        assert_eq!(delivery["botId"], "bot-ada", "{delivery}");
+        assert_eq!(delivery["botName"], "Ada", "{delivery}");
     }
 
     #[tokio::test]
