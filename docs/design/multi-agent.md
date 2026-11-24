@@ -2,8 +2,9 @@
 
 Status: **Accepted**. Group turns (PR A) shipped in
 [#129](https://github.com/PandaQuQ/robroz/pull/129) (`41edf6f`). Follow-up
-attachment (PR B, group and DM) is built; see Implementation status. The
-internal Router (PR C) is accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
+attachment (PR B, group and DM) and bros waking bros (with a depth cap)
+are built; see Implementation status. The internal Router (PR C) is
+accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
 Existing behaviour below is taken from `main` at `5705a18` plus [#130](https://github.com/PandaQuQ/robroz/pull/130). This document
@@ -63,10 +64,12 @@ Verified on `main` at `5705a18` plus #130. There is no Router session and no Wor
   path: the mention is stripped from the prompt, the status card is visible
   at once, and the task is returned in `Said.task`. The rest go one at a
   time in join order (`memberships.rowid`). If no one is named, `Said.task`
-  is `null` and every member takes a turn in join order. Only a person's
-  `/say` opens a round; each turn records `depth` (`turns.depth`, today
-  always `PERSON_DEPTH` 0). Bro deliveries, `/messages`, `/tasks` and
-  schedules never open a round. Approvals are unchanged.
+  is `null` and every member takes a turn in join order. A person's `/say`
+  opens a round at `PERSON_DEPTH` 0 (`turns.depth`). A clean bro reply on
+  a turn opens a round for the other bros at depth + 1, up to
+  `MAX_BRO_DEPTH` 2 (`open_bro_round` in `host/src/turns.rs`).
+  `/messages`, `/tasks` and schedules never open a round. Approvals are
+  unchanged.
   `POST /api/groups/{id}/tasks` assigns a bot directly, with no dispatch
   step.
 - Turns in one round run one after another: the next turn's task is created
@@ -132,9 +135,9 @@ Group messages keep today's `@` routing, plus turn-taking (PR A, shipped):
   or no model, logged only) produces nothing at all: no message, no card,
   no unread, and `lastActivityAt` is unchanged. A non-mentioned bro's task
   starts hidden and appears only if the bro speaks.
-- Only a person's `/say` starts a new round. A bro's own message never
-  triggers a new round. Direct messages and approvals are unchanged by
-  PR A.
+- A person's `/say` starts a round at depth 0. A bro's clean reply on a
+  turn starts a round for the other bros one level deeper, up to a cap.
+  Direct messages and approvals are unchanged.
 - Do not introduce a group-level Router that picks one assignee and posts the
   only user-visible reply.
 
@@ -482,7 +485,7 @@ merges. It is not a schedule.
 | --- | --- | --- |
 | Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
 | Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done (PR B, #130) | A DM `/say`, or a group `@name`, to a bro with a visible `queued` / `running` / `blocked` task there joins it (`host/src/follow_ups.rs`); the task's next step sees it. |
-| A bro's message also wakes the other bros, with a round cap on recorded `depth` | Not yet (after PR B) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
+| A bro's message also wakes the other bros, with a round cap on recorded `depth` | Done (after PR B) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
 | Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
 | New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | After PR C | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
@@ -516,13 +519,15 @@ built on `main`. The PR order and done standards are in
    unread, and `lastActivityAt` is unchanged. At most one bro speaks first:
    the one named by a leading `@name`, on the existing fast path; the rest
    take their turn one at a time in join order. A non-mentioned bro's task
-   starts hidden and appears only if the bro speaks. Only a person's `/say`
-   starts a new round. Direct messages and approvals are unchanged by the
+   starts hidden and appears only if the bro speaks. A person's `/say`
+   starts a round; a bro's clean reply starts a deeper round for the other
+   bros, up to a depth cap. Direct messages and approvals are unchanged by the
    group-turns PR. A follow-up in the group attaches to that bro's own
    still-open task (`queued`, `running`, or `blocked`); the host does not
    create a new task. Only genuinely new work creates a task. The follow-up
-   rule is built for a group `@name` and for DMs (PR B). After PR B, a bro's message should also
-   wake the other bros, with a round cap on recorded `depth`.
+   rule is built for a group `@name` and for DMs (PR B). A bro's reply
+   also wakes the other bros, capped on the recorded `depth` (built after
+   PR B).
 2. **Who speaks, and where Router sits.** In a group, whoever does the work
    replies themselves. No agent speaks for another. Router and Worker are
    only an internal dispatch layer inside one bro: their background workers
@@ -566,10 +571,10 @@ Verified on `main` at `5705a18` plus #130 (`host/src/turns.rs`, `host/src/follow
   A pending MCP approval, or `ROBROZ_MODEL=echo`, reveals the task (and
   sets `created_at` / `updated_at` to the reveal time) and it continues
   as a normal task. The `@`-mentioned bro is never hidden, so a model
-  error on that path still surfaces as it does today. Only a person's
-  `/say` opens a round; each turn records `depth` (today always
-  `PERSON_DEPTH` 0). Bro deliveries, `/messages`, `/tasks` and schedules
-  never open a round. Direct messages, the `@` direct path, and approvals
+  error on that path still surfaces as it does today. A person's `/say`
+  opens a round at `PERSON_DEPTH` 0, and each turn records `depth`.
+  `/messages`, `/tasks` and schedules never open a round (bro-opened
+  rounds are described below). Direct messages, the `@` direct path, and approvals
   are unchanged. No contract change: `Said.task` is still the mentioned
   bro's task or `null`.
 
@@ -606,12 +611,32 @@ Verified on `main` at `5705a18` plus #130 (`host/src/turns.rs`, `host/src/follow
   **Done when (met in #130):** a follow-up in the group attaches to that
   bro's open task and does not start a new one.
 
-- Not yet (after PR B): a bro's message also wakes the other bros, so
-  bros can reply to each other (as in Grok Bot). The recorded `depth` on
-  each round is the cap hook: a later change can open a follow-up round
-  at `depth + 1` and stop at a cap. At the cap the round wraps up, and
-  bros speak only when necessary. Today only a person's `/say` opens a
-  round.
+- Done (after PR B): bros wake bros (`open_bro_round` in
+  `host/src/turns.rs`, called from the pump right after a delivery). When
+  a task that is a turn in a group round delivers a clean reply (no
+  `failure`, no `needsSetup`, not `robroz-silent` or empty), the host
+  opens a round for the other bros at the parent round's `depth` + 1. The
+  turn's `speaker` column records who opened it.
+  - The speaker gets no turn in its own round. A bro whose turn in the
+    parent round has not started yet is left out too; that turn already
+    quotes the reply, so it would otherwise get two turns for one reply.
+  - A leading `@name` of another member moves that bro to the front, as a
+    hidden turn. It is not a fast-path task and never a follow-up;
+    follow-ups stay person-only.
+  - Turn mechanics are those of PR A and PR B: sequential, quoting earlier
+    replies (2000 characters, `robroz-` lines stripped), hidden until the
+    bro speaks, silence rules, and waiting while the bro is busy. The
+    prompt names the speaking bro and asks for `robroz-silent` unless the
+    bro is asked directly, must correct something, or has something
+    essential to add.
+  - Cap: `MAX_BRO_DEPTH` is 2. A reply in a depth-2 round is delivered and
+    opens nothing, so the conversation closes out.
+  - Tasks with no turn (`POST /api/groups/{id}/tasks`, schedules), failed
+    or needs-setup deliveries, silence, and DMs open nothing. No contract
+    change.
+
+  **Done when:** a bro's reply wakes the other bros one level deeper, the
+  speaker is never re-woken, and nothing opens past `MAX_BRO_DEPTH`.
 
 - Not yet (PR C, after A and B): the per-bro Router and Workers.
   Router and Worker stay an internal dispatch layer *inside one bro*.

@@ -209,7 +209,13 @@ curl -s -X POST $B/api/bros/<botId>/dm
   - 模型调用失败，或没设置模型：同样当作不说话，不出「模型没回」卡（只写日志）。
   - 其他回复（包括要批 MCP 工具）：任务从这时起出现，状态卡的 `createdAt` 是这一刻，之后跟普通任务一样（进沙箱、交付卡、审批卡都照旧）。
   - 测试开关 `ROBROZ_MODEL=echo` 下每个轮次都会说话（回显 prompt）。
-- 只有人用 `/say` 发的群消息才开一轮。bro 的交付、`POST /api/groups/{id}/messages`、`POST /api/groups/{id}/tasks`、例行任务都不开，所以 bro 之间不会互相触发。私聊不变。
+- **Bros waking bros** (`robroz_host::turns::open_bro_round`). A person's `/say` opens a round at depth `PERSON_DEPTH` (0). When a bro's task on a group turn (the `@name` fast-path turn or a revealed hidden turn) delivers a clean reply, the host opens a follow-on round at the parent round's depth + 1 for the other bros. A clean reply is one with no `failure` or `needsSetup` that is not silence.
+  - The speaker never gets a turn in the round it opened. A bro whose turn in the parent round has not started yet is also left out, because that turn already quotes the reply.
+  - A leading `@name` of another member in the reply moves that bro to the front. The rest follow in join order. The named bro still gets a hidden turn: it is not a fast-path task and never a follow-up.
+  - Turns work as above: one at a time, quoting earlier replies, hidden until the bro speaks, and waiting while the bro is busy. The prompt names the speaking bro and tells the bro to reply `robroz-silent` unless it is asked directly, needs to correct something, or has something essential to add.
+  - Cap: `robroz_host::turns::MAX_BRO_DEPTH` (2). A reply in a depth-2 round is delivered but opens nothing, so one person message leads to at most two bro-opened levels.
+  - Nothing else opens a round: not `POST /api/groups/{id}/messages`, not `POST /api/groups/{id}/tasks` or schedules (their tasks have no turn), not silence, not failed deliveries. DMs never have rounds.
+  - No contract change. Bro-opened rounds post no `message` events; their replies show up as normal status and delivery cards.
 - 两条消息的轮次各走各的，互不等待。轮到某个 bro 时它已经不在群里，就跳过它。
 - 轮到某个 bro 时，它在这个群里还有别的任务是 `queued` / `running`（自己的任务，或别的轮次），这一轮就等那个任务离开 `queued` / `running`（变成 `done` 或 `blocked`）再建，同一个 bro 不会同时在群的卷上跑两个任务。它后面的 bro 照旧排在它后面。
 
