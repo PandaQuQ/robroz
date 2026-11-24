@@ -16,6 +16,7 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
+use crate::cards::review_rules;
 use crate::cards::routines::{self, Routines};
 use crate::cards::search;
 use crate::cards::secret;
@@ -260,6 +261,14 @@ pub enum Action {
     SearchClearKey,
     SearchCancelKey,
     SearchSave,
+    /// 放行规则 page.
+    ReviewDraft {
+        text: String,
+    },
+    ReviewAdd,
+    ReviewDelete {
+        id: String,
+    },
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -665,15 +674,16 @@ fn btn<'a>(
 ) -> Element<'a, Action> {
     let t = *t;
     let enabled = on_press.is_some();
-    let strong = matches!(look, Look::Primary | Look::Selected);
-    let faded_out = look == Look::Disabled || (!enabled && look == Look::Primary);
+    let strong = matches!(look, Look::Primary | Look::Selected | Look::Danger);
+    let faded_out =
+        look == Look::Disabled || (!enabled && matches!(look, Look::Primary | Look::Danger));
     let alpha = if faded_out {
         t.palette.disabled_alpha
     } else {
         1.0
     };
     let fg = match look {
-        Look::Primary => t.palette.on_accent,
+        Look::Primary | Look::Danger => t.palette.on_accent,
         _ => t.palette.text,
     };
     let fg_color = faded(fg, alpha);
@@ -719,6 +729,15 @@ fn btn<'a>(
         let (bg, border) = match look {
             Look::Primary => {
                 let fill = if hovered { c.accent_hover } else { c.accent };
+                (Some(faded(fill, alpha)), Border::default())
+            }
+            // Proposed red for 「删除规则」; UI姐 to confirm the exact colour.
+            Look::Danger => {
+                let fill = if hovered {
+                    [0xb0, 0x3c, 0x32]
+                } else {
+                    [0xc4, 0x47, 0x3a]
+                };
                 (Some(faded(fill, alpha)), Border::default())
             }
             Look::Selected => (
@@ -804,10 +823,11 @@ pub fn card<'a>(
     ui: &CardUi,
     caps: Caps,
     width: f32,
+    in_group: bool,
 ) -> Element<'a, Action> {
     match card {
         Card::Choice(c) => choice(t, c, ui),
-        Card::Approval(c) => approval(t, c, ui, width),
+        Card::Approval(c) => approval(t, c, ui, width, in_group),
         Card::Draft(c) => draft(t, c, ui, caps, width),
         Card::Confirm(c) => confirm_card(t, c, ui, width),
     }
@@ -1027,6 +1047,7 @@ pub fn approval<'a>(
     card: &'a ApprovalCard,
     ui: &CardUi,
     width: f32,
+    in_group: bool,
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
     let (label, d) = status::approval_status(&card.state);
@@ -1034,6 +1055,18 @@ pub fn approval<'a>(
         header(t, &card.id, &card.bot, ui, label, d),
         gap(t.metrics.head_gap)
     ];
+    // Group thread: only the status and 「已发到主人私聊」, no buttons.
+    if in_group && card.state == crate::cards::ApprovalState::Pending {
+        col = col.push(
+            text(review_rules::SENT_TO_OWNER)
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
+        return frame(t, col.into());
+    }
+    if card.is_rule() {
+        return rule_approval(t, card, ui, col);
+    }
     let actions = interact::approval_actions(card, ui);
     if actions == ApprovalActions::TakeOver {
         // Stuck: one line and one secondary button. No approve/deny, no
@@ -1070,6 +1103,15 @@ pub fn approval<'a>(
             col = col
                 .push(gap(t.metrics.head_gap))
                 .push(path_chip(t, path, inner));
+        }
+        if let Some(reason) = card.reason.as_deref() {
+            if reason != review_rules::APPROVAL_EXPIRED_REASON {
+                col = col.push(gap(t.metrics.head_gap)).push(
+                    text(reason)
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text2)),
+                );
+            }
         }
         if let ApprovalActions::Decide { enabled } = actions {
             let id = &card.id;
@@ -3355,5 +3397,174 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
         body = body.push(inline_note(t, note));
     }
     col = col.push(container(body).padding(pad));
+    container(col).width(Fill).style(card_style(*t)).into()
+}
+
+/// Owner-DM card for adding or deleting a rule: #68 confirm layout.
+fn rule_approval<'a>(
+    t: &Skin,
+    card: &'a ApprovalCard,
+    ui: &CardUi,
+    mut col: iced::widget::Column<'a, Action>,
+) -> Element<'a, Action> {
+    let title = if card.kind == crate::cards::ActionKind::RuleAdd {
+        review_rules::ADD_TITLE
+    } else {
+        review_rules::DELETE_TITLE
+    };
+    let hint = if card.kind == crate::cards::ActionKind::RuleAdd {
+        review_rules::ADD_HINT
+    } else {
+        review_rules::DELETE_HINT
+    };
+    col = col
+        .push(
+            text(title)
+                .size(t.type_.body)
+                .font(bold())
+                .color(color(t.palette.text)),
+        )
+        .push(gap(t.metrics.head_gap))
+        .push(body(t, &card.summary))
+        .push(gap(t.metrics.head_gap))
+        .push(text(hint).size(t.type_.foot).color(color(t.palette.text2)));
+    let actions = interact::approval_actions(card, ui);
+    if let ApprovalActions::Decide { enabled } = actions {
+        let id = &card.id;
+        let (ok, look) = if card.kind == crate::cards::ActionKind::RuleDelete {
+            (review_rules::DELETE_ACTION, Look::Danger)
+        } else {
+            (review_rules::ADD_ACTION, Look::Primary)
+        };
+        col = col.push(gap(t.metrics.body_gap)).push(buttons_row(
+            t,
+            vec![
+                btn(
+                    t,
+                    ok.into(),
+                    look,
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.clone(),
+                        approve: true,
+                    }),
+                ),
+                btn(
+                    t,
+                    review_rules::DROP.into(),
+                    if enabled {
+                        Look::Secondary
+                    } else {
+                        Look::Disabled
+                    },
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.clone(),
+                        approve: false,
+                    }),
+                ),
+            ],
+        ));
+    }
+    if let Some(note) = ui.note.as_ref() {
+        col = col
+            .push(gap(t.metrics.foot_gap))
+            .push(footnote(t, note.text()));
+    } else if let Some(foot) = status::approval_footnote(&card.state, &Local) {
+        col = col
+            .push(gap(t.metrics.foot_gap))
+            .push(approval_footnote_view(t, foot));
+    }
+    frame(t, col.into())
+}
+
+/// The 放行规则 page: add an input, list confirmed rules, delete proposes a card.
+pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element<'a, Action> {
+    let m = t.metrics;
+    let busy = page.busy;
+    let head = row![text(review_rules::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .align_y(Alignment::Center);
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+    let mut body_col = column![].spacing(12);
+    let mut input = text_input(review_rules::PLACEHOLDER, &page.draft)
+        .size(t.type_.body)
+        .padding(Padding::from([8.0, 10.0]));
+    if !busy {
+        input = input
+            .on_input(|text| Action::ReviewDraft { text })
+            .on_submit(Action::ReviewAdd);
+    }
+    body_col = body_col.push(
+        row![
+            input,
+            btn(
+                t,
+                review_rules::ADD.into(),
+                Look::Primary,
+                Leading::None,
+                (!busy).then_some(Action::ReviewAdd),
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center),
+    );
+    match &page.rules {
+        None => {
+            body_col = body_col.push(
+                text(review_rules::LOADING)
+                    .size(t.type_.body)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        Some(rules) if rules.is_empty() => {
+            body_col = body_col.push(
+                text(review_rules::EMPTY)
+                    .size(t.type_.body)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        Some(rules) => {
+            for r in rules {
+                let date = r.added_on(&Local);
+                let mut row_el = column![text(r.text.as_str())
+                    .size(t.type_.body)
+                    .color(color(t.palette.text)),]
+                .spacing(4);
+                if !date.is_empty() {
+                    row_el =
+                        row_el.push(text(date).size(t.type_.foot).color(color(t.palette.text2)));
+                }
+                let id = r.id.clone();
+                body_col = body_col.push(
+                    row![
+                        container(row_el).width(Fill),
+                        btn(
+                            t,
+                            review_rules::DELETE.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!busy).then_some(Action::ReviewDelete { id }),
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+    }
+    if let Some(note) = &page.note {
+        body_col = body_col.push(inline_note(t, note));
+    }
+    col = col.push(container(body_col).padding(pad));
     container(col).width(Fill).style(card_style(*t)).into()
 }

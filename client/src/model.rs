@@ -6,7 +6,7 @@
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::confirm::ConfirmCard;
-use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
+use robroz_ui::cards::{ApprovalCard, ApprovalExtras, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -134,7 +134,13 @@ impl Feed {
     }
 
     pub fn apply(&mut self, event: &Event) {
-        let (key, row) = to_row(event);
+        self.apply_with(event, None);
+    }
+
+    /// Apply an approval together with client-side extras the contract event
+    /// cannot carry yet (`reason`, `rule_add` / `rule_delete`).
+    pub fn apply_with(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
+        let (key, row) = to_row(event, extras);
         self.upsert(key, row);
     }
 
@@ -266,7 +272,7 @@ pub fn preview(event: &Event) -> String {
     }
 }
 
-fn to_row(event: &Event) -> (Key, Row) {
+fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
     match event {
         Event::Message { id, kind, body, .. } => {
             let row = match kind {
@@ -352,7 +358,7 @@ fn to_row(event: &Event) -> (Key, Row) {
         }
         // Same as choice: the answered snapshot replaces the pending card.
         Event::Approval { id, .. } => {
-            let card = ApprovalCard::from_event(event)
+            let card = ApprovalCard::from_event_with(event, extras)
                 .expect("approval event")
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
@@ -571,7 +577,7 @@ mod tests {
 
     #[test]
     fn progress_is_one_line_and_never_on_a_finished_or_stuck_card() {
-        let line = |e: Event| match to_row(&e).1 {
+        let line = |e: Event| match to_row(&e, None).1 {
             Row::Status(c) => c.progress,
             _ => unreachable!(),
         };
@@ -866,7 +872,7 @@ mod tests {
             Some("在用 notes.write_note"),
         );
         assert_eq!(
-            match to_row(&stuck).1 {
+            match to_row(&stuck, None).1 {
                 Row::Status(c) => c.progress,
                 _ => unreachable!(),
             },
@@ -1099,6 +1105,7 @@ mod tests {
                 state,
                 mcp_server: None,
                 mcp_tool: None,
+                reason: None,
             })
         };
         let mut feed = Feed::default();

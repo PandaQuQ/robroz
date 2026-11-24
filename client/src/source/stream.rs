@@ -14,8 +14,10 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use robroz_contract::Event;
+use robroz_ui::cards::ApprovalExtras;
 
 use crate::conn::Conn;
+use crate::event_decode;
 
 /// What the reader reports.
 // `Event` grew with `confirm` cards; items are short-lived on a channel, so
@@ -25,7 +27,10 @@ use crate::conn::Conn;
 pub enum StreamItem {
     /// 200 and `text/event-stream`: events flow.
     Connected,
-    Event(Event),
+    Event {
+        event: Event,
+        extras: Option<ApprovalExtras>,
+    },
     /// Keep-alive comment; lets the reader notice nobody is listening.
     Ping,
     /// The connection ended or could not be made; it will retry.
@@ -172,8 +177,8 @@ pub fn read_once(
                 if let Some(id) = frame.id {
                     *last_id = Some(id);
                 }
-                match serde_json::from_str::<Event>(&frame.data) {
-                    Ok(event) => StreamItem::Event(event),
+                match event_decode::parse_event_str(&frame.data) {
+                    Ok((event, extras)) => StreamItem::Event { event, extras },
                     // A newer host may send a kind this client does not
                     // know yet: skip it rather than drop the stream. The
                     // frame's `id` above still moves `Last-Event-ID`.
@@ -400,7 +405,7 @@ mod tests {
                 if item == StreamItem::Ping {
                     return true;
                 }
-                if matches!(item, StreamItem::Event(_)) {
+                if matches!(item, StreamItem::Event { .. }) {
                     events += 1;
                 }
                 got.push(item);
@@ -411,7 +416,7 @@ mod tests {
             .iter()
             .map(|i| match i {
                 StreamItem::Connected => "up",
-                StreamItem::Event(_) => "event",
+                StreamItem::Event { .. } => "event",
                 StreamItem::Down(_) => "down",
                 StreamItem::Ping => "ping",
             })
@@ -451,8 +456,11 @@ mod tests {
             Backoff::new(Duration::from_millis(10), Duration::from_millis(20)),
             |item| {
                 match item {
-                    StreamItem::Event(Event::Message { body, .. }) => bodies.push(body),
-                    StreamItem::Event(other) => panic!("unexpected {other:?}"),
+                    StreamItem::Event {
+                        event: Event::Message { body, .. },
+                        ..
+                    } => bodies.push(body),
+                    StreamItem::Event { event: other, .. } => panic!("unexpected {other:?}"),
                     StreamItem::Down(_) => downs += 1,
                     _ => {}
                 }
@@ -529,8 +537,11 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("event within 5s")
             {
-                StreamItem::Event(e @ Event::Approval { .. }) => return e,
-                StreamItem::Ping | StreamItem::Event(_) => continue,
+                StreamItem::Event {
+                    event: e @ Event::Approval { .. },
+                    ..
+                } => return e,
+                StreamItem::Ping | StreamItem::Event { .. } => continue,
                 other => panic!("unexpected {other:?}"),
             }
         };
@@ -550,7 +561,7 @@ mod tests {
         feed.apply(&pending);
 
         let api = HttpApi::new(Conn::new(&base));
-        let answered = api.decide(id, true).unwrap().expect("host echoes the card");
+        let (answered, _) = api.decide(id, true).unwrap().expect("host echoes the card");
         assert!(matches!(
             answered,
             Event::Approval {
@@ -617,7 +628,10 @@ mod tests {
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match rx.recv_timeout(left).expect("event within 5s") {
-                StreamItem::Event(Event::Message { body, .. }) => {
+                StreamItem::Event {
+                    event: Event::Message { body, .. },
+                    ..
+                } => {
                     assert_eq!(body, "实时");
                     break;
                 }
