@@ -28,7 +28,7 @@
 3. 放锁后 `docker run` / `inspect` / `rm`，最后重新加锁写结果。慢容器不会卡住 HTTP。`docker run` 失败时任务改回 `queued`，没有交付卡。
 4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失变 `done`，`failure` 为「没写出结果」，不重排队。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
 5. 成功完成的任务读 `proposals.jsonl`，发确认卡（见 [memory-and-skills.md](memory-and-skills.md)）。
-6. Watchdog 只提示模型和工具调用太久、容器进度太久没变（写进 `progress`，打日志），不改状态、不重排队；`running` 且 `containerUp` false 的旧任务结束成 `done` + 「没写出结果」。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
+6. The Watchdog only hints when a model or tool step is slow (at half of `ROBROZ_STEP_TIMEOUT_SECS`) or a container's progress has not moved (it writes `progress` and a log line). It does not change the state or requeue. An old task that is `running` with `containerUp` false ends as `done` + 「没写出结果」. A step that reaches `ROBROZ_STEP_TIMEOUT_SECS` is cancelled by the pump, not the Watchdog: see step 7 (step timeout) in [api.md's What pump does](api.md#pump-做什么).
 
 ### 容器
 

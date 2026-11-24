@@ -8,7 +8,7 @@ are built, and so are the internal Router (PR C,
 cancel ([#143](https://github.com/PandaQuQ/robroz/pull/143)). See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `c8c9e06` plus [#143](https://github.com/PandaQuQ/robroz/pull/143). This document
+Existing behaviour below is taken from `main` at `e94e31e` plus [#143](https://github.com/PandaQuQ/robroz/pull/143). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -54,7 +54,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` at `c8c9e06` plus #143. There is no separate Router session in the
+Verified on `main` at `e94e31e` plus #143. There is no separate Router session in the
 room and no shared Worker pool. Inside one task, a bro's internal Router may split the work into
 two or three Worker steps that run in order on the same task (see
 [Implementation status](#implementation-status)); they share one status card
@@ -357,11 +357,12 @@ described separately:
   on a card is not step time.
 - A Watchdog runs in the same pump loop (`host/src/watchdog.rs`). For a
   live task (`running` and `containerUp` true) it may write a hint into the
-  existing `progress` field: 「模型和工具还没回，已等 N 分钟」 after
-  `ROBROZ_STEP_TIMEOUT_SECS` (default 600), or 「N 分钟没有新进度」 after
-  `ROBROZ_STALL_SECS` (default 900). The Watchdog itself only logs and
-  hints. The step-timeout hint uses the same budget as the cancel above,
-  so the cancel usually replaces it; the stall hint never cancels.
+  existing `progress` field: 「模型和工具还没回，已等 N 分钟」 after half
+  of `ROBROZ_STEP_TIMEOUT_SECS` (300 seconds at the default 600), or
+  「N 分钟没有新进度」 after `ROBROZ_STALL_SECS` (default 900). The
+  Watchdog itself only logs and hints. The step hint comes at half the
+  budget, so the card shows it before the cancel above at the full budget;
+  the stall hint never cancels.
 - A container that exits non-zero, writes no result file, or disappears
   mid-run is a dead run. It ends as `done` + `failure` (`robroz_card::NO_RESULT`
   「没写出结果」). There is no fifth state, the task is not re-queued, no
@@ -555,14 +556,14 @@ order and done standards are in
    auto-requeue; a rerun is the user's choice. There is no fifth task state.
 
 Hint budgets shipped in #118: `ROBROZ_STEP_TIMEOUT_SECS` defaults to 600,
-`ROBROZ_STALL_SECS` to 900. #143 cancels a step at the same
-`ROBROZ_STEP_TIMEOUT_SECS` budget. A follow-up on a
+`ROBROZ_STALL_SECS` to 900. #143 cancels a step at the full
+`ROBROZ_STEP_TIMEOUT_SECS` budget and moves the step hint to half of it. A follow-up on a
 `blocked` task attaches to that task and does not create a sibling; it is
 not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `c8c9e06` plus #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+Verified on `main` at `e94e31e` plus #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
 `host/src/pump.rs`, `host/src/router.rs`, `host/src/timeouts.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as

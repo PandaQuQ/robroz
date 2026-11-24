@@ -319,9 +319,9 @@ pump 不是接口，是宿主机里每秒跑一次的线程（`host/src/main.rs:
 5. 成功完成的任务，读它的 `proposals.jsonl`，每条记忆或技能提议发一张确认卡。
 6. Watchdog（`host/src/watchdog.rs`）：
    - `running` 且 `containerUp` false 的任务（旧版宿主机留下的运行失败）同样结束成 `done` + `failure`「没写出结果」，不重排队。
-   - 模型和工具调用跑过 `ROBROZ_STEP_TIMEOUT_SECS`（默认 600 秒）：打日志，`progress` 写「模型和工具还没回，已等 N 分钟」。同一个时限一到，下面的超时取消就会结束这一步，所以这条提示通常一闪而过。
+   - A step that has run for half of `ROBROZ_STEP_TIMEOUT_SECS` (300 seconds at the default 600): a log line, and `progress` becomes 「模型和工具还没回，已等 N 分钟」 (`step_timeout_hint`, N is the minutes waited so far). This is only a hint; the step keeps running until the full timeout, when step 7 cancels it.
    - 容器在跑但 `progress` 超过 `ROBROZ_STALL_SECS`（默认 900 秒）没变：打日志，`progress` 写「N 分钟没有新进度」，runner 写出新进度后换回新进度。只提示，不改状态、不停容器、不重排队。`blocked` 是在等人，不算卡住。
-7. Step timeout (`host/src/timeouts.rs`). A step is the model phase after a claim (the model call and its tool calls), each Router step, or the container run. Each starts its own clock, stored in SQLite (`step_clocks`), so a host restart does not reset it. When a `running` task's step is past `ROBROZ_STEP_TIMEOUT_SECS` (default 600 seconds), the next pump pass cancels it:
+7. Step timeout (`host/src/timeouts.rs`). A step is the model phase after a claim (the model call and its tool calls), each Router step, or the container run. Each starts its own clock, stored in SQLite (`step_clocks`), so a host restart does not reset it. When a `running` task's step reaches `ROBROZ_STEP_TIMEOUT_SECS` (default 600 seconds), the next pump pass cancels it. The Watchdog hint in step 6 comes at half that time, so the card shows it first:
    - The container is stopped with `docker rm -f`. If that fails, the task stays `running` and the next pass tries again.
    - A step still on its thread is told to stop before its next model or tool call. Whatever it returns later is dropped.
    - The task ends as `done` + `failure` 「没写出结果」 (`robroz_card::NO_RESULT`), the same as a failed Router step: no delivery, no requeue, and the Router plan is dropped. A hidden group turn ends silent instead (no card).
@@ -410,7 +410,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 - bro 报：prompt 或模型回复里一行 `robroz-progress:<文字>`，取最后一行。
 - 任务被 bro 内部的 Router 拆成 2–3 步时（`running` 且容器起来），这行正好是 `router_step_progress(n, m)`，即「{n}/{m} 步」，前后不拼别的字，也不和「在想怎么回」「在用 <工具名>」拼在一起；bro 报的 `robroz-progress:` 行不盖过它。客户端可用 `parse_router_step_progress` 读出 n、m，客户端显示 "Step n of m"。等 MCP 审批而 `blocked` 时仍按上面的规则显示，不是「n/m 步」。没拆（拆分失败、只有一步、没有模型或 `ROBROZ_MODEL=echo`）时和以前一样，不显示 n/m。Watchdog 提示照样可能临时换掉这行。
 - In English: when a bro's internal Router splits a task into 2–3 steps, `progress` is exactly `router_step_progress(n, m)` (「{n}/{m} 步」) while the task is `running` with its container up. It is never combined with other text. While the task is `blocked` on an MCP approval the usual approval progress shows instead. A task that is not split never shows it.
-- Watchdog 也可能写「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改状态，见上面「pump 做什么」。
+- The Watchdog may also write 「模型和工具还没回，已等 N 分钟」 (at half of `ROBROZ_STEP_TIMEOUT_SECS`) or 「N 分钟没有新进度」. These are hints only and do not change the state. A step that reaches `ROBROZ_STEP_TIMEOUT_SECS` is cancelled and the task ends as `done` + 「没写出结果」; see step 7 of [What pump does](#pump-做什么).
 - 规范成一行：连续空白变一个空格，去掉首尾空白，最多 60 个字符（超了截到 59 个加「…」）。文字没变不更新 `updatedAt`。
 
 ### needsSetup
