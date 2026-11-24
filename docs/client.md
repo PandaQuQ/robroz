@@ -1,167 +1,174 @@
-# 客户端
+# The desktop client
 
-`client/`（`robroz-client`）的界面行为。iced 0.14 原生程序，Windows、Linux、macOS 同一套代码，不套网页。怎么构建和运行见 [install.md](install.md#run-the-client)，环境变量见 [configuration.md 的「客户端」](configuration.md#客户端robroz-client)，事件来源和外观层见 [architecture.md](architecture.md#客户端)。
+How the `client/` crate (`robroz-client`) behaves. It is a native iced 0.14 app, with one codebase for Windows, Linux and macOS, and no web view. Build and run it with [install.md](install.md#run-the-client). Environment variables are in [configuration.md, Client](configuration.md#客户端robroz-client). How events and the look-and-feel layer fit together is in [architecture.md](architecture.md#客户端).
 
-卡片的颜色、状态那句话和动作都来自 `robroz-card`，布局和尺寸来自 `robroz-ui` 的 `Skin`，客户端不自己定。下文的界面文字以代码为准。
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps.
 
-## 布局
+Card colours, status lines and actions come from `robroz-card`; layout and sizes come from `robroz-ui`'s `Skin`. The client does not invent its own palette. UI copy below is taken from `crates/robroz-ui/src/i18n/en.rs`.
 
-- 左边：会话列表，标题「聊天」，标题行右边是「引入一个 bro」按钮（新建 bro 并打开它的私聊）；下面是群和私聊，按最近活动从新到旧，带未读数；还没有会话时显示「还没有 bro，引入第一个」。列表下面依次是「例行任务」「记忆」「技能」「模型」「联网搜索」「MCP」「放行规则」七个按钮。右边：打开的会话的消息流，或对应的页面。
-- 窗口宽度不超过 480 时，列表和会话各占整个窗口：点进去看会话，「‹ 聊天」返回。
-- 群列表来自 `GET /api/groups`；设了 `ROBROZ_GROUPS`（逗号分隔，每项 `id` 或 `id=名字`）就只显示这几个群。
-- 打开一个会话会标记已读（`POST /api/groups/{id}/read`），未读数来自 `GET /api/unread`。
-- 连不上宿主机时保留已经显示的内容，过一会再试，底栏报错。
-- `--fake` / `ROBROZ_FAKE=1`：离线跑一段脚本。`--gallery`：把每种卡的每个状态都摆出来，给设计验收用。
-- 输入框发出的每一句话都走 `POST /api/groups/{id}/say`：私聊里整句派给那个 bro；群里以 `@名字 内容`（或全角 `＠`）开头才派任务。
+## Layout
 
-## 消息流里的卡
+- Left: the conversation list, titled Chats (「聊天」). On the same heading row, Add a bro (「引入一个 bro」) creates a bro and opens its DM. Below that are groups and DMs, newest activity first, with unread counts. An empty list shows No bros yet. Add your first one. (「还没有 bro，引入第一个」). Under the list are seven buttons, in order: Routines, Memories, Skills, Model, Web search, MCP, Allow rules. Right: the open conversation's message stream, or the matching page.
+- When the window is no wider than 480px, the list and the conversation each take the whole window. Open a chat to see it; ‹ Chats (「‹ 聊天」) goes back.
+- The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set (comma-separated `id` or `id=name` items), only those groups are shown.
+- Opening a conversation marks it read (`POST /api/groups/{id}/read`). Unread counts come from `GET /api/unread`.
+- If the host cannot be reached, the client keeps what is already on screen, retries after a while, and shows an error in the bottom bar.
+- `--fake` / `ROBROZ_FAKE=1` plays a scripted run offline. `--gallery` lays out every card state for design review. Fake and gallery runs do not read or write the saved language file.
+- Every line from the composer goes to `POST /api/groups/{id}/say`. In a DM the whole message goes to that bro, or attaches as a follow-up if the bro already has an open task. In a group, every bro gets a turn; a leading `@name` or `＠name` gives that bro the first turn. The composer hint in a group is Message the group, or @name a bro.
 
-| 卡 | 怎么显示 |
+## Language
+
+The Language (「语言」) row sits on the Settings (Model) page. There is no separate general settings page and no footer switch. The label is Language; the options are English and 中文 (each name stays in its own language in both UIs). The choice is saved as one line (`en` or `zh`) in the `lang` file under the client config folder (`ROBROZ_CONFIG_DIR` if set, otherwise the usual per-OS folder; see [configuration.md](configuration.md)). `ROBROZ_LANG=en|zh` wins for the current run (`zh-CN`, `en_GB.UTF-8` and similar also work), is never written back, and unknown values are ignored. No file, or an unreadable one, means English.
+
+Changing the language redraws on-screen cards and conversation-list previews immediately, including You (「我」) on cards. Status cards are drawn from the event each time; previews are cached and rebuilt from the stored events on the switch (`client/src/model.rs`, `Previews::redraw`).
+
+## Cards in the message stream
+
+| Card | How it is shown |
 | --- | --- |
-| 文字消息 | 正文。 |
-| 图片 / 文件消息 | 一行带标签的名字，没有查看器。 |
-| 状态卡 | 一个任务一张，按 `taskId` 原地更新。左边 bro 名，右边状态那句话。规则见下。 |
-| 交付卡 | 摘要加一行等宽的群目录相对路径，只显示，不能点。`briefing` 为 true 时角上加「简报」（`robroz_card::briefing_badge`）。带 `needsSetup: "search"` 或 `"model"` 时右边加「去设置」，路径下面再加一行灰字（搜索是「这次没联网搜索：还没设置」，模型是「这次还没设置模型」），见下面「联网搜索页」和「模型页」。带 `failure` 时整张换成灰色「没做成：原因」，没有路径和那行灰字；这时如果还带 `needsSetup`，右边仍加「去设置」。 |
-| 选项卡 | 按 `id` 原地更新。可以作答（`POST /api/choices/{id}/answer`），只能答一次，处理人规则见下。 |
-| 审批卡 | 「批准」「拒绝」，只能答一次。答完后脚注分成两段文字，中间没有「·」：自己批准写「我已批准」和时间，别人批准写「{名字}已批准」和时间；拒绝写「我 拒绝」或「{名字} 拒绝」和时间；`answeredBy` 为 `null` 时写「已批准」或「已拒绝」和时间。 |
-| 确认卡 | 见下面「确认卡」。 |
+| Text message | The body. |
+| Image / file message | A labelled name on one line; there is no viewer. |
+| Status card | One per task, updated in place by `taskId`. Bro name on the left, status line on the right. Rules below. |
+| Delivery card | A summary plus a monospace path relative to the group folder, display only, not clickable. When `briefing` is true, a Briefing (「简报」) badge is added in the corner (`robroz_card::briefing_badge`). When `needsSetup` is `"search"` or `"model"`, a Set up (「去设置」) button is added on the right, and a grey line under the path says Skipped web search: not set up yet or Skipped: no model set up yet. When `failure` is set, the whole card becomes the grey Couldn't finish: {reason} line, with no path and no grey hint; if `needsSetup` is also set, Set up still appears on the right. A dead run's `failure` 「没写出结果」 is shown as Finished with no result, without the Couldn't finish: prefix (`robroz_card::failure_line`). |
+| Choice card | Updated in place by `id`. Can be answered (`POST /api/choices/{id}/answer`) once. Who answered is described below. |
+| Approval card | Approve and Deny, once. After an answer the footnote is two spans, with no "·" between them: Approved by You and the time when this client answered; Approved by {name} and the time when someone else did; Denied by You or Denied by {name} and the time for a denial. When `answeredBy` is `null`, the text is just Approved or Denied, plus the time. |
+| Confirm card | See Confirm cards below. |
 
-不认识的事件类型跳过，不影响其他卡。
+An event whose `type` the client does not recognise is skipped; other cards are unaffected.
 
-### 状态卡
+### Status cards
 
-- `queued`：灰色「排队」。
-- `running` 且 `containerUp`：「进行」。有 `progress` 时在 bro 名下面左对齐加一行浅灰小字，超长用「…」，没有就不占位。
-- `running` 且 `containerUp` 为 false：灰色「没写出结果」，没有动作。只在旧数据里出现；宿主机现在把运行失败结束成 `done` + `failure`「没写出结果」，这种卡照样显示灰色「没写出结果」，不加「没做成：」（`robroz_card::failure_line`）。
-- `blocked` 且 `waitingFor` 为 `approval`：不算卡住，灰色「等你批准」，没有按钮，去答旁边那张审批卡。
-- `blocked` 且 `waitingFor` 为 `takeover` 或没有这个字段（旧宿主机）：琥珀色「卡住」加「去私聊接管」。这个按钮现在只打日志，还没接上。
-- `done`：完成；带 `failure` 时显示灰色「没做成：原因」（`failure` 为「没写出结果」时只显示「没写出结果」），不显示绿色完成，没有按钮。
+- `queued`: grey Queued (「排队」).
+- `running` with `containerUp`: Running (「进行」). If `progress` is set, a light-grey line is left-aligned under the bro's name, shortened with "…" when it is too long; if there is no progress, that row is not reserved.
+- `running` with `containerUp` false: grey Finished with no result, no action. This only appears in old data; the host now ends a dead run as `done` plus `failure` 「没写出结果」, and that card is also shown as grey Finished with no result, without Couldn't finish:.
+- `blocked` with `waitingFor` `approval`: not treated as a takeover. Grey Needs your approval (「等你批准」), no button; answer the approval card beside it.
+- `blocked` with `waitingFor` `takeover`, or with the field missing (an older host): amber Stuck (「卡住」) plus Take over in DM (「去私聊接管」). That button currently only logs; it is not wired up yet.
+- `done`: Done (「完成」). With a `failure`, a grey Couldn't finish: {reason} (or Finished with no result when `failure` is 「没写出结果」), never the green Done, and no button.
 
-### 会话列表预览
+Host-written `label`, `failure` and `progress` values on the wire are still Chinese. The client maps known strings into the English above.
 
-- 有进度时预览用进度那句，写成「Ada：在想怎么回」，不是「Ada：进行」，太长按列宽截断加「…」。
-- `waitingFor` 为 `approval` 时写「Ada：等你批准」，不会被同时出现的审批卡摘要顶掉。
-- 没有进度、任务完成、卡住或没做成时，预览照旧显示状态那句话。
+### Conversation list previews
 
-### 处理人
+- When a live run has a progress line, the preview uses that line, for example Ada：Thinking about a reply, not Ada：Running. Long text is cut to the column width with "…".
+- When `waitingFor` is `approval`, the preview is Ada：Needs your approval, and is not replaced by an approval card's summary that arrives at the same time.
+- With no progress, or when the task is done, stuck, or failed, the preview uses the status line as usual.
+- Switching the language redraws every preview immediately from the events the client already has.
 
-答审批卡、选项卡、确认卡时，客户端把 `ROBROZ_USER_NAME`（不设就用主机名，再拿不到用 `robroz`；只取第一行，最多 40 个字）作为 `answeredBy` 发出去。
+### Who answered
 
-- 返回的 `answeredBy` 和自己报的名字一样就写「我」，不一样写返回的名字，是 `null` 就不写是谁，只写「已批准」和时间。已批准的脚注是「我已批准」或「{名字}已批准」或「已批准」，和时间分成两段，中间没有「·」。
-- 时间一律用宿主机返回的 `answeredAt`。
-- 两台设备不要用同一个名字，否则会互相把对方的回答显示成「我」。
-- 别人先答了（409）时，卡上原地显示别人的结果。
+When this client answers an approval, choice or confirm card, it sends `ROBROZ_USER_NAME` as `answeredBy` (the computer's hostname if that is unset, or `robroz` if the hostname cannot be read; first non-empty line only, at most 40 characters).
 
-## 确认卡
+- If the returned `answeredBy` matches the name this client sent, the footnote uses You (「我」). If it is a different name, that name is shown. If it is `null`, no name is shown, only Approved (or the matching word) and the time.
+- The time always comes from the host's `answeredAt`.
+- Two devices must not share the same name, or each will show the other's answers as You.
+- If someone else answered first (409), the card updates in place with that result.
 
-- **记忆卡**：左上角「记忆」标签，下面是完整原文和一行范围（「所有 bro」或「只给 Ada」），按钮「记下」「不用」。回答后换成「记下了 · 我 · HH:MM」或灰色「不用了 · …」。在记忆页忘掉一条待确认的记忆，卡显示「不用了 · HH:MM」，不带名字。
-- **技能卡**：左上角「技能」标签，显示标题和 `slug`，说明下面一行范围。说明默认只露前三行，「展开」看全部，「收起」折回。按钮「保存」「不用」，回答后换成「保存了 · 我 · HH:MM」或灰色「不用了 · …」。点「保存」后还要在群里启用才会进提示。
-- **折叠**：同一个任务待确认的卡超过 3 张时，从第 4 张起收成「还有 N 条待确认」，点开再逐条确认。
+## Confirm cards
 
-## 记忆页
+- **Memory card:** a Memory tag in the top left, then the full text and a one-line scope (All bros or Only Ada), with Remember and Not now. After an answer the footnote is Remembered · You · HH:MM, or a grey Dismissed · … (the client joins those parts with "·"). Forgetting a pending memory on the Memories page updates the card to Dismissed · HH:MM, with no name.
+- **Skill card:** a Skill tag in the top left, the title and `slug`, and a scope line under the instructions. Instructions show the first three lines by default; Show all opens them, Show less folds them back. The buttons are Save and Not now; after an answer the footnote is Saved · You · HH:MM or a grey Dismissed · …. After Save, the skill still has to be enabled in a group before it is added to the prompt.
+- **Folding:** if one task has more than three pending confirm cards, from the fourth onwards they collapse to {N} more to review. Open that row to confirm them one by one.
 
-点「记忆」按钮打开（在「例行任务」旁边）。
+## Memories page
 
-- 按范围分组：「所有 bro」排第一，后面每个 bro 一组（「只给 Ada」）。每组里「待确认」和「已记下 N」分开放；只有已记下的组也显示「已记下 N」。每条显示原文、类型（资料、习惯、项目）和更新时间。一条也没有时显示「还没有记下任何东西」。
-- 待确认的条目只有「记下」「不用」，用 `confirmId` 调确认卡接口，聊天里那张卡跟着变。
-- 已记下的条目可以「改」（`PATCH`）或「忘掉」（`DELETE`）。忘掉前确认一次「忘掉这条？bro 以后不会再用到它。」，忘掉后从列表里消失。
-- 「记一条」要先选范围：没选时那一行显示「选一下谁能用这条」，选好后换成灰色的「只给 Bob 用」或「所有 bro 都能用」。这一行一直占位，「保存」不会跳。
-- 「保存」在没写内容、没改动、超过 2000 字或没选范围时是灰的。成功后更新时间刷新，旁边标「已保存」；失败在原地提示「没保存：原因」，草稿还在。
+Open it with the Memories button (next to Routines).
 
-## 技能页
+- Entries are grouped by scope: All bros first, then one group per bro (Only Ada). Inside a group, To review and Remembered N are listed separately; a group that only has kept items still shows Remembered N. Each item shows the text, a kind (Profile, Habit, Project) and the updated time. An empty page shows Nothing remembered yet.
+- Pending items only have Remember and Not now, which call the confirm-card API with `confirmId`. The card in the chat updates with them.
+- Kept items can be Edit (`PATCH`) or Forget (`DELETE`). Forget asks Forget this? Bros won't use it again. and then removes the item from the list.
+- Add memory first asks for a scope. Until one is chosen, that row says Choose who can use this; after a choice it becomes the grey Only Bob can use this or All bros can use this. The row always takes space, so Save does not jump.
+- Save is grey when the text is empty, unchanged, over 2000 characters, or no scope is chosen. After a success the updated time refreshes and Saved appears beside it. A failure shows Not saved: {reason} in place, and the draft is kept.
 
-点「技能」按钮打开，结构和记忆页一样。
+## Skills page
 
-- 按范围分组，每组里「待确认」和「已保存 N」分开放。每条显示标题、`slug` 和说明的前三行。一条也没有时显示「还没有保存任何技能」。
-- 待确认的条目有「保存」「不用」，用 `confirmId` 调确认卡接口。
-- 已保存的条目可以「改」（`PATCH`，`slug` 不能改）或「删除」（`DELETE`）。删除前确认一次「删除这项？bro 以后不会再用到它。」
-- 已保存的条目下面有「在这些群里用」，每个群一个开关：打开走 `PUT /api/groups/{id}/skills/{slug}`，关掉走 `DELETE`。打开页面时先用 `GET /api/groups/{id}/skills` 读出真实状态；没读到时开关是灰的、点不了，旁边写「读取中」；读失败写「读不到」。
-- 「加一项」要填英文短名（`slug`，只能小写字母、数字和连字符）、标题（最多 80 字）、说明（最多 8000 字），还要选范围。范围提示、「保存」置灰、「已保存」、「没保存：原因」都跟记忆页一样。
+Open it with the Skills button. The layout matches the Memories page.
 
+- Entries are grouped by scope. Inside a group, To review and Saved N are listed separately. Each item shows the title, `slug` and the first three lines of the instructions. An empty page shows No skills saved yet.
+- Pending items have Save and Not now, which call the confirm-card API with `confirmId`.
+- Saved items can be Edit (`PATCH`; `slug` cannot change) or Delete (`DELETE`). Delete asks Delete this? Bros won't use it again.
+- A saved item has Use in these groups, with one switch per group: on is `PUT /api/groups/{id}/skills/{slug}`, off is `DELETE`. Opening the page first reads `GET /api/groups/{id}/skills`. Until that returns, the switch is grey and disabled, with Loading beside it; a failed read shows Couldn't load.
+- Add skill needs a short English name (`slug`: lowercase letters, digits and hyphens), a title (at most 80 characters), instructions (at most 8,000 characters), and a scope. The scope hint, the greyed-out Save, Saved and Not saved: {reason} behave as on the Memories page.
 
-## 模型页
+## Model page
 
-点左边的「模型」打开，或点交付卡上因 `needsSetup: "model"` 出现的「去设置」。接口是 `GET` / `PUT /api/settings/model` 和 `POST /api/settings/model/test`（[api.md](api.md#模型设置)）。代码：状态和文字在 `crates/robroz-ui/src/cards/model.rs`，界面在 `crates/robroz-ui/src/view.rs:model_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_model_action`。
+Open Model in the sidebar, or Set up on a delivery card with `needsSetup: "model"`. The API is `GET` / `PUT /api/settings/model` and `POST /api/settings/model/test` ([api.md](api.md#模型设置)). Code: state and copy in `crates/robroz-ui/src/cards/model.rs`, layout in `crates/robroz-ui/src/view.rs:model_panel`, requests in `client/src/api.rs`, message handling in `client/src/main.rs:on_model_action`. The Language row described above is on this page.
 
-- **打开时**先 `GET` 一次，表单显示当前生效的配置。三项都空时显示「还没设置模型」。读失败时在页内提示原因（连不上宿主机是「连不上主机」）。
-- **服务商**：前端自己的快捷项，宿主机没有服务商列表。选项依次是「Gemini（推荐）」「Groq」「OpenRouter」「Ollama」「自定义」。选一个会填入对应的 OpenAI 兼容地址（不含末尾 `/`）；模型名和密钥仍要自己填。改地址不再等于该快捷项时，服务商变成「自定义」。选「自定义」不会改已经填的地址。选中 OpenRouter 时，模型名下面有一行灰字「免费模型的名字以 :free 结尾」。
-- **地址 / 模型名 / 密钥**：标签是「地址」「模型名」「密钥（选填）」，占位符不重复标签。地址框留空；模型名用该服务商的示例（Gemini `gemini-2.5-flash`，Groq `llama-3.3-70b-versatile`，OpenRouter `meta-llama/llama-3.3-70b-instruct:free`，Ollama `llama3.2`，自定义留空）。密钥框也留空。所有服务商（包括 Ollama）都显示密钥框。
-- **密钥**用共用的 `MaskedKey`。已保存的密钥显示「已填 · 末4位」，旁边只有「清除」。点「清除」不会马上发请求，只在框里换成灰字「保存后删除」和「撤销」；点「保存」才把 `key` 设为 `null`（按项退回环境变量）。「保存」时只提交当前的地址、模型名和密钥变更，不清掉另外两项。
-- **保存**：地址和模型名都不能空，地址必须以 `http://` 或 `https://` 开头。密钥选填，本地不再校验「请填写密钥」。`PUT` 成功后再自动 `POST …/test` 一次，结果显示「试连中…」、墨色「能用了」（前面一个绿点），或「已保存，但连不上：原因」。云端漏填或密钥不对时，`/test` 的 `error` 是「密钥不对或没填」，页面写成「已保存，但连不上：密钥不对或没填」，不直接显示 401。保存失败显示「没保存：原因」。
-- **「来自环境变量」**：只在宿主机返回 `source: "env"` 时出现。没有这个字段就不标，也不猜测。
-- **「去设置」**：只看交付卡的 `needsSetup` 是否为 `"model"`。只要带这个字段就会显示按钮，不要求同时有 `failure`。点「去设置」打开这一页。
+- **On open** the page `GET`s once and fills the form with the effective settings. When all three fields are empty it shows No model set up yet. A failed read shows the reason on the page (Can't reach the host when the host is down).
+- **Provider:** a client-side shortcut; the host has no provider list. The options are, in order, Gemini (recommended), Groq, OpenRouter, Ollama, Custom. The empty-value placeholder is Choose a provider. Picking one fills the matching OpenAI-compatible URL (no trailing `/`); the model name and key still have to be entered. If the URL is edited so it no longer matches that shortcut, the provider becomes Custom. Picking Custom does not change a URL that is already filled in. When OpenRouter is selected, a grey line under the model name says Free model names end in :free.
+- **URL / Model name / Key:** the labels are URL, Model name and Key (optional). Placeholders do not repeat the labels. The URL box starts empty; the model-name box uses that provider's example (Gemini `gemini-2.5-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`, Custom left empty). The key box also starts empty. Every provider, including Ollama, shows the key field.
+- **Key** uses the shared `MaskedKey`. A stored key shows Set · last4, with only Clear beside it (the client joins Set and the last four characters with "·"). Clear does not send a request yet: the field changes to the grey Deleted on save plus Undo; Save is what sets `key` to `null` (that field then falls back to the environment). Save only submits the URL, model name and key changes in this form; it does not clear the other two fields.
+- **Save:** both URL and model name are required, and the URL must start with `http://` or `https://`. The key is optional; the client no longer checks for a missing key locally. After a successful `PUT` the client automatically `POST`s `…/test` once. The result is Testing…, then ink Working with a green dot, or Saved, but can't connect: {reason}. When the cloud service is missing a key or the key is wrong, `/test` returns `error` 「密钥不对或没填」, and the page shows Saved, but can't connect: key is wrong or missing, not a raw 401. A failed save shows Not saved: {reason}.
+- **From environment variables:** only shown when the host returns `source: "env"`. If the field is absent, nothing is labelled and nothing is guessed.
+- **Set up:** shown only when a delivery card's `needsSetup` is `"model"`. The button appears whenever that field is present, even without a `failure`. Tapping it opens this page.
 
-## 联网搜索页
+## Web search page
 
-点左边的「联网搜索」打开，或点交付卡上的「去设置」。接口是 `GET` / `PUT /api/settings/search` 和 `POST /api/settings/search/test`（[api.md](api.md#搜索设置)）。代码：状态和文字在 `crates/robroz-ui/src/cards/search.rs`，界面在 `crates/robroz-ui/src/view.rs:search_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_search_action`。
+Open Web search in the sidebar, or Set up on a delivery card. The API is `GET` / `PUT /api/settings/search` and `POST /api/settings/search/test` ([api.md](api.md#搜索设置)). Code: state and copy in `crates/robroz-ui/src/cards/search.rs`, layout in `crates/robroz-ui/src/view.rs:search_panel`, requests in `client/src/api.rs`, message handling in `client/src/main.rs:on_search_action`.
 
-- **打开时**先 `GET` 一次，表单显示当前生效的配置。还没生效（`provider` 为 null）且没选服务时显示「还没设置联网搜索」。读失败时在页内提示原因（连不上宿主机是「连不上主机」）。
-- **「来自环境变量」**：标题旁的标签，只在返回体的可选字段 `source` 为 `"env"` 时显示。`source` 为 `"settings"`、缺失或不认识的值都不显示，也不猜。保存后宿主机返回 `source: "settings"`，标签随之消失。
-- **选服务**：「Brave」或「SearXNG」两个按钮，选中的高亮。
-- **Brave 的密钥**：输入框是掩码的，客户端从不读回密钥原文。
-  - 宿主机已有密钥（`hasKey` 为 true）时，不显示输入框，显示「已填 · 末4位」（`keyLast4` 的值，例如「已填 · abcd」；没有末 4 位时只写「已填」），旁边只有「清除」。
-  - 「清除」：先标成待删除，灰字显示「保存后删除」，旁边是「撤销」。要点「保存」才真正清掉；「撤销」回到「已填 · …」。保存时发 `PUT {"provider":null,"url":null,"key":null}`，清掉设置接口里的服务、地址和密钥三项，之后按项退回环境变量；没有环境变量时页面回到「还没设置联网搜索」。来自环境变量的值清不掉，清除保存后页面仍显示环境变量的配置和「来自环境变量」。
-  - 没有已存的密钥时直接显示输入框，占位文字「API 密钥」。
-- **SearXNG 的地址**：一个输入框，占位文字「SearXNG 地址，如 http://127.0.0.1:8888」。SearXNG 下没有「清除」按钮。
-- **「保存」**：没选服务或请求进行中时是灰的；在输入框里按回车也会保存。发出的 `PUT` 只带需要的字段：Brave 有新密钥时带 `key`，用已存的密钥时只发 `{"provider":"brave"}`；SearXNG 发 `provider` 和 `url`，不动密钥。
-  - 本地检查不过时不发请求，在原地提示：Brave 没有已存密钥又没填，提示「请填写 key」；SearXNG 没填地址，提示「请填写地址」。
-  - 保存失败：原地提示「没保存：原因」，原因是宿主机的报错原文（见 api.md 的 400 列表），连不上宿主机时是「没保存：连不上主机」。
-  - 保存成功后**自动试连一次**（`POST …/test`），保存按钮旁依次显示「试连中…」，然后是「能用了」，或「已保存，但连不上：原因」。宿主机报错里自带的「连不上：」前缀会去掉，不会叠成两层。页面上没有单独的试连按钮。
-- **「去设置」**：只看交付卡的 `needsSetup` 是否为 `"search"`，不匹配「还没设置联网搜索」这句文字。只要带这个字段就会显示按钮，不要求同时有 `failure`。宿主机在 `web_search` 没配置时返回这句话给模型，任务一般照常写出结果，交付卡没有 `failure`：卡上仍出现「去设置」，路径下面加一行灰字「这次没联网搜索：还没设置」。带 `failure` 时整张是灰色「没做成：原因」，没有路径和那行灰字，按钮仍在右边。点「去设置」打开这一页。也可以从左边的「联网搜索」进去填。
+- **On open** the page `GET`s once and fills the form with the effective settings. When nothing is in effect (`provider` is null) and no service is selected, it shows Web search isn't set up yet. A failed read shows the reason on the page (Can't reach the host when the host is down).
+- **From environment variables:** a tag next to the title, only when the optional `source` field in the response is `"env"`. `"settings"`, a missing value or an unknown value are not shown and not guessed. After a save the host returns `source: "settings"` and the tag disappears.
+- **Provider:** Brave or SearXNG, two buttons, the selected one highlighted.
+- **Brave key:** a masked field; the client never reads the raw key back.
+  - When the host already has a key (`hasKey` is true), the input is hidden and the row shows Set · last4 (the `keyLast4` value, for example Set · abcd; or just Set when there is no last four). Only Clear sits beside it.
+  - Clear first marks the key for deletion, shows the grey Deleted on save, and offers Undo. Save is what actually clears it; Undo returns to Set · …. The save sends `PUT {"provider":null,"url":null,"key":null}`, which clears the service, URL and key in the settings API, then falls back field by field to the environment. With no environment values the page returns to Web search isn't set up yet. Values that come from the environment cannot be cleared: after that save the page still shows the environment settings and From environment variables.
+  - With no stored key the input is shown, with the placeholder API key.
+- **SearXNG URL:** one input, placeholder SearXNG URL, e.g. http://127.0.0.1:8888. There is no Clear button under SearXNG.
+- **Save:** grey when no service is selected or a request is in flight. Pressing Enter in an input also saves. The `PUT` only includes the fields that are needed: Brave with a new key sends `key`; Brave with a stored key sends only `{"provider":"brave"}`; SearXNG sends `provider` and `url` and leaves the key alone.
+  - Local checks that fail are not sent: Brave with no stored key and nothing typed shows Enter a key; SearXNG with no URL shows Enter a URL.
+  - A failed save shows Not saved: {reason} in place. The reason is the host's error text (see the 400 list in api.md), or Not saved: Can't reach the host when the host is down.
+  - After a successful save the page **tests the connection once** (`POST …/test`). Next to Save it shows Testing…, then Working, or Saved, but can't connect: {reason}. A leading 「连不上：」 in the host's error is stripped so it is not doubled. There is no separate test button on the page.
+- **Set up:** shown only when a delivery card's `needsSetup` is `"search"`, not by matching Web search isn't set up yet. The button appears whenever that field is present, even without a `failure`. When `web_search` is not configured the host returns that sentence to the model, the task usually still writes a result, and the delivery has no `failure`: the card still shows Set up, with the grey line Skipped web search: not set up yet under the path. With a `failure` the card is the grey Couldn't finish: {reason}, with no path and no grey hint, and the button stays on the right. Tapping Set up opens this page. You can also open Web search from the sidebar.
 
-## MCP 页
+## MCP page
 
-点左边的「MCP」打开。管理宿主机上的 MCP 服务器：增删改、试连、看工具、按群启用，以及批准 stdio 的启动命令。接口见 [search-and-mcp.md](search-and-mcp.md#mcp) 和 [api.md](api.md)。代码：状态和文字在 `crates/robroz-ui/src/cards/mcp.rs`，掩码密钥在 `crates/robroz-ui/src/cards/secret.rs`（和联网搜索页共用），界面在 `crates/robroz-ui/src/view.rs:mcp_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_mcp_action`。
+Open MCP in the sidebar. This page manages MCP servers on the host: add, edit, delete, test a connection, list tools, enable per group, and approve a stdio start command. The API is in [search-and-mcp.md](search-and-mcp.md#mcp) and [api.md](api.md). Code: state and copy in `crates/robroz-ui/src/cards/mcp.rs`, masked keys in `crates/robroz-ui/src/cards/secret.rs` (shared with the Web search page), layout in `crates/robroz-ui/src/view.rs:mcp_panel`, requests in `client/src/api.rs`, message handling in `client/src/main.rs:on_mcp_action`.
 
-- **打开时**读 `GET /api/mcp/servers`，再对左边列表里的每个会话读 `GET /api/groups/{id}/mcp`。读失败时在页内提示原因（连不上宿主机是「连不上主机」）。
-- **标题行**：「MCP」，有服务器时后面跟数量；右边「加一台」（表单打开时不显示）。
-- **空状态**：没有服务器、也没开表单时显示「还没有 MCP 服务器」和「点「加一台」接上 bro 可以用的工具服务」。
-- **列表**：按 `updatedAt` 从新到旧。每行是名字（粗体）、下面一行灰字、右边启用开关（`PATCH /api/mcp/servers/{id}` `{"enabled":…}`）。灰字是「N 个工具」（`toolCount`），还没数过时是「还没数过」。点名字展开或收起这一行。
-- **未批准的 stdio 服务器**（`transport` 为 stdio 且 `commandApproved` 不为 true）：名字旁加一个标签「命令未批准」（强调色文字，`palette.accent`），收起时那行灰字换成「批准命令后才能读取工具」。启用开关照常能用。
-- **展开后**依次是：工具列表（或命令批准区，见下）、「在这些群里用」、「改」「删除」。
-  - 工具列表来自 `GET /api/mcp/servers/{id}/tools`，第一次展开时读，之后用缓存。读取时显示「读取中」，失败是「连不上：原因」，没有工具是「这台服务器还没有工具」。每项是工具名，`needsApproval` 为 true 时旁边加「要你批准」，有 `description` 时下面一行灰字。
-  - 「在这些群里用」：左边列表里的每个会话一个开关，打开走 `PUT /api/groups/{id}/mcp/{serverId}`，关掉走 `DELETE`。没读到真实状态时开关是灰的、点不了，旁边写「读取中」；读失败写「读不到」。
-  - 「删除」先在原地问「删除这台服务器？群里也不会再用到它。」，再点「删除」才发 `DELETE`（返回 404 也当作已删除），「取消」收回。
-  - 失败时在这一行下面写「没保存：原因」。
-- **加一台 / 改**：表单出现在列表最上面（加）或原地替换这一行（改）。每个输入框上面有一行小字标签，填了内容也认得出是哪一栏：
-  - 「名称」：必填，最多 80 个字。
-  - 「stdio」「HTTP」两个按钮选传输方式，默认 stdio。
-  - stdio：「命令」（占位「启动命令」，必填）和「参数（用空格分开）」（占位「参数，用空格分开」，按空白切开，所以单个参数里不能带空格）。
-  - HTTP：「地址」（占位「地址，如 http://127.0.0.1:3000」，必须以 `http://` 或 `https://` 开头）。
-  - 「加一项密钥」加一行：「密钥名称」（不能有空白）、「环境变量」「请求头」二选一（stdio 默认环境变量，HTTP 默认请求头）、「去掉」、「密钥」。
-  - 本地检查不过时「保存」是灰的，提示「请填写名称」「名称最多 80 个字」「请填写启动命令」「请填写地址」「地址要以 http:// 或 https:// 开头」「请填写密钥名称」「密钥名称里不能有空白」「新增密钥时请填写值」之一。宿主机拒绝时原地写「没保存：原因」。
-  - 「改」会回填名称、命令、参数和地址，**不回填密钥原文**。
-- **密钥**：输入框是掩码的。已存的密钥（`hasKey` 为 true）不显示输入框，显示「已填 · 末4位」（`keyLast4`，没有末 4 位时只写「已填」），旁边「换一个」「清除」。
-  - 「换一个」：换成空的掩码输入框，旁边加「取消」，新值要点「保存」才生效。
-  - 「清除」：和联网搜索页不同，**不立即发请求**；点「保存」时这条密钥带 `key: null`，宿主机把这一整条（连名字）删掉。
-  - 没改的已存密钥在 `PATCH` 里不带 `key`，宿主机保持原值。
-  - 「去掉」只是把这一行从表单里拿掉。`PATCH` 里不提到的已存密钥宿主机会保留，所以对已存的密钥按「去掉」再保存**删不掉它**，要删请用「清除」再「保存」。
-- **保存之后**：新建走 `POST /api/mcp/servers`，修改走 `PATCH`。成功后这一行自动展开，并**自动试连一次**（`POST …/test`）、重新读工具。名字下面依次显示「试连中…」，然后是「能用了 · N 个工具」（没有数量时只写「能用了」）或「连不上：原因」。页面上没有单独的试连按钮。
-- **命令批准**：stdio 的命令和参数要先批准，宿主机才会启动它（[search-and-mcp.md](search-and-mcp.md#mcp)）。`…/test` 或 `…/tools` 返回 409 `command_not_approved` 时，这一行展开，工具列表的位置换成批准区：
-  - 小标签「命令」下面是命令，小标签「参数」下面每个参数单独一行，都是等宽字，长了换行，不截断。命令和参数取自 409 返回体，就是宿主机将要启动的那一条。
-  - 一行灰字「这条命令会在你的电脑上运行」。
-  - 「批准运行」发 `POST /api/mcp/servers/{id}/approve-command`，成功后批准区收起，并自动重新试连、重新读工具。失败时这一行下面写「没保存：原因」。
-  - 「取消」只收起批准区，不发请求；这一行回到「批准命令后才能读取工具」。再展开会重新读工具，再遇到 409 就再出批准区。
-  - 新建或改了命令、参数的 stdio 服务器保存后会马上试连，所以会直接看到批准区。
+- **On open** the page reads `GET /api/mcp/servers`, then `GET /api/groups/{id}/mcp` for each conversation in the left list. A failed read shows the reason on the page (Can't reach the host when the host is down).
+- **Heading:** MCP, with a count when there are servers; Add server on the right (hidden while the form is open).
+- **Empty state:** with no servers and no open form, No MCP servers yet and Click “Add server” to connect tools your bros can use.
+- **List:** newest `updatedAt` first. Each row is a bold name, a grey line under it, and an enable switch (`PATCH /api/mcp/servers/{id}` `{"enabled":…}`). The grey line is N tools (`toolCount`; 1 tool when the count is one), or Not counted yet when it has not been counted. Click the name to expand or collapse the row.
+- **An unapproved stdio server** (`transport` is stdio and `commandApproved` is not true): a Command not approved tag appears next to the name (accent-coloured, `palette.accent`). While collapsed, the grey line is Approve the command to load its tools. The enable switch still works.
+- **Once expanded,** in order: the tool list (or the command-approval panel, below), Use in these groups, Edit, Delete.
+  - The tool list comes from `GET /api/mcp/servers/{id}/tools`, fetched the first time the row is expanded and cached after that. While loading it shows Loading, a failure is Can't connect: {reason}, and no tools is This server has no tools yet. Each item is the tool name, with Needs your approval beside it when `needsApproval` is true, and a grey description line when `description` is set.
+  - Use in these groups: one switch per conversation in the left list. On is `PUT /api/groups/{id}/mcp/{serverId}`, off is `DELETE`. Until the real state is loaded the switch is grey and disabled, with Loading beside it; a failed read shows Couldn't load.
+  - Delete first asks Delete this server? Groups won't use it any more. A second Delete sends `DELETE` (a 404 is treated as already deleted); Cancel folds the prompt back.
+  - A failure under the row shows Not saved: {reason}.
+- **Add server / Edit:** the form appears at the top of the list (add) or replaces that row in place (edit). Each input has a small label above it so the field stays identifiable once it has a value:
+  - Name: required, at most 80 characters. The placeholder is the same as the label (Name).
+  - stdio and HTTP choose the transport; stdio is the default.
+  - stdio: Command (required) and Arguments (space-separated) (split on whitespace, so one argument cannot contain a space). The placeholders are the same as the labels.
+  - HTTP: URL (must start with `http://` or `https://`). The placeholder is URL.
+  - Add a secret adds a row: Secret name (no whitespace), Environment variables or Request headers (stdio defaults to Environment variables, HTTP to Request headers), Remove, and Secret. The placeholders are Secret name and Secret.
+  - When a local check fails, Save is grey and one of these hints is shown: Enter a name, Name: max 80 characters, Enter a start command, Enter a URL, The URL must start with http:// or https://, Enter a secret name, Secret names can't contain spaces, Enter a value for the new secret. When the host rejects the save, Not saved: {reason} is shown in place.
+  - Edit fills in the name, command, arguments and URL, and **does not fill in the raw secret**.
+- **Secrets:** the input uses the same `MaskedKey` as the Web search and Model pages. A stored secret (`hasKey` is true) hides the input and shows Set · last4 (or just Set), with only Clear beside it.
+  - Clear does not send a request immediately: the field changes to the grey Deleted on save plus Undo. Save is what sends this secret as `key: null`, and the host then deletes the whole entry (including the name). Undo returns to Set · ….
+  - A stored secret that was not changed is omitted from the `PATCH`, and the host keeps the previous value.
+  - Remove only takes the row out of the form. Secrets the `PATCH` does not mention are kept, so Remove plus Save **does not delete** a stored secret; use Clear and then Save.
+- **After Save:** create uses `POST /api/mcp/servers`, edit uses `PATCH`. On success the row expands itself, **tests the connection once** (`POST …/test`) and reloads the tools. Under the name it shows Testing…, then Working · N tools (or just Working when there is no count), or Can't connect: {reason}. There is no separate test button on the page.
+- **Command approval:** a stdio server's command and arguments must be approved before the host will start it ([search-and-mcp.md](search-and-mcp.md#mcp)). When `…/test` or `…/tools` returns 409 `command_not_approved`, the row expands and the tool list is replaced by the approval panel:
+  - A Command label over the command, an Arguments label over each argument on its own line, all monospace, wrapping rather than truncated. The command and arguments come from the 409 body, and are what the host would start.
+  - A grey line: This command runs on your computer.
+  - Approve and run sends `POST /api/mcp/servers/{id}/approve-command`. On success the panel folds away and the page tests the connection and reloads the tools automatically. A failure under the row shows Not saved: {reason}.
+  - Cancel only folds the panel, with no request; the row returns to Approve the command to load its tools. Expanding it again reloads the tools, and another 409 brings the panel back.
+  - A new or edited stdio server is tested right after save, so the approval panel appears immediately.
 
-## 放行规则页
+## Allow rules page
 
-点左边的「放行规则」（在「MCP」下面）打开。列出已经确认的放行规则。在设置页上新增或删除时，宿主返回 202 和 `approvalId`，客户端再调 `GET /api/approvals/{id}` 取卡，确认卡直接显示在本页（新增在输入框下面，删除替换那一行），主人当场点批准或拒绝，走 `POST /api/approvals/{id}/approve` / `deny`；`botId` 是 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），没有 `taskId`，不进任何聊天、stream 或未读，没有 bro 也能用。客户端也会把这种卡从会话流里滤掉。批准后再拉一次列表，拒绝就收起这张卡。接口见 [api.md 的「放行规则」](api.md#放行规则)，设计见 [design/auto-review.md](design/auto-review.md)。代码：状态和文字在 `crates/robroz-ui/src/cards/review_rules.rs`，界面在 `crates/robroz-ui/src/view.rs:review_rules_panel`，请求在 `client/src/api.rs`，消息处理在 `client/src/main.rs:on_review_action`。
+Open Allow rules in the sidebar (under MCP). It lists allow rules that have already been confirmed. Adding or deleting a rule from this page returns 202 and an `approvalId`; the client then `GET /api/approvals/{id}` and shows the confirm card on this page (a new rule under the input, a deletion in place of that row). The owner approves or denies it here, with `POST /api/approvals/{id}/approve` / `deny`. `botId` is `SETTINGS_APPROVAL_BOT_ID` (`"settings"`), there is no `taskId`, the card is not sent to any chat, stream or unread count, and it works even with no bros. The client also filters these cards out of the conversation stream. After an approval the list is fetched again; a denial just dismisses the card. The API is in [api.md, Allow rules](api.md#放行规则); the design is in [design/auto-review.md](design/auto-review.md). Code: state and copy in `crates/robroz-ui/src/cards/review_rules.rs`, layout in `crates/robroz-ui/src/view.rs:review_rules_panel`, requests in `client/src/api.rs`, message handling in `client/src/main.rs:on_review_action`.
 
-- **标题行**：「放行规则」。
-- **添加**：输入框占位符是「用一句话写，比如：允许合并 CI 全绿的 PR」，右边「添加」。点了不立刻进列表。空提交提示「请填写规则」。超过 200 字提示「最多 200 字，还要删掉 N 字」（N 是多出来的字数），红字，放在输入框下面。
-- **空状态**：「还没有放行规则。有风险的操作都会先问你。」
-- **一行规则**：规则原文，下面一行灰字「添加于 {日期}」（来自 `createdAt`），右边「删除」。没有开关，也没有编辑。删除后规则仍留在列表里，直到确认；确认卡显示在这一行的位置。
-- **确认卡**（设置页内，复用 #68 的确认布局）：没有粗体标题。正文是规则原文，下面一行灰字：「确认后加入放行规则」或「确认后删除这条规则」。新增按钮是「添加」/「不用」，删除按钮是红色「删除规则」/「不用」。这张卡已经在别处处理过时，卡片收起，页上灰字提示「这张卡已经处理过了」，并重新拉取列表。
-- **过期卡**：`decision` 是 `denied` 且 `reason` 等于 contract 常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）时，显示「已过期」，脚注「没人批准，已过期」和时间分成两个 span，按钮锁死，不写「我已拒绝」，也没有「重新发起」。聊天里的过期卡右上仍是灰点「已过期」，并保留操作那一行。
-- **群里的审批卡**：任务卡和 MCP 卡发在主人和这个 bro 的私聊里，主人在那里批准或拒绝；被拦时多一行灰字「被拦原因：」加上 `reason`。群里只剩状态卡：`blocked` + `waitingFor: approval`，`progress` 是「已发到主人私聊」（`APPROVAL_SENT_TO_OWNER_DM_NOTICE`），没有批准/拒绝按钮。任务本来就在私聊里跑时，卡留在这个私聊，不显示这行提示。bro 用 `POST /api/groups/{id}/approvals` 发的卡先过自动审核，放行的不出卡；被拦或没有放行规则时，卡发在主人和这个 bro 的私聊里，主人在那里批准或拒绝。发卡的群里也列着同一张卡（同一个 `id`），客户端照现在的做法画成没有按钮、写「已发到主人私聊」，主人在私聊答了之后群里那张跟着变。
+- **Add a rule:** a one-line input at the top, placeholder One sentence, e.g. Allow merging PRs when CI is green. Submitting it returns 202 and an `approvalId`; the confirm card is shown under the input. If the text is too long, the page shows Max {0} characters. Remove {1} more.
+- **One-line rule:** the rule text, a grey Added {date} line under it (from `createdAt`), and Delete on the right. There is no switch and no edit. After Delete the rule stays in the list until it is confirmed; the confirm card is shown in that row.
+- **Confirm card** (on this settings page, reusing the confirm layout): no bold title. The body is the rule text, with a grey line under it: Confirm to add this allow rule, or Confirm to delete this rule. For an add the buttons are Add / Not now; for a delete they are a red Delete rule / Not now. If the card was already handled elsewhere, it is dismissed and a grey This card was already handled appears on the page, then the list is fetched again.
+- **Expired card:** when `decision` is `denied` and `reason` equals the contract constant `APPROVAL_EXPIRED_REASON` (「审批已过期」), the card shows Expired, and the footnote Expired with no approval plus the time as two spans. The buttons are locked. It does not say Denied by You, and there is no "try again". In a chat an expired card still has a grey Expired dot in the top right, and keeps the action row.
+- **Approval cards in a group:** task cards and MCP cards are sent to the owner's DM with that bro, and the owner approves or denies them there. When a card is blocked, an extra grey line reads Blocked because: plus `reason`. In the group only the status card remains: `blocked` + `waitingFor: approval`, `progress` is Sent to owner's DM (`APPROVAL_SENT_TO_OWNER_DM_NOTICE`), with no Approve/Deny buttons. If the task was already running in that DM, the card stays there and this notice is not shown. A card a bro issues with `POST /api/groups/{id}/approvals` goes through auto-review first; an allowed card is not shown. If it is blocked or there are no rules, the card is sent to the owner's DM with that bro, and the owner approves or denies it there. The group the bro posted in also lists the same card (the same `id`); the client draws it with no buttons and Sent to owner's DM, and updates that copy when the owner answers in the DM.
 
-## 例行任务
+## Routines
 
-「例行任务」面板列出各群的例行任务（`GET /api/groups/{id}/schedules`），可以暂停和恢复（`PATCH /api/schedules/{id}`），暂停的标「已暂停」。
+The Routines panel lists each group's routines (`GET /api/groups/{id}/schedules`) and can pause or resume them (`PATCH /api/schedules/{id}`). A paused routine is tagged Paused.
 
-## 平台和测试
+## Platforms and tests
 
-- Linux 运行需要图形桌面，系统里要有 `libxkbcommon-x11`（X11）或 Wayland 运行库；编译本身不需要额外的开发包。
-- 客户端只走明文 HTTP，只认 `ROBROZ_TOKEN`（不读 `ROBROZ_TOKEN_FILE`），设了就自动带上。
-- `cargo test -p robroz-client` 在进程内起一份真实宿主机路由，用 `HttpSource` 读回来，不需要 Docker。
+- Running on Linux needs a graphical desktop, with `libxkbcommon-x11` (X11) or the Wayland libraries installed. The build itself does not need extra development packages.
+- The client uses plain HTTP only, and only honours `ROBROZ_TOKEN` (it does not read `ROBROZ_TOKEN_FILE`). When that is set, it is sent automatically.
+- `cargo test -p robroz-client` starts a real host router in-process and reads it back through `HttpSource`; Docker is not required.
