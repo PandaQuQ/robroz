@@ -527,6 +527,35 @@ pub fn status_dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
     dot(t, d)
 }
 
+/// A status dot in an arbitrary colour (the running card uses the chat accent).
+pub fn rgb_dot<'a, M: 'a>(t: &Skin, rgb: Rgb) -> Element<'a, M> {
+    let c = color(rgb);
+    let size = t.metrics.dot;
+    container(Space::new().width(size).height(size))
+        .style(move |_| container::Style {
+            background: Some(c.into()),
+            border: Border::default().rounded(size / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Take over in DM: outlined like Deny / Edit, 1px line border, ink text.
+pub fn takeover_button_style(t: Skin) -> impl Fn(&IcedTheme, button::Status) -> button::Style {
+    move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: hovered.then_some(color(t.palette.control_hover).into()),
+            text_color: color(t.palette.text),
+            border: Border::default()
+                .width(t.stroke.card)
+                .color(color(t.chat.bro_border))
+                .rounded(t.radii.button),
+            ..button::Style::default()
+        }
+    }
+}
+
 fn dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
     let c = color(t.dot(d));
     let size = t.metrics.dot;
@@ -546,7 +575,22 @@ fn header<'a>(
     ui: &CardUi,
     label: &'static str,
     d: Dot,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
+    let status = row![
+        dot(t, d),
+        text(label)
+            .size(t.type_.status)
+            .color(color(t.palette.text2)),
+    ]
+    .spacing(t.metrics.dot_gap)
+    .align_y(Alignment::Center);
+    // In the chat feed the avatar already shows the bro; the first line
+    // is only the status (and "Sent to owner's DM" under it on a group
+    // approval card).
+    if hide_bot {
+        return status.into();
+    }
     let name = |s: String| {
         text(s)
             .size(t.type_.bot)
@@ -578,25 +622,14 @@ fn header<'a>(
         }
         None => name(bot.to_string()).into(),
     };
-    row![
-        bot_name,
-        space::horizontal(),
-        row![
-            dot(t, d),
-            text(label)
-                .size(t.type_.status)
-                .color(color(t.palette.text2)),
-        ]
-        .spacing(t.metrics.dot_gap)
-        .align_y(Alignment::Center),
-    ]
-    .height(Length::Fixed(t.metrics.head_height.max(if t.narrow {
-        t.controls.touch_target
-    } else {
-        0.0
-    })))
-    .align_y(Alignment::Center)
-    .into()
+    row![bot_name, space::horizontal(), status,]
+        .height(Length::Fixed(t.metrics.head_height.max(if t.narrow {
+            t.controls.touch_target
+        } else {
+            0.0
+        })))
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn body<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
@@ -1019,12 +1052,13 @@ pub fn card<'a>(
     caps: Caps,
     width: f32,
     in_group: bool,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     match card {
-        Card::Choice(c) => choice(t, c, ui),
-        Card::Approval(c) => approval(t, c, ui, width, in_group),
-        Card::Draft(c) => draft(t, c, ui, caps, width),
-        Card::Confirm(c) => confirm_card(t, c, ui, width),
+        Card::Choice(c) => choice(t, c, ui, hide_bot),
+        Card::Approval(c) => approval(t, c, ui, width, in_group, hide_bot),
+        Card::Draft(c) => draft(t, c, ui, caps, width, hide_bot),
+        Card::Confirm(c) => confirm_card(t, c, ui, width, hide_bot),
     }
 }
 
@@ -1035,10 +1069,11 @@ pub fn confirm_card<'a>(
     card: &'a ConfirmCard,
     ui: &CardUi,
     width: f32,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let (label, d) = card.status();
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap)
     ];
     let tag_el = tag(t, card.tag(), t.palette.text2);
@@ -1168,7 +1203,12 @@ pub fn confirm_more<'a>(t: &Skin, task: &str, n: usize) -> Element<'a, Action> {
     )
 }
 
-pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Action> {
+pub fn choice<'a>(
+    t: &Skin,
+    card: &'a ChoiceCard,
+    ui: &CardUi,
+    hide_bot: bool,
+) -> Element<'a, Action> {
     let (label, d) = status::choice_status(&card.state);
     let buttons = interact::choice_buttons(card, ui);
     let confirm = interact::confirm_button(card, ui);
@@ -1200,7 +1240,7 @@ pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Ac
         .collect();
 
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap),
         body(t, &card.prompt),
         gap(t.metrics.body_gap),
@@ -1243,10 +1283,11 @@ pub fn approval<'a>(
     ui: &CardUi,
     width: f32,
     in_group: bool,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
     let (label, d) = status::approval_status(&card.state);
-    let mut col = column![header(t, &card.id, &card.bot, ui, label, d)];
+    let mut col = column![header(t, &card.id, &card.bot, ui, label, d, hide_bot)];
     // Group thread: same header and action line as a DM card, with
     // 「已发到主人私聊」 on its own 11px line under the header, no buttons.
     let group_pending = in_group && card.state == crate::cards::ApprovalState::Pending;
@@ -1362,6 +1403,7 @@ pub fn draft<'a>(
     ui: &CardUi,
     caps: Caps,
     width: f32,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let (label, d) = status::draft_status(&card.state);
     let lines = status::draft_preview_lines(&card.state);
@@ -1398,7 +1440,7 @@ pub fn draft<'a>(
         });
 
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap),
         row![
             tag(t, status::channel_label(card.channel), t.palette.text2),

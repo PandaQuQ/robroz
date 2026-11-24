@@ -168,12 +168,18 @@ pub enum Row {
 
 /// Who a feed item belongs to, for the chat bubbles. The host only writes
 /// `messages` from a person (`post_message`, `say`), so a `Message` is
-/// always [`Sender::Own`] and goes on the right; status, delivery and
-/// card events belong to a bro and go on the left.
+/// always [`Sender::Own`] and goes on the right; status and card events
+/// belong to a bro and go on the left. A delivery names no bro, so it is
+/// drawn alone and starts a new group ([`Sender::Delivery`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sender {
     Own,
-    Bro { id: String, name: String },
+    Bro {
+        id: String,
+        name: String,
+    },
+    /// A delivery event has no `bot_name` yet; shown alone, with no avatar.
+    Delivery,
 }
 
 impl Sender {
@@ -197,11 +203,15 @@ impl Sender {
         matches!(self, Sender::Own)
     }
 
-    /// The bro's name; empty for own.
+    pub fn is_delivery(&self) -> bool {
+        matches!(self, Sender::Delivery)
+    }
+
+    /// The bro's name; empty for own or an unattributed delivery.
     pub fn name(&self) -> &str {
         match self {
-            Sender::Own => "",
             Sender::Bro { name, .. } => name,
+            Sender::Own | Sender::Delivery => "",
         }
     }
 }
@@ -268,11 +278,12 @@ fn bro(id: &str, name: &str) -> Sender {
     }
 }
 
-/// Who owns a card and when it was made. A delivery event names no bro, so
-/// it takes the last bro in the feed (`prev`).
-fn meta_of(event: &Event, prev: Option<&Sender>) -> Meta {
+/// Who owns a card and when it was made. A delivery event names no bro,
+/// so it is [`Sender::Delivery`] until the contract carries `bot_name`.
+fn meta_of(event: &Event) -> Meta {
     let (sender, at) = match event {
         Event::Message { created_at, .. } => (Sender::Own, unix(created_at)),
+        Event::Delivery { created_at, .. } => (Sender::Delivery, unix(created_at)),
         Event::Status {
             bot_id,
             bot_name,
@@ -297,10 +308,6 @@ fn meta_of(event: &Event, prev: Option<&Sender>) -> Meta {
             created_at,
             ..
         } => (bro(bot_id, bot_name), unix(created_at)),
-        Event::Delivery { created_at, .. } => (
-            prev.cloned().unwrap_or_else(|| bro("", "")),
-            unix(created_at),
-        ),
     };
     Meta { sender, at }
 }
@@ -326,9 +333,6 @@ enum Key {
 #[derive(Debug, Default, Clone)]
 pub struct Feed {
     rows: Vec<(Key, Row, Meta)>,
-    /// The bro of the last bro event applied, in any order: a delivery
-    /// event names no bro, so it follows this one.
-    last_bro: Option<Sender>,
 }
 
 impl Feed {
@@ -359,10 +363,7 @@ impl Feed {
             return;
         }
         let (key, row) = to_row(event, extras);
-        let meta = meta_of(event, self.last_bro.as_ref());
-        if !meta.sender.is_own() && !matches!(event, Event::Delivery { .. }) {
-            self.last_bro = Some(meta.sender.clone());
-        }
+        let meta = meta_of(event);
         self.upsert(key, row, Some(meta));
     }
 
@@ -490,7 +491,7 @@ pub fn preview(event: &Event) -> String {
             failure: Some(failure),
             ..
         } => display(&failure_line(failure)).into_owned(),
-        Event::Delivery { summary, .. } => summary.clone(),
+        Event::Delivery { summary, .. } => host_text(summary).into_owned(),
         Event::Choice {
             bot_name, prompt, ..
         } => line(bot_name, prompt),
@@ -686,8 +687,20 @@ mod tests {
             "Couldn't finish: Stopped after 8 rounds of tool calls"
         );
         assert_eq!(display("Ada 的草稿"), "Ada 的草稿");
+        assert_eq!(
+            preview(&delivery("d-written", "tasks/t1/result.txt", false)),
+            "Result written"
+        );
+        assert_eq!(
+            host_text(robroz_contract::host_text::DELIVERY_NOT_RUN).as_ref(),
+            "Didn't run"
+        );
         let _zh = scoped(Locale::Zh);
         assert_eq!(display(AWAITING_APPROVAL), AWAITING_APPROVAL);
+        assert_eq!(
+            preview(&delivery("d-written", "tasks/t1/result.txt", false)),
+            robroz_contract::host_text::DELIVERY_WRITTEN
+        );
     }
 
     use super::*;
@@ -1715,13 +1728,17 @@ mod tests {
         let items: Vec<_> = feed.items().collect();
         assert_eq!(items[0].1.sender, Sender::Own);
         assert_eq!(items[1].1.sender.name(), "Ada");
-        assert_eq!(
-            items[2].1.sender.name(),
-            "Ada",
-            "a delivery follows the last bro that spoke"
+        assert!(
+            items[2].1.sender.is_delivery(),
+            "a delivery is not attributed to a bro"
         );
         assert_eq!(items[3].1.sender.name(), "Bea");
         assert_eq!(items[0].1.at, Some(1_791_399_600));
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        assert_eq!(groups.len(), 4, "a delivery starts its own group");
+        assert!(groups[2].sender.is_delivery());
+        assert!(!Sender::Delivery.same(&bro("bot-ada", "Ada")));
+        assert!(!Sender::Delivery.same(&Sender::Delivery));
     }
 
     #[test]

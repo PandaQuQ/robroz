@@ -2794,17 +2794,17 @@ impl App {
                 .color(color(t.palette.text))
                 .into()
         };
-        let section = |name: &'static str,
-                       samples: &'a [gallery::Sample]|
-         -> Element<'a, Message> {
-            let mut c = column![title(name)].spacing(6);
-            for s in samples {
-                c = c.push(caption(s.caption)).push(
-                    view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false).map(Message::Ui),
-                );
-            }
-            c.into()
-        };
+        let section =
+            |name: &'static str, samples: &'a [gallery::Sample]| -> Element<'a, Message> {
+                let mut c = column![title(name)].spacing(6);
+                for s in samples {
+                    c = c.push(caption(s.caption)).push(
+                        view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false, false)
+                            .map(Message::Ui),
+                    );
+                }
+                c.into()
+            };
         // The frozen status card, to review its dark-mode outline.
         let running = robroz_card::palette(robroz_card::Tone::Ink);
         let status_sample: Element<'a, Message> = container(
@@ -2906,6 +2906,14 @@ fn group_view<'a>(
     }
     if own {
         row![space::horizontal(), col.align_x(Alignment::End)].into()
+    } else if group.sender.is_delivery() {
+        // Same column as bro cards: indent by the avatar plus its gap,
+        // with no avatar and no name.
+        row![
+            iced::widget::Space::new().width(t.chat.avatar + t.chat.avatar_gap),
+            col
+        ]
+        .into()
     } else {
         row![
             container(view::chat_avatar(t, group.sender.name()))
@@ -2961,57 +2969,41 @@ fn item_view<'a>(
         Row::Delivery(c) => card(delivery_view(t, c, card_w)),
         Row::Card(c) => {
             let state = ui.get(c.id()).unwrap_or(empty);
-            card(view::card(t, c, state, caps, card_w, in_group).map(Message::Ui))
+            card(view::card(t, c, state, caps, card_w, in_group, true).map(Message::Ui))
         }
     }
 }
 
-/// Fill and text colour of a status card. Only a running card has a fill
-/// (the spec's ink, `#2c2f33` on dark); every other state is a plain bro card
-/// with a small status dot, not a saturated bar.
-fn status_colors(
-    t: &Skin,
-    card: &StatusCard,
-) -> (robroz_ui::theme::Rgb, robroz_ui::theme::Rgb, bool) {
-    if card.tone == robroz_card::Tone::Ink {
-        (t.chat.running_fill, t.chat.running_text, true)
-    } else {
-        (t.chat.bro_bg, t.palette.text, false)
-    }
-}
-
-/// The dot for a card that has no fill: green done, amber stuck, grey
-/// otherwise (queued, dead run, waiting on approval).
-fn status_dot_kind(card: &StatusCard) -> robroz_ui::cards::status::Dot {
+/// The status dot: accent for a running card, green done, amber stuck,
+/// grey otherwise (queued, a dead run, waiting on approval).
+fn status_dot_kind(card: &StatusCard) -> Option<robroz_ui::cards::status::Dot> {
     use robroz_ui::cards::status::Dot;
     match card.tone {
-        robroz_card::Tone::Green => Dot::Done,
-        robroz_card::Tone::Amber => Dot::Stuck,
-        _ => Dot::Void,
+        robroz_card::Tone::Ink => None,
+        robroz_card::Tone::Green => Some(Dot::Done),
+        robroz_card::Tone::Amber => Some(Dot::Stuck),
+        robroz_card::Tone::Gray => Some(Dot::Void),
     }
 }
 
-/// Status card: bro name (with a status dot unless the card is running),
-/// then Step n of m, the status word and the take-over button on the right.
+fn status_dot_view<'a>(t: &Skin, card: &StatusCard) -> Element<'a, Message> {
+    match status_dot_kind(card) {
+        None => view::rgb_dot(t, t.chat.accent),
+        Some(d) => view::status_dot(t, d).map(Message::Ui),
+    }
+}
+
+/// Status card: a plain bro card with a status dot and the status word.
+/// The bro name lives in the group header, not inside the card. No fill.
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::Wrapping;
-    let (fill, fg, filled) = status_colors(t, card);
-    let name = progress_cell(t, card, width);
-    let head: Element<'a, Message> = if filled {
-        name
-    } else {
-        row![
-            view::status_dot(t, status_dot_kind(card)).map(Message::Ui),
-            name
-        ]
+    let head = row![status_dot_view(t, card), progress_cell(t, card, width)]
         .spacing(t.metrics.dot_gap + 4.0)
         .align_y(Alignment::Center)
-        .width(Fill)
-        .into()
-    };
+        .width(Fill);
     let mut line = row![head].spacing(12).align_y(Alignment::Center);
     if let Some(step) = visible_step_progress(t, card, width) {
-        let rgb = robroz_ui::cards::status::progress_rgb(fill, fg);
+        let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
         line = line.push(
             text(model::display(step).into_owned())
                 .color(color(rgb))
@@ -3024,21 +3016,14 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Me
         line = line.push(
             button(text(model::display(action).into_owned()).size(t.type_.button))
                 .padding(Padding::from([pad_v, pad_h]))
-                .style(button::secondary)
+                .style(view::takeover_button_style(*t))
                 .on_press(Message::TakeOver(card.task_id.clone())),
         );
     }
-    let (filled_style, plain_style) = (view::status_card_style(*t, fill, fg), view::card_style(*t));
     container(line)
         .padding(view::status_card_padding(t))
         .width(Fill)
-        .style(move |th| {
-            if filled {
-                filled_style(th)
-            } else {
-                plain_style(th)
-            }
-        })
+        .style(view::card_style(*t))
         .into()
 }
 
@@ -3057,7 +3042,9 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
     };
     const WORD: f32 = 16.0;
     let inner = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
-    let mut needed = text_w(&card.bot_name, WORD)
+    let mut needed = t.metrics.dot
+        + t.metrics.dot_gap
+        + 4.0
         + text_w(&model::display(raw), WORD)
         + text_w(&model::display(&card.status_line), WORD)
         + 12.0
@@ -3066,21 +3053,16 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
         needed +=
             text_w(&model::display(action), t.type_.button) + 2.0 * view::TAKE_OVER_PAD[1] + 12.0;
     }
-    if card.tone != robroz_card::Tone::Ink {
-        needed += t.metrics.dot + t.metrics.dot_gap + 4.0 + 12.0;
-    }
     (needed <= inner).then_some(raw)
 }
 
-/// Left side of a status card: the bro name, and under it, left-aligned,
-/// what the bro is doing (`progress`). One line, cut with "…", at a fixed
-/// line height, so the card is one row taller with progress and exactly
-/// its old height without it, whatever the text says.
+/// Optional progress line under the status dot. One line, cut with "…", at
+/// a fixed line height, so the card is one row taller with progress and
+/// exactly its old height without it. The bro name is not drawn here.
 fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::{LineHeight, Wrapping};
-    let name = text(&card.bot_name);
     let Some(progress) = &card.progress else {
-        return container(name).width(Fill).into();
+        return container(iced::widget::Space::new()).width(Fill).into();
     };
     let size = t.type_.status;
     // Room left of the status word (and button), in ASCII width units.
@@ -3099,14 +3081,13 @@ fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, 
     let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
     let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
-    let (fill, fg, _) = status_colors(t, card);
-    let rgb = robroz_ui::cards::status::progress_rgb(fill, fg);
+    let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
     let line = text(fitted)
         .size(size)
         .line_height(LineHeight::Absolute(progress_line_height(size).into()))
         .wrapping(Wrapping::None)
         .color(color(rgb));
-    container(column![name, container(line).clip(true).width(Fill)].spacing(2))
+    container(container(line).clip(true).width(Fill))
         .width(Fill)
         .into()
 }
@@ -3171,7 +3152,7 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
         width - 2.0 * (t.controls.card_pad_h + t.stroke.card),
     );
     let mut head = row![
-        text(&card.summary).color(color(t.palette.text)),
+        text(model::display(&card.summary).into_owned()).color(color(t.palette.text)),
         space::horizontal()
     ]
     .align_y(Alignment::Center);
@@ -3243,26 +3224,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_running_status_card_has_a_fill() {
+    fn every_status_card_is_a_plain_card_with_a_dot() {
         use robroz_card::Tone;
         use robroz_ui::cards::status::Dot;
         use robroz_ui::{Mode, Skin};
         for mode in [Mode::Light, Mode::Dark] {
             let t = Skin::for_mode(mode);
             let mut card = live_step_card();
-            let (fill, fg, filled) = super::status_colors(&t, &card);
-            assert!(filled);
-            assert_eq!((fill, fg), (t.chat.running_fill, t.chat.running_text));
+            assert_eq!(
+                super::status_dot_kind(&card),
+                None,
+                "running uses the accent"
+            );
+            assert_eq!(
+                t.chat.accent,
+                if mode == Mode::Light {
+                    [0xc8, 0x57, 0x2a]
+                } else {
+                    [0xe0, 0x74, 0x3f]
+                }
+            );
             for (tone, dot) in [
                 (Tone::Green, Dot::Done),
                 (Tone::Amber, Dot::Stuck),
                 (Tone::Gray, Dot::Void),
             ] {
                 card.tone = tone;
-                let (fill, fg, filled) = super::status_colors(&t, &card);
-                assert!(!filled, "{tone:?} is a plain card");
-                assert_eq!((fill, fg), (t.chat.bro_bg, t.palette.text));
-                assert_eq!(super::status_dot_kind(&card), dot);
+                assert_eq!(super::status_dot_kind(&card), Some(dot));
             }
         }
     }
