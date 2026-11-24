@@ -1,7 +1,7 @@
 # Auto-review
 
 Status: **Accepted**. Existing behaviour below is taken from `main` at
-`91efdde`. If a description of current code disagrees with the tree or with
+`0aed709`. If a description of current code disagrees with the tree or with
 [api.md](../api.md), [permissions.md](../permissions.md), or
 [concepts.md](../concepts.md), the code wins. The decisions in this document
 are the accepted design for the review layer.
@@ -34,10 +34,16 @@ it does not add a fifth task `state`.
 1. **Expiry.** Approval cards expire after 24 hours by default. The TTL is
    configurable. Expiry applies to approval cards, including task approval
    cards, MCP call cards, and rule add/delete cards. An expired card is settled
-   as denied, and that is final. Takeover cards (「去私聊接管」) never expire.
-   Memory and skill confirm cards are unchanged and still do not expire. The
-   `failure` copy on an expired task card is 「审批已过期」. Answering after
-   expiry returns 409「已经过期了」.
+   as `decision: denied` with `reason` set to the exact string 「审批已过期」
+   (`APPROVAL_EXPIRED_REASON` in the contract; planned, added by the backend).
+   `answeredBy` is left unset: the owner never clicked. That is final, and no
+   new decision or task state is added. Takeover cards (「去私聊接管」) never
+   expire. Memory and skill confirm cards are unchanged and still do not
+   expire. The `failure` copy on an expired task card is also 「审批已过期」.
+   A later approve or deny returns 409「已经答过了」, the same path as a card
+   that was already answered elsewhere: the client locks the buttons, refetches
+   the card, and shows the expired presentation. There is no separate 409 copy
+   or client branch for expiry.
 2. **Rule matching.** The review model is given the pending action and the
    original text of every confirmed rule. It returns `allow` or `block` plus a
    one-sentence reason. There is no regex or wildcard matching. If the review
@@ -45,7 +51,7 @@ it does not add a fifth task `state`.
    action is blocked. Review never default-allows.
 3. **Adding and deleting a rule.** `POST` and `DELETE /api/settings/review-rules`
    do not change the rule list. Each call only creates a confirm card and
-   returns **202** with that pending approval id. The rule is added or removed
+   returns **202** `{"approvalId":"..."}`. The rule is added or removed
    only after the owner confirms the card with the existing
    `POST /api/approvals/{id}/approve`. Deny leaves the list unchanged.
    Unconfirmed rules are not returned by `GET`. A bro who calls these endpoints
@@ -157,9 +163,13 @@ Reuse the frozen states and the existing endpoints. No new `state`, no new
    path. The task becomes `done` with `failure`「你拒绝了：…」. The action does
    not run. The bro must not retry, reword, or work around it in this task.
 6. **Card expires** (24 hours by default, configurable): the host settles the
-   unanswered approval card as denied. The task becomes `done` with `failure`
-   「审批已过期」. Answering after expiry is 409「已经过期了」. This is also
-   final: no retry, no workaround.
+   unanswered approval card as `decision: denied` and
+   `reason: APPROVAL_EXPIRED_REASON` (「审批已过期」), with `answeredBy`
+   unset. If the card was tied to a task, the task becomes `done` with
+   `failure`「审批已过期」. A later approve or deny returns the existing
+   409「已经答过了」. The client follows the same already-answered path:
+   lock the buttons, refetch the card, then show the expired presentation.
+   This is also final: no retry, no workaround, no 「重新发起」.
 7. Captcha stays on `waitingFor: takeover` and `POST /api/tasks/{id}/resume`.
    Auto-review does not issue a card, does not auto-allow it, and does not
    expire it.
@@ -197,6 +207,13 @@ A new left-nav entry, 「放行规则」, directly under 「MCP」.
   confirm-card layout on an approval event whose `action` is `rule_add` or
   `rule_delete`. Title 「添加放行规则」 or 「删除规则」; body is the rule
   sentence, verbatim; grey line states add or delete.
+- **Owner DM, expired card**: the stored decision is `denied`, but the card
+  must not say 「我已拒绝」 or 「已拒绝」, and must not use the red denied
+  dot — the owner never clicked. Top-right: a grey dot and 「已过期」.
+  Footnote: 「没人批准，已过期」 and the time as two spans, with no 「·」.
+  Buttons are locked. There is no 「重新发起」. The client detects this
+  case with `reason == APPROVAL_EXPIRED_REASON` and must not hard-code the
+  string.
 
 ## New API (additive only)
 
@@ -213,7 +230,7 @@ have this shape in the list. Unconfirmed proposals are not listed.
 | Method | Path | Role |
 | --- | --- | --- |
 | `GET` | `/api/settings/review-rules` | List confirmed rules only. Response: `{"rules":[ReviewRule]}`. |
-| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Returns **202** and the pending approval id (body: `{"id":"<approvalId>"}`). Creates a `rule_add` card in the owner's DM. The rule is not listed and is not used in review until that card is approved. |
+| `POST` | `/api/settings/review-rules` | Propose a rule. Body: `{"text":"…"}`. Returns **202** `{"approvalId":"..."}`. Creates a `rule_add` card in the owner's DM. The rule is not listed and is not used in review until that card is approved. |
 | `DELETE` | `/api/settings/review-rules/{id}` | Propose deleting a confirmed rule. Returns **202** and the pending approval id, same body as `POST`. Creates a `rule_delete` card in the owner's DM. The rule stays listed until that card is approved. 404 if the id is not a confirmed rule. |
 
 A bro who calls `POST` or `DELETE` gets the same 202 and a card; the list still
@@ -224,7 +241,9 @@ does not change until the owner confirms. There is no edit endpoint.
 Keep `POST /api/approvals/{id}/approve` and `/deny` as the only way to answer
 an approval or confirm card. Do not add a parallel decision API. Request body,
 `answeredBy`, 404「审批卡不存在」, and 409「已经答过了」 stay as they are.
-After expiry, answering returns 409「已经过期了」.
+After expiry, a later answer returns that same 409「已经答过了」. The client
+uses the existing already-answered path (lock buttons, refetch, then show the
+expired presentation). There is no new 409 copy and no separate client branch.
 
 ### Additive fields
 
@@ -233,8 +252,12 @@ After expiry, answering returns 409「已经过期了」.
   valid. Set on task approval cards, MCP call cards, and rule add/delete
   cards. Absent on takeover, and on memory and skill confirm cards.
 - `reason` (string, optional): on a blocked action's approval card, the
-  one-sentence reason from the review model. Shown as grey text on the DM
-  card. Omitted when there is no reason (old JSON stays valid).
+  one-sentence reason from the review model, shown as grey text on the DM
+  card. When the card expired, `reason` is exactly 「审批已过期」. That
+  string is a planned contract constant, `APPROVAL_EXPIRED_REASON`, added
+  by the backend. The host writes the constant; the client compares
+  `reason == APPROVAL_EXPIRED_REASON` and must not hand-write the string.
+  Omitted when there is no reason (old JSON stays valid).
 
 Both are new optional fields. They are not changes to any existing field.
 
@@ -251,7 +274,7 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Rollout
 
-Verified on `main` at `91efdde`, `crates/robroz-contract/src/lib.rs` (the
+Verified on `main` at `0aed709` (the `ApprovalAction` enum is unchanged since `91efdde`), `crates/robroz-contract/src/lib.rs` (the
 `ApprovalAction` enum). There is no `#[serde(other)]` today, so an unknown
 `action` value fails the whole event parse; the client does not fall back to a
 generic card.
