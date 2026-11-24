@@ -140,9 +140,13 @@ impl Feed {
         self.apply_with(event, None);
     }
 
-    /// Apply an approval together with a `rule_add` / `rule_delete` stash
-    /// the contract cannot carry yet.
+    /// Apply an event, optionally with leftover approval extras (always
+    /// empty now that `rule_*` is on the contract). Settings-page rule
+    /// cards are ignored: they do not belong in a chat feed.
     pub fn apply_with(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
+        if crate::event_decode::is_settings_approval(event) {
+            return;
+        }
         let (key, row) = to_row(event, extras);
         self.upsert(key, row);
     }
@@ -1171,5 +1175,31 @@ mod tests {
             matches!(feed.rows().nth(1), Some(Row::Card(_))),
             "kept its slot"
         );
+    }
+
+    #[test]
+    fn settings_approval_is_kept_out_of_the_feed() {
+        let event = Event::Approval {
+            id: "apr-settings".into(),
+            bot_id: robroz_contract::SETTINGS_APPROVAL_BOT_ID.into(),
+            bot_name: robroz_contract::SETTINGS_APPROVAL_BOT_NAME.into(),
+            action: robroz_contract::ApprovalAction::RuleAdd,
+            summary: "允许发周报".into(),
+            path: None,
+            decision: None,
+            created_at: "2026-11-24T12:00:00Z".into(),
+            answered_at: None,
+            answered_by: None,
+            task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
+            reason: None,
+            expires_at: None,
+        };
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "打招呼"));
+        feed.apply(&event);
+        assert_eq!(feed.len(), 1);
+        assert!(feed.card("apr-settings").is_none());
     }
 }

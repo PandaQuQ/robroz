@@ -1,23 +1,18 @@
 //! Decode host events.
 //!
-//! `reason` and `expiresAt` now live on `Event::Approval`, and unknown
-//! `action` values parse as [`robroz_contract::ApprovalAction::Unknown`].
-//!
-//! `rule_add` / `rule_delete` are not on the contract yet, so they also
-//! parse as `Unknown`. A small stash keeps the real action so the settings
-//! confirm cards still render. TODO: drop the stash once the auto-review
-//! backend PR adds those variants.
+//! `reason` and `expiresAt` live on `Event::Approval`. Unknown `action`
+//! values parse as [`robroz_contract::ApprovalAction::Unknown`]. `rule_add`
+//! / `rule_delete` are on the contract and parse as themselves.
 
 use robroz_contract::Event;
-use robroz_ui::cards::{ApprovalExtras, ClientApprovalAction};
+use robroz_ui::cards::ApprovalExtras;
 use serde_json::Value;
 
 /// Decode one event. Unknown event *types* still fail (the caller skips
-/// them). `rule_add` / `rule_delete` come back as `Unknown` plus extras.
+/// them).
 pub fn parse_event(value: Value) -> Result<(Event, Option<ApprovalExtras>), serde_json::Error> {
-    let extras = rule_action_extras(&value);
     let event = serde_json::from_value(value)?;
-    Ok((event, extras))
+    Ok((event, None))
 }
 
 pub fn parse_event_str(body: &str) -> Result<(Event, Option<ApprovalExtras>), serde_json::Error> {
@@ -25,25 +20,18 @@ pub fn parse_event_str(body: &str) -> Result<(Event, Option<ApprovalExtras>), se
     parse_event(value)
 }
 
-/// TODO: drop once `ApprovalAction` has `rule_add` / `rule_delete`.
-fn rule_action_extras(value: &Value) -> Option<ApprovalExtras> {
-    if value.get("type").and_then(Value::as_str) != Some("approval") {
-        return None;
-    }
-    let action = match value.get("action").and_then(Value::as_str) {
-        Some("rule_add") => ClientApprovalAction::RuleAdd,
-        Some("rule_delete") => ClientApprovalAction::RuleDelete,
-        _ => return None,
-    };
-    Some(ApprovalExtras {
-        action: Some(action),
-    })
+/// Settings-page rule cards must not appear in any chat, stream or unread.
+pub fn is_settings_approval(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Approval { bot_id, .. } if bot_id == robroz_contract::SETTINGS_APPROVAL_BOT_ID
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use robroz_contract::{ApprovalAction, ApprovalDecision, Event};
+    use robroz_contract::{ApprovalAction, ApprovalDecision, Event, SETTINGS_APPROVAL_BOT_ID};
     use robroz_ui::cards::{review_rules, ActionKind, ApprovalCard, ApprovalState};
 
     fn ev(json: &str) -> (Event, Option<ApprovalExtras>) {
@@ -79,13 +67,12 @@ mod tests {
     #[test]
     fn rule_add_parses_as_a_rule_card() {
         let (event, extras) = ev(&approval_json("rule_add", r#","reason":null"#));
+        assert!(extras.is_none());
         let Event::Approval { action, .. } = &event else {
             panic!("not approval");
         };
-        assert_eq!(*action, ApprovalAction::Unknown);
-        let extras = extras.expect("rule_* shim");
-        assert_eq!(extras.action, Some(ClientApprovalAction::RuleAdd));
-        let card = ApprovalCard::from_event_with(&event, Some(&extras)).unwrap();
+        assert_eq!(*action, ApprovalAction::RuleAdd);
+        let card = ApprovalCard::from_event(&event).unwrap();
         assert_eq!(card.kind, ActionKind::RuleAdd);
         assert_eq!(card.summary, "允许发周报");
         assert_eq!(card.state, ApprovalState::Pending);
@@ -94,10 +81,19 @@ mod tests {
     #[test]
     fn rule_delete_parses() {
         let (event, extras) = ev(&approval_json("rule_delete", ""));
-        let extras = extras.expect("rule_* shim");
-        assert_eq!(extras.action, Some(ClientApprovalAction::RuleDelete));
-        let card = ApprovalCard::from_event_with(&event, Some(&extras)).unwrap();
+        assert!(extras.is_none());
+        let card = ApprovalCard::from_event(&event).unwrap();
         assert_eq!(card.kind, ActionKind::RuleDelete);
+    }
+
+    #[test]
+    fn settings_bot_id_is_a_settings_approval() {
+        let json = format!(
+            r#"{{"type":"approval","id":"a1","botId":"{SETTINGS_APPROVAL_BOT_ID}","botName":"设置","action":"rule_add","summary":"允许发周报","path":null,"decision":null,"createdAt":"2026-11-20T08:00:00Z","answeredAt":null}}"#
+        );
+        let (event, _) = ev(&json);
+        assert!(is_settings_approval(&event));
+        assert!(!is_settings_approval(&ev(&approval_json("call", "")).0));
     }
 
     #[test]

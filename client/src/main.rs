@@ -42,7 +42,7 @@ use robroz_ui::cards::review_rules::{self, Page as ReviewRulesPage, Rule as Revi
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
 use robroz_ui::cards::skills::Book as SkillBook;
-use robroz_ui::cards::ApprovalExtras;
+use robroz_ui::cards::{ApprovalCard, ApprovalExtras};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
 use robroz_ui::view::{self, color, Action, Caps};
@@ -163,7 +163,7 @@ enum Message {
 
     OpenReviewRules,
     ReviewRulesLoaded(Result<Vec<ReviewRule>, ApiError>),
-    ReviewRuleProposed(Result<String, ApiError>),
+    ReviewRuleProposed(Result<Event, ApiError>),
     /// 模型 page (sidebar, or 「去设置」 on a delivery).
     OpenModel,
     ModelLoaded(Result<ModelCurrent, ApiError>),
@@ -615,6 +615,11 @@ impl App {
     }
 
     fn apply_event_with(&mut self, group: String, event: &Event, extras: Option<&ApprovalExtras>) {
+        // Settings-page rule cards never belong in a chat, stream or unread.
+        if event_decode::is_settings_approval(event) {
+            self.sync_review_pending(event, extras);
+            return;
+        }
         // A confirm card answered anywhere (chat, page, another device, or a
         // forgotten pending memory) moves its entry on the 记忆 page too.
         if let Event::Confirm {
@@ -675,6 +680,38 @@ impl App {
                 ui.note = None;
             }
         }
+        self.sync_review_pending(event, extras);
+    }
+
+    /// Keep the settings-page confirm card in sync if this event is for it.
+    fn sync_review_pending(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
+        let Some(card) = ApprovalCard::from_event_with(event, extras) else {
+            return;
+        };
+        let Some(pending) = self.review_rules.pending.as_ref() else {
+            return;
+        };
+        if pending.id != card.id {
+            return;
+        }
+        match card.state {
+            ApprovalState::Expired { at } => self.review_rules.expire_pending(at),
+            ApprovalState::Approved { .. } | ApprovalState::Denied { .. } => {
+                self.review_rules.finish_pending();
+            }
+            ApprovalState::Pending | ApprovalState::NeedsOwner => {
+                if let Some(pending) = self.review_rules.pending.as_mut() {
+                    pending.state = card.state;
+                }
+            }
+        }
+    }
+
+    fn refresh_review_rules(&self) -> Task<Message> {
+        Task::perform(
+            call(&self.api, |api| api.review_rules()),
+            Message::ReviewRulesLoaded,
+        )
     }
 
     fn poll(&mut self) -> Task<Message> {
@@ -1201,25 +1238,39 @@ impl App {
         match action {
             Action::ReviewDraft { text } => page.set_draft(text),
             Action::ReviewAdd => {
-                if page.busy {
+                if page.locked() {
                     return Task::none();
                 }
                 let Some(text) = page.to_add() else {
                     return Task::none();
                 };
-                page.busy = true;
+                page.begin_add(text.clone());
                 return Task::perform(
-                    call(&self.api, move |api| api.propose_review_rule(&text)),
+                    call(&self.api, move |api| {
+                        let id = api.propose_review_rule(&text)?;
+                        api.approval(&id)
+                    }),
                     Message::ReviewRuleProposed,
                 );
             }
             Action::ReviewDelete { id } => {
-                if page.busy {
+                if page.locked() {
                     return Task::none();
                 }
-                page.busy = true;
+                let Some(text) = page
+                    .rules
+                    .as_ref()
+                    .and_then(|rules| rules.iter().find(|r| r.id == id))
+                    .map(|r| r.text.clone())
+                else {
+                    return Task::none();
+                };
+                page.begin_delete(id.clone(), text);
                 return Task::perform(
-                    call(&self.api, move |api| api.propose_delete_review_rule(&id)),
+                    call(&self.api, move |api| {
+                        let id = api.propose_delete_review_rule(&id)?;
+                        api.approval(&id)
+                    }),
                     Message::ReviewRuleProposed,
                 );
             }
@@ -1379,6 +1430,14 @@ impl App {
             Action::Decide { card, approve } => {
                 if !self.ui.entry(card.clone()).or_default().begin_action() {
                     return Task::none();
+                }
+                if self
+                    .review_rules
+                    .pending
+                    .as_ref()
+                    .is_some_and(|p| p.id == card)
+                {
+                    self.review_rules.busy = true;
                 }
                 let id = card.clone();
                 let job = call(&self.api, move |api| api.decide(&id, approve));
@@ -1559,18 +1618,15 @@ impl App {
             Message::OpenReviewRules => {
                 self.page = Page::ReviewRules;
                 self.narrow_open = true;
-                self.review_rules.busy = true;
-                return Task::perform(
-                    call(&self.api, |api| api.review_rules()),
-                    Message::ReviewRulesLoaded,
-                );
+                self.review_rules.reset_for_open();
+                return self.refresh_review_rules();
             }
             Message::ReviewRulesLoaded(result) => match result {
-                Ok(rules) => self.review_rules.opened(rules),
+                Ok(rules) => self.review_rules.load(rules),
                 Err(err) => self.review_rules.load_failed(&err.reason()),
             },
             Message::ReviewRuleProposed(result) => match result {
-                Ok(_) => self.review_rules.proposed(),
+                Ok(event) => self.review_rules.proposed_event(&event),
                 Err(err) => self.review_rules.propose_failed(&err.reason()),
             },
             Message::MemoriesLoaded(result) => match result {
@@ -2007,16 +2063,32 @@ impl App {
                 match result {
                     Ok(reply) => {
                         ui.action_done(None);
+                        let in_page = self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card);
+                        if in_page {
+                            match &reply {
+                                Some((event, extras)) => {
+                                    self.sync_review_pending(event, extras.as_ref());
+                                }
+                                None => self.review_rules.finish_pending(),
+                            }
+                            if self
+                                .review_rules
+                                .pending
+                                .as_ref()
+                                .is_some_and(|p| matches!(p.state, ApprovalState::Expired { .. }))
+                            {
+                                return Task::none();
+                            }
+                            return self.refresh_review_rules();
+                        }
                         match (reply, found) {
                             // The host's answered card replaces the pending one.
                             (Some((event, extras)), Some((group, _))) => {
                                 self.apply_event_with(group, &event, extras.as_ref());
-                                if self.page == Page::ReviewRules {
-                                    return Task::perform(
-                                        call(&self.api, |api| api.review_rules()),
-                                        Message::ReviewRulesLoaded,
-                                    );
-                                }
                             }
                             // No echo (fake API): show the answer locally.
                             (None, Some((group, Card::Approval(mut c)))) => {
@@ -2053,13 +2125,33 @@ impl App {
                         }
                     }
                     Err(ApiError::Conflict(_)) => {
+                        if self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card)
+                        {
+                            self.review_rules.answered_elsewhere();
+                            return self.refresh_review_rules();
+                        }
                         // Answered already (elsewhere): fetch the real state;
                         // the answered card clears this note when it lands.
                         ui.action_done(Some(Note::AlreadyDecided));
                         self.has_more = true;
                         return self.poll();
                     }
-                    Err(err) => ui.action_done(Some(err.note())),
+                    Err(err) => {
+                        if self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card)
+                        {
+                            self.review_rules.busy = false;
+                            self.review_rules.note = Some(err.reason());
+                        }
+                        ui.action_done(Some(err.note()));
+                    }
                 }
             }
             Message::Acted { card, result } => {

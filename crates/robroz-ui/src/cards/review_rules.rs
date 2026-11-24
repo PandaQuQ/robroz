@@ -1,6 +1,7 @@
 //! Allow-rules settings page (docs/design/auto-review.md).
 //!
-//! Adding or deleting a rule only proposes a confirm card in the owner's DM.
+//! Adding or deleting a rule on this page shows a confirm card inline.
+//! The owner answers it here through the normal approvals endpoint.
 //! The list shows confirmed rules only.
 
 use chrono::{DateTime, TimeZone};
@@ -11,8 +12,13 @@ pub const ADD: &str = "添加";
 pub const DELETE: &str = "删除";
 /// Empty state, wording from 最优雅UI姐.
 pub const EMPTY: &str = "还没有放行规则。有风险的操作都会先问你。";
-/// Shown after POST/DELETE returns 202, grey, directly under the input.
-pub const PENDING_NOTE: &str = "已发到私聊，确认后生效";
+/// Validation when the draft is longer than [`REVIEW_RULE_MAX`].
+/// Proposed copy; needs 最优雅UI姐 to confirm.
+pub const TOO_LONG: &str = "最多 200 字";
+/// Shown after approve/deny returns 409 (already answered elsewhere).
+pub const ALREADY_ANSWERED: &str = "别处已回答";
+/// Host limit on rule text.
+pub use robroz_contract::REVIEW_RULE_MAX;
 /// Placeholder, wording from 最优雅UI姐.
 pub const PLACEHOLDER: &str = "用一句话写，比如：允许合并 CI 全绿的 PR";
 pub const NEED_TEXT: &str = "请填写规则";
@@ -78,6 +84,35 @@ where
         .unwrap_or_default()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingKind {
+    Add,
+    Delete { rule_id: String },
+}
+
+/// In-page confirm card after POST/DELETE returns 202.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub id: String,
+    pub kind: PendingKind,
+    pub text: String,
+    pub state: super::ApprovalState,
+}
+
+impl Pending {
+    pub fn is_add(&self) -> bool {
+        matches!(self.kind, PendingKind::Add)
+    }
+
+    pub fn is_delete_of(&self, rule_id: &str) -> bool {
+        matches!(&self.kind, PendingKind::Delete { rule_id: id } if id == rule_id)
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, super::ApprovalState::Pending)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Page {
     /// `None` until the first successful load.
@@ -85,17 +120,30 @@ pub struct Page {
     pub draft: String,
     pub busy: bool,
     pub note: Option<String>,
+    /// Confirm card shown on this page after a 202.
+    pub pending: Option<Pending>,
+    /// Stashed add/delete payload while the propose request is in flight.
+    propose: Option<(PendingKind, String)>,
 }
 
 impl Page {
     pub fn load(&mut self, rules: Vec<Rule>) {
         self.rules = Some(rules);
         self.busy = false;
-        // Keep a pending note if we just proposed; a fresh open clears it.
+    }
+
+    /// Fresh open of the page: drop a leftover confirm card and notes.
+    pub fn reset_for_open(&mut self) {
+        self.note = None;
+        self.pending = None;
+        self.propose = None;
+        self.busy = true;
     }
 
     pub fn opened(&mut self, rules: Vec<Rule>) {
         self.note = None;
+        self.pending = None;
+        self.propose = None;
         self.load(rules);
     }
 
@@ -110,12 +158,15 @@ impl Page {
 
     pub fn set_draft(&mut self, text: String) {
         self.draft = text;
-        if self.note.as_deref() == Some(NEED_TEXT) {
+        if matches!(
+            self.note.as_deref(),
+            Some(NEED_TEXT | TOO_LONG | ALREADY_ANSWERED)
+        ) {
             self.note = None;
         }
     }
 
-    /// Trimmed body for POST, or an inline note if empty.
+    /// Trimmed body for POST, or an inline note if empty or too long.
     pub fn to_add(&mut self) -> Option<String> {
         let text = self.draft.trim().to_string();
         if text.is_empty() {
@@ -127,20 +178,103 @@ impl Page {
             self.note = Some(NEED_TEXT.into());
             return None;
         }
+        if text.chars().count() > REVIEW_RULE_MAX {
+            self.note = Some(TOO_LONG.into());
+            return None;
+        }
         self.note = None;
         Some(text)
     }
 
-    /// POST/DELETE returned 202: keep the list, show the pending note.
-    pub fn proposed(&mut self) {
+    /// Remember the add text, then fire POST.
+    pub fn begin_add(&mut self, text: String) {
+        self.busy = true;
+        self.propose = Some((PendingKind::Add, text));
+    }
+
+    /// Remember which rule is being deleted, then fire DELETE.
+    pub fn begin_delete(&mut self, rule_id: String, text: String) {
+        self.busy = true;
+        self.propose = Some((PendingKind::Delete { rule_id }, text));
+    }
+
+    /// POST/DELETE returned 202: show the confirm card on this page.
+    pub fn proposed(&mut self, approval_id: String) {
         self.busy = false;
         self.draft.clear();
-        self.note = Some(PENDING_NOTE.into());
+        self.note = None;
+        if let Some((kind, text)) = self.propose.take() {
+            self.pending = Some(Pending {
+                id: approval_id,
+                kind,
+                text,
+                state: super::ApprovalState::Pending,
+            });
+        }
+    }
+
+    /// After 202, the confirm card loaded from `GET /api/approvals/{id}`.
+    pub fn proposed_event(&mut self, event: &robroz_contract::Event) {
+        let Some(card) = super::ApprovalCard::from_event(event) else {
+            self.propose_failed("审批卡不存在");
+            return;
+        };
+        self.busy = false;
+        self.draft.clear();
+        self.note = None;
+        let kind = match self.propose.take() {
+            Some((kind, _)) => kind,
+            None => {
+                if card.kind == super::ActionKind::RuleDelete {
+                    PendingKind::Delete {
+                        rule_id: String::new(),
+                    }
+                } else {
+                    PendingKind::Add
+                }
+            }
+        };
+        self.pending = Some(Pending {
+            id: card.id,
+            kind,
+            text: card.summary,
+            state: card.state,
+        });
     }
 
     pub fn propose_failed(&mut self, reason: &str) {
         self.busy = false;
+        self.propose = None;
         self.note = Some(reason.to_string());
+    }
+
+    /// Owner approved or denied here: drop the card (caller refreshes GET).
+    pub fn finish_pending(&mut self) {
+        self.busy = false;
+        self.pending = None;
+        self.note = None;
+        self.propose = None;
+    }
+
+    /// 409: already answered elsewhere.
+    pub fn answered_elsewhere(&mut self) {
+        self.busy = false;
+        self.pending = None;
+        self.propose = None;
+        self.note = Some(ALREADY_ANSWERED.into());
+    }
+
+    pub fn expire_pending(&mut self, at: i64) {
+        self.busy = false;
+        if let Some(pending) = &mut self.pending {
+            pending.state = super::ApprovalState::Expired { at };
+        }
+    }
+
+    /// Input and row actions are locked while a request is in flight or a
+    /// confirm card is still waiting for an answer.
+    pub fn locked(&self) -> bool {
+        self.busy || self.pending.as_ref().is_some_and(Pending::is_open)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -199,27 +333,85 @@ mod tests {
     }
 
     #[test]
-    fn proposed_add_clears_the_draft_and_does_not_list_the_rule() {
+    fn add_rejects_more_than_max_chars() {
         let mut page = Page::default();
         page.opened(Vec::new());
-        page.draft = "允许发周报".into();
-        assert_eq!(page.to_add().as_deref(), Some("允许发周报"));
-        page.busy = true;
-        page.proposed();
-        assert!(page.draft.is_empty());
-        assert_eq!(page.note.as_deref(), Some(PENDING_NOTE));
-        assert!(page.is_empty(), "unconfirmed rules stay off the list");
-        assert!(!page.busy);
+        page.set_draft("字".repeat(REVIEW_RULE_MAX + 1));
+        assert_eq!(page.to_add(), None);
+        assert_eq!(page.note.as_deref(), Some(TOO_LONG));
+        page.set_draft("字".repeat(REVIEW_RULE_MAX));
+        assert_eq!(
+            page.to_add().as_deref(),
+            Some("字".repeat(REVIEW_RULE_MAX).as_str())
+        );
+        assert_eq!(page.note, None);
     }
 
     #[test]
-    fn proposed_delete_leaves_the_rule_listed() {
+    fn proposed_add_shows_an_inline_card_and_does_not_list_the_rule() {
+        let mut page = Page::default();
+        page.opened(Vec::new());
+        let text = page.to_add().or_else(|| {
+            page.set_draft("允许发周报".into());
+            page.to_add()
+        });
+        let text = text.unwrap();
+        page.begin_add(text.clone());
+        page.proposed("apr-1".into());
+        assert!(page.draft.is_empty());
+        assert_eq!(page.note, None);
+        let pending = page.pending.as_ref().unwrap();
+        assert_eq!(pending.id, "apr-1");
+        assert_eq!(pending.text, "允许发周报");
+        assert!(pending.is_add());
+        assert!(pending.is_open());
+        assert!(page.is_empty(), "unconfirmed rules stay off the list");
+        assert!(page.locked());
+        page.finish_pending();
+        assert!(page.pending.is_none());
+        assert!(!page.locked());
+    }
+
+    #[test]
+    fn proposed_delete_leaves_the_rule_listed_and_pins_the_row() {
         let mut page = Page::default();
         page.opened(vec![rule("r1", "允许发周报", "2026-11-20T08:00:00Z")]);
-        page.busy = true;
-        page.proposed();
+        page.begin_delete("r1".into(), "允许发周报".into());
+        page.proposed("apr-del-r1".into());
         assert_eq!(page.rules.as_ref().unwrap().len(), 1);
-        assert_eq!(page.note.as_deref(), Some(PENDING_NOTE));
+        assert_eq!(page.note, None);
+        let pending = page.pending.as_ref().unwrap();
+        assert!(pending.is_delete_of("r1"));
+        assert_eq!(pending.text, "允许发周报");
+        assert!(page.locked());
+    }
+
+    #[test]
+    fn answered_elsewhere_drops_the_card() {
+        let mut page = Page::default();
+        page.opened(Vec::new());
+        page.begin_add("允许发周报".into());
+        page.proposed("apr-1".into());
+        page.answered_elsewhere();
+        assert!(page.pending.is_none());
+        assert_eq!(page.note.as_deref(), Some(ALREADY_ANSWERED));
+        assert!(!page.locked());
+    }
+
+    #[test]
+    fn expire_pending_keeps_the_settled_card() {
+        let mut page = Page::default();
+        page.opened(Vec::new());
+        page.begin_add("允许发周报".into());
+        page.proposed("apr-1".into());
+        page.expire_pending(1_795_164_480);
+        let pending = page.pending.as_ref().unwrap();
+        assert!(matches!(
+            pending.state,
+            crate::cards::ApprovalState::Expired { at: 1_795_164_480 }
+        ));
+        assert!(!pending.is_open());
+        assert!(!page.locked());
     }
 
     #[test]
@@ -235,5 +427,8 @@ mod tests {
         assert_eq!(ADD_HINT, "确认后加入放行规则");
         assert_eq!(DELETE_HINT, "确认后删除这条规则");
         assert_eq!(PLACEHOLDER, "用一句话写，比如：允许合并 CI 全绿的 PR");
+        assert_eq!(TOO_LONG, "最多 200 字");
+        assert_eq!(REVIEW_RULE_MAX, 200);
+        assert_eq!(ALREADY_ANSWERED, "别处已回答");
     }
 }

@@ -18,12 +18,13 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro,
-    CreateMemory, CreateSkill, ErrorBody, Event, McpCommandNotApproved, McpServer, McpServers,
-    McpTestResult, McpTool, McpTools, Memories, Memory, MemoryKind, MemorySource, MemoryStatus,
-    Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
+    next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, ApprovalAction,
+    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, ErrorBody,
+    Event, McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools,
+    Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
+    ReviewRuleCreated, ReviewRules, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
-    MCP_COMMAND_NOT_APPROVED,
+    MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
 };
 use robroz_contract::{
     ModelSettings, ModelSettingsSource, ModelTestResult, SearchSettings, SearchTestResult,
@@ -31,14 +32,13 @@ use robroz_contract::{
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
 
-use robroz_ui::cards::review_rules;
 use robroz_ui::cards::model as model_page;
-
-use robroz_ui::cards::search;
-use robroz_ui::cards::ApprovalExtras;
+use robroz_ui::cards::review_rules;
 
 use crate::conn::Conn;
 use crate::event_decode;
+use robroz_ui::cards::search;
+use robroz_ui::cards::ApprovalExtras;
 
 pub mod paths {
     /// robroz#62: list and write memories.
@@ -112,6 +112,9 @@ pub mod paths {
         format!("/api/groups/{group_id}/say")
     }
     /// robroz#32: approve or deny an approval card, once.
+    pub fn approval(id: &str) -> String {
+        format!("/api/approvals/{id}")
+    }
     pub fn approval_decision(id: &str, approve: bool) -> String {
         let verb = if approve { "approve" } else { "deny" };
         format!("/api/approvals/{id}/{verb}")
@@ -308,52 +311,41 @@ pub trait CardApi: Send + Sync {
     fn propose_review_rule(&self, text: &str) -> Result<String, ApiError>;
     /// Propose deleting a confirmed rule. Returns the pending approval id (202).
     fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError>;
+    /// `GET /api/approvals/{id}`: the confirm card, same JSON as the event.
+    fn approval(&self, id: &str) -> Result<Event, ApiError>;
     /// 模型 page: what is in effect; never the key (robroz#102).
     fn model_settings(&self) -> Result<model_page::Current, ApiError>;
     fn put_model(&self, put: &model_page::Put) -> Result<model_page::Current, ApiError>;
     fn test_model(&self) -> Result<(bool, Option<String>), ApiError>;
-
 }
 
 /// `GET`/`PUT /api/settings/search` body. `source` is read only when the
 /// host sends it; absent or unknown stays `None` (no label, no guess).
 fn decode_review_rules(body: &str) -> Result<Vec<review_rules::Rule>, ApiError> {
-    let v: serde_json::Value = decode(body)?;
-    let rules = v
-        .get("rules")
-        .and_then(|r| r.as_array())
-        .ok_or_else(|| ApiError::Decode("与契约不符: 需要 rules".into()))?;
-    let mut out = Vec::new();
-    for r in rules {
-        let id = r
-            .get("id")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| ApiError::Decode("与契约不符: rule.id".into()))?;
-        let text = r
-            .get("text")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| ApiError::Decode("与契约不符: rule.text".into()))?;
-        let created_at = r
-            .get("createdAt")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        out.push(review_rules::Rule {
-            id: id.to_string(),
-            text: text.to_string(),
-            created_at,
-        });
-    }
-    Ok(out)
+    let list: ReviewRules = decode(body)?;
+    Ok(list
+        .rules
+        .into_iter()
+        .map(|r| review_rules::Rule {
+            id: r.id,
+            text: r.text,
+            created_at: r.created_at,
+        })
+        .collect())
 }
 
 fn decode_approval_id(body: &str) -> Result<String, ApiError> {
-    let v: serde_json::Value = decode(body)?;
-    v.get("approvalId")
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| ApiError::Decode("与契约不符: 需要 approvalId".into()))
+    let created: ReviewRuleCreated = decode(body)?;
+    if created.approval_id.is_empty() {
+        return Err(ApiError::Decode("与契约不符: 需要 approvalId".into()));
+    }
+    Ok(created.approval_id)
+}
+
+fn decode_approval_event(body: &str) -> Result<Event, ApiError> {
+    event_decode::parse_event_str(body)
+        .map(|(event, _)| event)
+        .map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
 }
 
 pub fn decode_search(body: &str) -> Result<search::Current, ApiError> {
@@ -784,22 +776,29 @@ impl CardApi for HttpApi {
         Ok((r.ok, r.error))
     }
 
-
     fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
         decode_review_rules(&self.get(paths::REVIEW_RULES)?)
     }
 
     fn propose_review_rule(&self, text: &str) -> Result<String, ApiError> {
-        let body = self.post(
-            paths::REVIEW_RULES,
-            Some(serde_json::json!({"text": text}).to_string()),
-        )?;
+        if text.chars().count() > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::TOO_LONG.into()));
+        }
+        let payload = serde_json::to_string(&CreateReviewRule {
+            text: text.to_string(),
+        })
+        .expect("serialize CreateReviewRule");
+        let body = self.post(paths::REVIEW_RULES, Some(payload))?;
         decode_approval_id(&body)
     }
 
     fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError> {
         let body = self.delete(&paths::review_rule(id))?;
         decode_approval_id(&body)
+    }
+
+    fn approval(&self, id: &str) -> Result<Event, ApiError> {
+        decode_approval_event(&self.get(&paths::approval(id))?)
     }
 
     fn model_settings(&self) -> Result<model_page::Current, ApiError> {
@@ -813,7 +812,6 @@ impl CardApi for HttpApi {
     fn test_model(&self) -> Result<(bool, Option<String>), ApiError> {
         let r: ModelTestResult = decode(&self.post(paths::MODEL_TEST, None)?)?;
         Ok((r.ok, r.error))
-
     }
 }
 
@@ -828,6 +826,7 @@ pub struct FakeApi {
     search: Mutex<search::Current>,
 
     review_rules: Mutex<Vec<review_rules::Rule>>,
+    pending_review: Mutex<Vec<FakeRuleApproval>>,
     model: Mutex<model_page::Current>,
 
     schedules: Mutex<Vec<ScheduleEntry>>,
@@ -846,6 +845,7 @@ impl FakeApi {
             search: Mutex::new(search::Current::default()),
 
             review_rules: Mutex::new(Vec::new()),
+            pending_review: Mutex::new(Vec::new()),
             model: Mutex::new(model_page::Current::default()),
 
             schedules: Mutex::new(schedules),
@@ -865,6 +865,13 @@ impl FakeApi {
     #[allow(dead_code)]
     pub fn with_model(self, cur: model_page::Current) -> Self {
         *self.model.lock().expect("fake model lock") = cur;
+        self
+    }
+
+    /// Seed confirmed allow-rules for `--fake` screenshots or a review script.
+    #[allow(dead_code)]
+    pub fn with_review_rules(self, rules: Vec<review_rules::Rule>) -> Self {
+        *self.review_rules.lock().expect("fake review rules lock") = rules;
         self
     }
 }
@@ -963,9 +970,12 @@ impl CardApi for FakeApi {
 
     fn decide(
         &self,
-        _: &str,
-        _: bool,
+        id: &str,
+        approve: bool,
     ) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError> {
+        if let Some(reply) = decide_fake_review_rule(self, id, approve)? {
+            return Ok(Some(reply));
+        }
         Ok(None)
     }
 
@@ -1356,7 +1366,6 @@ impl CardApi for FakeApi {
         })
     }
 
-
     fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
         Ok(self
             .review_rules
@@ -1368,17 +1377,64 @@ impl CardApi for FakeApi {
     fn propose_review_rule(&self, text: &str) -> Result<String, ApiError> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(ApiError::BadRequest("请填写规则".into()));
+            return Err(ApiError::BadRequest(review_rules::NEED_TEXT.into()));
         }
-        Ok(format!("apr-add-{}", text.chars().count()))
+        if text.chars().count() > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::TOO_LONG.into()));
+        }
+        let id = format!("apr-add-{}", uuid_ish());
+        self.pending_review
+            .lock()
+            .expect("fake pending review lock")
+            .push(FakeRuleApproval {
+                id: id.clone(),
+                text: text.to_string(),
+                delete_id: None,
+                decided: false,
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            });
+        Ok(id)
     }
 
     fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError> {
         let all = self.review_rules.lock().expect("fake review rules lock");
-        if !all.iter().any(|r| r.id == id) {
+        let Some(rule) = all.iter().find(|r| r.id == id) else {
             return Err(ApiError::NotFound("规则不存在".into()));
+        };
+        let approval_id = format!("apr-del-{}", uuid_ish());
+        self.pending_review
+            .lock()
+            .expect("fake pending review lock")
+            .push(FakeRuleApproval {
+                id: approval_id.clone(),
+                text: rule.text.clone(),
+                delete_id: Some(id.to_string()),
+                decided: false,
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            });
+        Ok(approval_id)
+    }
+
+    fn approval(&self, id: &str) -> Result<Event, ApiError> {
+        let pending = self
+            .pending_review
+            .lock()
+            .expect("fake pending review lock");
+        let Some(p) = pending.iter().find(|p| p.id == id) else {
+            return Err(ApiError::NotFound("审批卡不存在".into()));
+        };
+        if p.decided {
+            // Host returns the settled card; we only need pending cards on
+            // the settings page after 202, so treat decided as gone.
+            return Err(ApiError::NotFound("审批卡不存在".into()));
         }
-        Ok(format!("apr-del-{id}"))
+        Ok(fake_review_event(
+            &p.id,
+            &p.text,
+            p.delete_id.is_some(),
+            &p.created_at,
+            None,
+        ))
     }
 
     fn model_settings(&self) -> Result<model_page::Current, ApiError> {
@@ -1454,7 +1510,6 @@ impl CardApi for FakeApi {
         } else {
             (false, Some(model_page::NOT_SET.into()))
         })
-
     }
 }
 
@@ -1534,6 +1589,87 @@ fn last4(value: &str) -> Option<String> {
     Some(value.chars().skip(n.saturating_sub(4)).collect())
 }
 
+struct FakeRuleApproval {
+    id: String,
+    text: String,
+    delete_id: Option<String>,
+    decided: bool,
+    created_at: String,
+}
+
+fn decide_fake_review_rule(
+    api: &FakeApi,
+    id: &str,
+    approve: bool,
+) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError> {
+    let mut pending = api.pending_review.lock().expect("fake pending review lock");
+    let Some(idx) = pending.iter().position(|p| p.id == id) else {
+        return Ok(None);
+    };
+    if pending[idx].decided {
+        return Err(ApiError::Conflict(review_rules::ALREADY_ANSWERED.into()));
+    }
+    pending[idx].decided = true;
+    let text = pending[idx].text.clone();
+    let delete_id = pending[idx].delete_id.clone();
+    drop(pending);
+    if approve {
+        let mut rules = api.review_rules.lock().expect("fake review rules lock");
+        if let Some(del) = &delete_id {
+            rules.retain(|r| &r.id != del);
+        } else {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            rules.push(review_rules::Rule {
+                id: format!("r-{}", uuid_ish()),
+                text: text.clone(),
+                created_at: now,
+            });
+        }
+    }
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    Ok(Some((
+        fake_review_event(id, &text, delete_id.is_some(), &now, Some(approve)),
+        None,
+    )))
+}
+
+fn fake_review_event(
+    id: &str,
+    text: &str,
+    delete: bool,
+    now: &str,
+    approve: Option<bool>,
+) -> Event {
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(86_400);
+    Event::Approval {
+        id: id.to_string(),
+        bot_id: SETTINGS_APPROVAL_BOT_ID.into(),
+        bot_name: SETTINGS_APPROVAL_BOT_NAME.into(),
+        action: if delete {
+            ApprovalAction::RuleDelete
+        } else {
+            ApprovalAction::RuleAdd
+        },
+        summary: text.to_string(),
+        path: None,
+        decision: approve.map(|ok| {
+            if ok {
+                ApprovalDecision::Approved
+            } else {
+                ApprovalDecision::Denied
+            }
+        }),
+        created_at: now.to_string(),
+        answered_at: approve.map(|_| now.to_string()),
+        answered_by: approve.map(|_| "我".into()),
+        task_id: None,
+        mcp_server: None,
+        mcp_tool: None,
+        reason: None,
+        expires_at: Some(expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+    }
+}
+
 /// Unique-enough id for fake echoes.
 fn uuid_ish() -> u128 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1590,6 +1726,7 @@ mod tests {
 
         assert_eq!(paths::REVIEW_RULES, "/api/settings/review-rules");
         assert_eq!(paths::review_rule("r1"), "/api/settings/review-rules/r1");
+        assert_eq!(paths::approval("apr-1"), "/api/approvals/apr-1");
         assert_eq!(paths::MODEL_SETTINGS, "/api/settings/model");
         assert_eq!(paths::MODEL_TEST, "/api/settings/model/test");
     }
@@ -1609,7 +1746,77 @@ mod tests {
             "apr-1"
         );
         assert!(decode_approval_id(r#"{"id":"apr-1"}"#).is_err());
+        assert!(
+            decode_review_rules(r#"[{"id":"r1","text":"允许发周报"}]"#).is_err(),
+            "bare array is not the contract wrapper"
+        );
+    }
 
+    #[test]
+    fn fake_review_rules_confirm_then_apply() {
+        let api = FakeApi::new(Vec::new()).with_review_rules(vec![review_rules::Rule {
+            id: "r1".into(),
+            text: "允许发周报".into(),
+            created_at: "2026-11-20T08:00:00Z".into(),
+        }]);
+        assert_eq!(api.review_rules().unwrap().len(), 1);
+
+        let add_id = api.propose_review_rule("允许合并 CI 全绿的 PR").unwrap();
+        assert!(add_id.starts_with("apr-add-"));
+        assert_eq!(
+            api.review_rules().unwrap().len(),
+            1,
+            "unconfirmed add stays off the list"
+        );
+
+        let event = api.approval(&add_id).unwrap();
+        assert!(event_decode::is_settings_approval(&event));
+        assert!(matches!(
+            event,
+            Event::Approval {
+                action: ApprovalAction::RuleAdd,
+                bot_id,
+                task_id: None,
+                ..
+            } if bot_id == SETTINGS_APPROVAL_BOT_ID
+        ));
+
+        let (event, extras) = api.decide(&add_id, true).unwrap().unwrap();
+        assert!(extras.is_none());
+        assert!(matches!(
+            event,
+            Event::Approval {
+                decision: Some(ApprovalDecision::Approved),
+                action: ApprovalAction::RuleAdd,
+                ..
+            }
+        ));
+        let rules = api.review_rules().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().any(|r| r.text == "允许合并 CI 全绿的 PR"));
+        assert!(matches!(
+            api.decide(&add_id, true),
+            Err(ApiError::Conflict(_))
+        ));
+
+        let del_id = api.propose_delete_review_rule("r1").unwrap();
+        assert_eq!(api.review_rules().unwrap().len(), 2);
+        api.decide(&del_id, false).unwrap();
+        assert_eq!(
+            api.review_rules().unwrap().len(),
+            2,
+            "denied delete leaves the rule"
+        );
+        let del_id = api.propose_delete_review_rule("r1").unwrap();
+        api.decide(&del_id, true).unwrap();
+        let rules = api.review_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(!rules.iter().any(|r| r.id == "r1"));
+
+        assert!(matches!(
+            api.propose_review_rule(&"字".repeat(review_rules::REVIEW_RULE_MAX + 1)),
+            Err(ApiError::BadRequest(msg)) if msg == review_rules::TOO_LONG
+        ));
     }
 
     #[test]

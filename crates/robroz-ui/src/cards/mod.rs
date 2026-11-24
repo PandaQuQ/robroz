@@ -140,9 +140,9 @@ pub enum ActionKind {
     Spend,
     Call,
 
-    /// Propose adding an allow rule. Not on the contract enum yet.
+    /// Propose adding an allow rule (`ApprovalAction::RuleAdd`).
     RuleAdd,
-    /// Propose deleting an allow rule. Not on the contract enum yet.
+    /// Propose deleting an allow rule (`ApprovalAction::RuleDelete`).
     RuleDelete,
     /// An action value this client does not recognise. Shown with the
     /// generic verb 「操作」.
@@ -188,20 +188,10 @@ pub enum ApprovalState {
     },
 }
 
-/// Stash for `rule_add` / `rule_delete` until those variants land on
-/// `ApprovalAction`. Those values parse as [`ApprovalAction::Unknown`];
-/// this keeps the real action so the settings confirm cards still render.
-/// TODO: drop once the auto-review backend PR adds `rule_*`.
+/// Unused leftover from the pre-contract `rule_*` stash. Callers still
+/// thread this through event decode; it is always empty.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ApprovalExtras {
-    pub action: Option<ClientApprovalAction>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientApprovalAction {
-    RuleAdd,
-    RuleDelete,
-}
+pub struct ApprovalExtras {}
 
 impl ApprovalCard {
     /// Show this client's own name (`me`) as 「我」.
@@ -220,9 +210,9 @@ impl ApprovalCard {
         Self::from_event_with(event, None)
     }
 
-    /// Like [`Self::from_event`], with a `rule_add` / `rule_delete` stash
-    /// the contract cannot carry yet.
-    pub fn from_event_with(event: &Event, extras: Option<&ApprovalExtras>) -> Option<Self> {
+    /// Like [`Self::from_event`]. `extras` is ignored; rule actions come
+    /// from the contract enum.
+    pub fn from_event_with(event: &Event, _extras: Option<&ApprovalExtras>) -> Option<Self> {
         let Event::Approval {
             id,
             bot_name,
@@ -260,19 +250,14 @@ impl ApprovalCard {
                 at,
             },
         };
-        let kind = match extras.and_then(|e| e.action) {
-            Some(ClientApprovalAction::RuleAdd) => ActionKind::RuleAdd,
-            Some(ClientApprovalAction::RuleDelete) => ActionKind::RuleDelete,
-            None => match action {
-                ApprovalAction::Delete => ActionKind::Delete,
-                ApprovalAction::Send => ActionKind::Send,
-                ApprovalAction::Spend => ActionKind::Spend,
-                ApprovalAction::Call => ActionKind::Call,
-                ApprovalAction::RuleAdd => ActionKind::RuleAdd,
-                ApprovalAction::RuleDelete => ActionKind::RuleDelete,
-                ApprovalAction::Unknown => ActionKind::Unknown,
-            },
-        };
+        let kind = match action {
+            ApprovalAction::Delete => ActionKind::Delete,
+            ApprovalAction::Send => ActionKind::Send,
+            ApprovalAction::Spend => ActionKind::Spend,
+            ApprovalAction::Call => ActionKind::Call,
+            ApprovalAction::RuleAdd => ActionKind::RuleAdd,
+            ApprovalAction::RuleDelete => ActionKind::RuleDelete,
+            ApprovalAction::Unknown => ActionKind::Unknown,
         };
         Some(Self {
             id: id.clone(),
@@ -583,29 +568,29 @@ mod tests {
     }
 
     #[test]
-    fn rule_add_overrides_unknown_contract_action() {
-        let add = ApprovalExtras {
-            action: Some(ClientApprovalAction::RuleAdd),
-        };
+    fn rule_add_from_contract_action() {
         let mut ev = approval_event();
         if let Event::Approval {
             action,
             decision,
             answered_at,
+            bot_id,
+            bot_name,
+            task_id,
             ..
         } = &mut ev
         {
-            *action = ApprovalAction::Unknown;
+            *action = ApprovalAction::RuleAdd;
             *decision = None;
             *answered_at = None;
+            *bot_id = robroz_contract::SETTINGS_APPROVAL_BOT_ID.into();
+            *bot_name = robroz_contract::SETTINGS_APPROVAL_BOT_NAME.into();
+            *task_id = None;
         }
-        let card = ApprovalCard::from_event_with(&ev, Some(&add)).unwrap();
+        let card = ApprovalCard::from_event(&ev).unwrap();
         assert_eq!(card.kind, ActionKind::RuleAdd);
         assert!(card.is_rule());
-        // Without the shim, a rule_* value is just Unknown.
-        let card = ApprovalCard::from_event(&ev).unwrap();
-        assert_eq!(card.kind, ActionKind::Unknown);
-        assert!(!card.is_rule());
+        assert_eq!(card.bot, robroz_contract::SETTINGS_APPROVAL_BOT_NAME);
     }
 
     #[test]

@@ -3625,26 +3625,37 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     col = col.push(container(body).padding(pad));
     container(col).width(Fill).style(card_style(*t)).into()
 }
-/// Owner-DM card for adding or deleting a rule: #68 confirm layout.
-fn rule_approval<'a>(
+/// #68 confirm layout shared by the owner-DM card and the in-page card.
+fn rule_confirm_fields<'a>(
     t: &Skin,
-    card: &'a ApprovalCard,
-    ui: &CardUi,
+    kind: crate::cards::ActionKind,
+    summary: &'a str,
+    id: &'a str,
+    state: &'a crate::cards::ApprovalState,
+    show_buttons: bool,
+    enabled: bool,
+    note: Option<String>,
     mut col: iced::widget::Column<'a, Action>,
-) -> Element<'a, Action> {
-    let hint = if card.kind == crate::cards::ActionKind::RuleAdd {
-        review_rules::ADD_HINT
-    } else {
+) -> iced::widget::Column<'a, Action> {
+    let hint = if kind == crate::cards::ActionKind::RuleDelete {
         review_rules::DELETE_HINT
+    } else {
+        review_rules::ADD_HINT
     };
+    if matches!(state, crate::cards::ApprovalState::Expired { .. }) {
+        col = col.push(
+            text(review_rules::EXPIRED)
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
+        col = col.push(gap(t.metrics.head_gap));
+    }
     col = col
-        .push(body(t, &card.summary))
+        .push(body(t, summary))
         .push(gap(t.metrics.head_gap))
         .push(text(hint).size(t.type_.foot).color(color(t.palette.text2)));
-    let actions = interact::approval_actions(card, ui);
-    if let ApprovalActions::Decide { enabled } = actions {
-        let id = &card.id;
-        let (ok, look) = if card.kind == crate::cards::ActionKind::RuleDelete {
+    if show_buttons {
+        let (ok, look) = if kind == crate::cards::ActionKind::RuleDelete {
             (review_rules::DELETE_ACTION, Look::Danger)
         } else {
             (review_rules::ADD_ACTION, Look::Primary)
@@ -3658,7 +3669,7 @@ fn rule_approval<'a>(
                     look,
                     Leading::None,
                     enabled.then(|| Action::Decide {
-                        card: id.clone(),
+                        card: id.to_string(),
                         approve: true,
                     }),
                 ),
@@ -3672,29 +3683,85 @@ fn rule_approval<'a>(
                     },
                     Leading::None,
                     enabled.then(|| Action::Decide {
-                        card: id.clone(),
+                        card: id.to_string(),
                         approve: false,
                     }),
                 ),
             ],
         ));
     }
-    if let Some(note) = ui.note.as_ref() {
-        col = col
-            .push(gap(t.metrics.foot_gap))
-            .push(footnote(t, note.text()));
-    } else if let Some(foot) = status::approval_footnote(&card.state, &Local) {
+    if let Some(note) = note {
+        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, note));
+    } else if let Some(foot) = status::approval_footnote(state, &Local) {
         col = col
             .push(gap(t.metrics.foot_gap))
             .push(approval_footnote_view(t, foot));
     }
-    frame(t, col.into())
+    col
 }
 
-/// The 放行规则 page: add an input, list confirmed rules, delete proposes a card.
+/// In-page confirm card on the 放行规则 settings page.
+fn rule_confirm_on_page<'a>(
+    t: &Skin,
+    pending: &'a review_rules::Pending,
+    enabled: bool,
+) -> Element<'a, Action> {
+    let kind = if pending.is_add() {
+        crate::cards::ActionKind::RuleAdd
+    } else {
+        crate::cards::ActionKind::RuleDelete
+    };
+    let show_buttons = pending.is_open();
+    let col = rule_confirm_fields(
+        t,
+        kind,
+        &pending.text,
+        &pending.id,
+        &pending.state,
+        show_buttons,
+        enabled,
+        None,
+        column![],
+    );
+    container(col)
+        .padding(card_padding(t))
+        .width(Fill)
+        .style(card_style(*t))
+        .into()
+}
+
+/// Owner-DM card for adding or deleting a rule: #68 confirm layout.
+fn rule_approval<'a>(
+    t: &Skin,
+    card: &'a ApprovalCard,
+    ui: &CardUi,
+    col: iced::widget::Column<'a, Action>,
+) -> Element<'a, Action> {
+    let actions = interact::approval_actions(card, ui);
+    let show_buttons = matches!(actions, ApprovalActions::Decide { .. });
+    let enabled = matches!(actions, ApprovalActions::Decide { enabled: true });
+    let note = ui.note.as_ref().map(|n| n.text());
+    frame(
+        t,
+        rule_confirm_fields(
+            t,
+            card.kind,
+            &card.summary,
+            &card.id,
+            &card.state,
+            show_buttons,
+            enabled,
+            note,
+            col,
+        )
+        .into(),
+    )
+}
+
+/// The 放行规则 page: add an input, list confirmed rules, confirm in place.
 pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element<'a, Action> {
     let m = t.metrics;
-    let busy = page.busy;
+    let locked = page.locked();
     let head = row![text(review_rules::TITLE)
         .size(t.type_.list_title)
         .font(bold())
@@ -3712,7 +3779,7 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
     let mut input = text_input(review_rules::PLACEHOLDER, &page.draft)
         .size(t.type_.body)
         .padding(Padding::from([8.0, 10.0]));
-    if !busy {
+    if !locked {
         input = input
             .on_input(|text| Action::ReviewDraft { text })
             .on_submit(Action::ReviewAdd);
@@ -3725,22 +3792,18 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
                 review_rules::ADD.into(),
                 Look::Primary,
                 Leading::None,
-                (!busy).then_some(Action::ReviewAdd),
+                (!locked).then_some(Action::ReviewAdd),
             ),
         ]
         .spacing(t.controls.button_gap)
         .align_y(Alignment::Center),
     );
     if let Some(note) = &page.note {
-        if note == review_rules::PENDING_NOTE {
-            body_col = body_col.push(
-                text(note.as_str())
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text2)),
-            );
-        } else {
-            body_col = body_col.push(inline_note(t, note));
-        }
+        body_col = body_col.push(inline_note(t, note));
+    }
+    let add_pending = page.pending.as_ref().filter(|p| p.is_add());
+    if let Some(pending) = add_pending {
+        body_col = body_col.push(rule_confirm_on_page(t, pending, !page.busy));
     }
     match &page.rules {
         None => {
@@ -3750,7 +3813,7 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
                     .color(color(t.palette.text2)),
             );
         }
-        Some(rules) if rules.is_empty() => {
+        Some(rules) if rules.is_empty() && add_pending.is_none() => {
             body_col = body_col.push(
                 text(review_rules::EMPTY)
                     .size(t.type_.body)
@@ -3759,6 +3822,10 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
         }
         Some(rules) => {
             for r in rules {
+                if let Some(pending) = page.pending.as_ref().filter(|p| p.is_delete_of(&r.id)) {
+                    body_col = body_col.push(rule_confirm_on_page(t, pending, !page.busy));
+                    continue;
+                }
                 let date = r.added_on(&Local);
                 let mut row_el = column![text(r.text.as_str())
                     .size(t.type_.body)
@@ -3777,7 +3844,7 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
                             review_rules::DELETE.into(),
                             Look::Secondary,
                             Leading::None,
-                            (!busy).then_some(Action::ReviewDelete { id }),
+                            (!locked).then_some(Action::ReviewDelete { id }),
                         ),
                     ]
                     .spacing(t.controls.button_gap)
