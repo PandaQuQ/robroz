@@ -514,6 +514,23 @@ mod tests {
             approval_footnote(&ApprovalState::Approved { by: by("我"), at }, &Utc),
             Some(foot("我已批准", "01:52"))
         );
+        // This client's own answer is stored as a mark and drawn in the
+        // active language, so a switch changes it without a refresh.
+        let mine = ApprovalState::Approved {
+            by: by(super::super::ME_MARK),
+            at,
+        };
+        assert_eq!(
+            approval_footnote(&mine, &Utc),
+            Some(foot("我已批准", "01:52"))
+        );
+        {
+            let _en = crate::i18n::scoped(crate::i18n::Locale::En);
+            assert_eq!(
+                approval_footnote(&mine, &Utc).map(|f| f.text),
+                Some("Approved by You".into())
+            );
+        }
         assert_eq!(
             approval_footnote(
                 &ApprovalState::Denied {
