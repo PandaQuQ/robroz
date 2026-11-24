@@ -18,21 +18,28 @@ pub const WORKS: &str = "能用了";
 pub const LABEL_PRESET: &str = "服务商";
 pub const LABEL_URL: &str = "地址";
 pub const LABEL_MODEL: &str = "模型名";
-pub const LABEL_KEY: &str = "密钥";
-pub const URL_PLACEHOLDER: &str = LABEL_URL;
-pub const MODEL_PLACEHOLDER: &str = LABEL_MODEL;
-pub const KEY_PLACEHOLDER: &str = LABEL_KEY;
+pub const LABEL_KEY: &str = "密钥（选填）";
+/// Address placeholder is empty so it does not repeat the label.
+pub const URL_PLACEHOLDER: &str = "";
+/// Key placeholder is empty so it does not repeat the label.
+pub const KEY_PLACEHOLDER: &str = "";
 pub use secret::{CLEAR, PENDING_CLEAR, UNDO};
 pub const NEED_URL: &str = "请填写地址";
 pub const BAD_URL: &str = "地址要以 http:// 或 https:// 开头";
 pub const NEED_MODEL: &str = "请填写模型名";
-pub const NEED_KEY: &str = "请填写密钥";
 /// Delivery entry when a task needed a model (`needsSetup: "model"`).
 pub const GO_SETUP: &str = "去设置";
 /// Shown under the delivery path when `needsSetup` is `"model"` and there is no failure.
 pub const NEEDS_SETUP_HINT: &str = "这次还没设置模型";
 /// Hint under the OpenRouter preset.
-pub const OPENROUTER_HINT: &str = "模型名用带 :free 的免费模型";
+pub const OPENROUTER_HINT: &str = "免费模型的名字以 :free 结尾";
+
+/// Host `/test` returns this as `error` on 401/403, once the key-optional
+/// PR lands. Show it after 「已保存，但连不上：」, never a raw 401.
+///
+/// TODO: switch to `robroz_contract::MODEL_TEST_BAD_KEY` when that constant
+/// is in the contract crate. Do not edit the contract from this client PR.
+pub const MODEL_TEST_BAD_KEY: &str = "密钥不对或没填";
 
 pub fn key_filled(last4: Option<&str>) -> String {
     secret::filled(last4)
@@ -47,8 +54,26 @@ pub fn cannot_connect(reason: &str) -> String {
     format!("连不上：{}", strip_connect_prefix(reason))
 }
 
+fn is_raw_auth_error(reason: &str) -> bool {
+    let reason = reason.trim();
+    let reason = reason
+        .strip_prefix("HTTP ")
+        .or_else(|| reason.strip_prefix("http "))
+        .unwrap_or(reason);
+    reason == "401"
+        || reason == "403"
+        || reason.eq_ignore_ascii_case("401 Unauthorized")
+        || reason.eq_ignore_ascii_case("403 Forbidden")
+}
+
 pub fn saved_but_unreachable(reason: &str) -> String {
-    format!("已保存，但连不上：{}", strip_connect_prefix(reason))
+    let reason = strip_connect_prefix(reason);
+    let reason = if reason == MODEL_TEST_BAD_KEY || is_raw_auth_error(reason) {
+        MODEL_TEST_BAD_KEY
+    } else {
+        reason
+    };
+    format!("已保存，但连不上：{reason}")
 }
 
 pub fn failed(reason: &str) -> String {
@@ -94,6 +119,25 @@ impl Preset {
             Preset::Ollama => Some("http://localhost:11434/v1"),
             Preset::Custom => None,
         }
+    }
+
+    /// Example model id used as the placeholder. Empty for custom / no pick.
+    pub fn model_example(self) -> &'static str {
+        match self {
+            Preset::Gemini => "gemini-2.5-flash",
+            Preset::Groq => "llama-3.3-70b-versatile",
+            Preset::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
+            Preset::Ollama => "llama3.2",
+            Preset::Custom => "",
+        }
+    }
+
+    /// Whether the key field is hidden. Currently the field stays visible
+    /// for every preset, including Ollama. Flip the body to
+    /// `self == Preset::Ollama` if PM later wants it hidden.
+    pub fn hides_key(self) -> bool {
+        let _ = self;
+        false
     }
 
     pub fn from_url(url: &str) -> Self {
@@ -207,6 +251,15 @@ impl Page {
         self.key.shows_stored()
     }
 
+    /// Key field is shown unless the selected preset hides it.
+    pub fn shows_key(&self) -> bool {
+        !self.preset.is_some_and(Preset::hides_key)
+    }
+
+    pub fn model_placeholder(&self) -> &'static str {
+        self.preset.map_or("", Preset::model_example)
+    }
+
     pub fn not_set(&self) -> bool {
         self.current
             .as_ref()
@@ -266,11 +319,7 @@ impl Page {
         let key = match self.key.to_send() {
             Some(Some(k)) => Some(Some(k)),
             Some(None) => Some(None),
-            None if self.key.has_key => None,
-            None => {
-                self.note = Some(NEED_KEY.into());
-                return None;
-            }
+            None => None,
         };
         self.note = None;
         Some(Put {
@@ -355,9 +404,22 @@ mod tests {
             Preset::from_url("https://api.openai.com/v1"),
             Preset::Custom
         );
-        assert_eq!(LABEL_URL, URL_PLACEHOLDER);
-        assert_eq!(LABEL_MODEL, MODEL_PLACEHOLDER);
-        assert_eq!(LABEL_KEY, KEY_PLACEHOLDER);
+        assert!(URL_PLACEHOLDER.is_empty());
+        assert!(KEY_PLACEHOLDER.is_empty());
+        assert_ne!(LABEL_KEY, KEY_PLACEHOLDER);
+        assert_eq!(LABEL_KEY, "密钥（选填）");
+        assert_eq!(Preset::Gemini.model_example(), "gemini-2.5-flash");
+        assert_eq!(Preset::Groq.model_example(), "llama-3.3-70b-versatile");
+        assert_eq!(
+            Preset::OpenRouter.model_example(),
+            "meta-llama/llama-3.3-70b-instruct:free"
+        );
+        assert_eq!(Preset::Ollama.model_example(), "llama3.2");
+        assert_eq!(Preset::Custom.model_example(), "");
+        assert_eq!(OPENROUTER_HINT, "免费模型的名字以 :free 结尾");
+        for p in Preset::ALL {
+            assert!(!p.hides_key(), "key field stays visible, including Ollama");
+        }
         assert_eq!(PENDING_CLEAR, "保存后删除");
         assert_eq!(UNDO, "撤销");
         assert_eq!(TITLE, "模型");
@@ -406,8 +468,14 @@ mod tests {
         assert_eq!(p.note.as_deref(), Some(NEED_MODEL));
         p.set_model("llama3.2".into());
         assert_eq!(p.note.take(), None);
-        assert!(p.to_send().is_none());
-        assert_eq!(p.note.as_deref(), Some(NEED_KEY));
+        let without_key = p.to_send().unwrap();
+        assert_eq!(
+            without_key.base_url,
+            Some(Some("http://localhost:11434/v1".into()))
+        );
+        assert_eq!(without_key.model, Some(Some("llama3.2".into())));
+        assert_eq!(without_key.key, None, "key is optional");
+        assert!(p.shows_key(), "Ollama still shows the key field");
         p.key.draft = " sk-test ".into();
         let put = p.to_send().unwrap();
         assert_eq!(put.base_url, Some(Some("http://localhost:11434/v1".into())));
@@ -453,5 +521,31 @@ mod tests {
             "已保存，但连不上：io: refused"
         );
         assert_eq!(failed("请求体无效"), "没保存：请求体无效");
+        assert_eq!(
+            saved_but_unreachable(MODEL_TEST_BAD_KEY),
+            "已保存，但连不上：密钥不对或没填"
+        );
+        assert_eq!(
+            saved_but_unreachable("401"),
+            "已保存，但连不上：密钥不对或没填"
+        );
+        assert_eq!(
+            saved_but_unreachable("401 Unauthorized"),
+            "已保存，但连不上：密钥不对或没填"
+        );
+    }
+
+    #[test]
+    fn empty_key_saves_and_ollama_keeps_the_key_field() {
+        let mut p = Page::default();
+        p.pick(Preset::Gemini);
+        p.set_model("gemini-2.5-flash".into());
+        let put = p.to_send().expect("url + model is enough");
+        assert_eq!(put.key, None);
+        assert!(p.shows_key());
+        p.pick(Preset::Ollama);
+        assert!(p.shows_key());
+        assert!(!Preset::Ollama.hides_key());
+        assert_eq!(p.model_placeholder(), "llama3.2");
     }
 }

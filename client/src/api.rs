@@ -1322,13 +1322,11 @@ impl CardApi for FakeApi {
 
     fn test_model(&self) -> Result<(bool, Option<String>), ApiError> {
         let cur = self.model.lock().expect("fake model lock");
-        Ok(
-            if cur.base_url.is_some() && cur.model.is_some() && cur.has_key {
-                (true, None)
-            } else {
-                (false, Some(model_page::NOT_SET.into()))
-            },
-        )
+        Ok(if cur.base_url.is_some() && cur.model.is_some() {
+            (true, None)
+        } else {
+            (false, Some(model_page::NOT_SET.into()))
+        })
     }
 }
 
@@ -1604,18 +1602,28 @@ mod tests {
         assert_eq!(saved.key_last4.as_deref(), Some("xxxx"));
         assert_eq!(saved.source, Some(model_page::Source::Settings));
         assert_eq!(api.test_model().unwrap(), (true, None));
-        let cleared = api
+        let cleared_key = api
             .put_model(&model_page::Put {
                 base_url: None,
                 model: None,
                 key: Some(None),
             })
             .unwrap();
-        assert!(!cleared.has_key);
+        assert!(!cleared_key.has_key);
         assert_eq!(
             api.test_model().unwrap(),
-            (false, Some(model_page::NOT_SET.into()))
+            (true, None),
+            "url + model is enough; key is optional"
         );
+        let without_key = api
+            .put_model(&model_page::Put {
+                base_url: Some(Some("http://localhost:11434/v1".into())),
+                model: Some(Some("llama3.2".into())),
+                key: None,
+            })
+            .unwrap();
+        assert!(!without_key.has_key);
+        assert_eq!(api.test_model().unwrap(), (true, None));
         assert!(matches!(
             api.put_model(&model_page::Put {
                 base_url: Some(Some("not-a-url".into())),

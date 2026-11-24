@@ -3379,6 +3379,64 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
 
 // ---------- 模型 page ----------
 
+fn model_field_padding() -> Padding {
+    Padding::from([8.0, 10.0])
+}
+
+fn model_field_border(t: &Skin, c: Rgb) -> Border {
+    Border {
+        color: color(c),
+        width: t.stroke.control,
+        radius: 2.0.into(),
+    }
+}
+
+fn model_pick_style(t: Skin) -> impl Fn(&IcedTheme, pick_list::Status) -> pick_list::Style {
+    move |_theme, status| {
+        let border = match status {
+            pick_list::Status::Hovered | pick_list::Status::Opened { .. } => t.palette.text,
+            pick_list::Status::Active => t.palette.border,
+        };
+        pick_list::Style {
+            text_color: color(t.palette.text),
+            placeholder_color: color(t.palette.text3),
+            handle_color: color(t.palette.text),
+            background: color(t.palette.surface).into(),
+            border: model_field_border(&t, border),
+        }
+    }
+}
+
+fn model_pick_menu_style(t: Skin) -> impl Fn(&IcedTheme) -> iced::widget::overlay::menu::Style {
+    move |_theme| iced::widget::overlay::menu::Style {
+        background: color(t.palette.surface).into(),
+        border: model_field_border(&t, t.palette.border),
+        text_color: color(t.palette.text),
+        selected_text_color: color(t.palette.text),
+        selected_background: color(t.palette.control_hover).into(),
+        shadow: IcedShadow::default(),
+    }
+}
+
+fn model_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
+    move |_theme, status| {
+        let border = match status {
+            text_input::Status::Focused { .. } => t.palette.focus,
+            text_input::Status::Hovered => t.palette.text,
+            text_input::Status::Active | text_input::Status::Disabled => t.palette.border,
+        };
+        let sel = t.palette.selection;
+        text_input::Style {
+            background: color(t.palette.surface).into(),
+            border: model_field_border(&t, border),
+            icon: color(t.palette.text),
+            placeholder: color(t.palette.text3),
+            value: color(t.palette.text),
+            selection: faded(sel.rgb, sel.alpha),
+        }
+    }
+}
+
 /// The 模型 page: preset, address, model name, masked key, one test after each save.
 pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     let m = t.metrics;
@@ -3417,21 +3475,26 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     })
     .placeholder(model::LABEL_PRESET)
     .text_size(t.type_.body)
-    .padding(Padding::from([8.0, 10.0]))
-    .width(Fill);
+    .padding(model_field_padding())
+    .width(Fill)
+    .handle(pick_list::Handle::Arrow { size: None })
+    .style(model_pick_style(*t))
+    .menu_style(model_pick_menu_style(*t));
     body = body.push(labelled(t, model::LABEL_PRESET, preset));
 
     let mut url = text_input(model::URL_PLACEHOLDER, &page.url)
         .size(t.type_.body)
-        .padding(Padding::from([8.0, 10.0]));
+        .padding(model_field_padding())
+        .style(model_input_style(*t));
     if !busy {
         url = url.on_input(|text| Action::ModelUrl { text });
     }
     body = body.push(labelled(t, model::LABEL_URL, url));
 
-    let mut name = text_input(model::MODEL_PLACEHOLDER, &page.model)
+    let mut name = text_input(page.model_placeholder(), &page.model)
         .size(t.type_.body)
-        .padding(Padding::from([8.0, 10.0]));
+        .padding(model_field_padding())
+        .style(model_input_style(*t));
     if !busy {
         name = name
             .on_input(|text| Action::ModelName { text })
@@ -3447,20 +3510,22 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     }
     body = body.push(name_block.spacing(2.0));
 
-    body = body.push(labelled(
-        t,
-        model::LABEL_KEY,
-        masked_key_row(
+    if page.shows_key() {
+        body = body.push(labelled(
             t,
-            &page.key,
-            model::KEY_PLACEHOLDER,
-            busy,
-            |text| Action::ModelKey { text },
-            Action::ModelClearKey,
-            Action::ModelCancelKey,
-            Some(Action::ModelSave),
-        ),
-    ));
+            model::LABEL_KEY,
+            masked_key_row(
+                t,
+                &page.key,
+                model::KEY_PLACEHOLDER,
+                busy,
+                |text| Action::ModelKey { text },
+                Action::ModelClearKey,
+                Action::ModelCancelKey,
+                Some(Action::ModelSave),
+            ),
+        ));
+    }
 
     let mut foot = row![btn(
         t,
@@ -3471,12 +3536,32 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     )]
     .spacing(t.controls.button_gap)
     .align_y(Alignment::Center);
-    if let Some(line) = page.test_line() {
-        let c = match page.test {
-            Some(model::Test::Failed(_)) => t.palette.accent,
-            _ => t.palette.text2,
-        };
-        foot = foot.push(text(line).size(t.type_.foot).color(color(c)));
+    match &page.test {
+        Some(model::Test::Ok) => {
+            foot = foot.push(
+                row![
+                    dot(t, Dot::Done),
+                    text(model::WORKS)
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text)),
+                ]
+                .spacing(6.0)
+                .align_y(Alignment::Center),
+            );
+        }
+        Some(model::Test::Failed(_)) => {
+            if let Some(line) = page.test_line() {
+                foot = foot.push(text(line).size(t.type_.foot).color(color(t.palette.accent)));
+            }
+        }
+        Some(model::Test::Running) => {
+            foot = foot.push(
+                text(model::TESTING)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        None => {}
     }
     body = body.push(foot);
     if let Some(note) = &page.note {
