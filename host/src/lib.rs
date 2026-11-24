@@ -3366,6 +3366,356 @@ mod tests {
         assert_eq!(statuses(&events_of(&app, "g1").await)[0]["state"], "blocked");
     }
 
+    /// Schema shape from before later ALTER columns and some later tables,
+    /// derived from the original CREATE TABLE / SCHEMA constants in this crate.
+    /// Used to check that `init_schema` still upgrades a database from previous
+    /// main and keeps existing rows.
+    const PREVIOUS_MAIN_SCHEMA: &str = "
+        CREATE TABLE groups (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE bots (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE memberships (
+            group_id TEXT NOT NULL,
+            bot_id TEXT NOT NULL,
+            PRIMARY KEY (group_id, bot_id)
+        );
+        CREATE TABLE messages (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            assignee_bot_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE deliveries (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            path TEXT NOT NULL,
+            briefing INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE schedules (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            assignee_bot_id TEXT NOT NULL,
+            cron TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            next_run_at TEXT NOT NULL,
+            last_task_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE choices (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            bot_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            options TEXT NOT NULL,
+            multi INTEGER NOT NULL DEFAULT 0,
+            choice TEXT,
+            created_at TEXT NOT NULL,
+            answered_at TEXT
+        );
+        CREATE TABLE approvals (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            bot_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            path TEXT,
+            decision TEXT,
+            created_at TEXT NOT NULL,
+            answered_at TEXT
+        );
+        CREATE TABLE settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE mcp_servers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            transport TEXT NOT NULL,
+            command TEXT,
+            args TEXT,
+            url TEXT,
+            secrets TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            tool_count INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE group_mcp (
+            group_id TEXT NOT NULL,
+            server_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (group_id, server_id)
+        );
+        CREATE TABLE memories (
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            forgotten_at TEXT
+        );
+        CREATE TABLE skills (
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            title TEXT NOT NULL,
+            instruction TEXT NOT NULL,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            forgotten_at TEXT
+        );
+        CREATE TABLE group_skills (
+            group_id TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (group_id, slug)
+        );
+        CREATE TABLE group_reads (
+            group_id TEXT PRIMARY KEY,
+            read_at TEXT NOT NULL
+        );
+    ";
+
+    const PREVIOUS_MAIN_ROWS: &str = "
+        INSERT INTO groups VALUES ('g1', 'local', '旧群', '2026-10-01T00:00:00.000Z');
+        INSERT INTO bots VALUES ('bot-ada', 'local', 'Ada');
+        INSERT INTO memberships VALUES ('g1', 'bot-ada');
+        INSERT INTO messages VALUES ('m1', 'g1', 'text', 'hello', '2026-10-01T00:00:01.000Z');
+        INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at)
+            VALUES ('t-old', 'g1', 'bot-ada', '画一张草图', 'done',
+                    '2026-10-01T00:00:02.000Z', '2026-10-01T00:00:03.000Z');
+        INSERT INTO deliveries VALUES ('d1', 'g1', 't-old', '完成了', 'result.txt', 0, '2026-10-01T00:00:04.000Z');
+        INSERT INTO schedules VALUES ('s1', 'local', 'g1', 'bot-ada', '0 9 * * *', '早报',
+                    '2026-10-02T09:00:00.000Z', 't-old', '2026-10-01T00:00:05.000Z');
+        INSERT INTO choices (id, group_id, bot_id, prompt, options, multi, created_at)
+            VALUES ('c1', 'g1', 'bot-ada', '选一个', '[{\"id\":\"a\",\"label\":\"A\"}]', 0, '2026-10-01T00:00:06.000Z');
+        INSERT INTO approvals (id, group_id, bot_id, action, summary, path, created_at)
+            VALUES ('a1', 'g1', 'bot-ada', 'delete', '删一个文件', 'scratch.txt', '2026-10-01T00:00:07.000Z');
+        INSERT INTO settings VALUES ('search.url', 'https://api.search.brave.com/res/v1/web/search');
+        INSERT INTO mcp_servers (id, name, transport, command, args, secrets, enabled, tool_count, created_at, updated_at)
+            VALUES ('mcp1', 'echo', 'stdio', 'echo', '[\"hello\"]', '[]', 1, 2,
+                    '2026-10-01T00:00:08.000Z', '2026-10-01T00:00:08.000Z');
+        INSERT INTO group_mcp VALUES ('g1', 'mcp1', '2026-10-01T00:00:09.000Z');
+        INSERT INTO memories VALUES ('mem1', 'user', 'project', '正在做 robroz', 'user', 'kept',
+                    '2026-10-01T00:00:10.000Z', '2026-10-01T00:00:10.000Z', NULL);
+        INSERT INTO skills VALUES ('sk1', 'user', 'draft', 'Draft', '先写草稿', 'user', 'kept',
+                    '2026-10-01T00:00:11.000Z', '2026-10-01T00:00:11.000Z', NULL);
+        INSERT INTO group_skills VALUES ('g1', 'draft', '2026-10-01T00:00:12.000Z');
+        INSERT INTO group_reads VALUES ('g1', '2026-10-01T00:00:13.000Z');
+    ";
+
+    fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info(?1)")
+            .unwrap();
+        stmt.query_map([table], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn table_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn assert_has_columns(conn: &Connection, table: &str, columns: &[&str]) {
+        let have = table_columns(conn, table);
+        for column in columns {
+            assert!(have.iter().any(|c| c == column), "missing {table}.{column}: {have:?}");
+        }
+    }
+
+    fn assert_fixture_rows_survived(conn: &Connection) {
+        let group: (String, String) = conn
+            .query_row("SELECT name, tenant_id FROM groups WHERE id = 'g1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(group, ("旧群".into(), "local".into()));
+        let bot: String = conn
+            .query_row("SELECT name FROM bots WHERE id = 'bot-ada'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bot, "Ada");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memberships WHERE group_id = 'g1' AND bot_id = 'bot-ada'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        let body: String = conn
+            .query_row("SELECT body FROM messages WHERE id = 'm1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(body, "hello");
+        let task: (String, String) = conn
+            .query_row("SELECT prompt, state FROM tasks WHERE id = 't-old'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(task, ("画一张草图".into(), "done".into()));
+        let delivery: (String, String) = conn
+            .query_row("SELECT summary, path FROM deliveries WHERE id = 'd1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(delivery, ("完成了".into(), "result.txt".into()));
+        let cron: String = conn
+            .query_row("SELECT cron FROM schedules WHERE id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cron, "0 9 * * *");
+        let prompt: String = conn
+            .query_row("SELECT prompt FROM choices WHERE id = 'c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(prompt, "选一个");
+        let summary: String = conn
+            .query_row("SELECT summary FROM approvals WHERE id = 'a1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(summary, "删一个文件");
+        let url: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'search.url'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(url, "https://api.search.brave.com/res/v1/web/search");
+        let mcp: (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT name, command, tool_count FROM mcp_servers WHERE id = 'mcp1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(mcp, ("echo".into(), "echo".into(), Some(2)));
+        let linked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM group_mcp WHERE group_id = 'g1' AND server_id = 'mcp1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(linked, 1);
+        let memory: (String, String) = conn
+            .query_row("SELECT kind, text FROM memories WHERE id = 'mem1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(memory, ("project".into(), "正在做 robroz".into()));
+        let skill: String = conn
+            .query_row("SELECT slug FROM skills WHERE id = 'sk1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(skill, "draft");
+        let enabled: i64 = conn
+            .query_row("SELECT COUNT(*) FROM group_skills WHERE group_id = 'g1' AND slug = 'draft'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
+        let read_at: String = conn
+            .query_row("SELECT read_at FROM group_reads WHERE group_id = 'g1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(read_at, "2026-10-01T00:00:13.000Z");
+    }
+
+    fn assert_migrated_schema(conn: &Connection) {
+        for table in [
+            "groups", "bots", "memberships", "messages", "tasks", "deliveries", "schedules",
+            "choices", "approvals", "settings", "mcp_servers", "group_mcp", "memories", "skills",
+            "group_skills", "group_reads",
+        ] {
+            let names = table_names(conn);
+            assert!(names.iter().any(|n| n == table), "missing table {table}: {names:?}");
+        }
+        assert_has_columns(
+            conn,
+            "tasks",
+            &[
+                "container_up", "get_count", "briefing", "schedule_id",
+                "intent_kind", "intent_line", "intent_hash", "failure", "progress", "needs_setup",
+            ],
+        );
+        assert_has_columns(conn, "deliveries", &["failure", "needs_setup"]);
+        assert_has_columns(conn, "schedules", &["paused_at"]);
+        assert_has_columns(conn, "groups", &["dm_bot_id"]);
+        assert_has_columns(conn, "choices", &["answered_by"]);
+        assert_has_columns(
+            conn,
+            "approvals",
+            &["answered_by", "task_id", "intent_hash", "subject_kind", "subject_id", "mcp_server", "mcp_tool"],
+        );
+        assert_has_columns(conn, "mcp_servers", &["command_fingerprint", "command_approved_at"]);
+    }
+
+    fn write_previous_main_fixture(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(PREVIOUS_MAIN_SCHEMA).unwrap();
+        conn.execute_batch(PREVIOUS_MAIN_ROWS).unwrap();
+    }
+
+    #[test]
+    fn migration_upgrades_previous_main_db_and_keeps_rows() {
+        let path = temp_db();
+        write_previous_main_fixture(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            super::init_schema(&conn).unwrap();
+            assert_fixture_rows_survived(&conn);
+            assert_migrated_schema(&conn);
+        }
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let path = temp_db();
+        write_previous_main_fixture(&path);
+        let conn = Connection::open(&path).unwrap();
+        super::init_schema(&conn).unwrap();
+        super::init_schema(&conn).unwrap();
+        assert_fixture_rows_survived(&conn);
+        assert_migrated_schema(&conn);
+    }
+
+    #[test]
+    fn migration_fresh_empty_db() {
+        let path = temp_db();
+        let conn = Connection::open(&path).unwrap();
+        super::init_schema(&conn).unwrap();
+        super::init_schema(&conn).unwrap();
+        assert_migrated_schema(&conn);
+        // A fresh database can take a row in each of the core tables.
+        conn.execute_batch(
+            "INSERT INTO groups (id, tenant_id, name, created_at)
+                 VALUES ('g-new', 'local', '新群', '2026-11-01T00:00:00.000Z');
+             INSERT INTO bots (id, tenant_id, name) VALUES ('bot-new', 'local', 'Neo');
+             INSERT INTO memberships VALUES ('g-new', 'bot-new');",
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memberships", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
 
     /// Wraps the fake and records whether the DB lock was free during each docker call.
     struct LockProbe {

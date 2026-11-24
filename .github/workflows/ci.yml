@@ -54,8 +54,8 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
-      # Advisories are non-blocking: see the PR body for the current findings
-      # (tokio unsound, rusqlite bundled SQLite CVE, chrono unmaintained).
+      # Advisories are non-blocking. Remaining finding after the rusqlite
+      # 0.41 upgrade: chrono is unmaintained (RUSTSEC-2026-0543).
       - name: Check advisories
         continue-on-error: true
         uses: EmbarkStudios/cargo-deny-action@v2
