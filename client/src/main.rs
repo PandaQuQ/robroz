@@ -2038,6 +2038,12 @@ impl App {
                                 tasks.push(self.open_chat(first));
                             }
                         }
+                        // `--fake` + `ROBROZ_PAGE=model`: then switch to the
+                        // Model settings page (platform screenshots, see
+                        // `.github/workflows/shots.yml`).
+                        if self.fake && std::env::var("ROBROZ_PAGE").is_ok_and(|v| v == "model") {
+                            tasks.push(Task::done(Message::OpenModel));
+                        }
                         return Task::batch(tasks);
                     }
                     Err(err) => {
