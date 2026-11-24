@@ -11,119 +11,147 @@
   <a href="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml"><img src="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
-**robroz** is a self-hosted, single-machine multi-agent workspace that you drive through chat, not an IDE. You hand tasks to *bros* (agents) in groups and direct messages; each bro works in a Docker sandbox on your machine, and progress, approvals and results come back to the conversation as cards. The host, the runner and the native desktop client (Windows, Linux, macOS) are all written in Rust, with no web view.
+Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. Rust host + native desktop client.
 
-<!-- Screenshots pending: one at 390 px and one at 1440 px, shared by README.md and README.zh-CN.md. -->
+## What is robroz
 
-## Features
+You chat on your own machine with a group of AI bros. You give them work in plain language; they do it in a sandbox on that machine, and they ask you before anything risky.
 
-Phase 1 (on `main` today):
+It is for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
 
-- **Groups and DMs.** Start a message with `@name` in a group to give that bro a task; in a DM every message is a task. Status and delivery cards, live updates, unread counts.
-- **Three permission tiers.** Reading and writing the group folder is allowed; outbound network is GET-only and counted per task; external writes and captchas stop the task and wait for a person.
-- **Cards you answer.** Approval cards, choice cards, and routines (scheduled tasks that deliver a briefing).
-- **Memory and skills.** A bro proposes a memory or a skill; it takes effect only after you confirm it.
-- **Any OpenAI-compatible model**, web search (Brave or SearXNG), and MCP tools on the host (write tools wait for an approval card).
+<!-- TODO(screenshot): main window -->
 
-Not in phase 1: file tree, terminal, desktop streaming, bot detail pages, webhooks, E2B, multi-tenancy.
+The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional).
+
+## Works today
+
+- **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
+- **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
+- **Direct messages.** Talk one-to-one with a bro.
+- **Docker sandbox.** Each job runs in a container on your machine, without network access.
+- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
+  <!-- TODO(screenshot): approval card -->
+- **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
+
+You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
+
+## Not yet
+
+These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
+
+- A bro's message waking the other bros, so bros can reply to each other. In progress; the planned round cap is `MAX_BRO_DEPTH = 2`.
+- An internal Router inside one bro (at most three sub-steps, one status card, one delivery).
+- Cancelling a timed-out step or stopping the container.
 
 ## Quick start
 
-You need the Rust stable toolchain and Docker; the examples also use `curl`. From the repository root:
+You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. The walk-through in [docs/install.md](docs/install.md) also uses `curl` and `jq`. From the repository root:
 
 ```sh
-cargo build -p robroz-host -p robroz-client                # host and desktop client
-docker build -f runner/Dockerfile -t robroz-runner:local .  # runner image used for tasks
-cargo run -p robroz-host                                    # listens on 127.0.0.1:8790 only, no token needed
-cargo run -p robroz-client                                  # in a second terminal
+cargo build -p robroz-host -p robroz-client
+docker build -f runner/Dockerfile -t robroz-runner:local .
+cargo run -p robroz-host     # listens on 127.0.0.1:8790, no token required
+cargo run -p robroz-client   # in a second terminal; default host http://127.0.0.1:8790
 ```
 
-In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the delivery is 「还没设置模型」 (*the model isn't set up yet*) and the card asks you to go to settings. Tests and CI set `ROBROZ_MODEL=echo` to keep echoing the prompt instead.
+The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. A loopback listener needs no token; listening on a non-loopback address without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` refuses to start.
 
-To connect a model, set a token, reach the host from another machine, or walk through the API with `curl`, see [docs/install.md](docs/install.md).
+In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」 (Chats) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is 「还没设置模型」 (the model isn't set up yet) and the card offers 「去设置」 (Go to settings).
 
-## Configuration
+### Configure a model
 
-Everything is configured with environment variables on the host and the client (listen address, token, database, model, search, runner image). The full list with defaults is in [docs/configuration.md](docs/configuration.md). The model and web search can also be set through the settings API (web search also has a 「联网搜索」 (*Web search*) page in the client); values saved there take precedence over the environment variables, field by field. Keep keys and tokens in files outside the repository (`*_FILE` variables); never commit them.
+<!-- TODO(screenshot): settings page -->
 
-## Documentation
+Open 「模型」 (Model) in the client, or the 「去设置」 (Go to settings) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
-- **For people:** the [robroz wiki](https://github.com/PandaQuQ/robroz/wiki) covers installation, everyday use, FAQ and roadmap.
-- **For coding agents and contributors:** [AGENTS.md](AGENTS.md) and [`docs/`](docs/) hold the repository rules, the API contract, fields, environment variables and code locations. The wiki is not the contract; when they disagree, the repository wins.
+```sh
+mkdir -p "$HOME/.config/robroz"
+(umask 077 && printf '%s' '<your-key>' > "$HOME/.config/robroz/model-key")
+ROBROZ_MODEL_BASE_URL=https://api.openai.com/v1 \
+ROBROZ_MODEL=gpt-4o-mini \
+ROBROZ_MODEL_KEY_FILE="$HOME/.config/robroz/model-key" \
+cargo run -p robroz-host
+```
 
-| File | Contents |
-| --- | --- |
-| [docs/install.md](docs/install.md) | Build, run, connect a model, first task, tests |
-| [docs/configuration.md](docs/configuration.md) | All environment variables |
-| [docs/api.md](docs/api.md) | All HTTP endpoints and events |
-| [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
-| [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
-| [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
-| [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
-| [docs/client.md](docs/client.md) | Client UI behaviour |
-| [docs/architecture.md](docs/architecture.md) | Components, containers, theming layer |
-| [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
-| [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Phase 2 roadmap |
-| [docs/design/multi-agent.md](docs/design/multi-agent.md) | Accepted design: Router, Thread subscriptions, async tools and Watchdog (not a contract) |
+`ROBROZ_MODEL=echo` is a test switch (CI uses it) that echoes the prompt when no complete model is configured. Do not set it in a real deployment.
 
-"Bro" is the UI name for a bot: code, API and database still say bot (`botId` / `botName`). A DM is a group with only you and one bro.
+Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control how soon a long or stalled step shows a hint on the card; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
 
-## Contributing
+## Architecture
 
-### Layout
+The native desktop client (`robroz-client`, [iced](https://iced.rs/) 0.14, Windows, Linux and macOS, no web view) talks to a single-machine host (`robroz-host`) over HTTP and SSE. The host owns SQLite, model and tool calls, search, MCP, approvals and the container pump. Each task runs in a Docker container (`robroz-runner`) with no network; the container never sees model keys. How the pieces fit together: [docs/architecture.md](docs/architecture.md).
 
 | Path | Crate | Role |
 | --- | --- | --- |
-| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model calls, search, MCP configuration and tool calls |
+| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model and tool calls, search, MCP, auto-review |
 | `runner/` | `robroz-runner` | Task executor inside the container |
 | `client/` | `robroz-client` | iced desktop client |
-| `crates/robroz-contract` | `robroz-contract` | API contract: request/response bodies, event (card) types, task states |
+| `crates/robroz-contract` | `robroz-contract` | API contract: request and response bodies, event (card) types, task states |
 | `crates/robroz-policy` | `robroz-policy` | Permission tiers, outbound metering, blocking lines |
 | `crates/robroz-card` | `robroz-card` | Card status text, tone and actions |
 | `crates/robroz-tokens` | `robroz-tokens` | Design tokens generated from `tokens.json` |
 | `crates/robroz-ui` | `robroz-ui` | Shared client UI layer and theme |
 | `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
-| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP): list and call tools |
+| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
 
-See [docs/architecture.md](docs/architecture.md) for how they fit together.
+"Bro" is the UI name for a bot: code, API and the database still say bot (`botId` / `botName`). The four task states `queued` / `running` / `blocked` / `done` are frozen.
 
-### Build and test
+## Documentation
 
-Run the same commands as CI before opening a PR:
+Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/wiki) is informal; when the two disagree, this repository wins. Rules for contributors and coding agents: [AGENTS.md](AGENTS.md).
+
+| File | Contents |
+| --- | --- |
+| [docs/install.md](docs/install.md) | Prerequisites, build, run, connect a model, first task, tests |
+| [docs/configuration.md](docs/configuration.md) | All environment variables and defaults |
+| [docs/api.md](docs/api.md) | HTTP endpoints and events |
+| [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
+| [docs/permissions.md](docs/permissions.md) | Permission tiers, approvals, takeover, `failure` |
+| [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review and allow rules |
+| [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
+| [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
+| [docs/client.md](docs/client.md) | Client UI behaviour |
+| [docs/architecture.md](docs/architecture.md) | Components, containers, theming |
+| [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
+| [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Later roadmap |
+| [docs/design/multi-agent.md](docs/design/multi-agent.md) | Group turns, follow-ups, Router and Watchdog design |
+
+Most files under `docs/` are still Chinese-first. They will be switched to English in follow-up PRs; quoted UI strings stay in the language the client currently shows.
+
+## Status
+
+There is no tagged release yet. Use `main` as a development branch, not as a formal release.
+
+## Development
+
+Run the same commands as CI before opening a pull request:
 
 ```sh
 cargo test -p robroz-mcp --features fixture
 cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-card -p robroz-runner -p robroz-tokens
 cargo build -p robroz-client
 cargo test -p robroz-client -p robroz-ui -p robroz-tokens
-scripts/e2e.sh   # needs docker, curl and jq
+scripts/e2e.sh   # needs Docker, curl and jq
 ```
 
-CI builds the client on Linux for pull requests, and on Windows, Linux and macOS after merging to `main` and nightly.
-
-### Dependency licences
-
-CI also runs a `cargo-deny` job. It fails when a dependency's licence is not compatible with AGPL-3.0 or a crate comes from an unknown registry or git source, and PRs are only merged with green CI. Every new dependency must use an AGPL-compatible licence. The allowed licences are listed in the `[licenses] allow` list in [`deny.toml`](deny.toml); do not add an incompatible licence there to make the check pass. Run the same check locally (install [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) first, e.g. `cargo install --locked cargo-deny`):
+CI builds and tests the client on Linux for pull requests, and on Windows, Linux and macOS after merging to `main` and on a nightly schedule. A `cargo-deny` job checks that new dependencies use an AGPL-compatible licence and come from a known registry; advisories are reported and do not block the merge. Run the same checks locally after installing [cargo-deny](https://github.com/EmbarkStudios/cargo-deny):
 
 ```sh
 cargo deny check licenses bans sources
-cargo deny check advisories   # security advisories: reported, does not block merging
+cargo deny check advisories   # reported, does not block merging
 ```
 
-The advisories check runs as a separate, non-blocking step in the same job.
+## Contributing
 
-### Rules
-
-- One PR per change.
-- Every contributor must sign the [Contributor License Agreement](CLA.md) once: add the CLA line from `CLA.md` to your PR description (or tick the CLA box if the PR template has one). PRs without it are not merged.
-- Commit messages and PR titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): ...`, `fix(client): ...`, `docs: ...`. PRs are squash-merged with the PR title as the commit message.
-- The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states (`queued` / `running` / `blocked` / `done`) and `botId` / `botName` are frozen.
+- One pull request per change.
+- Every contributor must sign the [Contributor License Agreement](CLA.md) once: tick the CLA checkbox in the pull request template, or add the CLA line from `CLA.md` to the pull request body. Pull requests without it are not merged.
+- Commit messages and pull request titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): …`, `fix(client): …`, `docs: …`. Pull requests are squash-merged with the title as the commit message.
+- The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states and `botId` / `botName` are frozen.
 - No force-push. If your branch is behind, merge `main` into it.
-- Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens. Use placeholders in docs.
-- New dependencies must use an AGPL-3.0-compatible licence and pass `cargo deny check licenses bans sources`.
-- Keep `README.md` and `README.zh-CN.md` in sync; change both in the same PR.
+- Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens.
+- Keep `README.md` and `README.zh-CN.md` in sync; change both in the same pull request.
 
-The full rules for agents and contributors are in [AGENTS.md](AGENTS.md).
+The full rules are in [AGENTS.md](AGENTS.md).
 
 ## License
 
