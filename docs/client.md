@@ -39,7 +39,7 @@ An event whose `type` the client does not recognise is skipped; other cards are 
 ### Status cards
 
 - `queued`: grey Queued (「排队」).
-- `running` with `containerUp`: Running (「进行」). If `progress` is set, a light-grey line is left-aligned under the bro's name, shortened with "…" when it is too long; if there is no progress, that row is not reserved.
+- `running` with `containerUp`: Running (「进行」). If `progress` is the Router step form (`{n}/{m} 步`, shown as Step n of m), it sits immediately to the left of the status word in a lighter colour, with a 12px gap and no separator; on a narrow window it is dropped rather than wrapping or shortening the status word. Any other `progress` is a light-grey line left-aligned under the bro's name, shortened with "…" when it is too long. If there is no progress, that row is not reserved.
 - `running` with `containerUp` false: grey Finished with no result, no action. This only appears in old data; the host now ends a dead run as `done` plus `failure` 「没写出结果」, and that card is also shown as grey Finished with no result, without Couldn't finish:.
 - `blocked` with `waitingFor` `approval`: not treated as a takeover. Grey Needs your approval (「等你批准」), no button; answer the approval card beside it.
 - `blocked` with `waitingFor` `takeover`, or with the field missing (an older host): amber Stuck (「卡住」) plus Take over in DM (「去私聊接管」). That button currently only logs; it is not wired up yet.
@@ -49,7 +49,7 @@ Host-written `label`, `failure` and `progress` values on the wire are still Chin
 
 ### Conversation list previews
 
-- When a live run has a progress line, the preview uses that line, for example Ada：Thinking about a reply, not Ada：Running. Long text is cut to the column width with "…".
+- When a live run has a progress line, the preview uses that line (mapped into the UI language), for example Ada: Thinking about a reply or Ada: Step 2 of 3, not Ada: Running. Long text is cut to the column width with "…".
 - When `waitingFor` is `approval`, the preview is Ada：Needs your approval, and is not replaced by an approval card's summary that arrives at the same time.
 - With no progress, or when the task is done, stuck, or failed, the preview uses the status line as usual.
 - Switching the language redraws every preview immediately from the events the client already has.
