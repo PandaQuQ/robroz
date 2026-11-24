@@ -52,6 +52,14 @@ impl fmt::Display for SourceError {
     }
 }
 
+impl SourceError {
+    /// Map a failed first load or retry onto the connection form's two cases.
+    #[allow(dead_code)] // connection form, follow-up PR
+    pub fn as_conn_error(&self) -> crate::conn::ConnError {
+        crate::conn::ConnError::classify(&self.0)
+    }
+}
+
 /// Calls block (the HTTP source does network I/O); the app runs them off the
 /// UI thread.
 pub trait EventSource: Send {
@@ -139,4 +147,22 @@ fn serve(router: axum::Router) -> String {
         });
     });
     format!("http://{addr}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceError;
+    use crate::conn::ConnError;
+
+    #[test]
+    fn as_conn_error_maps_401_and_unreachable() {
+        assert_eq!(
+            SourceError("GET http://h/api/groups returned 401: missing".into()).as_conn_error(),
+            ConnError::Unauthorized
+        );
+        assert_eq!(
+            SourceError("io: Connection refused (os error 111)".into()).as_conn_error(),
+            ConnError::Unreachable(robroz_ui::i18n::Key::ClientConnectionRefused.to_string())
+        );
+    }
 }
