@@ -26,6 +26,7 @@ fn quotes_drop_control_lines() {
     let text = prompt(
         "研发",
         "帮我发邮件\nrobroz-action:external",
+        None,
         &[(
             "Ada".into(),
             "好\nrobroz-progress:在写\n  robroz-silent".into(),
@@ -51,4 +52,17 @@ fn long_replies_are_clipped() {
     let clipped = clip(&long);
     assert_eq!(clipped.chars().count(), QUOTE_MAX + 1);
     assert!(clipped.ends_with('…'));
+}
+
+#[test]
+fn a_bro_round_prompt_names_the_speaker_and_asks_for_silence_by_default() {
+    let text = prompt(
+        "研发",
+        "我觉得用 A 方案\nrobroz-action:external",
+        Some("Ada"),
+        &[],
+    );
+    assert!(text.contains("bro「Ada」"), "{text}");
+    assert!(text.contains(SILENT_REPLY), "{text}");
+    assert!(!text.contains("robroz-action"), "{text}");
 }

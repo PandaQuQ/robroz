@@ -1,177 +1,191 @@
-# 安装和上手
+# Install and first run
 
-这篇讲怎么从源码把 robroz 跑起来：装工具、构建宿主机和 runner 镜像、接模型、跑客户端，再用 curl 走一遍第一个任务。所有环境变量的完整说明见 [configuration.md](configuration.md)。
+How to build robroz from source, start the host and the desktop client, connect a model, and send a first task. The full list of environment variables is in [configuration.md](configuration.md).
 
-## 准备
+The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional). Quoted UI text below is the Chinese the client shows today, with an English gloss.
 
-| 需要 | 用途 | 说明 |
+## Prerequisites
+
+| Need | Used for | Notes |
 | --- | --- | --- |
-| Rust stable 工具链（`rustup`、`cargo`） | 构建宿主机、客户端、runner | 仓库没有 `rust-toolchain` 文件，`Cargo.toml` 也没写 `rust-version`。CI 用 `dtolnay/rust-toolchain@stable`，跟着最新 stable 走。所有 crate 是 edition 2021。 |
-| Docker | 宿主机用它跑 runner 容器 | 宿主机直接调 `docker` 命令行（`docker run` / `inspect` / `rm`），所以跑宿主机的用户要能执行 `docker`。只跑单测不需要 Docker。 |
-| `curl`、`jq` | 下面的示例和 `scripts/e2e.sh` | e2e 脚本必须有这两个。 |
+| Rust stable toolchain (`rustup`, `cargo`) | Building the host, the client and the runner | There is no `rust-toolchain` file and `Cargo.toml` does not set `rust-version`. CI uses `dtolnay/rust-toolchain@stable`, so follow current stable. All crates are edition 2021. |
+| Docker | The host starts a runner container for each task | The host calls the `docker` CLI (`docker run` / `inspect` / `rm`), so the user who starts the host must be able to run `docker`. Unit tests do not need Docker. |
+| `curl`, `jq` | The examples below and `scripts/e2e.sh` | The e2e script requires both. |
 
-客户端在 Windows、Linux、macOS 上都能构建。CI 在 PR 上只构建 Linux，合到 `main` 后和每天定时会再跑 Windows 和 macOS。
+The client builds on Windows, Linux and macOS. CI builds it on Linux for pull requests, and also on Windows and macOS after a merge to `main` and on a nightly schedule.
 
-## 构建
+## Build
 
-在仓库根目录：
+From the repository root:
 
 ```sh
-cargo build -p robroz-host      # 宿主机，产物 target/debug/robroz-host
-cargo build -p robroz-client    # 桌面客户端，产物 target/debug/robroz-client
+cargo build -p robroz-host      # host binary: target/debug/robroz-host
+cargo build -p robroz-client    # desktop client: target/debug/robroz-client
 ```
 
-要发布版就加 `--release`，产物在 `target/release/`。
+Add `--release` for a release build; the binaries then land in `target/release/`.
 
-### runner 镜像
+### Runner image
 
-bro 的每个任务在一个 Docker 容器里跑，容器里是 `robroz-runner`。宿主机默认用的镜像名是 `robroz-runner:local`（`ROBROZ_IMAGE` 可以改）。必须在仓库根目录构建，因为 Dockerfile 要拷整个工作区：
+Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). Build it from the repository root, because the Dockerfile copies the workspace:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
 ```
 
-镜像分两段：先在 `rust:1-bookworm` 里 `cargo build --release -p robroz-runner`，再把二进制放进 `debian:bookworm-slim`。镜像默认用户是 `65534:65534`（nobody），不是 root；宿主机启动容器时会传 `--user`，见下文。
+The image is two stages: `cargo build --release -p robroz-runner` in `rust:1-bookworm`, then the binary is copied into `debian:bookworm-slim`. The image's default user is `65534:65534` (nobody), not root; the host passes `--user` when it starts the container.
 
-容器的限制由宿主机在 `docker run` 时加上：
+The host adds these limits at `docker run`:
 
-- `--network none`，容器里没有网络；
-- 只有两个挂载：群目录挂到 `/workspace`（可写），这个任务自己的控制目录挂到 `/control`（只读，里面有 `prompt.txt`、模型回答 `reply.txt` 和接管标记 `takeover`）；
-- 只传一个环境变量 `ROBROZ_TASK_ID`，prompt 不走环境变量；
-- `--user` 默认是宿主机进程的 `uid:gid`（非 unix 平台不加），群目录里写出的文件归宿主机用户。要换就设 `ROBROZ_CONTAINER_USER`。
+- `--network none`: the container has no network.
+- Two mounts only: the group folder at `/workspace` (writable), and this task's control directory at `/control` (read-only; it holds `prompt.txt`, the model's reply `reply.txt`, and a takeover flag `takeover`).
+- One environment variable, `ROBROZ_TASK_ID`. The prompt is not passed in the environment.
+- `--user` defaults to the host process's `uid:gid` (omitted on non-Unix). Files written in the group folder then belong to the host user. Override with `ROBROZ_CONTAINER_USER`.
 
-## 跑宿主机
+## Run the host
 
 ```sh
 ./target/debug/robroz-host
 ```
 
-不设任何变量时：
+With no variables set:
 
-| 项 | 默认值 |
+| Item | Default |
 | --- | --- |
-| 监听地址 `ROBROZ_ADDR` | `127.0.0.1:8790` |
-| 数据库 `ROBROZ_DB` | `./robroz.db`（SQLite，不存在就新建） |
-| 群目录根 `ROBROZ_VOLUMES` | `./data/groups` |
-| 控制目录根 `ROBROZ_CONTROL` | `./data/control` |
-| runner 镜像 `ROBROZ_IMAGE` | `robroz-runner:local` |
+| Listen address `ROBROZ_ADDR` | `127.0.0.1:8790` |
+| Database `ROBROZ_DB` | `./robroz.db` (SQLite; created if missing) |
+| Group folder root `ROBROZ_VOLUMES` | `./data/groups` |
+| Control directory root `ROBROZ_CONTROL` | `./data/control` |
+| Runner image `ROBROZ_IMAGE` | `robroz-runner:local` |
 
-相对路径按启动时的当前目录算。`ROBROZ_CONTROL` 必须在 `ROBROZ_VOLUMES` 外面（两者都不能包含对方），否则宿主机拒绝启动。
+Relative paths are resolved from the current directory at startup. `ROBROZ_CONTROL` must sit outside `ROBROZ_VOLUMES` (neither path may contain the other), or the host refuses to start.
 
-启动成功时 stderr 会打两行：
+On a successful start, stderr prints two lines, for example:
 
 ```text
 robroz-host: 还没设置模型，任务会提示去设置
 robroz-host listening on 127.0.0.1:8790（仅本机，无令牌）
 ```
 
-### 令牌
+(The first line means the model is not set up yet, so tasks will tell you to go to settings. The second means the host is listening on loopback, with no token required.)
 
-- 监听本机回环地址时可以不设令牌。
-- 监听别的地址（比如 `0.0.0.0:8790`）而没设令牌，宿主机直接退出（退出码 2），提示：`拒绝启动：0.0.0.0:8790 不是本机回环地址，必须先设置 ROBROZ_TOKEN 或 ROBROZ_TOKEN_FILE`。
-- 令牌从 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`（文件路径）读，两个只能设一个。去掉首尾空白，至少 16 个字符，中间不能有空白。推荐用文件，令牌不会留在 shell 历史和进程环境里。
-- 设了令牌后，所有 `/api` 请求都要带 `Authorization: Bearer <令牌>`，本机访问也要。缺了或错了返回 401。
+### Token
+
+- A loopback listener can start without a token.
+- A non-loopback address (for example `0.0.0.0:8790`) without a token exits immediately with code 2: `拒绝启动：0.0.0.0:8790 不是本机回环地址，必须先设置 ROBROZ_TOKEN 或 ROBROZ_TOKEN_FILE` (refused: this is not a loopback address; set `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` first).
+- The token comes from `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` (a file path). You may set only one. Leading and trailing whitespace is stripped; the token must be at least 16 characters and must not contain whitespace in the middle. Prefer a file, so the token is not left in shell history or the process environment.
+- Once a token is set, every `/api` request needs `Authorization: Bearer <token>`, including requests from the same machine. A missing or wrong token returns 401.
 
 ```sh
-# 生成一个令牌文件，只给自己读
+# Create a token file that only you can read
 mkdir -p "$HOME/.config/robroz"
 (umask 077 && openssl rand -hex 24 > "$HOME/.config/robroz/token")
 ROBROZ_ADDR=0.0.0.0:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target/debug/robroz-host
 ```
 
-令牌文件和下面的密钥文件都不要放进仓库目录，也不要提交。
+Keep token files and the model-key file below outside the repository, and do not commit them.
 
-## 接模型
+## Connect a model
 
-没设置模型时，任务交付「还没设置模型」(the model isn't set up yet)，交付卡带 `needsSetup:"model"`，客户端右边出现「去设置」(Go to settings)。地址和模型名都有了才算设置好，密钥可选。也可以在启动后用客户端或设置接口补齐（`GET` / `PUT /api/settings/model`），不用重启。CI 和 e2e 会显式设 `ROBROZ_MODEL=echo`，这时仍把 prompt 原样写成结果，这是测试开关，正式部署不要设。
+Until a model is configured, a task delivers 「还没设置模型」 (the model isn't set up yet). The delivery card has `needsSetup:"model"`, and the client shows 「去设置」 (Go to settings). A base URL and a model name are enough; the key is optional. You can fill this in after startup from the client or the settings API (`GET` / `PUT /api/settings/model`), without restarting. CI and e2e set `ROBROZ_MODEL=echo`, which echoes the prompt as the result. That is a test switch; do not set it in a real deployment.
 
-### 在客户端填
+### In the client
 
-点左边的「模型」(Model)，或点交付卡上的「去设置」。
+Open 「模型」 (Model) in the sidebar, or 「去设置」 (Go to settings) on a delivery card.
 
-- 三个框：「地址」(Address)、「模型名」(Model)、「密钥（选填）」(Key (optional))。每个服务商都显示密钥框，包括 Ollama。
-- 选一个服务商会填入对应的 OpenAI 兼容地址。模型名用该服务商的示例：Gemini `gemini-2.5-flash`，Groq `llama-3.3-70b-versatile`，OpenRouter `meta-llama/llama-3.3-70b-instruct:free`，Ollama `llama3.2`，自定义留空。选中 OpenRouter 时，模型名下面有一行灰字「免费模型的名字以 :free 结尾」(Free model names end with :free)。
-- 只要填了地址和模型名就可以保存。本地 Ollama 一类服务可以不填密钥。清除密钥不会清掉地址和模型名。
-- 保存后会自动试连。成功显示「能用了」(It works)。失败显示「已保存，但连不上：原因」(Saved, but can't connect: reason)：设置已经写入，只是这次连不上。若原因是「密钥不对或没填」(the key is wrong or missing)，说明服务商返回了 401 或 403：密钥填错了，或这个服务需要密钥而你没填。页面不会直接显示 401。
+- Three fields: 「地址」 (Address), 「模型名」 (Model), and 「密钥（选填）」 (Key (optional)). The key field is shown for every provider, including Ollama.
+- Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-2.5-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says 「免费模型的名字以 :free 结尾」 (Free model names end with :free).
+- You can save as soon as the address and model name are filled in. A local service such as Ollama can omit the key. Clearing the key does not clear the address or the model name.
+- Saving tests the connection. Success shows 「能用了」 (It works). Failure shows 「已保存，但连不上：原因」 (Saved, but can't connect: reason): the settings were written, but this attempt could not connect. If the reason is 「密钥不对或没填」 (key is wrong or missing), the provider returned 401 or 403: the key is wrong, or this service needs a key and you did not provide one. The page does not show a raw 401. The combined line 「已保存，但连不上：密钥不对或没填」 is Saved, but can't connect: key is wrong or missing.
 
-字段、优先级和接口细节见 [configuration.md 的「模型」](configuration.md#模型) 和 [client.md 的「模型页」](client.md#模型页)。
+Field priority and the API are in [configuration.md, Model](configuration.md#模型) and [client.md, Model page](client.md#模型页).
 
-### 用环境变量
+### With environment variables
 
-接任意 OpenAI 兼容的 `/chat/completions` 服务，可以设这些环境变量（密钥可选）：
+To use any OpenAI-compatible `/chat/completions` service, you can set these (the key is optional):
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
-(umask 077 && printf '%s' '<你的密钥>' > "$HOME/.config/robroz/model-key")
+(umask 077 && printf '%s' '<your-key>' > "$HOME/.config/robroz/model-key")
 ROBROZ_MODEL_BASE_URL=https://api.openai.com/v1 \
 ROBROZ_MODEL=gpt-4o-mini \
 ROBROZ_MODEL_KEY_FILE="$HOME/.config/robroz/model-key" \
 ./target/debug/robroz-host
 ```
 
-- 密钥用 `ROBROZ_MODEL_KEY_FILE` 或 `ROBROZ_MODEL_KEY`，只能设一个，推荐文件。本地服务可以不设。
-- 地址要以 `http://` 或 `https://` 开头，末尾的 `/` 会去掉。
-- 只配了部分环境变量时照常启动，剩下的可以在设置页补。两个密钥变量都设、密钥文件是空的、或密钥里有空白时，宿主机拒绝启动；报错只写变量名，不写值。
-- 环境变量已经配齐一套模型时，启动日志是 `robroz-host: 环境变量里有模型 <模型名> @ <地址>，设置页保存的值优先`。打开测试开关时是 `robroz-host: 测试回显（ROBROZ_MODEL=echo）`。什么都没配时是 `robroz-host: 还没设置模型，任务会提示去设置`。
+- The key is `ROBROZ_MODEL_KEY_FILE` or `ROBROZ_MODEL_KEY`; you may set only one. Prefer a file. A local service can omit it.
+- The base URL must start with `http://` or `https://`. A trailing `/` is stripped.
+- A partial environment configuration still starts; you can finish it on the settings page. Setting both key variables, an empty key file, or a key that contains whitespace makes the host refuse to start. The error names the variable, not the value.
+- When the environment already has a complete model, the startup log is `robroz-host: 环境变量里有模型 <name> @ <url>，设置页保存的值优先` (a model is set in the environment; values saved on the settings page win). The test switch logs `robroz-host: 测试回显（ROBROZ_MODEL=echo）`. With nothing configured: `robroz-host: 还没设置模型，任务会提示去设置`.
 
-联网搜索（Brave 或 SearXNG）可以用环境变量，也可以在宿主机跑起来后用设置接口填，见 [configuration.md 的「搜索」一节](configuration.md#搜索)。
+Web search (Brave or SearXNG) can be set with environment variables or through the settings API after the host is running; see [configuration.md, Search](configuration.md#搜索).
 
-## 跑客户端
+## Run the client
 
-客户端是 iced 写的桌面程序，三个平台命令相同，只是设环境变量的写法不同。默认连 `http://127.0.0.1:8790`。
+The client is a native iced desktop app. The command is the same on all three platforms; only the way you set environment variables changes. It connects to `http://127.0.0.1:8790` by default.
 
-Linux / macOS：
+Linux / macOS:
 
 ```sh
 cargo run -p robroz-client
-# 宿主机在别处、或者设了令牌
-ROBROZ_HOST=http://<宿主机地址>:8790 ROBROZ_TOKEN='<你的令牌>' cargo run -p robroz-client
+# Host elsewhere, or a token is set
+ROBROZ_HOST=http://<host-address>:8790 ROBROZ_TOKEN='<your-token>' cargo run -p robroz-client
 ```
 
-Windows（PowerShell）：
+Windows (PowerShell):
 
 ```powershell
-$env:ROBROZ_HOST = "http://<宿主机地址>:8790"
-$env:ROBROZ_TOKEN = "<你的令牌>"
+$env:ROBROZ_HOST = "http://<host-address>:8790"
+$env:ROBROZ_TOKEN = "<your-token>"
 cargo run -p robroz-client
 ```
 
-- 客户端只走明文 HTTP，没有 TLS。跨机器用时请走内网或自己加隧道。
-- 客户端只认 `ROBROZ_TOKEN`，不读 `ROBROZ_TOKEN_FILE`。
-- 群列表来自 `GET /api/groups`。设了 `ROBROZ_GROUPS` 就只显示这几个群，不再跟宿主机同步。
-- 不连宿主机、只看界面：`cargo run -p robroz-client -- --fake`（或 `ROBROZ_FAKE=1`）。
-- 连不上宿主机时保留已经显示的内容，过一会再试。
+- The client uses plain HTTP only, with no TLS. Across machines, stay on a private network or add your own tunnel.
+- The client reads `ROBROZ_TOKEN` only, not `ROBROZ_TOKEN_FILE`.
+- The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set, the client shows only those groups and does not follow the host's list.
+- To look at the UI without a host: `cargo run -p robroz-client -- --fake` (or `ROBROZ_FAKE=1`).
+- If the host cannot be reached, the client keeps what is already on screen and retries after a short wait.
 
-Linux 上需要图形桌面（X11 或 Wayland）。CI 的 `ubuntu-latest` 不装额外的系统包就能构建。
+Linux needs a graphical session (X11 or Wayland). CI's `ubuntu-latest` can build the client without extra system packages.
 
-## 第一个任务
+In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」 (Chats) heading, open the DM and send a message. That is a first task from the UI.
 
-下面用 curl 走一遍：建群、拉 bro 进群、发一句话、看卡片。先按上文构建 runner 镜像，再起宿主机（这里用默认地址、不设令牌）。设了令牌的话，每条 curl 都加 `-H "Authorization: Bearer <你的令牌>"`。
+## First task
+
+This walk-through uses `curl`: create a group, add a bro, send a message, and read the cards. Build the runner image first, then start the host (default address, no token). If a token is set, add `-H "Authorization: Bearer <your-token>"` to every request.
 
 ```sh
 B=http://127.0.0.1:8790
 J='content-type: application/json'
 
-# 1. 建群，返回 201 和 {"id","name","tenantId"}
+# 1. Create a group. 201 and {"id","name","tenantId"}
 GID=$(curl -s -X POST $B/api/groups -H "$J" -d '{"name":"官网"}' | jq -r .id)
 
-# 2. 把 bro 拉进群：botId 是 bro 的 id，name 是在群里 @ 用的名字
+# 2. Add a bro: botId is the bro's id; name is what you type after @ in the group
 curl -s -X POST $B/api/groups/$GID/members -H "$J" -d '{"botId":"bot-ada","name":"ada"}'
 
-# 3. 在群里说话：以 @名字 开头才会派任务
+# 3. Speak in the group. A leading @name gives that bro the first turn
+#    and returns its task. A message with no @ still gives every bro a turn;
+#    Said.task is then null.
 curl -s -X POST $B/api/groups/$GID/say -H "$J" -d '{"body":"@ada 写一句欢迎语"}'
 ```
 
-第 3 步返回 201，`task` 是新排队的任务：
+Step 3 returns 201. For a leading `@ada`, `task` is that bro's new queued task (unless it attaches as a follow-up, below):
 
 ```json
 {"message":{"id":"…","kind":"text","body":"@ada 写一句欢迎语","createdAt":"…"},
  "task":{"id":"…","assigneeBotId":"bot-ada","prompt":"写一句欢迎语","state":"queued"}}
 ```
 
-`@` 规则：消息要以 `@名字`（全角 `＠` 也行）开头，名字后面是空格或结尾；多个成员名字都能匹配时取最长的；`@名字` 后面没内容就不派任务，`task` 是 `null`。私聊里不需要 `@`，直接派给那个 bro。
+What happens when you send a group message:
 
-宿主机每秒扫一次队列，起容器跑任务。几秒后看卡片：
+- Every bro in the group gets a turn. The bro named by a leading `@name` or `＠name` (full-width) speaks first, and that task is returned in `Said.task`. The rest go one at a time in join order and may stay silent (no message, no card, no unread). If no one is named, `Said.task` is `null` and every member still gets a turn.
+- The mention must be at the start of the message, followed by whitespace or the end of the line. If several member names could match, the longest wins. A leading `@name` with nothing after it does not start a direct-path task; `task` is `null`.
+- If that named bro already has an open task in the group (still in progress, waiting, or blocked), the message is a follow-up: it attaches to that task instead of starting a new one. `Said.task` is the existing task, and `Said.appendedToTaskId` is set. The same rule applies in a direct message, without `@`.
+
+In a DM you do not need `@`; the message goes to that bro, or attaches as a follow-up if the bro already has an open task there.
+
+The host picks up queued work about once a second and starts a container. After a few seconds, look at the cards:
 
 ```sh
 curl -s $B/api/groups/$GID/events | jq -c '.events[] | {type, state, label, path}'
@@ -183,12 +197,12 @@ curl -s $B/api/groups/$GID/events | jq -c '.events[] | {type, state, label, path
 {"type":"delivery","state":null,"label":null,"path":"tasks/<taskId>/result.txt"}
 ```
 
-- `status` 卡是任务状态，带 `botId`、`botName`、`state`、`label`、`containerUp`。
-- `delivery` 卡说明结果写好了，文件在群目录里：`./data/groups/<groupId>/tasks/<taskId>/result.txt`。没设置模型、也没有打开 `ROBROZ_MODEL=echo` 时，内容是「还没设置模型」，交付卡带 `needsSetup:"model"`。只有测试开关打开时，内容才是 prompt「写一句欢迎语」。
-- 状态卡上还可能看到：bro 名下面一行浅灰字「模型和工具还没回，已等 N 分钟」(Still waiting for the model and tools, N minutes) 或「N 分钟没有新进度」(No new progress for N minutes)，表示任务还在跑，只是提示，不会取消这一步，也不会停掉容器；灰色「没写出结果」(No result was written) 表示容器非 0 退出、没写出结果或容器中途消失，任务已经结束成 `done`，不会自动再跑，不能 resume。它不会显示成「没做成：没写出结果」。
-- 要实时收卡片，用 `GET /api/groups/{id}/stream`；只要变化的部分，`GET …/events?since=<RFC3339 时间>`。
+- A `status` card is the task's status, with `botId`, `botName`, `state`, `label` and `containerUp`. 「完成」 means the task is done.
+- A `delivery` card means the result was written, in the group folder: `./data/groups/<groupId>/tasks/<taskId>/result.txt`. If no model is configured and `ROBROZ_MODEL=echo` is off, the file is 「还没设置模型」 and the delivery has `needsSetup:"model"`. Only with the test switch on is the file the prompt itself, here 「写一句欢迎语」.
+- The status card may also show a light-grey hint under the bro's name, 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). That is only a hint: the step is not cancelled and the container is not stopped. A grey 「没写出结果」 (Finished with no result) means the container exited non-zero, wrote no result, or disappeared. The task has already ended as `done`; it is not started again automatically, and `resume` is refused. It is not shown as 「没做成：没写出结果」.
+- For a live feed of cards, use `GET /api/groups/{id}/stream`. For only what changed, `GET …/events?since=<RFC3339 timestamp>`.
 
-另一种开局方式是先建 bro，宿主机会顺带给它开一个私聊：
+Another way to start is to create a bro; the host also opens a DM for it:
 
 ```sh
 curl -s -X POST $B/api/bros -H "$J" -d '{"name":"bob"}'
@@ -196,49 +210,48 @@ curl -s -X POST $B/api/bros -H "$J" -d '{"name":"bob"}'
 curl -s -X POST $B/api/groups/<dmGroupId>/say -H "$J" -d '{"body":"写一句欢迎语"}'
 ```
 
-其他接口（审批、选项卡、例行任务、记忆、技能、搜索设置、模型设置、MCP 服务器）见 [api.md](api.md)。
+Other endpoints (approvals, Allow rules, choice cards, scheduled routines, memory, skills, search settings, model settings, MCP servers) are in [api.md](api.md).
 
-## 跑测试
+## Tests
 
-单测不需要 Docker。CI 的 `host` 任务跑的是：
+Unit tests do not need Docker. CI's `host` job runs:
 
 ```sh
 cargo test -p robroz-mcp --features fixture
 cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-card -p robroz-runner -p robroz-tokens
 ```
 
-`client` 任务跑的是：
+The `client` job runs:
 
 ```sh
 cargo build -p robroz-client
 cargo test -p robroz-client -p robroz-ui -p robroz-tokens
 ```
 
-`cargo test -p robroz-client` 会在进程里起一份真实的宿主机路由，不需要单独起宿主机。只改了宿主机时，`cargo test -p robroz-host` 就够了。
+`cargo test -p robroz-client` starts a real host router inside the process, so you do not need a separate host. If you only changed the host, `cargo test -p robroz-host` is enough.
 
-CI 还有一个 `cargo-deny` 任务，检查依赖许可证是否与 AGPL-3.0 兼容，并挡住未知来源。仓库根目录跑：
+CI also runs a `cargo-deny` job, which checks that dependency licences are compatible with AGPL-3.0 and rejects unknown sources. From the repository root:
 
 ```sh
 cargo deny check licenses bans sources
 ```
 
-需要先安装 [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)。新依赖必须使用与 AGPL-3.0 兼容的许可证，允许的许可证写在根目录的 `deny.toml`。不要把不兼容的许可证加进白名单。CI 也会跑 `cargo deny check advisories`，但这一项目前不挡住合并。
+Install [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) first. New dependencies must use an AGPL-3.0-compatible licence. The allowed licences are listed in the root `deny.toml`. Do not add an incompatible licence to that list. CI also runs `cargo deny check advisories`, which currently does not block a merge.
 
+### End-to-end: `scripts/e2e.sh`
 
-### 端到端：`scripts/e2e.sh`
-
-用真实的宿主机二进制和真实的 Docker 跑一遍完整流程，CI 的 `e2e` 任务就是它。需要 `docker`、`curl`、`jq`，在仓库根目录跑：
+This runs a full flow against a real host binary and real Docker. It is CI's `e2e` job. It needs `docker`, `curl` and `jq`. From the repository root:
 
 ```sh
 scripts/e2e.sh
 ```
 
-它做的事：
+What it does:
 
-1. 构建 runner 镜像（默认标签 `robroz-runner:e2e`，用 `ROBROZ_IMAGE` 改）和 `cargo build -p robroz-host`。
-2. 在临时目录里放数据库、群目录和控制目录，宿主机监听 `127.0.0.1:18790`（用 `E2E_PORT` 改端口）。脚本自己设 `ROBROZ_ADDR`、`ROBROZ_DB`、`ROBROZ_VOLUMES`、`ROBROZ_CONTROL`、`ROBROZ_IMAGE`，不读你环境里的这几个值（`ROBROZ_IMAGE` 除外）。
-3. 建群、加成员 `bot-e2e`，派一个带两行阻塞指令（`robroz-action:external` 和 `robroz-action:captcha`）的任务。不接模型，runner 按 prompt 确定地执行。
-4. 检查：任务停在 `blocked` 且没有 delivery；重启宿主机后仍是 `blocked`；第一次 `resume` 后停在第二行而不是重复第一行；第二次 `resume` 后 `done`，`result.txt` 只有三行正文，delivery 恰好一条。
-5. 再重启一次，检查已完成的任务不重放：状态、delivery 数量、`result.txt` 的修改时间都不变，对已完成任务 `resume` 返回 409，没有留下容器。
+1. Builds the runner image (default tag `robroz-runner:e2e`, override with `ROBROZ_IMAGE`) and `cargo build -p robroz-host`.
+2. Puts the database, group folder and control directory in a temporary directory. The host listens on `127.0.0.1:18790` (change the port with `E2E_PORT`). The script sets `ROBROZ_ADDR`, `ROBROZ_DB`, `ROBROZ_VOLUMES`, `ROBROZ_CONTROL` and `ROBROZ_IMAGE` itself, so it does not use your existing values for the first four. `ROBROZ_IMAGE` is the exception: if you already set it, that value is used. It also sets `ROBROZ_MODEL=echo`.
+3. Creates a group, adds member `bot-e2e`, and starts a task with two blocking lines (`robroz-action:external` and `robroz-action:captcha`). There is no live model; the runner follows the prompt deterministically.
+4. Checks that the task stops as blocked with no delivery; that it is still blocked after the host restarts; that the first `resume` stops on the second line instead of repeating the first; and that the second `resume` finishes the task as `done`, with only three body lines in `result.txt` and exactly one delivery.
+5. Restarts once more and checks that a finished task is not replayed: the state, the delivery count and `result.txt`'s modification time stay the same, `resume` on a finished task returns 409, and no container is left behind.
 
-最后输出 `[e2e] PASS`。失败时打印原因和宿主机日志的最后 40 行，退出时清掉临时目录。
+It prints `[e2e] PASS` at the end. On failure it prints the reason and the last 40 lines of the host log. The temporary directory is removed on exit.

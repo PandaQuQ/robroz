@@ -675,6 +675,10 @@ fn collect_task(
             &proposals,
         )?;
         if matches!(outcome, Outcome::Done) {
+            // A bro that spoke on a group turn wakes the other bros (capped).
+            if let Some(text) = reply.as_deref() {
+                crate::turns::open_bro_round(conn, &task.id, text, &updated_at)?;
+            }
             let again_at = newer_than(&updated_at);
             crate::follow_ups::continue_after_done(conn, &task.id, reply.as_deref(), &again_at)?;
         }
