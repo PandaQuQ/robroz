@@ -13,23 +13,27 @@
 
 自托管的多智能体工作台，用聊天来驱动。智能体（bro）在 Docker 沙箱里干活；审批和结果以卡片回到对话里。Rust 宿主机 + 原生桌面客户端。
 
-<!-- TODO(screenshot): 主界面 — 最优雅UI姐 会在英文界面落地后，把真实客户端截图放到 docs/images/。不要使用 /workspace/shot/。在文件存在之前不要加图片链接。 -->
+## robroz 是什么
+
+你在自己的机器上和一组 AI bro 群聊。用大白话派活，它们在沙盒里干，遇到有风险的操作会先问你。
+
+适合想在自己控制的电脑上用一组 AI 智能体、并且风险步骤要自己点头的人。
+
+<!-- TODO(screenshot): main window -->
 
 桌面客户端界面目前是中文；英文界面正在做（英文为默认，中文为备选）。
 
 ## 现在能用的
 
-已在 `main`（`67dde00`）上核对。
+- **群轮次。** 在群里发一条消息，每个 bro 都可以回复，也可以选择不说话。消息开头用 `@name` 点名的那个 bro 先说。
+- **追问。** 如果一个 bro 还在干活，你可以往这份活上补充，而不新开任务。在群里以 `@name` 开头；在私聊里直接发送即可。
+- **私聊。** 可以和一个 bro 单独对话。
+- **Docker 沙箱。** 每份工作在你机器上的一个容器里跑，容器没有网络。
+- **审批和放行规则（Allow rules）。** 有风险的步骤会先问你。自动审核会按你的放行规则检查每张卡；没有规则放行时，卡会发到你的私聊。记忆和技能的变更也要先经你确认。
+  <!-- TODO(screenshot): approval card -->
+- **模型设置。** 可以接任意 OpenAI 兼容的模型。填了地址和模型名就算配好，密钥可选。可以在客户端填，也可以用环境变量。
 
-- **群轮次。** 人发的一条群消息，群里每个 bro 都轮一次。开头 `@name` 点名的那个 bro 先说，走现在的直达路径（状态卡立刻可见）。其余按入群顺序一个一个来，可以选择沉默（不发消息、不出卡、不算未读）。
-- **追问。** 在群里用 `@name` 找一个还有未结束任务（`queued`、`running` 或 `blocked`）的 bro，会挂到那个任务上，不新开任务。私聊里规则相同，不用 `@`。
-- **私聊。** 私聊是只有你和一个 bro 的群。每条消息都是给这个 bro 的任务，除非按上面的规则挂成追问。
-- **Docker 沙箱。** 每个任务在一个容器（`robroz-runner`）里跑，容器没有网络。群目录挂到 `/workspace`；这个任务的控制目录只读挂到 `/control`。
-- **审批和自动审核。** 对外写入一类动作要等主人批准。放行规则可以自动同意；否则卡发到主人和这个 bro 的私聊。记忆和技能的变更也要先出确认卡。
-  <!-- TODO(screenshot): 审批卡 — 同一组 `docs/images/`，等英文界面落地后再补。 -->
-- **模型设置。** 任意 OpenAI 兼容的 `/chat/completions` 接口。填了地址和模型名就算配好，密钥可选（例如本地 Ollama）。可以在客户端填，也可以用环境变量；设置页保存的值逐项优先。
-
-`main` 上还有：三级权限（读写群目录、按任务计次的 GET 出网、以及必须等人的动作）；联网搜索（Brave 或 SearXNG）；宿主机上的 MCP 工具；例行任务；长时间或卡住时的 Watchdog 提示（只提示，不取消任务）。
+还可以用联网搜索（Brave 或 SearXNG）、MCP 工具和例行任务。某一步跑得太久或卡住时，卡片上会出现一行提示；工作本身不会被取消。
 
 ## 还没做的
 
@@ -56,7 +60,7 @@ cargo run -p robroz-client   # 另开一个终端；默认连接 http://127.0.0.
 
 ### 配置模型
 
-<!-- TODO(screenshot): 设置页 — 同一组 `docs/images/`，等英文界面落地后再补。 -->
+<!-- TODO(screenshot): settings page -->
 
 在客户端打开「模型」，或点交付卡上的「去设置」。填地址和模型名即可，密钥可选。保存时会试连。也可以用环境变量，并把密钥放在仓库外的文件里：
 
@@ -71,7 +75,7 @@ cargo run -p robroz-host
 
 `ROBROZ_MODEL=echo` 是测试开关（CI 会用），在没有配齐模型时把 prompt 原样写成结果。正式部署不要设。
 
-其他常用的宿主机变量：`ROBROZ_STEP_TIMEOUT_SECS`（默认 `600`）和 `ROBROZ_STALL_SECS`（默认 `900`）控制 Watchdog 提示；`ROBROZ_APPROVAL_TTL_SECS`（默认 `86400`）是审批卡的有效期。完整列表见 [docs/configuration.md](docs/configuration.md)。从令牌到用 `curl` 走第一个任务，见 [docs/install.md](docs/install.md)。
+其他常用的宿主机变量：`ROBROZ_STEP_TIMEOUT_SECS`（默认 `600`）和 `ROBROZ_STALL_SECS`（默认 `900`）控制卡片上多久出现「跑太久或卡住」的提示；`ROBROZ_APPROVAL_TTL_SECS`（默认 `86400`）是审批卡的有效期。完整列表见 [docs/configuration.md](docs/configuration.md)。从令牌到用 `curl` 走第一个任务，见 [docs/install.md](docs/install.md)。
 
 ## 架构
 
