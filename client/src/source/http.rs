@@ -14,9 +14,11 @@
 use std::collections::HashMap;
 
 use robroz_contract::{Event, Groups};
+use robroz_ui::cards::ApprovalExtras;
 
 use super::{EventSource, GroupEvent, GroupTab, SourceError};
 use crate::conn::Conn;
+use crate::event_decode;
 use crate::model::change_time;
 
 pub struct HttpSource {
@@ -124,6 +126,7 @@ struct RawEvents {
 #[derive(Debug, Default)]
 struct Decoded {
     events: Vec<Event>,
+    extras: Vec<Option<ApprovalExtras>>,
     skipped_at: Option<String>,
 }
 
@@ -135,8 +138,11 @@ struct Decoded {
 fn decode_events(raw: Vec<serde_json::Value>) -> Decoded {
     let mut out = Decoded::default();
     for value in raw {
-        match serde_json::from_value::<Event>(value.clone()) {
-            Ok(event) => out.events.push(event),
+        match event_decode::parse_event(value.clone()) {
+            Ok((event, extras)) => {
+                out.events.push(event);
+                out.extras.push(extras);
+            }
             Err(err) => {
                 if cfg!(debug_assertions) {
                     eprintln!(
@@ -222,10 +228,11 @@ impl EventSource for HttpSource {
             let since = self.since(&group.id);
             let decoded = self.fetch(&group.id, since.as_deref())?;
             self.advance(&group.id, &decoded);
-            for event in decoded.events {
+            for (event, extras) in decoded.events.into_iter().zip(decoded.extras) {
                 out.push(GroupEvent {
                     group_id: group.id.clone(),
                     event,
+                    approval_extras: extras,
                 });
             }
         }

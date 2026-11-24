@@ -18,7 +18,10 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
+
 use crate::cards::model;
+use crate::cards::review_rules;
+
 use crate::cards::routines::{self, Routines};
 use crate::cards::search;
 use crate::cards::secret;
@@ -263,6 +266,15 @@ pub enum Action {
     SearchClearKey,
     SearchCancelKey,
     SearchSave,
+
+    /// 放行规则 page.
+    ReviewDraft {
+        text: String,
+    },
+    ReviewAdd,
+    ReviewDelete {
+        id: String,
+    },
     /// 模型 page.
     ModelPick {
         preset: model::Preset,
@@ -684,15 +696,16 @@ fn btn<'a>(
 ) -> Element<'a, Action> {
     let t = *t;
     let enabled = on_press.is_some();
-    let strong = matches!(look, Look::Primary | Look::Selected);
-    let faded_out = look == Look::Disabled || (!enabled && look == Look::Primary);
+    let strong = matches!(look, Look::Primary | Look::Selected | Look::Danger);
+    let faded_out =
+        look == Look::Disabled || (!enabled && matches!(look, Look::Primary | Look::Danger));
     let alpha = if faded_out {
         t.palette.disabled_alpha
     } else {
         1.0
     };
     let fg = match look {
-        Look::Primary => t.palette.on_accent,
+        Look::Primary | Look::Danger => t.palette.on_accent,
         _ => t.palette.text,
     };
     let fg_color = faded(fg, alpha);
@@ -738,6 +751,15 @@ fn btn<'a>(
         let (bg, border) = match look {
             Look::Primary => {
                 let fill = if hovered { c.accent_hover } else { c.accent };
+                (Some(faded(fill, alpha)), Border::default())
+            }
+            // Proposed red for 「删除规则」; UI姐 to confirm the exact colour.
+            Look::Danger => {
+                let fill = if hovered {
+                    [0xb0, 0x3c, 0x32]
+                } else {
+                    [0xc4, 0x47, 0x3a]
+                };
                 (Some(faded(fill, alpha)), Border::default())
             }
             Look::Selected => (
@@ -823,10 +845,11 @@ pub fn card<'a>(
     ui: &CardUi,
     caps: Caps,
     width: f32,
+    in_group: bool,
 ) -> Element<'a, Action> {
     match card {
         Card::Choice(c) => choice(t, c, ui),
-        Card::Approval(c) => approval(t, c, ui, width),
+        Card::Approval(c) => approval(t, c, ui, width, in_group),
         Card::Draft(c) => draft(t, c, ui, caps, width),
         Card::Confirm(c) => confirm_card(t, c, ui, width),
     }
@@ -1046,6 +1069,7 @@ pub fn approval<'a>(
     card: &'a ApprovalCard,
     ui: &CardUi,
     width: f32,
+    in_group: bool,
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
     let (label, d) = status::approval_status(&card.state);
@@ -1053,6 +1077,12 @@ pub fn approval<'a>(
         header(t, &card.id, &card.bot, ui, label, d),
         gap(t.metrics.head_gap)
     ];
+    // Group thread: same header and action line as a DM card, then
+    // 「已发到主人私聊」, no buttons.
+    let group_pending = in_group && card.state == crate::cards::ApprovalState::Pending;
+    if card.is_rule() && !group_pending {
+        return rule_approval(t, card, ui, col);
+    }
     let actions = interact::approval_actions(card, ui);
     if actions == ApprovalActions::TakeOver {
         // Stuck: one line and one secondary button. No approve/deny, no
@@ -1089,6 +1119,23 @@ pub fn approval<'a>(
             col = col
                 .push(gap(t.metrics.head_gap))
                 .push(path_chip(t, path, inner));
+        }
+        if let Some(reason) = card.reason.as_deref() {
+            if reason != review_rules::APPROVAL_EXPIRED_REASON {
+                col = col.push(gap(t.metrics.head_gap)).push(
+                    text(review_rules::blocked_reason_line(reason))
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text2)),
+                );
+            }
+        }
+        if group_pending {
+            col = col.push(gap(t.metrics.head_gap)).push(
+                text(review_rules::SENT_TO_OWNER)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+            return frame(t, col.into());
         }
         if let ApprovalActions::Decide { enabled } = actions {
             let id = &card.id;
@@ -3445,6 +3492,32 @@ fn field_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text
     }
 }
 
+/// Settings-page rule input: white fill even when disabled; text and
+/// placeholder drop to 40% opacity. The 「添加」 button keeps its usual
+/// disabled look.
+fn review_rule_input_style(
+    t: Skin,
+) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let disabled = matches!(status, text_input::Status::Disabled);
+        let border = match status {
+            text_input::Status::Focused { .. } => t.palette.focus,
+            text_input::Status::Hovered => t.palette.text,
+            text_input::Status::Active | text_input::Status::Disabled => t.palette.border,
+        };
+        let alpha = if disabled { 0.4 } else { 1.0 };
+        let sel = t.palette.selection;
+        text_input::Style {
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
+            icon: faded(t.palette.text, alpha),
+            placeholder: faded(t.palette.text3, alpha),
+            value: faded(t.palette.text, alpha),
+            selection: faded(sel.rgb, sel.alpha),
+        }
+    }
+}
+
 /// The 模型 page: preset, address, model name, masked key, one test after each save.
 pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     let m = t.metrics;
@@ -3576,5 +3649,245 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
         body = body.push(inline_note(t, note));
     }
     col = col.push(container(body).padding(pad));
+    container(col).width(Fill).style(card_style(*t)).into()
+}
+/// #68 confirm layout shared by the owner-DM card and the in-page card.
+fn rule_confirm_fields<'a>(
+    t: &Skin,
+    kind: crate::cards::ActionKind,
+    summary: &'a str,
+    id: &'a str,
+    state: &'a crate::cards::ApprovalState,
+    show_buttons: bool,
+    enabled: bool,
+    note: Option<String>,
+    mut col: iced::widget::Column<'a, Action>,
+) -> iced::widget::Column<'a, Action> {
+    let hint = if kind == crate::cards::ActionKind::RuleDelete {
+        review_rules::DELETE_HINT
+    } else {
+        review_rules::ADD_HINT
+    };
+    if matches!(state, crate::cards::ApprovalState::Expired { .. }) {
+        col = col.push(
+            text(review_rules::EXPIRED)
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
+        col = col.push(gap(t.metrics.head_gap));
+    }
+    col = col
+        .push(body(t, summary))
+        .push(gap(t.metrics.head_gap))
+        .push(text(hint).size(t.type_.foot).color(color(t.palette.text2)));
+    if show_buttons {
+        let (ok, look) = if kind == crate::cards::ActionKind::RuleDelete {
+            (review_rules::DELETE_ACTION, Look::Danger)
+        } else {
+            (review_rules::ADD_ACTION, Look::Primary)
+        };
+        col = col.push(gap(t.metrics.body_gap)).push(buttons_row(
+            t,
+            vec![
+                btn(
+                    t,
+                    ok.into(),
+                    look,
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.to_string(),
+                        approve: true,
+                    }),
+                ),
+                btn(
+                    t,
+                    review_rules::DROP.into(),
+                    if enabled {
+                        Look::Secondary
+                    } else {
+                        Look::Disabled
+                    },
+                    Leading::None,
+                    enabled.then(|| Action::Decide {
+                        card: id.to_string(),
+                        approve: false,
+                    }),
+                ),
+            ],
+        ));
+    }
+    if let Some(note) = note {
+        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, note));
+    } else if let Some(foot) = status::approval_footnote(state, &Local) {
+        col = col
+            .push(gap(t.metrics.foot_gap))
+            .push(approval_footnote_view(t, foot));
+    }
+    col
+}
+
+/// In-page confirm card on the 放行规则 settings page.
+fn rule_confirm_on_page<'a>(
+    t: &Skin,
+    pending: &'a review_rules::Pending,
+    enabled: bool,
+) -> Element<'a, Action> {
+    let kind = if pending.is_add() {
+        crate::cards::ActionKind::RuleAdd
+    } else {
+        crate::cards::ActionKind::RuleDelete
+    };
+    let show_buttons = pending.is_open();
+    let col = rule_confirm_fields(
+        t,
+        kind,
+        &pending.text,
+        &pending.id,
+        &pending.state,
+        show_buttons,
+        enabled,
+        None,
+        column![],
+    );
+    container(col)
+        .padding(card_padding(t))
+        .width(Fill)
+        .style(card_style(*t))
+        .into()
+}
+
+/// Owner-DM card for adding or deleting a rule: #68 confirm layout.
+fn rule_approval<'a>(
+    t: &Skin,
+    card: &'a ApprovalCard,
+    ui: &CardUi,
+    col: iced::widget::Column<'a, Action>,
+) -> Element<'a, Action> {
+    let actions = interact::approval_actions(card, ui);
+    let show_buttons = matches!(actions, ApprovalActions::Decide { .. });
+    let enabled = matches!(actions, ApprovalActions::Decide { enabled: true });
+    let note = ui.note.as_ref().map(|n| n.text());
+    frame(
+        t,
+        rule_confirm_fields(
+            t,
+            card.kind,
+            &card.summary,
+            &card.id,
+            &card.state,
+            show_buttons,
+            enabled,
+            note,
+            col,
+        )
+        .into(),
+    )
+}
+
+/// The 放行规则 page: add an input, list confirmed rules, confirm in place.
+pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element<'a, Action> {
+    let m = t.metrics;
+    let locked = page.locked();
+    let head = row![text(review_rules::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .align_y(Alignment::Center);
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+    let mut body_col = column![].spacing(12);
+    let mut input = text_input(review_rules::PLACEHOLDER, &page.draft)
+        .size(t.type_.body)
+        .padding(Padding::from([8.0, 10.0]))
+        .style(review_rule_input_style(*t));
+    if !locked {
+        input = input
+            .on_input(|text| Action::ReviewDraft { text })
+            .on_submit(Action::ReviewAdd);
+    }
+    body_col = body_col.push(
+        row![
+            input,
+            btn(
+                t,
+                review_rules::ADD.into(),
+                Look::Primary,
+                Leading::None,
+                (!locked).then_some(Action::ReviewAdd),
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center),
+    );
+    if let Some(note) = &page.note {
+        if note == review_rules::ALREADY_ANSWERED {
+            body_col = body_col.push(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        } else {
+            body_col = body_col.push(inline_note(t, note));
+        }
+    }
+    let add_pending = page.pending.as_ref().filter(|p| p.is_add());
+    if let Some(pending) = add_pending {
+        body_col = body_col.push(rule_confirm_on_page(t, pending, !page.busy));
+    }
+    match &page.rules {
+        None => {
+            body_col = body_col.push(
+                text(review_rules::LOADING)
+                    .size(t.type_.body)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        Some(rules) if rules.is_empty() && add_pending.is_none() => {
+            body_col = body_col.push(
+                text(review_rules::EMPTY)
+                    .size(t.type_.body)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        Some(rules) => {
+            for r in rules {
+                if let Some(pending) = page.pending.as_ref().filter(|p| p.is_delete_of(&r.id)) {
+                    body_col = body_col.push(rule_confirm_on_page(t, pending, !page.busy));
+                    continue;
+                }
+                let date = r.added_on(&Local);
+                let mut row_el = column![text(r.text.as_str())
+                    .size(t.type_.body)
+                    .color(color(t.palette.text)),]
+                .spacing(4);
+                if !date.is_empty() {
+                    row_el =
+                        row_el.push(text(date).size(t.type_.foot).color(color(t.palette.text2)));
+                }
+                let id = r.id.clone();
+                body_col = body_col.push(
+                    row![
+                        container(row_el).width(Fill),
+                        btn(
+                            t,
+                            review_rules::DELETE.into(),
+                            Look::Secondary,
+                            Leading::None,
+                            (!locked).then_some(Action::ReviewDelete { id }),
+                        ),
+                    ]
+                    .spacing(t.controls.button_gap)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+    }
+    col = col.push(container(body_col).padding(pad));
     container(col).width(Fill).style(card_style(*t)).into()
 }

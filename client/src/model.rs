@@ -6,7 +6,7 @@
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::confirm::ConfirmCard;
-use robroz_ui::cards::{ApprovalCard, Card, ChoiceCard};
+use robroz_ui::cards::{ApprovalCard, ApprovalExtras, Card, ChoiceCard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -137,7 +137,17 @@ impl Feed {
     }
 
     pub fn apply(&mut self, event: &Event) {
-        let (key, row) = to_row(event);
+        self.apply_with(event, None);
+    }
+
+    /// Apply an event, optionally with leftover approval extras (always
+    /// empty now that `rule_*` is on the contract). Settings-page rule
+    /// cards are ignored: they do not belong in a chat feed.
+    pub fn apply_with(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
+        if crate::event_decode::is_settings_approval(event) {
+            return;
+        }
+        let (key, row) = to_row(event, extras);
         self.upsert(key, row);
     }
 
@@ -269,7 +279,7 @@ pub fn preview(event: &Event) -> String {
     }
 }
 
-fn to_row(event: &Event) -> (Key, Row) {
+fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
     match event {
         Event::Message { id, kind, body, .. } => {
             let row = match kind {
@@ -356,7 +366,7 @@ fn to_row(event: &Event) -> (Key, Row) {
         }
         // Same as choice: the answered snapshot replaces the pending card.
         Event::Approval { id, .. } => {
-            let card = ApprovalCard::from_event(event)
+            let card = ApprovalCard::from_event_with(event, extras)
                 .expect("approval event")
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Approval(card)))
@@ -575,7 +585,7 @@ mod tests {
 
     #[test]
     fn progress_is_one_line_and_never_on_a_finished_or_stuck_card() {
-        let line = |e: Event| match to_row(&e).1 {
+        let line = |e: Event| match to_row(&e, None).1 {
             Row::Status(c) => c.progress,
             _ => unreachable!(),
         };
@@ -912,7 +922,7 @@ mod tests {
             Some("在用 notes.write_note"),
         );
         assert_eq!(
-            match to_row(&stuck).1 {
+            match to_row(&stuck, None).1 {
                 Row::Status(c) => c.progress,
                 _ => unreachable!(),
             },
@@ -1145,6 +1155,7 @@ mod tests {
                 state,
                 mcp_server: None,
                 mcp_tool: None,
+                reason: None,
             })
         };
         let mut feed = Feed::default();
@@ -1164,5 +1175,31 @@ mod tests {
             matches!(feed.rows().nth(1), Some(Row::Card(_))),
             "kept its slot"
         );
+    }
+
+    #[test]
+    fn settings_approval_is_kept_out_of_the_feed() {
+        let event = Event::Approval {
+            id: "apr-settings".into(),
+            bot_id: robroz_contract::SETTINGS_APPROVAL_BOT_ID.into(),
+            bot_name: robroz_contract::SETTINGS_APPROVAL_BOT_NAME.into(),
+            action: robroz_contract::ApprovalAction::RuleAdd,
+            summary: "允许发周报".into(),
+            path: None,
+            decision: None,
+            created_at: "2026-11-24T12:00:00Z".into(),
+            answered_at: None,
+            answered_by: None,
+            task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
+            reason: None,
+            expires_at: None,
+        };
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "打招呼"));
+        feed.apply(&event);
+        assert_eq!(feed.len(), 1);
+        assert!(feed.card("apr-settings").is_none());
     }
 }

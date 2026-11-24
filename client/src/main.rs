@@ -16,6 +16,7 @@
 
 mod api;
 mod conn;
+mod event_decode;
 mod gallery;
 mod model;
 mod source;
@@ -34,10 +35,14 @@ use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
 use robroz_ui::cards::mcp::{self, Book as McpBook};
 use robroz_ui::cards::memories::Book;
+
 use robroz_ui::cards::model::{self as model_page, Current as ModelCurrent, Page as ModelPage};
+use robroz_ui::cards::review_rules::{self, Page as ReviewRulesPage, Rule as ReviewRule};
+
 use robroz_ui::cards::routines::{RoutineRow, Routines};
 use robroz_ui::cards::search::{self as search_page, Current as SearchCurrent, Page as SearchPage};
 use robroz_ui::cards::skills::Book as SkillBook;
+use robroz_ui::cards::{ApprovalCard, ApprovalExtras};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
 use robroz_ui::view::{self, color, Action, Caps};
@@ -140,7 +145,9 @@ enum Page {
     Skills,
     Mcp,
     Search,
+
     Model,
+    ReviewRules,
 }
 
 #[derive(Debug, Clone)]
@@ -153,11 +160,16 @@ enum Message {
     SearchLoaded(Result<SearchCurrent, ApiError>),
     SearchSaved(Result<SearchCurrent, ApiError>),
     SearchTested(Result<(bool, Option<String>), ApiError>),
+
+    OpenReviewRules,
+    ReviewRulesLoaded(Result<Vec<ReviewRule>, ApiError>),
+    ReviewRuleProposed(Result<Event, ApiError>),
     /// 模型 page (sidebar, or 「去设置」 on a delivery).
     OpenModel,
     ModelLoaded(Result<ModelCurrent, ApiError>),
     ModelSaved(Result<ModelCurrent, ApiError>),
     ModelTested(Result<(bool, Option<String>), ApiError>),
+
     MemoriesLoaded(Result<Vec<Memory>, ApiError>),
     SkillsLoaded(Result<Vec<Skill>, ApiError>),
     /// PATCH (edit) or POST (new) answered.
@@ -174,7 +186,7 @@ enum Message {
     MemoryDecided {
         id: String,
         keep: bool,
-        result: Result<Option<Event>, ApiError>,
+        result: Result<Option<(Event, Option<ApprovalExtras>)>, ApiError>,
     },
     /// PATCH (edit) or POST (new) answered on the 技能 page.
     SkillSaved {
@@ -190,7 +202,7 @@ enum Message {
     SkillDecided {
         slug: String,
         keep: bool,
-        result: Result<Option<Event>, ApiError>,
+        result: Result<Option<(Event, Option<ApprovalExtras>)>, ApiError>,
     },
     SkillToggled {
         slug: String,
@@ -255,7 +267,7 @@ enum Message {
     Decided {
         card: String,
         approve: bool,
-        result: Result<Option<Event>, ApiError>,
+        result: Result<Option<(Event, Option<ApprovalExtras>)>, ApiError>,
     },
     RoutinesLoaded(Result<Vec<ScheduleEntry>, ApiError>),
     Paused {
@@ -336,8 +348,12 @@ struct App {
     mcp: McpBook,
     /// 联网搜索 page (robroz#76).
     search: SearchPage,
+
+    /// 放行规则 page.
+    review_rules: ReviewRulesPage,
     /// 模型 page (robroz#102).
     model_settings: ModelPage,
+
     mode: Mode,
     width: f32,
     loaded: bool,
@@ -435,7 +451,10 @@ impl App {
             skills: SkillBook::default(),
             mcp: McpBook::default(),
             search: SearchPage::default(),
+
+            review_rules: ReviewRulesPage::default(),
             model_settings: ModelPage::default(),
+
             mode,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
@@ -592,6 +611,15 @@ impl App {
     }
 
     fn apply_event(&mut self, group: String, event: &Event) {
+        self.apply_event_with(group, event, None);
+    }
+
+    fn apply_event_with(&mut self, group: String, event: &Event, extras: Option<&ApprovalExtras>) {
+        // Settings-page rule cards never belong in a chat, stream or unread.
+        if event_decode::is_settings_approval(event) {
+            self.sync_review_pending(event, extras);
+            return;
+        }
         // A confirm card answered anywhere (chat, page, another device, or a
         // forgotten pending memory) moves its entry on the 记忆 page too.
         if let Event::Confirm {
@@ -624,7 +652,10 @@ impl App {
                 .insert(group.clone(), (at.to_string(), rank));
         }
         self.convs.touch(&group, shown, Some(at));
-        self.feeds.entry(group).or_default().apply(event);
+        self.feeds
+            .entry(group)
+            .or_default()
+            .apply_with(event, extras);
         // A 409 note ("refreshing") goes once the answered card arrives.
         let answered = match event {
             Event::Choice {
@@ -649,6 +680,38 @@ impl App {
                 ui.note = None;
             }
         }
+        self.sync_review_pending(event, extras);
+    }
+
+    /// Keep the settings-page confirm card in sync if this event is for it.
+    fn sync_review_pending(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
+        let Some(card) = ApprovalCard::from_event_with(event, extras) else {
+            return;
+        };
+        let Some(pending) = self.review_rules.pending.as_ref() else {
+            return;
+        };
+        if pending.id != card.id {
+            return;
+        }
+        match card.state {
+            ApprovalState::Expired { at } => self.review_rules.expire_pending(at),
+            ApprovalState::Approved { .. } | ApprovalState::Denied { .. } => {
+                self.review_rules.finish_pending();
+            }
+            ApprovalState::Pending | ApprovalState::NeedsOwner => {
+                if let Some(pending) = self.review_rules.pending.as_mut() {
+                    pending.state = card.state;
+                }
+            }
+        }
+    }
+
+    fn refresh_review_rules(&self) -> Task<Message> {
+        Task::perform(
+            call(&self.api, |api| api.review_rules()),
+            Message::ReviewRulesLoaded,
+        )
     }
 
     fn poll(&mut self) -> Task<Message> {
@@ -1170,6 +1233,52 @@ impl App {
         Task::none()
     }
 
+    fn on_review_action(&mut self, action: Action) -> Task<Message> {
+        let page = &mut self.review_rules;
+        match action {
+            Action::ReviewDraft { text } => page.set_draft(text),
+            Action::ReviewAdd => {
+                if page.locked() {
+                    return Task::none();
+                }
+                let Some(text) = page.to_add() else {
+                    return Task::none();
+                };
+                page.begin_add(text.clone());
+                return Task::perform(
+                    call(&self.api, move |api| {
+                        let id = api.propose_review_rule(&text)?;
+                        api.approval(&id)
+                    }),
+                    Message::ReviewRuleProposed,
+                );
+            }
+            Action::ReviewDelete { id } => {
+                if page.locked() {
+                    return Task::none();
+                }
+                let Some(text) = page
+                    .rules
+                    .as_ref()
+                    .and_then(|rules| rules.iter().find(|r| r.id == id))
+                    .map(|r| r.text.clone())
+                else {
+                    return Task::none();
+                };
+                page.begin_delete(id.clone(), text);
+                return Task::perform(
+                    call(&self.api, move |api| {
+                        let id = api.propose_delete_review_rule(&id)?;
+                        api.approval(&id)
+                    }),
+                    Message::ReviewRuleProposed,
+                );
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     fn on_model_action(&mut self, action: Action) -> Task<Message> {
         let page = &mut self.model_settings;
         match action {
@@ -1271,6 +1380,10 @@ impl App {
             | Action::SearchClearKey
             | Action::SearchCancelKey
             | Action::SearchSave => self.on_search_action(action),
+
+            Action::ReviewDraft { .. } | Action::ReviewAdd | Action::ReviewDelete { .. } => {
+                self.on_review_action(action)
+            }
             Action::ModelPick { .. }
             | Action::ModelUrl { .. }
             | Action::ModelName { .. }
@@ -1278,6 +1391,7 @@ impl App {
             | Action::ModelClearKey
             | Action::ModelCancelKey
             | Action::ModelSave => self.on_model_action(action),
+
             Action::ToggleInstruction { card } => {
                 let ui = self.ui.entry(card).or_default();
                 ui.more_open = !ui.more_open;
@@ -1316,6 +1430,14 @@ impl App {
             Action::Decide { card, approve } => {
                 if !self.ui.entry(card.clone()).or_default().begin_action() {
                     return Task::none();
+                }
+                if self
+                    .review_rules
+                    .pending
+                    .as_ref()
+                    .is_some_and(|p| p.id == card)
+                {
+                    self.review_rules.busy = true;
                 }
                 let id = card.clone();
                 let job = call(&self.api, move |api| api.decide(&id, approve));
@@ -1493,6 +1615,20 @@ impl App {
                 self.narrow_open = true;
                 return self.load_mcp();
             }
+            Message::OpenReviewRules => {
+                self.page = Page::ReviewRules;
+                self.narrow_open = true;
+                self.review_rules.reset_for_open();
+                return self.refresh_review_rules();
+            }
+            Message::ReviewRulesLoaded(result) => match result {
+                Ok(rules) => self.review_rules.load(rules),
+                Err(err) => self.review_rules.load_failed(&err.reason()),
+            },
+            Message::ReviewRuleProposed(result) => match result {
+                Ok(event) => self.review_rules.proposed_event(&event),
+                Err(err) => self.review_rules.propose_failed(&err.reason()),
+            },
             Message::MemoriesLoaded(result) => match result {
                 Ok(list) => {
                     self.memories.load(list);
@@ -1511,11 +1647,11 @@ impl App {
                     self.memories.decided(&id, keep);
                     // The chat card shows the answer at once; the stream
                     // brings the same snapshot again later.
-                    if let Some(event @ Event::Confirm { .. }) = reply {
+                    if let Some((event @ Event::Confirm { .. }, extras)) = reply {
                         let card = robroz_ui::cards::confirm::ConfirmCard::from_event(&event);
                         let group = card.and_then(|c| self.find_card(&c.id)).map(|(g, _)| g);
                         if let Some(group) = group {
-                            self.apply_event(group, &event);
+                            self.apply_event_with(group, &event, extras.as_ref());
                         }
                     }
                 }
@@ -1555,11 +1691,11 @@ impl App {
             Message::SkillDecided { slug, keep, result } => match result {
                 Ok(reply) => {
                     self.skills.decided(&slug, keep);
-                    if let Some(event @ Event::Confirm { .. }) = reply {
+                    if let Some((event @ Event::Confirm { .. }, extras)) = reply {
                         let card = robroz_ui::cards::confirm::ConfirmCard::from_event(&event);
                         let group = card.and_then(|c| self.find_card(&c.id)).map(|(g, _)| g);
                         if let Some(group) = group {
-                            self.apply_event(group, &event);
+                            self.apply_event_with(group, &event, extras.as_ref());
                         }
                     }
                 }
@@ -1822,7 +1958,9 @@ impl App {
                         self.stream_up = true;
                     }
                 }
-                StreamItem::Event(event) => self.apply_event(group, &event),
+                StreamItem::Event { event, extras } => {
+                    self.apply_event_with(group, &event, extras.as_ref())
+                }
                 StreamItem::Ping => {}
                 // Polling takes over at full speed until it reconnects.
                 StreamItem::Down(_) => self.stream_up = false,
@@ -1862,7 +2000,11 @@ impl App {
                 match result {
                     Ok(polled) => {
                         for ge in polled.events {
-                            self.apply_event(ge.group_id, &ge.event);
+                            self.apply_event_with(
+                                ge.group_id,
+                                &ge.event,
+                                ge.approval_extras.as_ref(),
+                            );
                         }
                         for gc in polled.cards {
                             self.set_card(&gc.group_id, gc.card);
@@ -1921,9 +2063,33 @@ impl App {
                 match result {
                     Ok(reply) => {
                         ui.action_done(None);
+                        let in_page = self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card);
+                        if in_page {
+                            match &reply {
+                                Some((event, extras)) => {
+                                    self.sync_review_pending(event, extras.as_ref());
+                                }
+                                None => self.review_rules.finish_pending(),
+                            }
+                            if self
+                                .review_rules
+                                .pending
+                                .as_ref()
+                                .is_some_and(|p| matches!(p.state, ApprovalState::Expired { .. }))
+                            {
+                                return Task::none();
+                            }
+                            return self.refresh_review_rules();
+                        }
                         match (reply, found) {
                             // The host's answered card replaces the pending one.
-                            (Some(event), Some((group, _))) => self.apply_event(group, &event),
+                            (Some((event, extras)), Some((group, _))) => {
+                                self.apply_event_with(group, &event, extras.as_ref());
+                            }
                             // No echo (fake API): show the answer locally.
                             (None, Some((group, Card::Approval(mut c)))) => {
                                 let at = now_unix();
@@ -1959,13 +2125,33 @@ impl App {
                         }
                     }
                     Err(ApiError::Conflict(_)) => {
+                        if self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card)
+                        {
+                            self.review_rules.answered_elsewhere();
+                            return self.refresh_review_rules();
+                        }
                         // Answered already (elsewhere): fetch the real state;
                         // the answered card clears this note when it lands.
                         ui.action_done(Some(Note::AlreadyDecided));
                         self.has_more = true;
                         return self.poll();
                     }
-                    Err(err) => ui.action_done(Some(err.note())),
+                    Err(err) => {
+                        if self
+                            .review_rules
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.id == card)
+                        {
+                            self.review_rules.busy = false;
+                            self.review_rules.note = Some(err.reason());
+                        }
+                        ui.action_done(Some(err.note()));
+                    }
                 }
             }
             Message::Acted { card, result } => {
@@ -2196,6 +2382,14 @@ impl App {
             .padding(Padding::from([0.0, 12.0]))
             .style(view::nav_button_style(*t, self.page == Page::Mcp))
             .on_press(Message::OpenMcp);
+        let review_rules = button(text(review_rules::TITLE).size(t.type_.row_name))
+            .width(Fill)
+            .height(Length::Fixed(
+                t.controls.touch_target.max(t.controls.button_h),
+            ))
+            .padding(Padding::from([0.0, 12.0]))
+            .style(view::nav_button_style(*t, self.page == Page::ReviewRules))
+            .on_press(Message::OpenReviewRules);
         container(
             column![
                 scrollable(list).height(Fill),
@@ -2204,7 +2398,8 @@ impl App {
                 skills,
                 model_nav,
                 search,
-                mcp
+                mcp,
+                review_rules
             ]
             .spacing(4),
         )
@@ -2281,6 +2476,16 @@ impl App {
             .width(Fill)
             .into();
         }
+        if self.page == Page::ReviewRules {
+            return scrollable(
+                container(view::review_rules_panel(t, &self.review_rules).map(Message::Ui))
+                    .padding(t.metrics.stream_padding)
+                    .width(Fill),
+            )
+            .height(Fill)
+            .width(Fill)
+            .into();
+        }
         if self.page == Page::Routines {
             return scrollable(
                 container(view::routines_panel(t, &self.routines, now_unix()).map(Message::Ui))
@@ -2297,6 +2502,7 @@ impl App {
                 .into();
         };
         let width = self.content_width(t);
+        let in_group = self.convs.get(id).is_some_and(|c| !c.dm);
         let empty = CardUi::default();
         let rows = self
             .feeds
@@ -2317,7 +2523,7 @@ impl App {
             .into_iter()
             .zip(plan)
             .filter_map(|(r, fold)| match fold {
-                Fold::Show => Some(row_view(t, r, &self.ui, &empty, self.caps, width)),
+                Fold::Show => Some(row_view(t, r, &self.ui, &empty, self.caps, width, in_group)),
                 Fold::Hide => None,
                 Fold::More { task, n } => Some(view::confirm_more(t, &task, n).map(Message::Ui)),
             });
@@ -2384,16 +2590,17 @@ impl App {
                 .color(color(t.palette.text))
                 .into()
         };
-        let section =
-            |name: &'static str, samples: &'a [gallery::Sample]| -> Element<'a, Message> {
-                let mut c = column![title(name)].spacing(6);
-                for s in samples {
-                    c = c.push(caption(s.caption)).push(
-                        view::card(t, &s.card, &s.ui, Caps::FAKE, col_width).map(Message::Ui),
-                    );
-                }
-                c.into()
-            };
+        let section = |name: &'static str,
+                       samples: &'a [gallery::Sample]|
+         -> Element<'a, Message> {
+            let mut c = column![title(name)].spacing(6);
+            for s in samples {
+                c = c.push(caption(s.caption)).push(
+                    view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false).map(Message::Ui),
+                );
+            }
+            c.into()
+        };
         // The frozen status card, to review its dark-mode outline.
         let running = robroz_card::palette(robroz_card::Tone::Ink);
         let status_sample: Element<'a, Message> = container(
@@ -2449,6 +2656,7 @@ fn row_view<'a>(
     empty: &CardUi,
     caps: Caps,
     width: f32,
+    in_group: bool,
 ) -> Element<'a, Message> {
     match r {
         Row::Text { body } => text(body).color(color(t.palette.text)).into(),
@@ -2469,7 +2677,7 @@ fn row_view<'a>(
         Row::Delivery(card) => delivery_view(t, card, width),
         Row::Card(card) => {
             let state = ui.get(card.id()).unwrap_or(empty);
-            view::card(t, card, state, caps, width).map(Message::Ui)
+            view::card(t, card, state, caps, width, in_group).map(Message::Ui)
         }
     }
 }

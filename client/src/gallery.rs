@@ -60,6 +60,7 @@ fn approval(state: ApprovalState, bot: &str) -> Card {
         state,
         mcp_server: None,
         mcp_tool: None,
+        reason: None,
     })
 }
 

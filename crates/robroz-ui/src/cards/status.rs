@@ -33,6 +33,8 @@ pub fn approval_status(state: &ApprovalState) -> (&'static str, Dot) {
         ApprovalState::Approved { .. } => ("已批准", Dot::Done),
         ApprovalState::Denied { .. } => ("已拒绝", Dot::Void),
         ApprovalState::NeedsOwner => ("卡住", Dot::Stuck),
+        // Grey Void, same as other settled-void states; never the denied copy.
+        ApprovalState::Expired { .. } => (crate::cards::review_rules::EXPIRED, Dot::Void),
     }
 }
 
@@ -50,7 +52,9 @@ pub fn action_kind_label(kind: ActionKind) -> &'static str {
         ActionKind::Send => "发送",
         ActionKind::Spend => "付款",
         ActionKind::Call => "调用",
+
         ActionKind::Unknown => "操作",
+        ActionKind::RuleAdd | ActionKind::RuleDelete => "",
     }
 }
 
@@ -164,6 +168,10 @@ where
             let text = by.as_ref().map_or("已拒绝".into(), |b| format!("{b} 拒绝"));
             Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
+        ApprovalState::Expired { at } => Some(ApprovalFootnote::new(
+            crate::cards::review_rules::EXPIRED_FOOT.to_string(),
+            clock_in(*at, tz),
+        )),
         ApprovalState::Pending | ApprovalState::NeedsOwner => None,
     }
 }
@@ -435,6 +443,10 @@ mod tests {
             ("卡住", Dot::Stuck)
         );
         assert_eq!(
+            approval_status(&ApprovalState::Expired { at: 0 }),
+            ("已过期", Dot::Void)
+        );
+        assert_eq!(
             draft_status(&DraftState::Pending),
             ("草稿待确认", Dot::Waiting)
         );
@@ -497,6 +509,13 @@ mod tests {
             Some(foot("Panda 的手机 拒绝", "01:52"))
         );
         assert_eq!(approval_footnote(&ApprovalState::NeedsOwner, &Utc), None);
+        assert_eq!(
+            approval_footnote(&ApprovalState::Expired { at: 1795164480 }, &Utc),
+            Some(ApprovalFootnote {
+                text: "没人批准，已过期".into(),
+                time: Some("08:48".into()),
+            })
+        );
         assert_eq!(
             draft_footnote(
                 &DraftState::Sent {

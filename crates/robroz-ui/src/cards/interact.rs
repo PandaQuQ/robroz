@@ -19,6 +19,8 @@ pub enum Look {
     Selected,
     /// Faded to the theme's disabled alpha and not clickable.
     Disabled,
+    /// Red filled button: 「删除规则」 on a rule-delete confirm card.
+    Danger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,7 +226,9 @@ pub fn approval_actions(card: &ApprovalCard, ui: &CardUi) -> ApprovalActions {
     match card.state {
         ApprovalState::Pending => ApprovalActions::Decide { enabled: !ui.busy },
         ApprovalState::NeedsOwner => ApprovalActions::TakeOver,
-        _ => ApprovalActions::None,
+        ApprovalState::Approved { .. }
+        | ApprovalState::Denied { .. }
+        | ApprovalState::Expired { .. } => ApprovalActions::None,
     }
 }
 
@@ -437,6 +441,7 @@ mod tests {
             state: ApprovalState::Pending,
             mcp_server: None,
             mcp_tool: None,
+            reason: None,
         };
         let mut ui = CardUi::default();
         assert_eq!(
@@ -451,6 +456,8 @@ mod tests {
         );
         a.state = ApprovalState::NeedsOwner;
         assert_eq!(approval_actions(&a, &ui), ApprovalActions::TakeOver);
+        a.state = ApprovalState::Expired { at: 0 };
+        assert_eq!(approval_actions(&a, &ui), ApprovalActions::None);
         // 409 on a pending card: no buttons while the answer is fetched.
         a.state = ApprovalState::Pending;
         ui.action_done(Some(Note::AlreadyDecided));
