@@ -459,6 +459,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpApproveRun => "批准运行",
         Key::McpApproveFailed => "批准失败：{0}",
         Key::CannotConnect => "连不上：{0}",
+        Key::MobileHostLabel => "地址",
         Key::MobileTokenLabel => "令牌",
         Key::MobileConnect => "连接",
         Key::MobileAbout => "关于",

@@ -29,8 +29,7 @@ fn apply_strings(ui: &MainWindow) {
     let tr = ui.global::<Tr>();
     tr.set_title_chats(Key::ConversationsTitle.as_str().into());
     tr.set_empty_chats(Key::ConversationsEmptyHint.as_str().into());
-    // "URL" is the label the desktop settings use for a base URL.
-    tr.set_label_host(Key::ModelLabelUrl.as_str().into());
+    tr.set_label_host(Key::MobileHostLabel.as_str().into());
     tr.set_label_token(Key::MobileTokenLabel.as_str().into());
     tr.set_connect(Key::MobileConnect.as_str().into());
     tr.set_back(Key::ViewBackToChats.as_str().into());
