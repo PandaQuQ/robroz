@@ -21,7 +21,7 @@
 
 <!-- TODO(screenshot): main window -->
 
-桌面客户端界面目前是中文；英文界面正在做（英文为默认，中文为备选）。
+桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [configuration.md](configuration.md)。
 
 ## 现在能用的
 
@@ -56,13 +56,13 @@ cargo run -p robroz-client   # 另开一个终端；默认连接 http://127.0.0.
 
 宿主机默认写入 `./robroz.db`、`./data/groups` 和 `./data/control`。监听本机回环地址时可以不设令牌；监听非回环地址却没有 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE` 时，会拒绝启动。
 
-在客户端「聊天」标题旁点「引入一个 bro」，打开私聊发一条消息，这就是第一个任务。没设置模型时，交付是「还没设置模型」，卡片上有「去设置」。
+在客户端 Chats（「聊天」）标题旁点 Add a bro（「引入一个 bro」），打开私聊发一条消息，这就是第一个任务。没设置模型时，交付是 No model set up yet（「还没设置模型」），卡片上有 Set up（「去设置」）。
 
 ### 配置模型
 
 <!-- TODO(screenshot): settings page -->
 
-在客户端打开「模型」，或点交付卡上的「去设置」。填地址和模型名即可，密钥可选。保存时会试连。也可以用环境变量，并把密钥放在仓库外的文件里：
+在客户端打开 Model（「模型」），或点交付卡上的 Set up（「去设置」）。填地址和模型名即可，密钥可选。保存时会试连。也可以用环境变量，并把密钥放在仓库外的文件里：
 
 ```sh
 mkdir -p "$HOME/.config/robroz"

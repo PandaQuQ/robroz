@@ -21,7 +21,7 @@ It is for people who want several AI agents in one workspace they control, and w
 
 <!-- TODO(screenshot): main window -->
 
-The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional).
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Works today
 
@@ -56,13 +56,13 @@ cargo run -p robroz-client   # in a second terminal; default host http://127.0.0
 
 The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. A loopback listener needs no token; listening on a non-loopback address without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` refuses to start.
 
-In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」 (Chats) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is 「还没设置模型」 (the model isn't set up yet) and the card offers 「去设置」 (Go to settings).
+In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is No model set up yet (「还没设置模型」) and the card offers Set up (「去设置」).
 
 ### Configure a model
 
 <!-- TODO(screenshot): settings page -->
 
-Open 「模型」 (Model) in the client, or the 「去设置」 (Go to settings) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
+Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
