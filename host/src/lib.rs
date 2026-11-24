@@ -6570,9 +6570,13 @@ mod tests {
     // ---- group turns ----
 
     /// Answers from a script, in call order, and records every prompt.
+    /// Turns of a bro-opened round (their prompt names the speaking bro) use
+    /// their own script, `bro_answers`, and stay silent once it runs out.
     struct TurnModel {
         answers: std::sync::Mutex<Vec<Result<String, String>>>,
         prompts: std::sync::Mutex<Vec<String>>,
+        bro_answers: std::sync::Mutex<Vec<String>>,
+        bro_prompts: std::sync::Mutex<Vec<String>>,
     }
 
     impl TurnModel {
@@ -6585,16 +6589,36 @@ mod tests {
                         .collect(),
                 ),
                 prompts: std::sync::Mutex::new(Vec::new()),
+                bro_answers: std::sync::Mutex::new(Vec::new()),
+                bro_prompts: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        fn with_bro_answers(self, answers: &[&str]) -> Self {
+            *self.bro_answers.lock().unwrap() = answers.iter().map(|a| a.to_string()).collect();
+            self
         }
 
         fn prompts(&self) -> Vec<String> {
             self.prompts.lock().unwrap().clone()
         }
+
+        fn bro_prompts(&self) -> Vec<String> {
+            self.bro_prompts.lock().unwrap().clone()
+        }
     }
 
     impl robroz_model::Model for TurnModel {
         fn reply(&self, prompt: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
+            if prompt.contains("刚在群里回复了") {
+                self.bro_prompts.lock().unwrap().push(prompt.to_string());
+                let mut answers = self.bro_answers.lock().unwrap();
+                return Ok(if answers.is_empty() {
+                    crate::turns::SILENT_REPLY.to_string()
+                } else {
+                    answers.remove(0)
+                });
+            }
             self.prompts.lock().unwrap().push(prompt.to_string());
             let mut answers = self.answers.lock().unwrap();
             assert!(!answers.is_empty(), "unexpected model call: {prompt}");
@@ -6693,8 +6717,10 @@ mod tests {
             1
         );
 
-        // A bro's reply never opens another round.
+        // Bob already saw Ada's reply on his own turn, so it woke nobody;
+        // his silence opens nothing either.
         run_rounds(&path, &volumes, &mut fake, &model, 3);
+        assert!(model.bro_prompts().is_empty());
         assert_eq!(count(&path, "SELECT COUNT(*) FROM tasks"), 2);
         assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), 2);
     }
@@ -7054,5 +7080,180 @@ mod tests {
             )
             .unwrap();
         assert!(turn_created >= task_done, "{turn_created} < {task_done}");
+    }
+
+    // ---- bros wake bros ----
+
+    fn depths(db: &Path) -> Vec<(i64, String)> {
+        let conn = Connection::open(db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT depth, bot_id FROM turns ORDER BY depth, created_at, position")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<(i64, String)>>>()
+            .unwrap();
+        rows
+    }
+
+    #[tokio::test]
+    async fn a_bro_reply_wakes_the_other_bros_one_level_deeper_until_the_cap() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "讨论一下用哪个数据库").await;
+        let model = TurnModel::new(&[Ok("我投 SQLite。"), Ok("我投 Postgres。")])
+            .with_bro_answers(&["@Bob 单机够用，SQLite 更省事。", "那就 SQLite，我同意。"]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 12);
+
+        assert_eq!(
+            depths(&path),
+            vec![
+                (0, "b-ada".to_string()),
+                (0, "b-bob".to_string()),
+                (1, "b-ada".to_string()),
+                (2, "b-bob".to_string()),
+            ],
+            "each reply wakes only the other bro, one level deeper, and depth {} is the last",
+            crate::turns::MAX_BRO_DEPTH
+        );
+        let bro = model.bro_prompts();
+        assert_eq!(bro.len(), 2, "{bro:?}");
+        assert!(
+            bro[0].contains("bro「Bob」") && bro[0].contains("我投 Postgres。"),
+            "{}",
+            bro[0]
+        );
+        assert!(
+            bro[1].contains("bro「Ada」") && bro[1].contains("单机够用"),
+            "{}",
+            bro[1]
+        );
+        assert_eq!(model.prompts().len(), 2, "round 0 ran once per bro");
+        let events = events_of(&app, &group).await;
+        assert_eq!(
+            deliveries(&events).len(),
+            4,
+            "the depth-2 reply is delivered and wakes nobody"
+        );
+        assert_eq!(messages(&events), 1);
+
+        // Nothing else opens later.
+        run_rounds(&path, &volumes, &mut fake, &model, 3);
+        assert_eq!(depths(&path).len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_bro_mention_goes_first_and_is_not_a_follow_up() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        add_member(&app, &group, "b-cara", "Cara").await;
+        say_in(&app, &group, "@Ada 写个方案").await;
+        // Ada is named and speaks first; Bob and Cara still have their turn
+        // in round 0, so her reply wakes nobody. Bob speaks; only Ada (done)
+        // is woken: Cara's round-0 turn is still ahead. Cara speaks last and
+        // names Bob, so Bob goes before Ada in her round.
+        let model = TurnModel::new(&[Ok("方案在此。"), Ok("我补一句。"), Ok("@Bob 你那句不对。")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 12);
+        let d = depths(&path);
+        let level1: Vec<_> = d
+            .iter()
+            .filter(|(depth, _)| *depth == 1)
+            .map(|(_, b)| b.as_str())
+            .collect();
+        assert_eq!(level1, vec!["b-ada", "b-bob", "b-ada"], "{d:?}");
+        let conn = Connection::open(&path).unwrap();
+        let cara_round: Vec<String> = conn
+            .prepare(
+                "SELECT bot_id FROM turns WHERE depth = 1 AND speaker = 'Cara' ORDER BY position",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            cara_round,
+            vec!["b-bob", "b-ada"],
+            "the named bro goes first"
+        );
+        assert_eq!(
+            count(&path, "SELECT COUNT(*) FROM follow_ups"),
+            0,
+            "a bro's @ is no follow-up"
+        );
+        assert_eq!(
+            count(
+                &path,
+                "SELECT COUNT(*) FROM tasks WHERE turn_hidden = 0 AND assignee_bot_id = 'b-bob'"
+            ),
+            1,
+            "no visible fast-path task from a bro's @"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_or_silent_replies_and_dms_wake_nobody() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "有人在吗").await;
+        // Ada speaks, Bob stays silent: Bob already saw Ada; silence opens nothing.
+        let model = TurnModel::new(&[Ok("在。"), Ok("robroz-silent")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+        assert_eq!(depths(&path).len(), 2);
+
+        // A failed delivery from a turn task opens nothing; a clean one would.
+        let conn = Connection::open(&path).unwrap();
+        let (task, at): (String, String) = conn
+            .query_row(
+                "SELECT t.id, d.created_at FROM tasks t JOIN deliveries d ON d.task_id = t.id
+                 WHERE t.assignee_bot_id = 'b-ada'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        conn.execute("UPDATE turns SET task_id = 'x' WHERE bot_id = 'b-bob'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE deliveries SET failure = '模型没回' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::turns::open_bro_round(&conn, &task, "在。", &at).unwrap(),
+            None
+        );
+        conn.execute(
+            "UPDATE deliveries SET failure = NULL WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::turns::open_bro_round(&conn, &task, "robroz-silent", &at).unwrap(),
+            None
+        );
+        assert_eq!(
+            crate::turns::open_bro_round(&conn, &task, "在。", &at).unwrap(),
+            Some(1)
+        );
+
+        // DMs never chain.
+        let (_, bro) = new_bro(&app, Some(json!({ "name": "小明" }))).await;
+        let dm = bro["dmGroupId"].as_str().unwrap();
+        say_in(&app, dm, "整理周报").await;
+        let before = count(&path, "SELECT COUNT(*) FROM turns");
+        let model = TurnModel::new(&[Ok("整理好了。")]);
+        run_rounds(&path, &volumes, &mut fake, &model, 4);
+        assert_eq!(model.prompts().len(), 1);
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), before);
     }
 }
