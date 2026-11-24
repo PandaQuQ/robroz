@@ -140,8 +140,8 @@ impl Feed {
         self.apply_with(event, None);
     }
 
-    /// Apply an approval together with client-side extras the contract event
-    /// cannot carry yet (`reason`, `rule_add` / `rule_delete`).
+    /// Apply an approval together with a `rule_add` / `rule_delete` stash
+    /// the contract cannot carry yet.
     pub fn apply_with(&mut self, event: &Event, extras: Option<&ApprovalExtras>) {
         let (key, row) = to_row(event, extras);
         self.upsert(key, row);

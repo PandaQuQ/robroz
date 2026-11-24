@@ -188,21 +188,19 @@ pub enum ApprovalState {
     },
 }
 
-/// Fields the contract `Event::Approval` does not yet carry. Filled by the
-/// client when pre-parsing host JSON. Drop this once `reason`, `expiresAt`
-/// and `rule_*` / `#[serde(other)]` are on the contract.
+/// Stash for `rule_add` / `rule_delete` until those variants land on
+/// `ApprovalAction`. Those values parse as [`ApprovalAction::Unknown`];
+/// this keeps the real action so the settings confirm cards still render.
+/// TODO: drop once the auto-review backend PR adds `rule_*`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ApprovalExtras {
     pub action: Option<ClientApprovalAction>,
-    pub reason: Option<String>,
-    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientApprovalAction {
     RuleAdd,
     RuleDelete,
-    Unknown,
 }
 
 impl ApprovalCard {
@@ -222,8 +220,8 @@ impl ApprovalCard {
         Self::from_event_with(event, None)
     }
 
-    /// Like [`Self::from_event`], with client-side fields the contract event
-    /// cannot carry yet (`reason`, `expiresAt`, `rule_add` / `rule_delete`).
+    /// Like [`Self::from_event`], with a `rule_add` / `rule_delete` stash
+    /// the contract cannot carry yet.
     pub fn from_event_with(event: &Event, extras: Option<&ApprovalExtras>) -> Option<Self> {
         let Event::Approval {
             id,
@@ -236,16 +234,18 @@ impl ApprovalCard {
             answered_by,
             mcp_server,
             mcp_tool,
+            reason,
+            expires_at,
             ..
         } = event
         else {
             return None;
         };
-        let reason = extras.and_then(|e| e.reason.clone());
+        let reason = reason.clone();
         let expired = reason.as_deref() == Some(review_rules::APPROVAL_EXPIRED_REASON);
         let at = answered_at
             .as_deref()
-            .or_else(|| extras.and_then(|e| e.expires_at.as_deref()))
+            .or(expires_at.as_deref())
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .map_or(0, |t| t.timestamp());
         let state = match decision {
@@ -264,7 +264,6 @@ impl ApprovalCard {
         let kind = match extras.and_then(|e| e.action) {
             Some(ClientApprovalAction::RuleAdd) => ActionKind::RuleAdd,
             Some(ClientApprovalAction::RuleDelete) => ActionKind::RuleDelete,
-            Some(ClientApprovalAction::Unknown) => ActionKind::Unknown,
             None => match action {
                 ApprovalAction::Delete => ActionKind::Delete,
                 ApprovalAction::Send => ActionKind::Send,
@@ -551,11 +550,11 @@ mod tests {
 
     #[test]
     fn expired_reason_is_not_a_rejection() {
-        let extras = ApprovalExtras {
-            reason: Some(review_rules::APPROVAL_EXPIRED_REASON.into()),
-            ..ApprovalExtras::default()
-        };
-        let card = ApprovalCard::from_event_with(&approval_event(), Some(&extras)).unwrap();
+        let mut ev = approval_event();
+        if let Event::Approval { reason, .. } = &mut ev {
+            *reason = Some(review_rules::APPROVAL_EXPIRED_REASON.into());
+        }
+        let card = ApprovalCard::from_event(&ev).unwrap();
         assert!(matches!(card.state, ApprovalState::Expired { .. }));
         assert_eq!(
             status::approval_status(&card.state),
@@ -572,39 +571,37 @@ mod tests {
 
     #[test]
     fn denied_without_expired_reason_stays_denied() {
-        let extras = ApprovalExtras {
-            reason: Some("这条会改生产数据".into()),
-            ..ApprovalExtras::default()
-        };
-        let card = ApprovalCard::from_event_with(&approval_event(), Some(&extras)).unwrap();
+        let mut ev = approval_event();
+        if let Event::Approval { reason, .. } = &mut ev {
+            *reason = Some("这条会改生产数据".into());
+        }
+        let card = ApprovalCard::from_event(&ev).unwrap();
         assert!(matches!(card.state, ApprovalState::Denied { .. }));
         assert_eq!(card.reason.as_deref(), Some("这条会改生产数据"));
     }
 
     #[test]
-    fn rule_add_and_unknown_actions() {
+    fn rule_add_overrides_unknown_contract_action() {
         let add = ApprovalExtras {
             action: Some(ClientApprovalAction::RuleAdd),
-            ..ApprovalExtras::default()
         };
         let mut ev = approval_event();
         if let Event::Approval {
+            action,
             decision,
             answered_at,
             ..
         } = &mut ev
         {
+            *action = ApprovalAction::Unknown;
             *decision = None;
             *answered_at = None;
         }
         let card = ApprovalCard::from_event_with(&ev, Some(&add)).unwrap();
         assert_eq!(card.kind, ActionKind::RuleAdd);
         assert!(card.is_rule());
-        let unk = ApprovalExtras {
-            action: Some(ClientApprovalAction::Unknown),
-            ..ApprovalExtras::default()
-        };
-        let card = ApprovalCard::from_event_with(&ev, Some(&unk)).unwrap();
+        // Without the shim, a rule_* value is just Unknown.
+        let card = ApprovalCard::from_event(&ev).unwrap();
         assert_eq!(card.kind, ActionKind::Unknown);
         assert!(!card.is_rule());
     }

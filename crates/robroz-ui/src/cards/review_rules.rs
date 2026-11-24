@@ -45,9 +45,9 @@ pub const EXPIRED: &str = "已过期";
 /// Footnote text on an expired card, wording from the design.
 pub const EXPIRED_FOOT: &str = "没人批准，已过期";
 
-/// TODO: switch to `robroz_contract::APPROVAL_EXPIRED_REASON` once the
-/// backend PR lands. Do not hand-write this string at call sites.
-pub const APPROVAL_EXPIRED_REASON: &str = "审批已过期";
+/// Host writes this exact string on an expired card. Compare with `==`,
+/// never hand-write the text at call sites.
+pub use robroz_contract::APPROVAL_EXPIRED_REASON;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
