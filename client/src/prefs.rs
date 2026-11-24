@@ -100,6 +100,20 @@ mod tests {
     }
 
     #[test]
+    fn language_row_choice_persists_in_the_config_lang_file() {
+        // Shared by the Settings (Model) row and the disconnected pane:
+        // Message::SetLocale calls prefs::save, which writes `lang`.
+        let dir = temp_dir("language-row");
+        save_in(&dir, Locale::Zh).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), "zh\n");
+        assert_eq!(load_in(&dir), Some(Locale::Zh));
+        save_in(&dir, Locale::En).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), "en\n");
+        assert_eq!(load_in(&dir), Some(Locale::En));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn junk_file_reads_none() {
         let dir = temp_dir("junk");
         std::fs::create_dir_all(&dir).unwrap();
