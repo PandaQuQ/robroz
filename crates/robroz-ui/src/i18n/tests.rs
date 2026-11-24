@@ -249,8 +249,17 @@ fn language_names_are_native_in_both_locales() {
 
 #[test]
 fn every_contract_host_string_maps_to_english() {
-    use robroz_contract::host_text::HOST_UI_STRINGS;
+    use robroz_contract::host_text::{self as ht, HOST_UI_STRINGS};
     for &(name, text) in HOST_UI_STRINGS {
+        // The stall suffix never maps on its own; its English exists only
+        // as the whole `stall_hint` sentence (checked below).
+        let whole;
+        let text = if name == "WATCHDOG_STALL_SUFFIX" {
+            whole = ht::stall_hint(5);
+            whole.as_str()
+        } else {
+            text
+        };
         let mapped = host_text_in(Locale::En, text);
         assert_ne!(mapped.as_ref(), text, "unmapped {name}: {text}");
         assert!(!mapped.contains('{'), "unfilled template {name}: {mapped}");
@@ -299,5 +308,38 @@ fn contract_prefixes_suffixes_and_hint_functions_map() {
             )
         ),
         "Can't connect: key is wrong or missing"
+    );
+}
+
+#[test]
+fn stall_sentences_map_whole_never_from_the_suffix() {
+    use robroz_contract::host_text as ht;
+    assert_eq!(
+        host_text_in(Locale::En, &ht::stall_hint(12)),
+        "No new progress for 12 min"
+    );
+    // The bare suffix and anything that isn't exactly `stall_hint(n)` pass
+    // through unchanged instead of being stitched from fragments.
+    for s in [
+        ht::WATCHDOG_STALL_SUFFIX.to_string(),
+        format!("abc{}", ht::WATCHDOG_STALL_SUFFIX),
+        format!("07{}", ht::WATCHDOG_STALL_SUFFIX),
+        format!("{}!", ht::stall_hint(3)),
+    ] {
+        assert_eq!(host_text_in(Locale::En, &s), s);
+    }
+    assert!(!Key::ALL
+        .iter()
+        .any(|k| text_in(Locale::En, *k).contains("without new progress")));
+}
+
+#[test]
+fn every_english_entry_is_approved() {
+    let en = include_str!("en.rs");
+    assert!(!en.contains("[draft]"), "draft copy left in en.rs");
+    assert_eq!(
+        en.matches("  [approved").count(),
+        Key::ALL.len(),
+        "every key carries an approved tag"
     );
 }

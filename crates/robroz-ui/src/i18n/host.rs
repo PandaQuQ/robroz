@@ -193,11 +193,12 @@ fn exact(s: &str) -> Option<Key> {
         return Some(*key);
     }
     // Fragments are also mappable on their own (`HOST_UI_STRINGS`). A
-    // complete watchdog sentence is handled by `watchdog` below.
+    // complete watchdog sentence is handled by `watchdog` below. The stall
+    // suffix has no English of its own: a stall sentence only ever maps as
+    // a whole, through the `stall_hint` form.
     for (text, key) in [
         (ht::WATCHDOG_STEP_TIMEOUT_PREFIX, Key::HostStepTimeoutPrefix),
         (ht::WATCHDOG_STEP_TIMEOUT_SUFFIX, Key::HostMinutesSuffix),
-        (ht::WATCHDOG_STALL_SUFFIX, Key::HostStallSuffix),
         (ht::MCP_CALL_SUMMARY_PREFIX, Key::ViewCallPrefix),
         (ht::MCP_CALL_ARGS_SEPARATOR, Key::ViewCallArgsSep),
     ] {
@@ -248,7 +249,8 @@ fn exact(s: &str) -> Option<Key> {
 }
 
 /// Watchdog hints: `step_timeout_hint(n)` / `stall_hint(n)`; `n` goes into
-/// `{0}`.
+/// `{0}`. A stall sentence is recognised only when `stall_hint(n)` rebuilds
+/// it exactly, so it always maps to the whole English sentence.
 fn watchdog(s: &str) -> Option<(Key, &str)> {
     let is_number = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
     if let Some(n) = s
@@ -258,9 +260,12 @@ fn watchdog(s: &str) -> Option<(Key, &str)> {
     {
         return Some((Key::HostStepTimeoutHint, n));
     }
-    s.strip_suffix(ht::WATCHDOG_STALL_SUFFIX)
-        .filter(|n| is_number(n))
-        .map(|n| (Key::HostStallHint, n))
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    let n = &s[..digits];
+    n.parse::<u64>()
+        .ok()
+        .filter(|&m| ht::stall_hint(m) == s)
+        .map(|_| (Key::HostStallHint, n))
 }
 
 /// `s` in the active locale when it is a known host string; otherwise `s`
