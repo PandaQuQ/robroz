@@ -92,7 +92,10 @@ pub(crate) async fn stream_events(
         .map(str::to_string)
         .or_else(|| query.get("since").cloned());
     let Ok(since) = parse_since(raw.as_deref()) else {
-        return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::SINCE_INVALID,
+        );
     };
     let mut cursor = Cursor {
         at: since,
@@ -103,7 +106,12 @@ pub(crate) async fn stream_events(
         group_events(&conn, &group_id, cursor.query_since().as_deref())
     };
     let pending: VecDeque<TimedEvent> = match first {
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::GROUP_NOT_FOUND,
+            )
+        }
         Err(err) => return crate::db_error(err),
         Ok(Some(timed)) => cursor.take_new(timed).into(),
     };

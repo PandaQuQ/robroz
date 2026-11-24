@@ -533,7 +533,10 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 
 fn db_error(err: rusqlite::Error) -> Response {
     eprintln!("sqlite error: {err}");
-    error_response(StatusCode::INTERNAL_SERVER_ERROR, "数据库错误")
+    error_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        robroz_contract::host_text::DATABASE_ERROR,
+    )
 }
 
 fn lock_db(state: &AppState) -> std::sync::MutexGuard<'_, Connection> {
@@ -580,7 +583,10 @@ async fn list_groups(State(state): State<AppState>) -> Response {
 async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
     let name = body.name.trim();
     if name.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "请填写名称");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NEED_NAME,
+        );
     }
     let id = new_id();
     let created_at = now_rfc3339();
@@ -612,7 +618,10 @@ async fn add_member(
     let bot_id = body.bot_id.trim();
     let name = body.name.trim();
     if bot_id.is_empty() || name.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "请填写名称");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NEED_NAME,
+        );
     }
 
     let conn = lock_db(&state);
@@ -643,8 +652,13 @@ async fn add_member(
     drop(conn);
 
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
-        Ok(Some(Err(()))) => error_response(StatusCode::CONFLICT, "私聊里只能有一个 bro"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
+        Ok(Some(Err(()))) => {
+            error_response(StatusCode::CONFLICT, robroz_contract::host_text::DM_ONE_BRO)
+        }
         Ok(Some(Ok((created, stored_name)))) => {
             let status = if created {
                 StatusCode::CREATED
@@ -678,7 +692,10 @@ async fn post_message(
         .and_then(MessageKind::parse)
         .is_some();
     if raw.get("kind").is_some() && !kind_is_known {
-        return error_response(StatusCode::BAD_REQUEST, "kind 只能是 text、image 或 file");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::BAD_MESSAGE_KIND,
+        );
     }
     let body: PostMessage = match serde_json::from_value(raw) {
         Ok(body) => body,
@@ -686,7 +703,7 @@ async fn post_message(
             return (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(ErrorBody {
-                    error: "请求格式不正确".to_string(),
+                    error: robroz_contract::host_text::BAD_REQUEST_FORMAT.to_string(),
                 }),
             )
                 .into_response();
@@ -694,7 +711,10 @@ async fn post_message(
     };
     let text = body.body.trim();
     if text.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "请填写内容");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NEED_TEXT,
+        );
     }
 
     let conn = lock_db(&state);
@@ -718,7 +738,10 @@ async fn post_message(
     drop(conn);
 
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(message)) => (StatusCode::CREATED, Json(message)).into_response(),
         Err(err) => db_error(err),
     }
@@ -731,14 +754,20 @@ async fn create_task(
 ) -> Response {
     let prompt = body.prompt.trim();
     if prompt.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "请填写内容");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NEED_TEXT,
+        );
     }
     let assignee = body.assignee_bot_id.trim();
 
     let conn = lock_db(&state);
     let result = (|| {
         if !group_exists(&conn, &group_id)? {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::GROUP_NOT_FOUND,
+            )));
         }
         let member: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memberships WHERE group_id = ?1 AND bot_id = ?2",
@@ -748,7 +777,7 @@ async fn create_task(
         if member == 0 {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "这个 Bot 不在群里",
+                robroz_contract::host_text::BOT_NOT_IN_GROUP,
             )));
         }
         let id = new_id();
@@ -775,9 +804,9 @@ async fn create_task(
     }
 }
 
-const RESUME_NO_INTENT: &str = "恢复失败，找不到卡住记录";
-const RESUME_MARKER_FAILED: &str = "恢复失败，无法写入接管标记";
-const RESUME_NEEDS_APPROVAL: &str = "请先回答审批卡";
+const RESUME_NO_INTENT: &str = robroz_contract::host_text::RESUME_NO_INTENT;
+const RESUME_MARKER_FAILED: &str = robroz_contract::host_text::RESUME_MARKER_FAILED;
+const RESUME_NEEDS_APPROVAL: &str = robroz_contract::host_text::RESUME_NEEDS_APPROVAL;
 
 /// Resume a blocked task. Never reads the group volume.
 ///
@@ -810,12 +839,18 @@ async fn resume_task(
     let (task_state, intent_hash, intent_kind) = match found {
         Ok(row) => row,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return error_response(StatusCode::NOT_FOUND, "任务不存在");
+            return error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::TASK_NOT_FOUND,
+            );
         }
         Err(err) => return db_error(err),
     };
     if task_state != TaskState::Blocked.as_str() {
-        return error_response(StatusCode::CONFLICT, "这次不能恢复");
+        return error_response(
+            StatusCode::CONFLICT,
+            robroz_contract::host_text::CANT_RESUME,
+        );
     }
     if intent_kind.as_deref() == Some("mcp") {
         return error_response(StatusCode::CONFLICT, RESUME_NEEDS_APPROVAL);
@@ -871,7 +906,10 @@ async fn create_schedule(
     let conn = lock_db(&state);
     let result = (|| {
         if !group_exists(&conn, &group_id)? {
-            return Ok(Err(error_response(StatusCode::NOT_FOUND, "群不存在")));
+            return Ok(Err(error_response(
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::GROUP_NOT_FOUND,
+            )));
         }
         let member: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memberships WHERE group_id = ?1 AND bot_id = ?2",
@@ -881,18 +919,21 @@ async fn create_schedule(
         if member == 0 {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "这个 Bot 不在群里",
+                robroz_contract::host_text::BOT_NOT_IN_GROUP,
             )));
         }
         if prompt.is_empty() {
-            return Ok(Err(error_response(StatusCode::BAD_REQUEST, "请填写内容")));
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                robroz_contract::host_text::NEED_TEXT,
+            )));
         }
         let Some(next) = schedule::parse_cron(&cron_text)
             .and_then(|cron| schedule::next_after(&cron, Utc::now()))
         else {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
-                "cron 格式不对",
+                robroz_contract::host_text::BAD_CRON,
             )));
         };
         let id = new_id();
@@ -965,7 +1006,10 @@ async fn list_events(
     Query(query): Query<EventsQuery>,
 ) -> Response {
     let Ok(since) = parse_since(query.get("since").map(String::as_str)) else {
-        return error_response(StatusCode::BAD_REQUEST, "since 不是合法时间");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::SINCE_INVALID,
+        );
     };
     let conn = lock_db(&state);
     let result = group_events(&conn, &group_id, since.as_deref()).map(|found| {
@@ -976,7 +1020,10 @@ async fn list_events(
     drop(conn);
 
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "群不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::GROUP_NOT_FOUND,
+        ),
         Ok(Some(events)) => (StatusCode::OK, Json(events)).into_response(),
         Err(err) => db_error(err),
     }

@@ -15,9 +15,9 @@ use crate::pump::newer_than;
 pub(crate) const MAX_CHARS: usize = 60;
 
 /// Key moments pump reports by itself.
-pub(crate) const STARTED: &str = "开始干活";
-pub(crate) const THINKING: &str = "在想怎么回";
-pub(crate) const IN_SANDBOX: &str = "在沙箱里跑";
+pub(crate) const STARTED: &str = robroz_contract::host_text::PROGRESS_STARTED;
+pub(crate) const THINKING: &str = robroz_contract::host_text::PROGRESS_THINKING;
+pub(crate) const IN_SANDBOX: &str = robroz_contract::host_text::PROGRESS_IN_SANDBOX;
 
 /// Set the progress text of a running task. Returns `true` when the card
 /// changed (and a new `status` event will go out), `false` when the text is the

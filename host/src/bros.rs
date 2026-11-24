@@ -61,10 +61,10 @@ pub(crate) fn owner_dm_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<
 fn clean_name(raw: &str) -> Result<String, &'static str> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("请填写名称");
+        return Err(robroz_contract::host_text::NEED_NAME);
     }
     if name.chars().count() > BRO_NAME_MAX {
-        return Err("名字太长");
+        return Err(robroz_contract::host_text::NAME_TOO_LONG);
     }
     Ok(name.to_string())
 }
@@ -192,7 +192,10 @@ pub(crate) async fn rename_bro(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "bro 不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::BRO_NOT_FOUND,
+        ),
         Ok(Some(bro)) => (StatusCode::OK, Json(bro)).into_response(),
         Err(err) => db_error(err),
     }
@@ -215,7 +218,10 @@ pub(crate) async fn open_dm(
     })();
     drop(conn);
     match result {
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "bro 不存在"),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            robroz_contract::host_text::BRO_NOT_FOUND,
+        ),
         Ok(Some((created, bro))) => (
             if created {
                 StatusCode::CREATED

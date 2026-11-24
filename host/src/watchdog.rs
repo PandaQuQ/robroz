@@ -72,12 +72,12 @@ impl WatchdogConfig {
 
 /// Hint text for a step past its timeout.
 pub fn step_timeout_hint(elapsed: Duration) -> String {
-    format!("模型和工具还没回，已等 {} 分钟", minutes(elapsed))
+    robroz_contract::host_text::step_timeout_hint(minutes(elapsed))
 }
 
 /// Hint text for a live container whose progress has not moved.
 pub fn stall_hint(idle: Duration) -> String {
-    format!("{} 分钟没有新进度", minutes(idle))
+    robroz_contract::host_text::stall_hint(minutes(idle))
 }
 
 fn minutes(d: Duration) -> u64 {

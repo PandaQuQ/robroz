@@ -24,9 +24,9 @@ pub trait Reviewer: Send + Sync {
 }
 
 /// `reason` when review failed twice.
-pub const REVIEW_FAILED_REASON: &str = "自动审核没有成功，需要你批准";
+pub const REVIEW_FAILED_REASON: &str = robroz_contract::host_text::REVIEW_FAILED_REASON;
 /// `reason` when no rule allows the action and the model gave none.
-pub const NO_MATCH_REASON: &str = "没有放行规则允许这个操作";
+pub const NO_MATCH_REASON: &str = robroz_contract::host_text::REVIEW_NO_MATCH_REASON;
 
 /// Reasons are one line on the card.
 const REASON_MAX: usize = 200;
@@ -40,7 +40,10 @@ pub fn review_with_retry(reviewer: &dyn Reviewer, action: &str, rules: &[String]
     for attempt in 1..=2 {
         match reviewer.review(action, rules) {
             Ok(Verdict::Allow(reason)) => {
-                return Verdict::Allow(clean_reason(&reason, "符合放行规则"))
+                return Verdict::Allow(clean_reason(
+                    &reason,
+                    robroz_contract::host_text::REVIEW_ALLOW_FALLBACK,
+                ))
             }
             Ok(Verdict::Block(reason)) => {
                 return Verdict::Block(clean_reason(&reason, NO_MATCH_REASON))

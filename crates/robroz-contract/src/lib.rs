@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Client-visible text the host writes; see the module docs.
+pub mod host_text;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
     #[serde(rename = "queued")]

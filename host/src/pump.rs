@@ -474,7 +474,10 @@ fn finish_start(
                     write_outcome(
                         conn,
                         task,
-                        &Outcome::Failed(format!("无法保存审批状态：{err}")),
+                        &Outcome::Failed(format!(
+                            "{}{err}",
+                            robroz_contract::host_text::SAVE_APPROVAL_STATE_FAILED_PREFIX
+                        )),
                         reply.get_count as i64,
                         &updated_at,
                         &crate::sandbox::result_rel(&task.id),
@@ -503,7 +506,11 @@ fn finish_start(
                 write_outcome(
                     conn,
                     task,
-                    &Outcome::Failed(reply.failure.clone().unwrap_or_else(|| "出网超额".into())),
+                    &Outcome::Failed(
+                        reply.failure.clone().unwrap_or_else(|| {
+                            robroz_contract::host_text::OUTBOUND_OVER_QUOTA.into()
+                        }),
+                    ),
                     reply.get_count as i64,
                     &updated_at,
                     &crate::sandbox::result_rel(&task.id),
@@ -756,10 +763,18 @@ fn write_outcome(
             if changed > 0 {
                 tx.execute(
                     "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure, needs_setup)
-                     VALUES (?1, ?2, ?3, '已写入结果', ?4, ?5, ?6,
+                     VALUES (?1, ?2, ?3, ?7, ?4, ?5, ?6,
                              (SELECT failure FROM tasks WHERE id = ?3),
                              (SELECT needs_setup FROM tasks WHERE id = ?3))",
-                    params![delivery_id, task.group_id, task.id, rel, task.briefing as i64, updated_at],
+                    params![
+                        delivery_id,
+                        task.group_id,
+                        task.id,
+                        rel,
+                        task.briefing as i64,
+                        updated_at,
+                        robroz_contract::host_text::DELIVERY_WRITTEN
+                    ],
                 )?;
                 // One pending memory and one confirm card per good proposal.
                 crate::proposals::ingest(&tx, &task.id, proposals, updated_at)?;
@@ -846,7 +861,7 @@ fn write_reply(
             ctx.needs_setup = pending.needs_setup.clone();
         }
     }
-    let mut on_using = |name: &str| on_progress(&format!("在用 {name}"));
+    let mut on_using = |name: &str| on_progress(&robroz_contract::host_text::using_tool(name));
     let (mut text, failure, over_quota, pending) = if resume {
         match crate::mcp_tools::load_approved(control_dir) {
             Ok(pending) => {
@@ -873,7 +888,10 @@ fn write_reply(
             }
             Err(err) => {
                 eprintln!("pump: resume mcp for {task_id}: {err}");
-                let text = format!("无法继续已批准的调用：{err}");
+                let text = format!(
+                    "{}{err}",
+                    robroz_contract::host_text::RESUME_APPROVED_CALL_FAILED_PREFIX
+                );
                 (text.clone(), Some(text), false, None)
             }
         }
@@ -882,7 +900,7 @@ fn write_reply(
             Ok(text) => (text, None, false, None),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {err}");
-                let text = format!("模型没回：{err}");
+                let text = format!("{}{err}", robroz_contract::host_text::MODEL_NO_REPLY_PREFIX);
                 (text.clone(), Some(text), false, None)
             }
         }
@@ -953,7 +971,7 @@ fn block_mcp_task(
     get_count: i64,
 ) -> rusqlite::Result<()> {
     let hash = crate::mcp_tools::intent_hash(&task.id, pending);
-    let line = format!("在用 {}", pending.display_name);
+    let line = robroz_contract::host_text::using_tool(&pending.display_name);
     let changed = conn.execute(
         "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2, progress = ?4,
                           intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6

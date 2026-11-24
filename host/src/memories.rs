@@ -55,11 +55,11 @@ const SELECT: &str = "SELECT id, scope, kind, text, source, status, created_at, 
 /// Newest change first; rowid breaks ties within the same millisecond.
 const ORDER: &str = "ORDER BY updated_at DESC, rowid DESC";
 
-const BAD_SCOPE: &str = "scope 只能是 user 或 bot:<botId>";
-const BAD_KIND: &str = "kind 只能是 profile、habit 或 project";
-const BAD_STATUS: &str = "status 只能是 pending、kept 或 rejected";
-const UNKNOWN_BOT: &str = "这个 bro 不存在";
-const NOT_FOUND: &str = "记忆不存在";
+const BAD_SCOPE: &str = robroz_contract::host_text::BAD_SCOPE;
+const BAD_KIND: &str = robroz_contract::host_text::BAD_MEMORY_KIND;
+const BAD_STATUS: &str = robroz_contract::host_text::BAD_STATUS;
+const UNKNOWN_BOT: &str = robroz_contract::host_text::UNKNOWN_BRO;
+const NOT_FOUND: &str = robroz_contract::host_text::MEMORY_NOT_FOUND;
 
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
@@ -156,10 +156,10 @@ pub(crate) fn prompt_section_with(memories: &[Memory], max_chars: usize) -> Opti
 pub(crate) fn clean_text(raw: &str) -> Result<String, &'static str> {
     let text = raw.trim();
     if text.is_empty() {
-        return Err("请填写内容");
+        return Err(robroz_contract::host_text::NEED_TEXT);
     }
     if text.chars().count() > MEMORY_TEXT_MAX {
-        return Err("内容太长，最多 2000 个字");
+        return Err(robroz_contract::host_text::MEMORY_TOO_LONG);
     }
     Ok(text.to_string())
 }
@@ -220,7 +220,7 @@ fn body_error(rejection: JsonRejection) -> Response {
     let message = if rejection.body_text().contains("unknown variant") {
         BAD_KIND
     } else {
-        "请求格式不正确"
+        robroz_contract::host_text::BAD_REQUEST_FORMAT
     };
     error_response(StatusCode::BAD_REQUEST, message)
 }
@@ -330,7 +330,10 @@ pub(crate) async fn update_memory(
         Err(rejection) => return body_error(rejection),
     };
     if body.text.is_none() && body.kind.is_none() && body.scope.is_none() {
-        return error_response(StatusCode::BAD_REQUEST, "没有要改的内容");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            robroz_contract::host_text::NOTHING_TO_CHANGE,
+        );
     }
     let text = match body.text.as_deref().map(clean_text).transpose() {
         Ok(text) => text,

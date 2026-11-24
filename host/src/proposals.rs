@@ -299,9 +299,15 @@ pub(crate) fn answer(
     let tx = conn.transaction()?;
     if !settle(&tx, id, decision, by, &crate::now_rfc3339())? {
         return Ok(Err(if load(&tx, id)?.is_some() {
-            (StatusCode::CONFLICT, "已经答过了")
+            (
+                StatusCode::CONFLICT,
+                robroz_contract::host_text::ALREADY_ANSWERED,
+            )
         } else {
-            (StatusCode::NOT_FOUND, "确认卡不存在")
+            (
+                StatusCode::NOT_FOUND,
+                robroz_contract::host_text::CONFIRM_CARD_NOT_FOUND,
+            )
         }));
     }
     tx.commit()?;
