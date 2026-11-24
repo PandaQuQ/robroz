@@ -54,7 +54,7 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Bro>> {
     .optional()
 }
 
-fn ensure_dm(conn: &Connection, bot_id: &str, name: &str) -> rusqlite::Result<bool> {
+pub(crate) fn ensure_dm(conn: &Connection, bot_id: &str, name: &str) -> rusqlite::Result<bool> {
     if conn
         .query_row("SELECT 1 FROM groups WHERE dm_bot_id = ?1", [bot_id], |_| Ok(()))
         .optional()?

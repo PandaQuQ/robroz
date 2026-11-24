@@ -23,6 +23,7 @@ mod skills;
 mod progress;
 mod proposals;
 mod pump;
+pub mod review;
 mod tools;
 mod search;
 mod settings;
@@ -69,6 +70,8 @@ pub struct Host {
     /// Set by [`Host::with_offloaded_steps`]: model steps run off the pump
     /// thread, and [`Host::watchdog_once`] watches them.
     offload: Option<Arc<Mutex<pump::Offload>>>,
+    /// Test hook: review with this instead of the configured model.
+    reviewer: Option<Arc<dyn review::Reviewer>>,
 }
 
 impl Host {
@@ -90,6 +93,7 @@ impl Host {
             model: None,
             mcp: crate::mcp_tools::real_mcp(),
             offload: None,
+            reviewer: None,
         })
     }
 
@@ -126,6 +130,61 @@ impl Host {
     pub fn with_offloaded_steps(mut self, cfg: watchdog::WatchdogConfig) -> Self {
         self.offload = Some(Arc::new(Mutex::new(pump::Offload::new(cfg))));
         self
+    }
+
+    /// Review with `reviewer` instead of the configured model. Tests pass a fake.
+    pub fn with_reviewer(mut self, reviewer: Arc<dyn review::Reviewer>) -> Self {
+        self.reviewer = Some(reviewer);
+        self
+    }
+
+    /// One auto-review pass at `now`: expire approval cards whose `expiresAt`
+    /// has passed (`denied` + 「审批已过期」), then review cards waiting for
+    /// review. Model calls happen without the DB lock. The binary runs this
+    /// on its own thread so a slow review never holds up the pump.
+    pub fn review_once(&self, now: chrono::DateTime<Utc>) -> rusqlite::Result<()> {
+        {
+            let mut conn = self.db.lock().expect("sqlite connection lock poisoned");
+            for id in review::expire_due(&mut conn, &self.control_root, now)? {
+                eprintln!("review: approval {id} expired");
+            }
+        }
+        let waiting: i64 = {
+            let conn = self.db.lock().expect("sqlite connection lock poisoned");
+            conn.query_row(
+                "SELECT COUNT(*) FROM approvals WHERE review_state = 'pending' AND decision IS NULL",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        if waiting == 0 {
+            return Ok(());
+        }
+        let reviewer: Option<Arc<dyn review::Reviewer>> = match (&self.reviewer, &self.model) {
+            (Some(r), _) => Some(r.clone()),
+            (None, Some(model)) => Some(Arc::new(review::ModelReviewer::new(model.clone()))),
+            (None, None) => {
+                let conn = self.db.lock().expect("sqlite connection lock poisoned");
+                match crate::model_settings::live_model(&conn) {
+                    Ok(Some(cfg)) => Some(Arc::new(review::ModelReviewer::new(Arc::new(
+                        robroz_model::OpenAiCompat::new(cfg),
+                    )))),
+                    Ok(None) => None,
+                    Err(err) => {
+                        eprintln!("review: model config: {err}");
+                        None
+                    }
+                }
+            }
+        };
+        review::run_pending(
+            &self.db,
+            &self.control_root,
+            reviewer.as_deref(),
+            review::approval_ttl(),
+            now,
+        )
+        .map(|_| ())
     }
 
     /// One Watchdog pass at `now`: end dead runs as `done` + 「没写出结果」,
@@ -283,6 +342,14 @@ fn router_from(state: AppState) -> Router {
             get(model_settings::get_model).put(model_settings::put_model),
         )
         .route("/api/settings/model/test", post(model_settings::test_model))
+        .route(
+            "/api/settings/review-rules",
+            get(review::rules::list_rules).post(review::rules::create_rule),
+        )
+        .route(
+            "/api/settings/review-rules/{id}",
+            axum::routing::delete(review::rules::delete_rule),
+        )
         .route("/api/mcp/servers", get(mcp::list_servers).post(mcp::create_server))
         .route(
             "/api/mcp/servers/{id}",
@@ -418,6 +485,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["mcp_server", "mcp_tool"] {
         let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
     }
+    // Auto-review: allow rules, card expiry and review state.
+    review::migrate(conn)?;
     Ok(())
 }
 
@@ -2515,8 +2584,8 @@ mod tests {
         assert_eq!(card["path"], "target/");
         assert_eq!(card["decision"], Value::Null);
         assert_eq!(card["answeredAt"], Value::Null);
-        assert!(card.get("reason").is_none(), "host does not emit reason yet: {card}");
-        assert!(card.get("expiresAt").is_none(), "host does not emit expiresAt yet: {card}");
+        assert!(card.get("reason").is_none(), "no reason on a bro-issued card: {card}");
+        assert!(card["expiresAt"].as_str().unwrap() > card["createdAt"].as_str().unwrap(), "{card}");
         let id = card["id"].as_str().unwrap().to_string();
 
         let since = card["createdAt"].as_str().unwrap().to_string();
