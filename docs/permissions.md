@@ -2,7 +2,7 @@
 
 What a bro may do, when it stops to ask a person, and how a person takes over. The tiers live in `crates/robroz-policy`; they are applied in `host/src/pump.rs`, `host/src/approvals.rs`, `host/src/tools.rs` and `host/src/mcp_tools.rs`. API details are in [api.md](api.md).
 
-The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Permission tiers
 
