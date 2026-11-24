@@ -26,7 +26,7 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_reads (
 const UNREAD_SQL: &str = "SELECT
     (SELECT COUNT(*) FROM deliveries WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM choices WHERE group_id = ?1 AND created_at > ?2)
-  + (SELECT COUNT(*) FROM approvals WHERE (group_id = ?1 OR origin_group_id = ?1) AND created_at > ?2
+  + (SELECT COUNT(*) FROM approvals WHERE group_id = ?1 AND created_at > ?2
        AND (review_state IS NULL OR review_state = 'blocked'))
   + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2)";
 

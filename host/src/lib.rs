@@ -3166,6 +3166,22 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         let (_, unread) =
             read_json(call(&app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
+        assert_eq!(
+            unread["unread"], 0,
+            "the card moved to the owner's DM; the group copy is a notice: {unread}"
+        );
+        let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
+        let dm = bros["bros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == "bot-ada")
+            .unwrap()["dmGroupId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (_, unread) =
+            read_json(call(&app, get(&format!("/api/groups/{dm}/unread"))).await).await;
         assert_eq!(unread["unread"], 1, "{unread}");
     }
 

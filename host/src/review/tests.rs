@@ -950,3 +950,45 @@ async fn an_abandoned_bro_card_is_picked_up_by_the_review_pass() {
     assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.row("left").1.as_deref(), Some("不匹配"));
 }
+
+#[tokio::test]
+async fn a_moved_bro_card_is_unread_only_in_the_dm() {
+    let h = harness();
+    let (bot, dm) = h.bro("ada").await;
+    let group = h.group_with(&bot).await;
+    let unread = |g: String| {
+        let h = &h;
+        async move {
+            let (status, body) = h
+                .call("GET", &format!("/api/groups/{g}/unread"), None)
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["unread"].as_u64().unwrap()
+        }
+    };
+    let card = h.bro_post(&group, &bot).await;
+    assert_eq!(
+        h.approvals(&group).await.len(),
+        1,
+        "the group lists the notice copy"
+    );
+    assert_eq!(
+        unread(group.clone()).await,
+        0,
+        "the group copy is only a notice"
+    );
+    assert_eq!(unread(dm.clone()).await, 1, "unread in the owner's DM");
+
+    let (status, _) = h.answer(card["id"].as_str().unwrap(), "approve").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        unread(group.clone()).await,
+        0,
+        "still not unread in the group after the answer"
+    );
+    assert_eq!(
+        unread(dm.clone()).await,
+        1,
+        "answering does not change the DM count"
+    );
+}

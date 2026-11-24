@@ -287,8 +287,8 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Implementation status
 
-On `main` after [#125](https://github.com/PandaQuQ/robroz/pull/125), plus the
-bro-card review PR:
+On `main` after [#125](https://github.com/PandaQuQ/robroz/pull/125), plus
+[#127](https://github.com/PandaQuQ/robroz/pull/127):
 
 - Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
   `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
@@ -317,7 +317,8 @@ bro-card review PR:
   returns it already `approved` with `reason` and no card is shown; block
   (or no rules) shows it in the owner's DM with that bro, and the group it
   was posted in lists the same card, which the client draws without buttons
-  as 「已发到主人私聊」. If the request dies mid-review, the review thread
+  as 「已发到主人私聊」. That group copy is only a notice: unread counts it in
+  the DM only, never in the group. If the request dies mid-review, the review thread
   picks the card up after 60 seconds. Allowed cards are readable with
   `GET /api/approvals/{id}`, and answering them returns 409.
 - Not yet: a bro
