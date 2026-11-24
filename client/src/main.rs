@@ -53,7 +53,7 @@ use robroz_ui::{Mode, Skin};
 use api::{ApiError, CardApi, FakeApi, HttpApi};
 use conn::Conn;
 use gallery::Gallery;
-use model::{attachment_label, change_time, preview, DeliveryCard, Feed, Row, StatusCard};
+use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
 use source::stream::{self, StreamItem};
 use source::{
     fake_chats, fake_schedules, EventSource, FakeSource, GroupCard, GroupEvent, GroupTab,
@@ -298,7 +298,7 @@ enum Message {
     /// Narrow screens: back from a chat to the list.
     Back,
     ToggleTheme,
-    /// Footer language switch: English / 中文.
+    /// Language row on the Settings (模型) page: English / 中文.
     SetLocale(Locale),
     Resized(Size),
     TouchSeen,
@@ -336,8 +336,8 @@ struct App {
     interval: Duration,
     groups: Vec<GroupTab>,
     feeds: HashMap<String, Feed>,
-    /// Change time and rank of the event behind each chat's list preview.
-    preview_key: HashMap<String, (String, u8)>,
+    /// The event behind each chat's list preview (see `model::Previews`).
+    previews: model::Previews,
     selected: Option<String>,
     page: Page,
     ui: HashMap<String, CardUi>,
@@ -448,7 +448,7 @@ impl App {
             interval,
             groups: Vec::new(),
             feeds: HashMap::new(),
-            preview_key: HashMap::new(),
+            previews: model::Previews::default(),
             selected: None,
             page: Page::Group,
             ui: HashMap::new(),
@@ -650,14 +650,7 @@ impl App {
         // Newest change time wins the list preview; a tie goes to the
         // outcome (see `model::preview_wins`), not to arrival order.
         let at = change_time(event);
-        let rank = model::preview_rank(event);
-        let cur = self.preview_key.get(&group);
-        let wins = model::preview_wins((at, rank), cur.map(|(t, r)| (t.as_str(), *r)));
-        let shown = wins.then(|| preview(event));
-        if wins {
-            self.preview_key
-                .insert(group.clone(), (at.to_string(), rank));
-        }
+        let shown = self.previews.offer(&group, event);
         self.convs.touch(&group, shown, Some(at));
         self.feeds
             .entry(group)
@@ -2045,7 +2038,7 @@ impl App {
                                 c.state = ChoiceState::Answered {
                                     selected: sent,
                                     at: Some(chrono::Utc::now().to_rfc3339()),
-                                    by: Some(robroz_ui::cards::ME.into()),
+                                    by: Some(robroz_ui::cards::ME_MARK.into()),
                                 };
                                 self.set_card(&group, Card::Choice(c));
                             }
@@ -2105,19 +2098,19 @@ impl App {
                                 let at = now_unix();
                                 c.state = if approve {
                                     ApprovalState::Approved {
-                                        by: Some(robroz_ui::cards::ME.into()),
+                                        by: Some(robroz_ui::cards::ME_MARK.into()),
                                         at,
                                     }
                                 } else {
                                     ApprovalState::Denied {
-                                        by: Some(robroz_ui::cards::ME.into()),
+                                        by: Some(robroz_ui::cards::ME_MARK.into()),
                                         at,
                                     }
                                 };
                                 self.set_card(&group, Card::Approval(c));
                             }
                             (None, Some((group, Card::Confirm(mut c)))) => {
-                                let (by, at) = (Some(robroz_ui::cards::ME.into()), now_unix());
+                                let (by, at) = (Some(robroz_ui::cards::ME_MARK.into()), now_unix());
                                 c.state = if approve {
                                     ConfirmState::Kept { by, at }
                                 } else {
@@ -2207,6 +2200,11 @@ impl App {
             Message::SetLocale(locale) => {
                 if locale != i18n::locale() {
                     i18n::set_locale(locale);
+                    // Stored text was drawn in the old language. Cards and
+                    // statuses render on the fly; previews are cached.
+                    for (group, line) in self.previews.redraw() {
+                        self.convs.set_preview(group, line);
+                    }
                     if !self.fake {
                         prefs::save(locale);
                     }
@@ -2332,7 +2330,6 @@ impl App {
             )
             .style(view::nav_button_style(t, false))
             .on_press(Message::ToggleTheme),
-            self.language_switch(&t),
         ]
         .align_y(Alignment::Center);
         container(column![
@@ -2343,19 +2340,37 @@ impl App {
         .into()
     }
 
-    /// English / 中文, each in its own language; the active one is
-    /// highlighted. Sizes follow the text, so longer copy never clips.
-    fn language_switch(&self, t: &Skin) -> Element<'_, Message> {
+    /// The one Settings row for the UI language: label on the left,
+    /// English / 中文 (each in its own language) on the right, the active
+    /// one highlighted. Sizes follow the text, so longer copy never clips.
+    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
         let active = i18n::locale();
-        let mut r = row![].spacing(2).align_y(Alignment::Center);
+        let mut choices = row![]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
         for locale in Locale::ALL {
-            r = r.push(
-                button(text(locale.native_name()).size(t.type_.foot))
+            choices = choices.push(
+                button(text(locale.native_name()).size(t.type_.body))
+                    .height(Length::Fixed(t.controls.button_h))
                     .style(view::nav_button_style(*t, locale == active))
                     .on_press(Message::SetLocale(locale)),
             );
         }
-        r.into()
+        let r = row![
+            text(Text::SettingsLanguage)
+                .size(t.type_.body)
+                .color(color(t.palette.text)),
+            space::horizontal(),
+            choices,
+        ]
+        .align_y(Alignment::Center);
+        container(container(r).padding(Padding::from([
+            t.metrics.row_pad_h * 0.75,
+            t.metrics.row_pad_h,
+        ])))
+        .width(Fill)
+        .style(view::card_style(*t))
+        .into()
     }
 
     fn group_list(&self, t: &Skin, width: Length) -> Element<'_, Message> {
@@ -2492,9 +2507,15 @@ impl App {
         }
         if self.page == Page::Model {
             return scrollable(
-                container(view::model_panel(t, &self.model_settings).map(Message::Ui))
-                    .padding(t.metrics.stream_padding)
-                    .width(Fill),
+                container(
+                    column![
+                        view::model_panel(t, &self.model_settings).map(Message::Ui),
+                        self.language_row(t),
+                    ]
+                    .spacing(t.metrics.row_pad_h),
+                )
+                .padding(t.metrics.stream_padding)
+                .width(Fill),
             )
             .height(Fill)
             .width(Fill)

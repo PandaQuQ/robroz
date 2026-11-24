@@ -17,6 +17,8 @@ pub const NOT_SET: Key = Key::ModelNotSet;
 pub const TESTING: Key = Key::ModelTesting;
 pub const WORKS: Key = Key::ModelWorks;
 pub const LABEL_PRESET: Key = Key::ModelLabelPreset;
+/// Empty value of the provider dropdown.
+pub const PRESET_PLACEHOLDER: Key = Key::ModelPresetPlaceholder;
 pub const LABEL_URL: Key = Key::ModelLabelUrl;
 pub const LABEL_MODEL: Key = Key::ModelLabelModel;
 pub const LABEL_KEY: Key = Key::ModelLabelKey;

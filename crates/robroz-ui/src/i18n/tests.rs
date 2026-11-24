@@ -179,7 +179,7 @@ mod host {
         );
         assert_eq!(
             host_text_in(En, &robroz_card::failure_line("工具调用超过 8 轮")),
-            "Didn't get done: Tool calls went past 8 rounds"
+            "Couldn't finish: Stopped after 8 rounds of tool calls"
         );
         assert_eq!(
             host_text_in(En, &robroz_card::failure_line(robroz_card::NO_RESULT)),
@@ -196,7 +196,7 @@ mod host {
         );
         assert_eq!(
             host_text_in(En, "要对外写入：git push"),
-            "External write: git push"
+            "Writes to an outside service: git push"
         );
     }
 
@@ -221,4 +221,28 @@ fn placeholder_looking_user_text_is_not_interpreted() {
         "value with {1}: tail"
     );
     assert_eq!(fill_template("literal {0", &[]), "literal {0");
+}
+
+#[test]
+fn english_batch_two_copy() {
+    let _en = scoped(Locale::En);
+    assert_eq!(Key::CardsMe.as_str(), "You");
+    assert_eq!(Key::InteractFailed.fill(&[&"x"]), "Failed: x");
+    assert_eq!(Key::ModelPresetPlaceholder.as_str(), "Choose a provider");
+    assert_eq!(crate::cards::mcp::tool_count_text(Some(1)), "1 tool");
+    assert_eq!(crate::cards::mcp::tool_count_text(Some(3)), "3 tools");
+    assert_eq!(Key::SettingsLanguage.as_str(), "Language");
+    let _zh = scoped(Locale::Zh);
+    assert_eq!(crate::cards::mcp::tool_count_text(Some(1)), "1 个工具");
+    assert_eq!(crate::cards::mcp::tool_count_text(Some(3)), "3 个工具");
+    assert_eq!(Key::SettingsLanguage.as_str(), "语言");
+}
+
+#[test]
+fn language_names_are_native_in_both_locales() {
+    for l in [Locale::En, Locale::Zh] {
+        let _s = scoped(l);
+        assert_eq!(Locale::En.native_name(), "English");
+        assert_eq!(Locale::Zh.native_name(), "中文");
+    }
 }

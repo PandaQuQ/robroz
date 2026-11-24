@@ -1,10 +1,11 @@
 //! English copy: one entry per [`Key`], the comment above each is the
 //! Chinese source (`zh.rs`).
 //!
-//! Copy owner: the designer. Entries marked `[approved, batch 1]` are her
-//! exact copy; entries marked `[draft]` are frontend placeholders awaiting
-//! her next batch. Edit the strings here only; keep each `{0}`, `{1}`
-//! placeholder that the Chinese has. Approval cards and allow rules first.
+//! Copy owner: the designer. Every entry is her approved copy, marked with
+//! the batch it came in (`[approved, batch 1]` or `[approved, batch 2]`).
+//! Edit the strings here only; keep each `{0}`, `{1}` placeholder that the
+//! Chinese has. Language names (`LocaleName*`) stay native in both files;
+//! `SettingsLanguage` is the label the PM review asked for.
 
 use super::Key;
 
@@ -15,79 +16,79 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostSentToOwnerDm => "Sent to owner's DM",
         // 审批已过期  [approved, batch 1]
         Key::HostApprovalExpired => "Approval expired",
-        // 设置  [draft]
+        // 设置  [approved, batch 2]
         Key::HostSettingsBotName => "Settings",
         // 密钥不对或没填  [approved, batch 1]
         Key::HostModelBadKey => "key is wrong or missing",
         // 没写出结果  [approved, batch 1]
         Key::HostNoResult => "Finished with no result",
-        // 开始干活  [draft]
+        // 开始干活  [approved, batch 2]
         Key::HostProgressStarted => "Getting started",
-        // 在想怎么回  [draft]
+        // 在想怎么回  [approved, batch 2]
         Key::HostProgressThinking => "Thinking about a reply",
-        // 在沙箱里跑  [draft]
+        // 在沙箱里跑  [approved, batch 2]
         Key::HostProgressInSandbox => "Running in the sandbox",
-        // 自动审核没有成功，需要你批准  [draft]
-        Key::HostReviewFailed => "Auto-review didn't finish; needs your approval",
-        // 没有放行规则允许这个操作  [draft]
+        // 自动审核没有成功，需要你批准  [approved, batch 2]
+        Key::HostReviewFailed => "Auto-review failed. Needs your approval.",
+        // 没有放行规则允许这个操作  [approved, batch 2]
         Key::HostReviewNoMatch => "No allow rule covers this action",
-        // 还没设置模型，没法自动审核  [draft]
+        // 还没设置模型，没法自动审核  [approved, batch 2]
         Key::HostReviewNoModel => "No model set up, so auto-review can't run",
-        // 工具调用超过 8 轮  [draft]
-        Key::HostToolRoundLimit => "Tool calls went past 8 rounds",
-        // 调用失败：这个工具还需要批准  [draft]
+        // 工具调用超过 8 轮  [approved, batch 2]
+        Key::HostToolRoundLimit => "Stopped after 8 rounds of tool calls",
+        // 调用失败：这个工具还需要批准  [approved, batch 2]
         Key::HostToolNeedsApproval => "Call failed: this tool still needs approval",
-        // 还没设置模型  [draft]
+        // 还没设置模型  [approved, batch 2]
         Key::HostModelNotConfigured => "No model set up yet",
-        // 还没设置联网搜索  [draft]
+        // 还没设置联网搜索  [approved, batch 2]
         Key::HostSearchNotConfigured => "Web search isn't set up yet",
-        // 不支持这个动作  [draft]
+        // 不支持这个动作  [approved, batch 2]
         Key::HostUnsupportedAction => "This action isn't supported",
-        // 请先回答审批卡  [draft]
+        // 请先回答审批卡  [approved, batch 2]
         Key::HostResumeNeedsApproval => "Answer the approval card first",
-        // 恢复失败，找不到卡住记录  [draft]
+        // 恢复失败，找不到卡住记录  [approved, batch 2]
         Key::HostResumeNoIntent => "Couldn't resume: no record of where it got stuck",
-        // 恢复失败，无法写入接管标记  [draft]
-        Key::HostResumeMarkerFailed => "Couldn't resume: the takeover marker couldn't be written",
-        // 这个名字已经有了  [draft]
+        // 恢复失败，无法写入接管标记  [approved, batch 2]
+        Key::HostResumeMarkerFailed => "Couldn't resume: couldn't save the takeover marker",
+        // 这个名字已经有了  [approved, batch 2]
         Key::HostNameTaken => "That name is already taken",
-        // MCP 服务器不存在  [draft]
+        // MCP 服务器不存在  [approved, batch 2]
         Key::HostMcpNotFound => "MCP server not found",
-        // 群不存在  [draft]
+        // 群不存在  [approved, batch 2]
         Key::HostGroupNotFound => "Group not found",
-        // 只有 stdio 服务器需要批准启动命令  [draft]
+        // 只有 stdio 服务器需要批准启动命令  [approved, batch 2]
         Key::HostStdioOnlyApprove => "Only stdio servers need their start command approved",
-        // 这个 bro 不存在  [draft]
+        // 这个 bro 不存在  [approved, batch 2]
         Key::HostUnknownBro => "That bro doesn't exist",
-        // 记忆不存在  [draft]
+        // 记忆不存在  [approved, batch 2]
         Key::HostMemoryNotFound => "Memory not found",
-        // 技能不存在  [draft]
+        // 技能不存在  [approved, batch 2]
         Key::HostSkillNotFound => "Skill not found",
-        // 这个 slug 已经有了  [draft]
+        // 这个 slug 已经有了  [approved, batch 2]
         Key::HostSlugTaken => "That slug is already taken",
-        // slug 只能是小写字母、数字和连字符  [draft]
+        // slug 只能是小写字母、数字和连字符  [approved, batch 2]
         Key::HostBadSlug => "A slug can only use lowercase letters, digits and hyphens",
-        // 在用 {0}  [draft]
+        // 在用 {0}  [approved, batch 2]
         Key::HostProgressUsing => "Using {0}",
-        // 你拒绝了：{0}  [draft]
+        // 你拒绝了：{0}  [approved, batch 2]
         Key::HostDeniedFailure => "You denied: {0}",
-        // 要对外写入：{0}  [draft]
-        Key::HostExternalWrite => "External write: {0}",
-        // 调用失败：{0}  [draft]
+        // 要对外写入：{0}  [approved, batch 2]
+        Key::HostExternalWrite => "Writes to an outside service: {0}",
+        // 调用失败：{0}  [approved, batch 2]
         Key::HostCallFailed => "Call failed: {0}",
-        // 没做成：{0}  [draft]
-        Key::HostFailedBecause => "Didn't get done: {0}",
-        // 排队  [draft]
+        // 没做成：{0}  [approved, batch 2]
+        Key::HostFailedBecause => "Couldn't finish: {0}",
+        // 排队  [approved, batch 2]
         Key::CardQueued => "Queued",
-        // 进行  [draft]
+        // 进行  [approved, batch 2]
         Key::CardRunning => "Running",
-        // 完成  [draft]
+        // 完成  [approved, batch 2]
         Key::CardDone => "Done",
-        // 卡住  [draft]
+        // 卡住  [approved, batch 2]
         Key::CardBlocked => "Stuck",
-        // 简报  [draft]
+        // 简报  [approved, batch 2]
         Key::CardBriefing => "Briefing",
-        // 去私聊接管  [draft]
+        // 去私聊接管  [approved, batch 2]
         Key::CardTakeOver => "Take over in DM",
 
         // ---- Card status, footnotes and approval buttons (cards/status.rs) ----
@@ -139,7 +140,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::StatusConfirmPicked => "Confirm ({0})",
         // 已过期，没有人作答  [approved, batch 1]
         Key::StatusChoiceExpiredFoot => "Expired, no one answered",
-        // 、  [draft]
+        // 、  [approved, batch 2]
         Key::StatusListSeparator => ", ",
         // {0} 选了「{1}」  [approved, batch 1]
         Key::StatusChoiceByFoot => "{0} chose \"{1}\"",
@@ -203,8 +204,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::DateMonth12 => "Dec",
 
         // ---- Cards (cards/mod.rs) ----
-        // 我  [draft]
-        Key::CardsMe => "Me",
+        // 我  [approved, batch 2]
+        Key::CardsMe => "You",
 
         // ---- Allow-rules settings page and rule confirm cards (cards/review_rules.rs) ----
         // 放行规则  [approved, batch 1]
@@ -247,20 +248,20 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ReviewRulesTooLong => "Max {0} characters. Remove {1} more.",
         // 添加于 {0}  [approved, batch 1]
         Key::ReviewRulesAddedOn => "Added {0}",
-        // 读不到：{0}  [draft]
+        // 读不到：{0}  [approved, batch 2]
         Key::ReviewRulesLoadFailedBecause => "Couldn't load: {0}",
         // 审批卡不存在  [approved, batch 1]
         Key::ReviewRulesCardMissing => "Approval card not found",
 
         // ---- Card footnotes after a click (cards/interact.rs) ----
-        // 已经有人选过了，正在刷新  [draft]
-        Key::InteractAlreadyPicked => "Someone already picked, refreshing",
-        // 这张卡已经处理过了，正在刷新  [draft]
-        Key::InteractAlreadyDecided => "This card was already handled, refreshing",
-        // 没选上：{0}  [draft]
-        Key::InteractRejected => "Pick not accepted: {0}",
-        // 没成功：{0}  [draft]
-        Key::InteractFailed => "Didn't work: {0}",
+        // 已经有人选过了，正在刷新  [approved, batch 2]
+        Key::InteractAlreadyPicked => "Someone already picked. Refreshing…",
+        // 这张卡已经处理过了，正在刷新  [approved, batch 2]
+        Key::InteractAlreadyDecided => "This card was already handled. Refreshing…",
+        // 没选上：{0}  [approved, batch 2]
+        Key::InteractRejected => "Choice not accepted: {0}",
+        // 没成功：{0}  [approved, batch 2]
+        Key::InteractFailed => "Failed: {0}",
 
         // ---- Memory and skill confirm cards (cards/confirm.rs) ----
         // 记忆  [approved, batch 1]
@@ -293,389 +294,399 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ConfirmMoreLabel => "{0} more to review",
 
         // ---- Client feed (client/src/model.rs) ----
-        // {0}：{1}  [draft]
+        // {0}：{1}  [approved, batch 2]
         Key::ClientPreviewLine => "{0}: {1}",
-        // 图片  [draft]
+        // 图片  [approved, batch 2]
         Key::ClientAttachImage => "Image",
-        // 文件  [draft]
+        // 文件  [approved, batch 2]
         Key::ClientAttachFile => "File",
-        // 文本  [draft]
+        // 文本  [approved, batch 2]
         Key::ClientAttachText => "Text",
         // 等你批准  [approved, batch 1]
         Key::ClientAwaitingApproval => "Needs your approval",
 
         // ---- Shared widgets (view.rs) ----
-        // 批准  [draft]
+        // 批准  [approved, batch 2]
         Key::ViewApprove => "Approve",
-        // 拒绝  [draft]
+        // 拒绝  [approved, batch 2]
         Key::ViewDeny => "Deny",
-        // 发给  [draft]
+        // 发给  [approved, batch 2]
         Key::ViewDraftTo => "To",
-        // 发送  [draft]
+        // 发送  [approved, batch 2]
         Key::ViewDraftSend => "Send",
-        // 修改  [draft]
+        // 修改  [approved, batch 2]
         Key::ViewDraftEdit => "Edit",
-        // 这台服务器还没有工具  [draft]
+        // 这台服务器还没有工具  [approved, batch 2]
         Key::ViewMcpNoTools => "This server has no tools yet",
-        // ‹ 聊天  [draft]
+        // ‹ 聊天  [approved, batch 2]
         Key::ViewBackToChats => "‹ Chats",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::ViewRenameSave => "Save",
-        // 取消  [draft]
+        // 取消  [approved, batch 2]
         Key::ViewRenameCancel => "Cancel",
-        // 私聊  [draft]
+        // 私聊  [approved, batch 2]
         Key::ViewDmTag => "DM",
-        // 调用   [draft]
+        // 调用   [approved, batch 2]
         Key::ViewCallPrefix => "Call ",
-        // ：  [draft]
+        // ：  [approved, batch 2]
         Key::ViewCallArgsSep => ": ",
 
         // ---- Chat list and composer (conversations.rs) ----
-        // 还没有 bro，引入第一个  [draft]
-        Key::ConversationsEmptyHint => "No bros yet. Add your first one",
-        // 引入一个 bro  [draft]
+        // 还没有 bro，引入第一个  [approved, batch 2]
+        Key::ConversationsEmptyHint => "No bros yet. Add your first one.",
+        // 引入一个 bro  [approved, batch 2]
         Key::ConversationsNewBro => "Add a bro",
-        // 改名  [draft]
+        // 改名  [approved, batch 2]
         Key::ConversationsRenameHint => "Rename",
-        // bro 的新名字，回车保存，Esc 取消  [draft]
-        Key::ConversationsRenamePlaceholder => "New name for the bro. Enter saves, Esc cancels",
-        // 发消息，@名字 派活  [draft]
-        Key::ConversationsGroupHint => "Send a message; @name to give work",
-        // 发送  [draft]
+        // bro 的新名字，回车保存，Esc 取消  [approved, batch 2]
+        Key::ConversationsRenamePlaceholder => "New name. Enter to save, Esc to cancel",
+        // 发消息，@名字 派活  [approved, batch 2]
+        Key::ConversationsGroupHint => "Message the group, or @name a bro",
+        // 发送  [approved, batch 2]
         Key::ConversationsSend => "Send",
-        // 聊天  [draft]
+        // 聊天  [approved, batch 2]
         Key::ConversationsTitle => "Chats",
-        // 发给 {0}…  [draft]
+        // 发给 {0}…  [approved, batch 2]
         Key::ConversationsDmHint => "Message {0}…",
-        // 昨天  [draft]
+        // 昨天  [approved, batch 2]
         Key::ConversationsYesterday => "Yesterday",
 
         // ---- App shell (client/src/main.rs) ----
-        // 假事件  [draft]
+        // 假事件  [approved, batch 2]
         Key::ClientFakeOrigin => "Demo events",
-        // 没能引入新 bro：{0}  [draft]
+        // 没能引入新 bro：{0}  [approved, batch 2]
         Key::ClientNewBroFailed => "Couldn't add a bro: {0}",
-        // 没改成：{0}  [draft]
+        // 没改成：{0}  [approved, batch 2]
         Key::ClientRenameFailed => "Couldn't rename: {0}",
-        // 没发出去：{0}  [draft]
+        // 没发出去：{0}  [approved, batch 2]
         Key::ClientSendFailed => "Didn't send: {0}",
-        //  · 实时  [draft]
+        //  · 实时  [approved, batch 2]
         Key::ClientLive => " · live",
-        //  · 轮询  [draft]
+        //  · 轮询  [approved, batch 2]
         Key::ClientPolling => " · polling",
-        // 深色  [draft]
+        // 深色  [approved, batch 2]
         Key::ClientThemeDark => "Dark",
-        // 浅色  [draft]
+        // 浅色  [approved, batch 2]
         Key::ClientThemeLight => "Light",
-        // 选一个聊天  [draft]
+        // 选一个聊天  [approved, batch 2]
         Key::ClientPickChat => "Pick a chat",
+        // 语言  [PM review: Settings row label]
+        Key::SettingsLanguage => "Language",
+        // English  [native name, same in both files]
+        Key::LocaleNameEn => "English",
+        // 中文  [native name, same in both files]
+        Key::LocaleNameZh => "中文",
 
         // ---- Client-side errors (client/src/api.rs) ----
-        // 连不上主机  [draft]
+        // 连不上主机  [approved, batch 2]
         Key::ClientNoHost => "Can't reach the host",
-        // 与契约不符: 需要 approvalId  [draft]
-        Key::ClientDecodeNeedsApprovalId => "Doesn't match the contract: approvalId missing",
-        // 与契约不符: {0}  [draft]
-        Key::ClientDecodeFailed => "Doesn't match the contract: {0}",
-        // 连不上宿主机 {0}: {1}  [draft]
+        // 与契约不符: 需要 approvalId  [approved, batch 2]
+        Key::ClientDecodeNeedsApprovalId => "Unexpected reply from the host: approvalId missing",
+        // 与契约不符: {0}  [approved, batch 2]
+        Key::ClientDecodeFailed => "Unexpected reply from the host: {0}",
+        // 连不上宿主机 {0}: {1}  [approved, batch 2]
         Key::ClientConnectFailed => "Can't reach the host {0}: {1}",
-        // 读 {0} 失败: {1}  [draft]
+        // 读 {0} 失败: {1}  [approved, batch 2]
         Key::ClientReadFailed => "Couldn't read {0}: {1}",
-        // {0} {1} 返回 {2}  [draft]
+        // {0} {1} 返回 {2}  [approved, batch 2]
         Key::ClientHttpStatus => "{0} {1} returned {2}",
-        // 没有这台服务器  [draft]
+        // 没有这台服务器  [approved, batch 2]
         Key::ClientNoSuchServer => "No such server",
 
         // ---- Connection errors (client/src/source) ----
-        // 实时推送断开: {0}  [draft]
+        // 实时推送断开: {0}  [approved, batch 2]
         Key::ClientStreamDroppedBecause => "Live updates dropped: {0}",
-        // 实时推送断开  [draft]
+        // 实时推送断开  [approved, batch 2]
         Key::ClientStreamDropped => "Live updates dropped",
 
         // ---- Routines page (cards/routines.rs) ----
-        // 已暂停  [draft]
+        // 已暂停  [approved, batch 2]
         Key::RoutinesPausedTag => "Paused",
-        // 例行任务  [draft]
+        // 例行任务  [approved, batch 2]
         Key::RoutinesTitle => "Routines",
-        // 还没有例行任务  [draft]
+        // 还没有例行任务  [approved, batch 2]
         Key::RoutinesEmptyTitle => "No routines yet",
-        // 在群里对 bro 说「每天 8 点给我发简报」就会出现在这里  [draft]
+        // 在群里对 bro 说「每天 8 点给我发简报」就会出现在这里  [approved, batch 2]
         Key::RoutinesEmptyHint => {
             "Tell a bro in a group “send me a briefing every day at 8” and it shows up here"
         }
 
         // ---- Memories page (cards/memories.rs) ----
-        // 记忆  [draft]
+        // 记忆  [approved, batch 2]
         Key::MemoriesTitle => "Memories",
-        // 还没有记下任何东西  [draft]
+        // 还没有记下任何东西  [approved, batch 2]
         Key::MemoriesEmptyTitle => "Nothing remembered yet",
-        // 点「记一条」写下想让 bro 记住的事  [draft]
+        // 点「记一条」写下想让 bro 记住的事  [approved, batch 2]
         Key::MemoriesEmptyHint => {
             "Click “Add memory” to write down something for your bros to remember"
         }
-        // 所有 bro  [draft]
+        // 所有 bro  [approved, batch 2]
         Key::MemoriesAllBros => "All bros",
-        // 待确认  [draft]
-        Key::MemoriesPendingTag => "Pending",
-        // 待确认  [draft]
-        Key::MemoriesPendingHead => "Pending",
-        // 已记下  [draft]
+        // 待确认  [approved, batch 2]
+        Key::MemoriesPendingTag => "To review",
+        // 待确认  [approved, batch 2]
+        Key::MemoriesPendingHead => "To review",
+        // 已记下  [approved, batch 2]
         Key::MemoriesKeptHead => "Remembered",
-        // 记一条  [draft]
+        // 记一条  [approved, batch 2]
         Key::MemoriesAdd => "Add memory",
-        // 改  [draft]
+        // 改  [approved, batch 2]
         Key::MemoriesEdit => "Edit",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::MemoriesSave => "Save",
-        // 取消  [draft]
+        // 取消  [approved, batch 2]
         Key::MemoriesCancel => "Cancel",
-        // 忘掉  [draft]
+        // 忘掉  [approved, batch 2]
         Key::MemoriesForget => "Forget",
-        // 忘掉这条？bro 以后不会再用到它。  [draft]
+        // 忘掉这条？bro 以后不会再用到它。  [approved, batch 2]
         Key::MemoriesForgetAsk => "Forget this? Bros won't use it again.",
-        // 想让 bro 记住什么  [draft]
+        // 想让 bro 记住什么  [approved, batch 2]
         Key::MemoriesNewPlaceholder => "What should your bros remember?",
-        // 最多 2000 字  [draft]
+        // 最多 2000 字  [approved, batch 2]
         Key::MemoriesTooLong => "Max 2000 characters",
-        // 写点什么再保存  [draft]
+        // 写点什么再保存  [approved, batch 2]
         Key::MemoriesEmptyText => "Write something before saving",
-        // 已保存  [draft]
+        // 已保存  [approved, batch 2]
         Key::MemoriesSaved => "Saved",
-        // 选一下谁能用这条  [draft]
+        // 选一下谁能用这条  [approved, batch 2]
         Key::MemoriesPickScope => "Choose who can use this",
-        // 资料  [draft]
+        // 资料  [approved, batch 2]
         Key::MemoriesKindProfile => "Profile",
-        // 习惯  [draft]
+        // 习惯  [approved, batch 2]
         Key::MemoriesKindHabit => "Habit",
-        // 项目  [draft]
+        // 项目  [approved, batch 2]
         Key::MemoriesKindProject => "Project",
-        // 只给 {0}  [draft]
+        // 只给 {0}  [approved, batch 2]
         Key::MemoriesOnlyFor => "Only {0}",
-        // 只给 {0} 用  [draft]
+        // 只给 {0} 用  [approved, batch 2]
         Key::MemoriesChosenBot => "Only {0} can use this",
-        // 所有 bro 都能用  [draft]
+        // 所有 bro 都能用  [approved, batch 2]
         Key::MemoriesChosenAll => "All bros can use this",
 
         // ---- Skills page (cards/skills.rs) ----
-        // 技能  [draft]
+        // 技能  [approved, batch 2]
         Key::SkillsTitle => "Skills",
-        // 还没有保存任何技能  [draft]
+        // 还没有保存任何技能  [approved, batch 2]
         Key::SkillsEmptyTitle => "No skills saved yet",
-        // 点「加一项」写下想让 bro 会的做法  [draft]
+        // 点「加一项」写下想让 bro 会的做法  [approved, batch 2]
         Key::SkillsEmptyHint => {
             "Click “Add skill” to write down how you want your bros to do something"
         }
-        // 待确认  [draft]
-        Key::SkillsPendingTag => "Pending",
-        // 待确认  [draft]
-        Key::SkillsPendingHead => "Pending",
-        // 已保存  [draft]
+        // 待确认  [approved, batch 2]
+        Key::SkillsPendingTag => "To review",
+        // 待确认  [approved, batch 2]
+        Key::SkillsPendingHead => "To review",
+        // 已保存  [approved, batch 2]
         Key::SkillsKeptHead => "Saved",
-        // 加一项  [draft]
+        // 加一项  [approved, batch 2]
         Key::SkillsAdd => "Add skill",
-        // 改  [draft]
+        // 改  [approved, batch 2]
         Key::SkillsEdit => "Edit",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::SkillsSave => "Save",
-        // 取消  [draft]
+        // 取消  [approved, batch 2]
         Key::SkillsCancel => "Cancel",
-        // 删除  [draft]
+        // 删除  [approved, batch 2]
         Key::SkillsDelete => "Delete",
-        // 删除这项？bro 以后不会再用到它。  [draft]
+        // 删除这项？bro 以后不会再用到它。  [approved, batch 2]
         Key::SkillsDeleteAsk => "Delete this? Bros won't use it again.",
-        // 英文短名，比如 weekly-report  [draft]
+        // 英文短名，比如 weekly-report  [approved, batch 2]
         Key::SkillsSlugPlaceholder => "Short English name, e.g. weekly-report",
-        // 标题  [draft]
+        // 标题  [approved, batch 2]
         Key::SkillsTitlePlaceholder => "Title",
-        // 想让 bro 怎么做  [draft]
+        // 想让 bro 怎么做  [approved, batch 2]
         Key::SkillsInstructionPlaceholder => "How should your bros do it?",
-        // 先填一个英文短名  [draft]
+        // 先填一个英文短名  [approved, batch 2]
         Key::SkillsEmptySlug => "Enter a short English name first",
-        // 短名只能是小写字母、数字和连字符  [draft]
+        // 短名只能是小写字母、数字和连字符  [approved, batch 2]
         Key::SkillsBadSlug => "Short names can only use lowercase letters, digits and hyphens",
-        // 写个标题再保存  [draft]
+        // 写个标题再保存  [approved, batch 2]
         Key::SkillsEmptyTitleText => "Add a title before saving",
-        // 写点说明再保存  [draft]
+        // 写点说明再保存  [approved, batch 2]
         Key::SkillsEmptyInstruction => "Add instructions before saving",
-        // 标题最多 80 个字  [draft]
+        // 标题最多 80 个字  [approved, batch 2]
         Key::SkillsTitleTooLong => "Title: max 80 characters",
-        // 说明最多 8000 个字  [draft]
+        // 说明最多 8000 个字  [approved, batch 2]
         Key::SkillsInstructionTooLong => "Instructions: max 8000 characters",
-        // 已保存  [draft]
+        // 已保存  [approved, batch 2]
         Key::SkillsSaved => "Saved",
-        // 在这些群里用  [draft]
+        // 在这些群里用  [approved, batch 2]
         Key::SkillsGroupEnable => "Use in these groups",
-        // 读取中  [draft]
+        // 读取中  [approved, batch 2]
         Key::SkillsLoading => "Loading",
-        // 读不到  [draft]
+        // 读不到  [approved, batch 2]
         Key::SkillsLoadFailed => "Couldn't load",
 
         // ---- Model settings page (cards/model.rs) ----
-        // 模型  [draft]
+        // 模型  [approved, batch 2]
         Key::ModelTitle => "Model",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::ModelSave => "Save",
-        // 来自环境变量  [draft]
+        // 来自环境变量  [approved, batch 2]
         Key::ModelFromEnv => "From environment variables",
-        // 还没设置模型  [draft]
+        // 还没设置模型  [approved, batch 2]
         Key::ModelNotSet => "No model set up yet",
-        // 试连中…  [draft]
+        // 试连中…  [approved, batch 2]
         Key::ModelTesting => "Testing…",
-        // 能用了  [draft]
+        // 能用了  [approved, batch 2]
         Key::ModelWorks => "Working",
-        // 服务商  [draft]
+        // 服务商  [approved, batch 2]
         Key::ModelLabelPreset => "Provider",
-        // 地址  [draft]
+        // 地址  [approved, batch 2]
         Key::ModelLabelUrl => "URL",
-        // 模型名  [draft]
+        // 模型名  [approved, batch 2]
         Key::ModelLabelModel => "Model name",
-        // 密钥（选填）  [draft]
+        // 密钥（选填）  [approved, batch 2]
         Key::ModelLabelKey => "Key (optional)",
-        // 请填写地址  [draft]
+        // 请填写地址  [approved, batch 2]
         Key::ModelNeedUrl => "Enter a URL",
-        // 地址要以 http:// 或 https:// 开头  [draft]
+        // 地址要以 http:// 或 https:// 开头  [approved, batch 2]
         Key::ModelBadUrl => "The URL must start with http:// or https://",
-        // 请填写模型名  [draft]
+        // 请填写模型名  [approved, batch 2]
         Key::ModelNeedModel => "Enter a model name",
-        // 去设置  [draft]
+        // 去设置  [approved, batch 2]
         Key::ModelGoSetup => "Set up",
-        // 这次还没设置模型  [draft]
-        Key::ModelNeedsSetupHint => "No model was set up this time",
-        // 免费模型的名字以 :free 结尾  [draft]
+        // 这次还没设置模型  [approved, batch 2]
+        Key::ModelNeedsSetupHint => "Skipped: no model set up yet",
+        // 免费模型的名字以 :free 结尾  [approved, batch 2]
         Key::ModelOpenrouterHint => "Free model names end in :free",
         // 已保存，但连不上：{0}  [approved, batch 1]
         Key::SavedButUnreachable => "Saved, but can't connect: {0}",
-        // Gemini（推荐）  [draft]
+        // Gemini（推荐）  [approved, batch 2]
         Key::ModelPresetGemini => "Gemini (recommended)",
-        // 自定义  [draft]
+        // 自定义  [approved, batch 2]
         Key::ModelPresetCustom => "Custom",
+        // 选一个服务商  [approved, batch 2]
+        Key::ModelPresetPlaceholder => "Choose a provider",
 
         // ---- Web search settings page (cards/search.rs) ----
-        // 联网搜索  [draft]
+        // 联网搜索  [approved, batch 2]
         Key::SearchTitle => "Web search",
-        // API 密钥  [draft]
+        // API 密钥  [approved, batch 2]
         Key::SearchKeyPlaceholder => "API key",
-        // SearXNG 地址，如 http://127.0.0.1:8888  [draft]
+        // SearXNG 地址，如 http://127.0.0.1:8888  [approved, batch 2]
         Key::SearchUrlPlaceholder => "SearXNG URL, e.g. http://127.0.0.1:8888",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::SearchSave => "Save",
-        // 取消  [draft]
+        // 取消  [approved, batch 2]
         Key::SearchCancel => "Cancel",
-        // 来自环境变量  [draft]
+        // 来自环境变量  [approved, batch 2]
         Key::SearchFromEnv => "From environment variables",
-        // 还没设置联网搜索  [draft]
+        // 还没设置联网搜索  [approved, batch 2]
         Key::SearchNotSet => "Web search isn't set up yet",
-        // 试连中…  [draft]
+        // 试连中…  [approved, batch 2]
         Key::SearchTesting => "Testing…",
-        // 能用了  [draft]
+        // 能用了  [approved, batch 2]
         Key::SearchWorks => "Working",
-        // 请填写 key  [draft]
+        // 请填写 key  [approved, batch 2]
         Key::SearchNeedKey => "Enter a key",
-        // 请填写地址  [draft]
+        // 请填写地址  [approved, batch 2]
         Key::SearchNeedUrl => "Enter a URL",
-        // 去设置  [draft]
+        // 去设置  [approved, batch 2]
         Key::SearchGoSetup => "Set up",
-        // 这次没联网搜索：还没设置  [draft]
-        Key::SearchNeedsSetupHint => "No web search this time: not set up yet",
+        // 这次没联网搜索：还没设置  [approved, batch 2]
+        Key::SearchNeedsSetupHint => "Skipped web search: not set up yet",
 
         // ---- MCP page (cards/mcp.rs) ----
-        // 加一台  [draft]
+        // 加一台  [approved, batch 2]
         Key::McpAdd => "Add server",
-        // 还没有 MCP 服务器  [draft]
+        // 还没有 MCP 服务器  [approved, batch 2]
         Key::McpEmptyTitle => "No MCP servers yet",
-        // 点「加一台」接上 bro 可以用的工具服务  [draft]
+        // 点「加一台」接上 bro 可以用的工具服务  [approved, batch 2]
         Key::McpEmptyHint => "Click “Add server” to connect tools your bros can use",
-        // 保存  [draft]
+        // 保存  [approved, batch 2]
         Key::McpSave => "Save",
-        // 取消  [draft]
+        // 取消  [approved, batch 2]
         Key::McpCancel => "Cancel",
-        // 删除  [draft]
+        // 删除  [approved, batch 2]
         Key::McpDelete => "Delete",
-        // 删除这台服务器？群里也不会再用到它。  [draft]
+        // 删除这台服务器？群里也不会再用到它。  [approved, batch 2]
         Key::McpDeleteAsk => "Delete this server? Groups won't use it any more.",
-        // 改  [draft]
+        // 改  [approved, batch 2]
         Key::McpEdit => "Edit",
         // 要你批准  [approved, batch 1]
         Key::McpNeedsApproval => "Needs your approval",
-        // 在这些群里用  [draft]
+        // 在这些群里用  [approved, batch 2]
         Key::McpGroupEnable => "Use in these groups",
-        // 读取中  [draft]
+        // 读取中  [approved, batch 2]
         Key::McpLoading => "Loading",
-        // 读不到  [draft]
+        // 读不到  [approved, batch 2]
         Key::McpLoadFailed => "Couldn't load",
-        // 试连中…  [draft]
+        // 试连中…  [approved, batch 2]
         Key::McpTesting => "Testing…",
-        // 能用了  [draft]
+        // 能用了  [approved, batch 2]
         Key::McpWorks => "Working",
-        // 加一项密钥  [draft]
+        // 加一项密钥  [approved, batch 2]
         Key::McpAddSecret => "Add a secret",
-        // 去掉  [draft]
+        // 去掉  [approved, batch 2]
         Key::McpRemoveSecret => "Remove",
-        // 名称  [draft]
+        // 名称  [approved, batch 2]
         Key::McpLabelName => "Name",
-        // 命令  [draft]
+        // 命令  [approved, batch 2]
         Key::McpLabelCommand => "Command",
-        // 参数（用空格分开）  [draft]
+        // 参数（用空格分开）  [approved, batch 2]
         Key::McpLabelArgs => "Arguments (space-separated)",
-        // 地址  [draft]
+        // 地址  [approved, batch 2]
         Key::McpLabelUrl => "URL",
-        // 密钥名称  [draft]
+        // 密钥名称  [approved, batch 2]
         Key::McpLabelSecretName => "Secret name",
-        // 密钥  [draft]
+        // 密钥  [approved, batch 2]
         Key::McpLabelSecretKey => "Secret",
-        // 命令  [draft]
+        // 命令  [approved, batch 2]
         Key::McpLabelPromptCommand => "Command",
-        // 参数  [draft]
+        // 参数  [approved, batch 2]
         Key::McpLabelPromptArgs => "Arguments",
-        // 环境变量  [draft]
+        // 环境变量  [approved, batch 2]
         Key::McpEnv => "Environment variables",
-        // 请求头  [draft]
+        // 请求头  [approved, batch 2]
         Key::McpHeader => "Request headers",
-        // 请填写名称  [draft]
+        // 请填写名称  [approved, batch 2]
         Key::McpEmptyName => "Enter a name",
-        // 名称最多 80 个字  [draft]
+        // 名称最多 80 个字  [approved, batch 2]
         Key::McpNameTooLong => "Name: max 80 characters",
-        // 请填写启动命令  [draft]
+        // 请填写启动命令  [approved, batch 2]
         Key::McpNeedCommand => "Enter a start command",
-        // 请填写地址  [draft]
+        // 请填写地址  [approved, batch 2]
         Key::McpNeedUrl => "Enter a URL",
-        // 地址要以 http:// 或 https:// 开头  [draft]
+        // 地址要以 http:// 或 https:// 开头  [approved, batch 2]
         Key::McpBadUrl => "The URL must start with http:// or https://",
-        // 请填写密钥名称  [draft]
+        // 请填写密钥名称  [approved, batch 2]
         Key::McpEmptySecretName => "Enter a secret name",
-        // 密钥名称里不能有空白  [draft]
+        // 密钥名称里不能有空白  [approved, batch 2]
         Key::McpBadSecretName => "Secret names can't contain spaces",
-        // 新增密钥时请填写值  [draft]
+        // 新增密钥时请填写值  [approved, batch 2]
         Key::McpNeedSecretKey => "Enter a value for the new secret",
-        // 命令未批准  [draft]
+        // 命令未批准  [approved, batch 2]
         Key::McpCommandUnapproved => "Command not approved",
         // 批准命令后才能读取工具  [approved, batch 1]
         Key::McpToolsNeedApproval => "Approve the command to load its tools",
-        // 这条命令会在你的电脑上运行  [draft]
+        // 这条命令会在你的电脑上运行  [approved, batch 2]
         Key::McpCommandRunsLocal => "This command runs on your computer",
-        // 批准运行  [draft]
+        // 批准运行  [approved, batch 2]
         Key::McpApproveRun => "Approve and run",
-        // 批准失败：{0}  [draft]
+        // 批准失败：{0}  [approved, batch 2]
         Key::McpApproveFailed => "Approval failed: {0}",
-        // 连不上：{0}  [draft]
+        // 连不上：{0}  [approved, batch 2]
         Key::CannotConnect => "Can't connect: {0}",
-        // 没保存：{0}  [draft]
+        // 没保存：{0}  [approved, batch 2]
         Key::NotSaved => "Not saved: {0}",
-        // {0} 个工具  [draft]
+        // {0} 个工具  [approved, batch 2]
         Key::McpToolCount => "{0} tools",
-        // 还没数过  [draft]
+        // 还没数过  [approved, batch 2]
         Key::McpToolsNotCounted => "Not counted yet",
-        // 原因不明  [draft]
+        // 原因不明  [approved, batch 2]
         Key::McpUnknownReason => "Unknown reason",
+        // 1 个工具  [approved, batch 2]
+        Key::McpToolCountOne => "1 tool",
 
         // ---- Secret fields (cards/secret.rs) ----
-        // 清除  [draft]
+        // 清除  [approved, batch 2]
         Key::SecretClear => "Clear",
-        // 保存后删除  [draft]
+        // 保存后删除  [approved, batch 2]
         Key::SecretPendingClear => "Deleted on save",
-        // 撤销  [draft]
+        // 撤销  [approved, batch 2]
         Key::SecretUndo => "Undo",
-        // 已填  [draft]
+        // 已填  [approved, batch 2]
         Key::SecretFilled => "Set",
     }
 }

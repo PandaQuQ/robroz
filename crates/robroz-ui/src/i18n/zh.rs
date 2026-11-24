@@ -194,6 +194,9 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientThemeDark => "深色",
         Key::ClientThemeLight => "浅色",
         Key::ClientPickChat => "选一个聊天",
+        Key::SettingsLanguage => "语言",
+        Key::LocaleNameEn => "English",
+        Key::LocaleNameZh => "中文",
 
         // ---- Client-side errors (client/src/api.rs) ----
         Key::ClientNoHost => "连不上主机",
@@ -287,6 +290,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::SavedButUnreachable => "已保存，但连不上：{0}",
         Key::ModelPresetGemini => "Gemini（推荐）",
         Key::ModelPresetCustom => "自定义",
+        Key::ModelPresetPlaceholder => "选一个服务商",
 
         // ---- Web search settings page (cards/search.rs) ----
         Key::SearchTitle => "联网搜索",
@@ -348,6 +352,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpToolCount => "{0} 个工具",
         Key::McpToolsNotCounted => "还没数过",
         Key::McpUnknownReason => "原因不明",
+        Key::McpToolCountOne => "1 个工具",
 
         // ---- Secret fields (cards/secret.rs) ----
         Key::SecretClear => "清除",

@@ -128,7 +128,7 @@ where
                 .map(|a| clock_iso_in(a, tz))
                 .unwrap_or_default();
             let text = match by {
-                Some(by) => Key::StatusChoiceByFoot.fill(&[by, &labels]),
+                Some(by) => Key::StatusChoiceByFoot.fill(&[&super::who(by), &labels]),
                 None => Key::StatusChoiceFoot.fill(&[&labels]),
             };
             Some(with_time(text, &time))
@@ -161,13 +161,13 @@ where
     match state {
         ApprovalState::Approved { by, at } => {
             let text = by.as_ref().map_or(Key::StatusApprovedFoot.into(), |b| {
-                Key::StatusApprovedByFoot.fill(&[b])
+                Key::StatusApprovedByFoot.fill(&[&super::who(b)])
             });
             Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
         ApprovalState::Denied { by, at } => {
             let text = by.as_ref().map_or(Key::StatusDeniedFoot.into(), |b| {
-                Key::StatusDeniedByFoot.fill(&[b])
+                Key::StatusDeniedByFoot.fill(&[&super::who(b)])
             });
             Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
@@ -185,11 +185,11 @@ where
 {
     match state {
         DraftState::Sent { by, at } => Some(with_time(
-            Key::StatusDraftSentFoot.fill(&[by]),
+            Key::StatusDraftSentFoot.fill(&[&super::who(by)]),
             &clock_in(*at, tz),
         )),
         DraftState::Discarded { by, at } => Some(with_time(
-            Key::StatusDraftDiscardedFoot.fill(&[by]),
+            Key::StatusDraftDiscardedFoot.fill(&[&super::who(by)]),
             &clock_in(*at, tz),
         )),
         DraftState::Pending => None,

@@ -1,8 +1,8 @@
 //! Client preferences kept on this computer: the UI language.
 //!
 //! `ROBROZ_LANG=en|zh` wins for a run and is never written back. Otherwise
-//! the language picked with the footer switch is saved as one line (`en` or
-//! `zh`) in `lang` under the client's config folder:
+//! the language picked with the language setting on the Settings page is
+//! saved as one line (`en` or `zh`) in `lang` under the client's config folder:
 //! `ROBROZ_CONFIG_DIR` if set, else `$XDG_CONFIG_HOME/robroz`,
 //! `~/.config/robroz` (Linux), `~/Library/Application Support/robroz`
 //! (macOS) or `%APPDATA%\robroz` (Windows). No file, or an unreadable one,
@@ -64,7 +64,7 @@ pub fn initial_locale(saved: bool) -> Locale {
         .unwrap_or_default()
 }
 
-/// Save the switch's choice. Ignored when no config folder is known.
+/// Save the language picked on the Settings page. Ignored when no config folder is known.
 pub fn save(locale: Locale) {
     if let Some(dir) = config_dir() {
         if let Err(err) = save_in(&dir, locale) {

@@ -62,15 +62,16 @@ impl Locale {
         }
     }
 
-    /// The language's own name, for the switch: 「English」 / 「中文」.
+    /// The language's own name, for the Settings row: 「English」 /
+    /// 「中文」, the same in both locales (`LocaleName*` in `en.rs`/`zh.rs`).
     pub fn native_name(self) -> &'static str {
         match self {
-            Locale::En => "English",
-            Locale::Zh => "中文",
+            Locale::En => Key::LocaleNameEn.as_str(),
+            Locale::Zh => Key::LocaleNameZh.as_str(),
         }
     }
 
-    /// The other locale (the switch toggles between the two).
+    /// The other locale.
     pub fn other(self) -> Locale {
         match self {
             Locale::En => Locale::Zh,

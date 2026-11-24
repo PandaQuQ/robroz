@@ -110,6 +110,13 @@ impl Conversations {
         self.sort();
     }
 
+    /// Replace a chat's preview without moving it (language switch).
+    pub fn set_preview(&mut self, group_id: &str, preview: String) {
+        if let Some(c) = self.rows.iter_mut().find(|c| c.group_id == group_id) {
+            c.preview = Some(clip(&preview, PREVIEW_CHARS));
+        }
+    }
+
     /// Opened, or the host confirmed a read: the badge goes away.
     pub fn mark_read(&mut self, group_id: &str) {
         if let Some(c) = self.rows.iter_mut().find(|c| c.group_id == group_id) {

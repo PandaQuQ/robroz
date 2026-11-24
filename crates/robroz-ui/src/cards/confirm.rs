@@ -180,7 +180,7 @@ impl ConfirmCard {
             ConfirmState::Dropped { by, at } => (DROPPED.as_str(), by, *at),
         };
         let mut parts = vec![word.to_string()];
-        parts.extend(by.clone());
+        parts.extend(by.as_deref().map(|b| super::who(b).to_string()));
         let time = clock_in(at, tz);
         if !time.is_empty() {
             parts.push(time);

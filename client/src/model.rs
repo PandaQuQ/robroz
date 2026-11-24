@@ -92,6 +92,35 @@ pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
     }
 }
 
+/// The event behind each chat's list preview. The event is kept, not its
+/// text, so a language switch can redraw every preview at once.
+#[derive(Debug, Default)]
+pub struct Previews {
+    by_group: std::collections::HashMap<String, (String, u8, Event)>,
+}
+
+impl Previews {
+    /// Offer `event` for `group`'s preview; the preview text if it wins.
+    pub fn offer(&mut self, group: &str, event: &Event) -> Option<String> {
+        let at = change_time(event);
+        let rank = preview_rank(event);
+        let cur = self.by_group.get(group);
+        if !preview_wins((at, rank), cur.map(|(t, r, _)| (t.as_str(), *r))) {
+            return None;
+        }
+        self.by_group
+            .insert(group.to_string(), (at.to_string(), rank, event.clone()));
+        Some(preview(event))
+    }
+
+    /// Every chat's preview, drawn again in the active language.
+    pub fn redraw(&self) -> impl Iterator<Item = (&str, String)> + '_ {
+        self.by_group
+            .iter()
+            .map(|(g, (_, _, ev))| (g.as_str(), preview(ev)))
+    }
+}
+
 /// The grey line for a task the host says did not get done. A dead run reads
 /// 「没写出结果」, anything else 「没做成：原因」 (from `robroz-card`).
 ///
@@ -451,7 +480,7 @@ mod tests {
         );
         assert_eq!(
             display(&failure_line("工具调用超过 8 轮")),
-            "Didn't get done: Tool calls went past 8 rounds"
+            "Couldn't finish: Stopped after 8 rounds of tool calls"
         );
         assert_eq!(display("Ada 的草稿"), "Ada 的草稿");
         let _zh = scoped(Locale::Zh);
@@ -1253,5 +1282,27 @@ mod tests {
         feed.apply(&event);
         assert_eq!(feed.len(), 1);
         assert!(feed.card("apr-settings").is_none());
+    }
+
+    #[test]
+    fn previews_redraw_in_the_new_language() {
+        use robroz_ui::i18n::{scoped, Locale};
+        let status: Event = serde_json::from_value(serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
+            "state": "queued", "label": "排队", "createdAt": "2026-10-07T19:00:00.000Z",
+            "updatedAt": "2026-10-07T19:00:00.000Z", "containerUp": false
+        }))
+        .unwrap();
+        let mut previews = Previews::default();
+        let shown = {
+            let _en = scoped(Locale::En);
+            previews.offer("g1", &status).unwrap()
+        };
+        let _zh = scoped(Locale::Zh);
+        let redrawn: Vec<_> = previews.redraw().collect();
+        assert_ne!(redrawn[0].1, shown);
+        assert_eq!(redrawn, vec![("g1", preview(&status))]);
+        // Same time and rank: the newer arrival still wins.
+        assert!(previews.offer("g1", &status).is_some(), "tie, same rank");
     }
 }

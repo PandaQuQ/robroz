@@ -3575,7 +3575,7 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     let preset = pick_list(model::Preset::ALL, page.preset, |preset| {
         Action::ModelPick { preset }
     })
-    .placeholder(model::LABEL_PRESET)
+    .placeholder(model::PRESET_PLACEHOLDER)
     .text_size(t.type_.body)
     .padding(field_padding())
     .width(Fill)

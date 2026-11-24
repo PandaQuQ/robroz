@@ -74,7 +74,7 @@ pub fn failed(reason: &str) -> String {
 
 pub fn tool_count_text(n: Option<u32>) -> String {
     match n {
-        Some(n) => Key::McpToolCount.fill(&[&n]),
+        Some(n) => tool_count(n),
         None => Key::McpToolsNotCounted.into(),
     }
 }
@@ -90,7 +90,7 @@ pub fn row_subtitle(s: &McpServer) -> String {
 
 pub fn works_text(count: Option<u32>) -> String {
     match count {
-        Some(n) => format!("{WORKS} · {}", Key::McpToolCount.fill(&[&n])),
+        Some(n) => format!("{WORKS} · {}", tool_count(n)),
         None => WORKS.into(),
     }
 }
@@ -733,6 +733,14 @@ impl Book {
         if self.approve_note.as_ref().is_some_and(|(e, _)| e == id) {
             self.approve_note = None;
         }
+    }
+}
+
+/// "1 tool" / "{n} tools".
+fn tool_count(n: impl Into<u64>) -> String {
+    match n.into() {
+        1 => Key::McpToolCountOne.to_string(),
+        n => Key::McpToolCount.fill(&[&n]),
     }
 }
 
