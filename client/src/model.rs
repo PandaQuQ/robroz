@@ -214,9 +214,24 @@ pub fn preview(event: &Event) -> String {
             container_up,
             failure,
             progress,
+            waiting_for,
             ..
-        } if progress_line(*state, *container_up, failure.as_deref(), progress).is_some() => {
-            let line = progress_line(*state, *container_up, failure.as_deref(), progress);
+        } if progress_line(
+            *state,
+            *container_up,
+            failure.as_deref(),
+            *waiting_for,
+            progress,
+        )
+        .is_some() =>
+        {
+            let line = progress_line(
+                *state,
+                *container_up,
+                failure.as_deref(),
+                *waiting_for,
+                progress,
+            );
             format!("{bot_name}：{}", line.unwrap_or_default())
         }
         Event::Status {
@@ -298,7 +313,13 @@ fn to_row(event: &Event) -> (Key, Row) {
                 tone: look.tone,
                 palette: robroz_card::palette(look.tone),
                 action: look.action,
-                progress: progress_line(*state, *container_up, failure.as_deref(), progress),
+                progress: progress_line(
+                    *state,
+                    *container_up,
+                    failure.as_deref(),
+                    *waiting_for,
+                    progress,
+                ),
             };
             (Key::Task(task_id.clone()), Row::Status(card))
         }
@@ -353,9 +374,11 @@ fn progress_line(
     state: TaskState,
     container_up: bool,
     failure: Option<&str>,
+    waiting_for: Option<WaitingFor>,
     progress: &Option<String>,
 ) -> Option<String> {
-    if state != TaskState::Running || !container_up || failure.is_some() {
+    let live = state == TaskState::Running && container_up;
+    if failure.is_some() || !(live || awaits_approval(state, waiting_for)) {
         return None;
     }
     let line = progress
@@ -824,6 +847,34 @@ mod tests {
     }
 
     #[test]
+    fn awaiting_approval_keeps_the_host_progress_line() {
+        let ev = with_progress(
+            blocked_waiting(Some(WaitingFor::Approval)),
+            Some("在用 notes.write_note"),
+        );
+        let mut feed = Feed::default();
+        feed.apply(&ev);
+        let card = status_cards(&feed)[0];
+        assert_eq!(card.status_line, "等你批准");
+        assert_eq!(card.action, None);
+        assert_eq!(card.progress.as_deref(), Some("在用 notes.write_note"));
+        // The list preview stays 等你批准; the progress line is on the card.
+        assert_eq!(preview(&ev), "Ada：等你批准");
+        // A stuck takeover still has no progress line.
+        let stuck = with_progress(
+            blocked_waiting(Some(WaitingFor::Takeover)),
+            Some("在用 notes.write_note"),
+        );
+        assert_eq!(
+            match to_row(&stuck).1 {
+                Row::Status(c) => c.progress,
+                _ => unreachable!(),
+            },
+            None
+        );
+    }
+
+    #[test]
     fn takeover_to_approval_replaces_the_same_card_in_place() {
         // First poll (list) says takeover, then SSE says approval for the
         // same task: one card, updated where it was.
@@ -1046,6 +1097,8 @@ mod tests {
                 summary: "清理 12 个旧日志文件".into(),
                 path: Some("logs/2026-10/".into()),
                 state,
+                mcp_server: None,
+                mcp_tool: None,
             })
         };
         let mut feed = Feed::default();
