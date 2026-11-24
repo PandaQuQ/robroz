@@ -26,6 +26,7 @@ The desktop client UI is currently in Chinese; English UI is in progress (Englis
 ## Works today
 
 - **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
+- **Bros talk to each other.** In a group, when one bro replies, the other bros can join in. They only speak when they have something to add, and the back-and-forth stops after 2 rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
@@ -39,7 +40,6 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
-- A bro's message waking the other bros, so bros can reply to each other. In progress; the planned round cap is `MAX_BRO_DEPTH = 2`.
 - An internal Router inside one bro (at most three sub-steps, one status card, one delivery).
 - Cancelling a timed-out step or stopping the container.
 
