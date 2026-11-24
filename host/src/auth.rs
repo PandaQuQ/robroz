@@ -55,12 +55,19 @@ impl ApiToken {
 }
 
 /// `ROBROZ_TOKEN` wins; otherwise read `ROBROZ_TOKEN_FILE`. Setting both is an error.
-pub fn token_from(env_token: Option<String>, token_file: Option<String>) -> Result<Option<ApiToken>, String> {
-    match (env_token.filter(|v| !v.trim().is_empty()), token_file.filter(|v| !v.trim().is_empty())) {
+pub fn token_from(
+    env_token: Option<String>,
+    token_file: Option<String>,
+) -> Result<Option<ApiToken>, String> {
+    match (
+        env_token.filter(|v| !v.trim().is_empty()),
+        token_file.filter(|v| !v.trim().is_empty()),
+    ) {
         (Some(_), Some(_)) => Err("ROBROZ_TOKEN 和 ROBROZ_TOKEN_FILE 只能设一个".into()),
         (Some(raw), None) => ApiToken::parse(&raw).map_err(|e| format!("ROBROZ_TOKEN: {e}")),
         (None, Some(path)) => {
-            let raw = std::fs::read_to_string(&path).map_err(|e| format!("读不了 ROBROZ_TOKEN_FILE {path}: {e}"))?;
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| format!("读不了 ROBROZ_TOKEN_FILE {path}: {e}"))?;
             ApiToken::parse(&raw).map_err(|e| format!("ROBROZ_TOKEN_FILE: {e}"))
         }
         (None, None) => Ok(None),
@@ -68,7 +75,10 @@ pub fn token_from(env_token: Option<String>, token_file: Option<String>) -> Resu
 }
 
 pub fn token_from_env() -> Result<Option<ApiToken>, String> {
-    token_from(std::env::var("ROBROZ_TOKEN").ok(), std::env::var("ROBROZ_TOKEN_FILE").ok())
+    token_from(
+        std::env::var("ROBROZ_TOKEN").ok(),
+        std::env::var("ROBROZ_TOKEN_FILE").ok(),
+    )
 }
 
 /// Startup guard: a non-loopback listener without a token is refused.
@@ -139,7 +149,10 @@ mod tests {
         assert_eq!(ApiToken::parse("  \n").unwrap(), None);
         assert!(ApiToken::parse("short").is_err());
         assert!(ApiToken::parse("0123456789 abcdefgh").is_err());
-        assert_eq!(ApiToken::parse(&format!("{GOOD}\n")).unwrap(), ApiToken::parse(GOOD).unwrap());
+        assert_eq!(
+            ApiToken::parse(&format!("{GOOD}\n")).unwrap(),
+            ApiToken::parse(GOOD).unwrap()
+        );
     }
 
     #[test]

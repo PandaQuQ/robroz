@@ -19,13 +19,13 @@ use std::path::Path;
 
 use axum::http::StatusCode;
 use robroz_contract::{
-    ApprovalDecision, ConfirmSubject, Event, MemoryKind, MemoryScope, MemorySource, MemoryStatus, Proposal,
-    PROPOSALS_PER_TASK_MAX,
+    ApprovalDecision, ConfirmSubject, Event, MemoryKind, MemoryScope, MemorySource, MemoryStatus,
+    Proposal, PROPOSALS_PER_TASK_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::approvals::{decision_text, parse_decision};
-use crate::{memories, skills, new_id, TimedEvent};
+use crate::{memories, new_id, skills, TimedEvent};
 
 /// `approvals.action` of a confirm card. Approval queries skip these rows.
 pub(crate) const ACTION: &str = "confirm";
@@ -33,15 +33,21 @@ pub(crate) const ACTION: &str = "confirm";
 /// Columns added to `approvals`; ignore "duplicate column" on databases that have them.
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["subject_kind", "subject_id"] {
-        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+        let _ = conn.execute(
+            &format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"),
+            [],
+        );
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS approvals_subject ON approvals(subject_kind, subject_id);")
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS approvals_subject ON approvals(subject_kind, subject_id);",
+    )
 }
 
 /// Good lines of the run's `proposals.jsonl`, in order. Missing file: none.
 /// Bad lines and unknown types are skipped.
 pub(crate) fn read(group_dir: &Path, task_id: &str) -> Vec<Proposal> {
-    let Ok(text) = std::fs::read_to_string(robroz_runner::proposals_path(group_dir, task_id)) else {
+    let Ok(text) = std::fs::read_to_string(robroz_runner::proposals_path(group_dir, task_id))
+    else {
         return Vec::new();
     };
     text.lines().filter_map(Proposal::parse_line).collect()
@@ -61,16 +67,25 @@ pub(crate) fn remove(group_dir: &Path, task_id: &str) -> std::io::Result<()> {
 /// already in use (not forgotten, any status). At most
 /// [`PROPOSALS_PER_TASK_MAX`] are taken, memories and skills together.
 /// Returns how many were stored.
-pub(crate) fn ingest(conn: &Connection, task_id: &str, proposals: &[Proposal], now: &str) -> rusqlite::Result<usize> {
+pub(crate) fn ingest(
+    conn: &Connection,
+    task_id: &str,
+    proposals: &[Proposal],
+    now: &str,
+) -> rusqlite::Result<usize> {
     if proposals.is_empty() {
         return Ok(0);
     }
     let task: Option<(String, String, Option<String>)> = conn
-        .query_row("SELECT group_id, assignee_bot_id, failure FROM tasks WHERE id = ?1", [task_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
+        .query_row(
+            "SELECT group_id, assignee_bot_id, failure FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .optional()?;
-    let Some((group_id, bot_id, None)) = task else { return Ok(0) };
+    let Some((group_id, bot_id, None)) = task else {
+        return Ok(0);
+    };
     let mut stored = 0;
     for proposal in proposals {
         if stored == PROPOSALS_PER_TASK_MAX {
@@ -78,8 +93,12 @@ pub(crate) fn ingest(conn: &Connection, task_id: &str, proposals: &[Proposal], n
         }
         match proposal {
             Proposal::Memory(memory) => {
-                let Ok(text) = memories::clean_text(&memory.text) else { continue };
-                let Some(scope) = resolve_scope(conn, &bot_id, memory.scope.as_deref())? else { continue };
+                let Ok(text) = memories::clean_text(&memory.text) else {
+                    continue;
+                };
+                let Some(scope) = resolve_scope(conn, &bot_id, memory.scope.as_deref())? else {
+                    continue;
+                };
                 if memories::has_live_duplicate(conn, &scope, memory.kind, &text)? {
                     continue;
                 }
@@ -97,14 +116,30 @@ pub(crate) fn ingest(conn: &Connection, task_id: &str, proposals: &[Proposal], n
                         now
                     ],
                 )?;
-                insert_card(conn, &group_id, &bot_id, &text, now, task_id, (ConfirmSubject::Memory, &memory_id))?;
+                insert_card(
+                    conn,
+                    &group_id,
+                    &bot_id,
+                    &text,
+                    now,
+                    task_id,
+                    (ConfirmSubject::Memory, &memory_id),
+                )?;
                 stored += 1;
             }
             Proposal::Skill(skill) => {
-                let Ok(slug) = skills::clean_slug(&skill.slug) else { continue };
-                let Ok(title) = skills::clean_title(&skill.title) else { continue };
-                let Ok(instruction) = skills::clean_instruction(&skill.instruction) else { continue };
-                let Some(scope) = resolve_scope(conn, &bot_id, skill.scope.as_deref())? else { continue };
+                let Ok(slug) = skills::clean_slug(&skill.slug) else {
+                    continue;
+                };
+                let Ok(title) = skills::clean_title(&skill.title) else {
+                    continue;
+                };
+                let Ok(instruction) = skills::clean_instruction(&skill.instruction) else {
+                    continue;
+                };
+                let Some(scope) = resolve_scope(conn, &bot_id, skill.scope.as_deref())? else {
+                    continue;
+                };
                 if skills::has_live_slug(conn, &slug)? {
                     continue;
                 }
@@ -123,7 +158,15 @@ pub(crate) fn ingest(conn: &Connection, task_id: &str, proposals: &[Proposal], n
                         now
                     ],
                 )?;
-                insert_card(conn, &group_id, &bot_id, &title, now, task_id, (ConfirmSubject::Skill, &skill_id))?;
+                insert_card(
+                    conn,
+                    &group_id,
+                    &bot_id,
+                    &title,
+                    now,
+                    task_id,
+                    (ConfirmSubject::Skill, &skill_id),
+                )?;
                 stored += 1;
             }
         }
@@ -131,7 +174,11 @@ pub(crate) fn ingest(conn: &Connection, task_id: &str, proposals: &[Proposal], n
     Ok(stored)
 }
 
-fn resolve_scope(conn: &Connection, bot_id: &str, raw: Option<&str>) -> rusqlite::Result<Option<String>> {
+fn resolve_scope(
+    conn: &Connection,
+    bot_id: &str,
+    raw: Option<&str>,
+) -> rusqlite::Result<Option<String>> {
     match raw {
         None => Ok(Some(MemoryScope::for_bot(bot_id).to_string())),
         Some(raw) => match memories::checked_scope(conn, raw)? {
@@ -163,7 +210,11 @@ fn insert_card(
 /// Whether `id` is a confirm card (answered or not).
 pub(crate) fn is_confirm(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(conn
-        .query_row("SELECT subject_kind IS NOT NULL FROM approvals WHERE id = ?1", [id], |r| r.get::<_, bool>(0))
+        .query_row(
+            "SELECT subject_kind IS NOT NULL FROM approvals WHERE id = ?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
         .optional()?
         .unwrap_or(false))
 }
@@ -257,7 +308,8 @@ pub(crate) fn answer(
     Ok(Ok(load(conn, id)?.expect("confirm card exists")))
 }
 
-const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.subject_kind, a.subject_id, a.task_id, a.decision,
+const SELECT: &str =
+    "SELECT a.id, a.bot_id, b.name, a.subject_kind, a.subject_id, a.task_id, a.decision,
             a.created_at, a.answered_at, a.answered_by, m.kind, m.text, m.scope, m.updated_at,
             s.slug, s.title, s.instruction, s.scope, s.updated_at
      FROM approvals a
@@ -266,14 +318,20 @@ const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.subject_kind, a.subject_i
      LEFT JOIN skills s ON a.subject_kind = 'skill' AND s.id = a.subject_id";
 
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, format!("unknown value {text:?}").into())
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        format!("unknown value {text:?}").into(),
+    )
 }
 
 /// The card and when it last changed (answered, or its memory edited).
 /// `None` for a subject this host does not know.
 fn timed_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<TimedEvent>> {
     let subject: String = row.get(3)?;
-    let Some(subject) = ConfirmSubject::parse(&subject) else { return Ok(None) };
+    let Some(subject) = ConfirmSubject::parse(&subject) else {
+        return Ok(None);
+    };
     let id: String = row.get(0)?;
     let created_at: String = row.get(7)?;
     let answered_at: Option<String> = row.get(8)?;
@@ -281,7 +339,9 @@ fn timed_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<TimedEvent
     let skill_updated: Option<String> = row.get(18)?;
     let decision: Option<String> = row.get(6)?;
     let kind: Option<String> = row.get(10)?;
-    let kind = kind.map(|k| MemoryKind::parse(&k).ok_or_else(|| bad_column(10, &k))).transpose()?;
+    let kind = kind
+        .map(|k| MemoryKind::parse(&k).ok_or_else(|| bad_column(10, &k)))
+        .transpose()?;
     let changed_at = [
         Some(answered_at.clone().unwrap_or_else(|| created_at.clone())),
         memory_updated,
@@ -302,7 +362,13 @@ fn timed_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<TimedEvent
         memory_id: if memory { row.get(4)? } else { None },
         kind,
         text: if memory { row.get(11)? } else { None },
-        scope: if memory { row.get(12)? } else if skill { row.get(17)? } else { None },
+        scope: if memory {
+            row.get(12)?
+        } else if skill {
+            row.get(17)?
+        } else {
+            None
+        },
         slug: if skill { row.get(14)? } else { None },
         title: if skill { row.get(15)? } else { None },
         instruction: if skill { row.get(16)? } else { None },
@@ -311,12 +377,21 @@ fn timed_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<TimedEvent
         answered_at,
         answered_by: row.get(9)?,
     };
-    Ok(Some(TimedEvent { created_at, changed_at, id, event }))
+    Ok(Some(TimedEvent {
+        created_at,
+        changed_at,
+        id,
+        event,
+    }))
 }
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
     Ok(conn
-        .query_row(&format!("{SELECT} WHERE a.id = ?1 AND a.subject_kind IS NOT NULL"), [id], timed_from_row)
+        .query_row(
+            &format!("{SELECT} WHERE a.id = ?1 AND a.subject_kind IS NOT NULL"),
+            [id],
+            timed_from_row,
+        )
         .optional()?
         .flatten()
         .map(|t| t.event))
@@ -324,7 +399,9 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
 
 /// Confirm cards of one group, for `/events` and the live stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
-    let mut stmt = conn.prepare(&format!("{SELECT} WHERE a.group_id = ?1 AND a.subject_kind IS NOT NULL"))?;
+    let mut stmt = conn.prepare(&format!(
+        "{SELECT} WHERE a.group_id = ?1 AND a.subject_kind IS NOT NULL"
+    ))?;
     let rows = stmt.query_map([group_id], timed_from_row)?;
     rows.filter_map(|row| row.transpose()).collect()
 }

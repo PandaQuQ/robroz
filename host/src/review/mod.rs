@@ -23,7 +23,7 @@ pub(crate) mod reviewer;
 pub(crate) mod rules;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use robroz_contract::{ApprovalDecision, APPROVAL_EXPIRED_REASON};
@@ -47,8 +47,19 @@ pub(crate) const BLOCKED: &str = "blocked";
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(rules::SCHEMA)?;
     // Ignore "duplicate column" on databases that have them.
-    for column in ["reason", "expires_at", "review_state", "rule_id"] {
-        let _ = conn.execute(&format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"), []);
+    // `origin_group_id`: the group a bro posted a card in when the host moved
+    // it to the owner's DM; the group still shows it, without buttons.
+    for column in [
+        "reason",
+        "expires_at",
+        "review_state",
+        "rule_id",
+        "origin_group_id",
+    ] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"),
+            [],
+        );
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS approvals_open_expiry ON approvals(expires_at) WHERE decision IS NULL;
@@ -107,20 +118,51 @@ pub(crate) fn open_gate(conn: &Connection, now: &str) -> rusqlite::Result<Gate> 
     }
 }
 
+/// The reviewer to use: a test override, else the host's fixed model, else
+/// the model configured in settings or env. `None` without any model.
+pub(crate) fn reviewer_for(
+    conn: &Connection,
+    reviewer: Option<&Arc<dyn Reviewer>>,
+    model: Option<&Arc<dyn robroz_model::Model>>,
+) -> Option<Arc<dyn Reviewer>> {
+    if let Some(r) = reviewer {
+        return Some(r.clone());
+    }
+    if let Some(m) = model {
+        return Some(Arc::new(ModelReviewer::new(m.clone())));
+    }
+    match crate::model_settings::live_model(conn) {
+        Ok(Some(cfg)) => Some(Arc::new(ModelReviewer::new(Arc::new(
+            robroz_model::OpenAiCompat::new(cfg),
+        )))),
+        Ok(None) => None,
+        Err(err) => {
+            eprintln!("review: model config: {err}");
+            None
+        }
+    }
+}
+
 /// One card waiting for review.
 struct Pending {
     id: String,
     action: String,
 }
 
-fn pending(conn: &Connection) -> rusqlite::Result<Vec<Pending>> {
+/// A bro-posted card is reviewed inside its `POST`; this pass only picks it
+/// up if that request did not finish (for example the client went away).
+pub(crate) const BRO_CARD_GRACE_SECS: i64 = 60;
+
+fn pending(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<Pending>> {
     let mut stmt = conn.prepare(
         "SELECT a.id, a.action, a.summary, a.mcp_server, a.mcp_tool, t.intent_line
          FROM approvals a LEFT JOIN tasks t ON t.id = a.task_id
          WHERE a.review_state = 'pending' AND a.decision IS NULL AND a.subject_kind IS NULL
+           AND (a.task_id IS NOT NULL OR a.created_at <= ?1)
          ORDER BY a.created_at, a.rowid",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let cutoff = rfc3339(now - Duration::seconds(BRO_CARD_GRACE_SECS));
+    let rows = stmt.query_map([cutoff], |r| {
         let action: String = r.get(1)?;
         let summary: String = r.get(2)?;
         let server: Option<String> = r.get(3)?;
@@ -128,14 +170,20 @@ fn pending(conn: &Connection) -> rusqlite::Result<Vec<Pending>> {
         let line: Option<String> = r.get(5)?;
         Ok(Pending {
             id: r.get(0)?,
-            action: describe(&action, &summary, server.as_deref(), tool.as_deref(), line.as_deref()),
+            action: describe(
+                &action,
+                &summary,
+                server.as_deref(),
+                tool.as_deref(),
+                line.as_deref(),
+            ),
         })
     })?;
     rows.collect()
 }
 
 /// What the review model is shown about the action.
-fn describe(
+pub(crate) fn describe(
     action: &str,
     summary: &str,
     server: Option<&str>,
@@ -164,7 +212,7 @@ pub fn run_pending(
 ) -> rusqlite::Result<usize> {
     let (items, rules) = {
         let conn = db.lock().expect("sqlite connection lock poisoned");
-        (pending(&conn)?, rules::texts(&conn)?)
+        (pending(&conn, now)?, rules::texts(&conn)?)
     };
     let mut settled = 0;
     for item in items {
@@ -181,7 +229,7 @@ pub fn run_pending(
 }
 
 /// Write one verdict. `false` when the card is no longer waiting for review.
-fn apply(
+pub(crate) fn apply(
     conn: &mut Connection,
     control_root: &Path,
     id: &str,
@@ -264,7 +312,9 @@ pub fn expire_due(
     };
     let mut expired = Vec::new();
     for id in due {
-        let Some(card) = load_any(conn, &id)? else { continue };
+        let Some(card) = load_any(conn, &id)? else {
+            continue;
+        };
         let settled = settle(
             conn,
             control_root,

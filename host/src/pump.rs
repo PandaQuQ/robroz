@@ -124,7 +124,11 @@ impl Offload {
     }
 
     /// One Watchdog pass at `now` over the database and the steps in flight.
-    pub(crate) fn watchdog_once(&mut self, conn: &Connection, now: Instant) -> rusqlite::Result<()> {
+    pub(crate) fn watchdog_once(
+        &mut self,
+        conn: &Connection,
+        now: Instant,
+    ) -> rusqlite::Result<()> {
         let steps: Vec<(String, Instant)> = self
             .steps
             .in_flight()
@@ -342,7 +346,9 @@ fn start_task(
             let task_id = task.id.clone();
             let spawned = off.state.steps.spawn(&task.id, move || {
                 let mut on_progress = |line: &str| {
-                    if let Err(err) = shared.with(|conn| progress::set_progress(conn, &task_id, line)) {
+                    if let Err(err) =
+                        shared.with(|conn| progress::set_progress(conn, &task_id, line))
+                    {
                         eprintln!("pump: progress for {task_id}: {err}");
                     }
                 };

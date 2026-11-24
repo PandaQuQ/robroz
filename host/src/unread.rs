@@ -13,7 +13,9 @@ use axum::Json;
 use robroz_contract::{MarkRead, Unread, Unreads};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{db_error, error_response, group_exists, lock_db, now_rfc3339, parse_since, AppState, TENANT_ID};
+use crate::{
+    db_error, error_response, group_exists, lock_db, now_rfc3339, parse_since, AppState, TENANT_ID,
+};
 
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_reads (
     group_id TEXT PRIMARY KEY,
@@ -24,7 +26,8 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_reads (
 const UNREAD_SQL: &str = "SELECT
     (SELECT COUNT(*) FROM deliveries WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM choices WHERE group_id = ?1 AND created_at > ?2)
-  + (SELECT COUNT(*) FROM approvals WHERE group_id = ?1 AND created_at > ?2)
+  + (SELECT COUNT(*) FROM approvals WHERE (group_id = ?1 OR origin_group_id = ?1) AND created_at > ?2
+       AND (review_state IS NULL OR review_state = 'blocked'))
   + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2)";
 
 const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
@@ -32,28 +35,45 @@ const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
     UNION ALL SELECT MAX(updated_at) FROM tasks WHERE group_id = ?1
     UNION ALL SELECT MAX(created_at) FROM deliveries WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM choices WHERE group_id = ?1
-    UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM approvals WHERE group_id = ?1
+    UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM approvals
+      WHERE (group_id = ?1 OR origin_group_id = ?1) AND (review_state IS NULL OR review_state = 'blocked')
 )";
 
 fn read_at(conn: &Connection, group_id: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT read_at FROM group_reads WHERE group_id = ?1", [group_id], |r| r.get(0))
-        .optional()
+    conn.query_row(
+        "SELECT read_at FROM group_reads WHERE group_id = ?1",
+        [group_id],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 fn unread_of(conn: &Connection, group_id: &str) -> rusqlite::Result<Unread> {
     let read_at = read_at(conn, group_id)?;
     let floor = read_at.clone().unwrap_or_default();
     let unread: i64 = conn.query_row(UNREAD_SQL, params![group_id, floor], |r| r.get(0))?;
-    let last_activity_at: Option<String> = conn.query_row(LAST_ACTIVITY_SQL, [group_id], |r| r.get(0))?;
-    Ok(Unread { group_id: group_id.to_string(), read_at, unread: unread as u64, last_activity_at })
+    let last_activity_at: Option<String> =
+        conn.query_row(LAST_ACTIVITY_SQL, [group_id], |r| r.get(0))?;
+    Ok(Unread {
+        group_id: group_id.to_string(),
+        read_at,
+        unread: unread as u64,
+        last_activity_at,
+    })
 }
 
 pub(crate) async fn list_unread(State(state): State<AppState>) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
-        let mut stmt = conn.prepare("SELECT id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid")?;
-        let ids = stmt.query_map([TENANT_ID], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut groups = ids.iter().map(|id| unread_of(&conn, id)).collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt =
+            conn.prepare("SELECT id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid")?;
+        let ids = stmt
+            .query_map([TENANT_ID], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut groups = ids
+            .iter()
+            .map(|id| unread_of(&conn, id))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         // Newest activity first; empty groups last, in creation order (stable sort).
         groups.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
         Ok::<_, rusqlite::Error>(Unreads { groups })
@@ -65,7 +85,10 @@ pub(crate) async fn list_unread(State(state): State<AppState>) -> Response {
     }
 }
 
-pub(crate) async fn group_unread(State(state): State<AppState>, AxumPath(group_id): AxumPath<String>) -> Response {
+pub(crate) async fn group_unread(
+    State(state): State<AppState>,
+    AxumPath(group_id): AxumPath<String>,
+) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
         if !group_exists(&conn, &group_id)? {

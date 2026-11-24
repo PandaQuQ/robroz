@@ -40,7 +40,10 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<ScheduleEntry>> 
     .optional()
 }
 
-pub(crate) fn list_for_group(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<ScheduleEntry>> {
+pub(crate) fn list_for_group(
+    conn: &Connection,
+    group_id: &str,
+) -> rusqlite::Result<Vec<ScheduleEntry>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM schedules WHERE group_id = ?1 ORDER BY created_at, id"
     ))?;
@@ -49,7 +52,11 @@ pub(crate) fn list_for_group(conn: &Connection, group_id: &str) -> rusqlite::Res
 }
 
 /// Sets or clears `paused_at`. Pausing twice keeps the first timestamp.
-pub(crate) fn set_paused(conn: &Connection, id: &str, paused: bool) -> rusqlite::Result<Option<ScheduleEntry>> {
+pub(crate) fn set_paused(
+    conn: &Connection,
+    id: &str,
+    paused: bool,
+) -> rusqlite::Result<Option<ScheduleEntry>> {
     let Some(current) = load(conn, id)? else {
         return Ok(None);
     };

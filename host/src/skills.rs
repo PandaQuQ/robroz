@@ -29,8 +29,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use robroz_contract::{
-    parse_skill_slug, CreateSkill, MemoryScope, MemorySource, MemoryStatus, Skill, Skills, UpdateSkill,
-    SKILL_INSTRUCTION_MAX, SKILL_TITLE_MAX,
+    parse_skill_slug, CreateSkill, MemoryScope, MemorySource, MemoryStatus, Skill, Skills,
+    UpdateSkill, SKILL_INSTRUCTION_MAX, SKILL_TITLE_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 
@@ -59,7 +59,8 @@ pub(crate) const SCHEMA: &str = "
 ";
 
 /// The last column is the open confirm card of a pending skill, if any.
-const SELECT: &str = "SELECT skills.id, skills.scope, skills.slug, skills.title, skills.instruction,
+const SELECT: &str =
+    "SELECT skills.id, skills.scope, skills.slug, skills.title, skills.instruction,
             skills.source, skills.status, skills.created_at, skills.updated_at,
             (SELECT a.id FROM approvals a
              WHERE a.subject_kind = 'skill' AND a.subject_id = skills.id AND a.decision IS NULL
@@ -75,7 +76,11 @@ const SLUG_TAKEN: &str = "这个 slug 已经有了";
 const NOT_FOUND: &str = "技能不存在";
 const GROUP_NOT_FOUND: &str = "群不存在";
 fn bad_column(column: usize, text: &str) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, format!("unknown value {text:?}").into())
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        format!("unknown value {text:?}").into(),
+    )
 }
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
@@ -91,22 +96,40 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
         status: MemoryStatus::parse(&status).ok_or_else(|| bad_column(6, &status))?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
-        confirm_id: if status == MemoryStatus::Pending.as_str() { row.get(9)? } else { None },
+        confirm_id: if status == MemoryStatus::Pending.as_str() {
+            row.get(9)?
+        } else {
+            None
+        },
     })
 }
 
 fn load_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Skill>> {
-    conn.query_row(&format!("{SELECT} WHERE id = ?1 AND forgotten_at IS NULL"), [id], from_row).optional()
+    conn.query_row(
+        &format!("{SELECT} WHERE id = ?1 AND forgotten_at IS NULL"),
+        [id],
+        from_row,
+    )
+    .optional()
 }
 
 fn load_by_slug(conn: &Connection, slug: &str) -> rusqlite::Result<Option<Skill>> {
-    conn.query_row(&format!("{SELECT} WHERE slug = ?1 AND forgotten_at IS NULL"), [slug], from_row).optional()
+    conn.query_row(
+        &format!("{SELECT} WHERE slug = ?1 AND forgotten_at IS NULL"),
+        [slug],
+        from_row,
+    )
+    .optional()
 }
 
 /// A live (not forgotten) skill with this slug, any status.
 pub(crate) fn has_live_slug(conn: &Connection, slug: &str) -> rusqlite::Result<bool> {
     let found: Option<i64> = conn
-        .query_row("SELECT 1 FROM skills WHERE slug = ?1 AND forgotten_at IS NULL", [slug], |r| r.get(0))
+        .query_row(
+            "SELECT 1 FROM skills WHERE slug = ?1 AND forgotten_at IS NULL",
+            [slug],
+            |r| r.get(0),
+        )
         .optional()?;
     Ok(found.is_some())
 }
@@ -126,7 +149,11 @@ pub(crate) fn enabled_for(conn: &Connection, group_id: &str) -> rusqlite::Result
 
 /// Kept, not forgotten skills a bro may use in this group: everyone's (`user`)
 /// plus its own (`bot:<id>`), enabled on the group, newest `updatedAt` first.
-pub(crate) fn kept_for(conn: &Connection, bot_id: &str, group_id: &str) -> rusqlite::Result<Vec<Skill>> {
+pub(crate) fn kept_for(
+    conn: &Connection,
+    bot_id: &str,
+    group_id: &str,
+) -> rusqlite::Result<Vec<Skill>> {
     let mut stmt = conn.prepare(&format!(
         "{SELECT}
          JOIN group_skills g ON g.slug = skills.slug
@@ -146,7 +173,10 @@ pub(crate) const SKILL_PROMPT_MAX: usize = 8000;
 const SKILL_PROMPT_HEADER: &str = "你会这些技能：";
 
 fn prompt_block(skill: &Skill) -> String {
-    format!("### {} ({})\n{}", skill.title, skill.slug, skill.instruction)
+    format!(
+        "### {} ({})\n{}",
+        skill.title, skill.slug, skill.instruction
+    )
 }
 
 /// The paragraph to append to the system prompt, or `None` when there is
@@ -207,7 +237,10 @@ pub(crate) fn clean_slug(raw: &str) -> Result<String, &'static str> {
 }
 
 fn is_unique_violation(err: &rusqlite::Error) -> bool {
-    matches!(err.sqlite_error_code(), Some(rusqlite::ErrorCode::ConstraintViolation))
+    matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::ConstraintViolation)
+    )
 }
 
 fn body_error(rejection: JsonRejection) -> Response {
@@ -217,12 +250,17 @@ fn body_error(rejection: JsonRejection) -> Response {
 
 type ListQuery = std::collections::HashMap<String, String>;
 
-pub(crate) async fn list_skills(State(state): State<AppState>, Query(query): Query<ListQuery>) -> Response {
+pub(crate) async fn list_skills(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Response {
     let param = |key: &str| query.get(key).map(String::as_str).filter(|v| !v.is_empty());
     let mut filters = vec!["forgotten_at IS NULL".to_string()];
     let mut values: Vec<String> = Vec::new();
     if let Some(scope) = param("scope") {
-        let Some(scope) = MemoryScope::parse(scope) else { return error_response(StatusCode::BAD_REQUEST, BAD_SCOPE) };
+        let Some(scope) = MemoryScope::parse(scope) else {
+            return error_response(StatusCode::BAD_REQUEST, BAD_SCOPE);
+        };
         values.push(scope.to_string());
         filters.push(format!("scope = ?{}", values.len()));
     }
@@ -241,7 +279,9 @@ pub(crate) async fn list_skills(State(state): State<AppState>, Query(query): Que
     let result = (|| {
         let mut stmt = conn.prepare(&sql)?;
         let args: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
-        let skills = stmt.query_map(args.as_slice(), from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let skills = stmt
+            .query_map(args.as_slice(), from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok::<_, rusqlite::Error>(Skills { skills })
     })();
     drop(conn);
@@ -314,7 +354,12 @@ pub(crate) async fn update_skill(
         Ok(title) => title,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, msg),
     };
-    let instruction = match body.instruction.as_deref().map(clean_instruction).transpose() {
+    let instruction = match body
+        .instruction
+        .as_deref()
+        .map(clean_instruction)
+        .transpose()
+    {
         Ok(instruction) => instruction,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, msg),
     };
@@ -323,7 +368,9 @@ pub(crate) async fn update_skill(
     };
     let conn = lock_db(&state);
     let result = (|| {
-        let Some(current) = load_by_slug(&conn, &slug)? else { return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND))) };
+        let Some(current) = load_by_slug(&conn, &slug)? else {
+            return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND)));
+        };
         let scope = match body.scope.as_deref() {
             None => current.scope,
             Some(raw) => match crate::memories::checked_scope(&conn, raw)? {
@@ -348,7 +395,10 @@ pub(crate) async fn update_skill(
     }
 }
 
-pub(crate) async fn forget_skill(State(state): State<AppState>, AxumPath(slug): AxumPath<String>) -> Response {
+pub(crate) async fn forget_skill(
+    State(state): State<AppState>,
+    AxumPath(slug): AxumPath<String>,
+) -> Response {
     let Some(slug) = parse_skill_slug(&slug).map(str::to_string) else {
         return error_response(StatusCode::NOT_FOUND, NOT_FOUND);
     };
@@ -365,9 +415,17 @@ pub(crate) async fn forget_skill(State(state): State<AppState>, AxumPath(slug): 
             Some((_, Some(_))) => Ok(true),
             Some((id, None)) => {
                 let now = now_rfc3339();
-                conn.execute("UPDATE skills SET forgotten_at = ?2 WHERE id = ?1", params![id, now])?;
+                conn.execute(
+                    "UPDATE skills SET forgotten_at = ?2 WHERE id = ?1",
+                    params![id, now],
+                )?;
                 conn.execute("DELETE FROM group_skills WHERE slug = ?1", [&slug])?;
-                crate::proposals::close_for_forgotten(&conn, robroz_contract::ConfirmSubject::Skill, &id, &now)?;
+                crate::proposals::close_for_forgotten(
+                    &conn,
+                    robroz_contract::ConfirmSubject::Skill,
+                    &id,
+                    &now,
+                )?;
                 conn.commit()?;
                 Ok::<_, rusqlite::Error>(true)
             }
@@ -390,7 +448,9 @@ pub(crate) async fn list_group_skills(
         if !crate::group_exists(&conn, &group_id)? {
             return Ok(Err((StatusCode::NOT_FOUND, GROUP_NOT_FOUND)));
         }
-        Ok(Ok(Skills { skills: enabled_for(&conn, &group_id)? }))
+        Ok(Ok(Skills {
+            skills: enabled_for(&conn, &group_id)?,
+        }))
     })();
     drop(conn);
     match result {
@@ -444,7 +504,10 @@ pub(crate) async fn disable_skill(
         if load_by_slug(&conn, &slug)?.is_none() {
             return Ok(Err((StatusCode::NOT_FOUND, NOT_FOUND)));
         }
-        conn.execute("DELETE FROM group_skills WHERE group_id = ?1 AND slug = ?2", params![group_id, slug])?;
+        conn.execute(
+            "DELETE FROM group_skills WHERE group_id = ?1 AND slug = ?2",
+            params![group_id, slug],
+        )?;
         Ok::<_, rusqlite::Error>(Ok(()))
     })();
     drop(conn);
@@ -467,7 +530,10 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    use super::{enabled_for, kept_for, prompt_section, prompt_section_with, SCHEMA, SKILL_PROMPT_HEADER, SKILL_PROMPT_MAX};
+    use super::{
+        enabled_for, kept_for, prompt_section, prompt_section_with, SCHEMA, SKILL_PROMPT_HEADER,
+        SKILL_PROMPT_MAX,
+    };
 
     fn temp_path(ext: &str) -> PathBuf {
         std::env::temp_dir().join(format!("robroz-skill-test-{}.{ext}", uuid::Uuid::new_v4()))
@@ -483,7 +549,12 @@ mod tests {
         (router, db)
     }
 
-    async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(uri);
         let body = match body {
             Some(v) => {
@@ -495,7 +566,11 @@ mod tests {
         let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
         (status, value)
     }
 
@@ -505,12 +580,20 @@ mod tests {
         bro["id"].as_str().unwrap().to_string()
     }
 
-    async fn post_skill(app: &Router, scope: &str, slug: &str, title: &str, instruction: &str) -> (StatusCode, Value) {
+    async fn post_skill(
+        app: &Router,
+        scope: &str,
+        slug: &str,
+        title: &str,
+        instruction: &str,
+    ) -> (StatusCode, Value) {
         send(
             app,
             "POST",
             "/api/skills",
-            Some(json!({ "scope": scope, "slug": slug, "title": title, "instruction": instruction })),
+            Some(
+                json!({ "scope": scope, "slug": slug, "title": title, "instruction": instruction }),
+            ),
         )
         .await
     }
@@ -535,22 +618,41 @@ mod tests {
     async fn crud_lists_filters_and_rejects_a_taken_slug() {
         let (app, _) = app();
         let ada = new_bro(&app, "Ada").await;
-        let (status, weekly) = post_skill(&app, "user", "weekly-report", "写周报", "先列三点").await;
+        let (status, weekly) =
+            post_skill(&app, "user", "weekly-report", "写周报", "先列三点").await;
         assert_eq!(status, StatusCode::CREATED, "{weekly}");
         assert_eq!(weekly["slug"], "weekly-report");
         assert_eq!(weekly["status"], "kept");
         assert_eq!(weekly["source"], "user");
         assert!(weekly.get("confirmId").is_none());
 
-        let (status, _) = post_skill(&app, &format!("bot:{ada}"), "weekly-report", "另一个", "说明").await;
+        let (status, _) = post_skill(
+            &app,
+            &format!("bot:{ada}"),
+            "weekly-report",
+            "另一个",
+            "说明",
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT);
 
-        let (status, ada_skill) = post_skill(&app, &format!("bot:{ada}"), "ada-notes", "Ada 的笔记", "只给 Ada").await;
+        let (status, ada_skill) = post_skill(
+            &app,
+            &format!("bot:{ada}"),
+            "ada-notes",
+            "Ada 的笔记",
+            "只给 Ada",
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{ada_skill}");
 
         let (status, body) = send(&app, "GET", "/api/skills", None).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["skills"].as_array().unwrap().len(), 2, "newest first, both kept");
+        assert_eq!(
+            body["skills"].as_array().unwrap().len(),
+            2,
+            "newest first, both kept"
+        );
         assert_eq!(body["skills"][0]["slug"], "ada-notes");
 
         let (status, body) = send(&app, "GET", &format!("/api/skills?scope=bot:{ada}"), None).await;
@@ -558,11 +660,21 @@ mod tests {
         assert_eq!(body["skills"].as_array().unwrap().len(), 1);
         assert_eq!(body["skills"][0]["slug"], "ada-notes");
 
-        let (status, body) = send(&app, "PATCH", "/api/skills/weekly-report", Some(json!({ "title": "周报", "instruction": "用中文" }))).await;
+        let (status, body) = send(
+            &app,
+            "PATCH",
+            "/api/skills/weekly-report",
+            Some(json!({ "title": "周报", "instruction": "用中文" })),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!((body["title"].as_str(), body["instruction"].as_str()), (Some("周报"), Some("用中文")));
+        assert_eq!(
+            (body["title"].as_str(), body["instruction"].as_str()),
+            (Some("周报"), Some("用中文"))
+        );
 
-        let (status, body) = send(&app, "PATCH", "/api/skills/weekly-report", Some(json!({}))).await;
+        let (status, body) =
+            send(&app, "PATCH", "/api/skills/weekly-report", Some(json!({}))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "没有要改的内容");
 
@@ -579,7 +691,13 @@ mod tests {
         let (status, _) = post_skill(&app, "user", "weekly-report", "写周报", "再记一次").await;
         assert_eq!(status, StatusCode::CREATED);
 
-        let (status, body) = send(&app, "PATCH", "/api/skills/nope", Some(json!({ "title": "x" }))).await;
+        let (status, body) = send(
+            &app,
+            "PATCH",
+            "/api/skills/nope",
+            Some(json!({ "title": "x" })),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "技能不存在");
         let (status, _) = send(&app, "DELETE", "/api/skills/nope", None).await;
@@ -590,12 +708,30 @@ mod tests {
     async fn create_rejects_bad_fields_and_unknown_bros() {
         let (app, _) = app();
         for (body, status) in [
-            (json!({ "scope": "user", "slug": "Weekly", "title": "t", "instruction": "i" }), StatusCode::BAD_REQUEST),
-            (json!({ "scope": "user", "slug": "ok", "title": "  ", "instruction": "i" }), StatusCode::BAD_REQUEST),
-            (json!({ "scope": "user", "slug": "ok", "title": "t", "instruction": "  " }), StatusCode::BAD_REQUEST),
-            (json!({ "scope": "bot:nobody", "slug": "ok", "title": "t", "instruction": "i" }), StatusCode::BAD_REQUEST),
-            (json!({ "scope": "group:g1", "slug": "ok", "title": "t", "instruction": "i" }), StatusCode::BAD_REQUEST),
-            (json!({ "scope": "user", "slug": "ok", "title": "t", "instruction": "长".repeat(8001) }), StatusCode::BAD_REQUEST),
+            (
+                json!({ "scope": "user", "slug": "Weekly", "title": "t", "instruction": "i" }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "scope": "user", "slug": "ok", "title": "  ", "instruction": "i" }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "scope": "user", "slug": "ok", "title": "t", "instruction": "  " }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "scope": "bot:nobody", "slug": "ok", "title": "t", "instruction": "i" }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "scope": "group:g1", "slug": "ok", "title": "t", "instruction": "i" }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "scope": "user", "slug": "ok", "title": "t", "instruction": "长".repeat(8001) }),
+                StatusCode::BAD_REQUEST,
+            ),
         ] {
             let (got, error) = send(&app, "POST", "/api/skills", Some(body.clone())).await;
             assert_eq!(got, status, "{body} {error}");
@@ -609,7 +745,8 @@ mod tests {
     #[tokio::test]
     async fn group_skills_list_tracks_enable_disable_forget_and_missing() {
         let (app, _) = app();
-        let (status, group) = send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
+        let (status, group) =
+            send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
         assert_eq!(status, StatusCode::CREATED);
         let group_id = group["id"].as_str().unwrap();
         let list = format!("/api/groups/{group_id}/skills");
@@ -626,21 +763,48 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "not enabled yet");
         assert_eq!(body["skills"].as_array().unwrap().len(), 0);
 
-        let (status, _) = send(&app, "PUT", &format!("/api/groups/{group_id}/skills/weekly-report"), None).await;
+        let (status, _) = send(
+            &app,
+            "PUT",
+            &format!("/api/groups/{group_id}/skills/weekly-report"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, body) = send(&app, "GET", &list, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["skills"].as_array().unwrap().len(), 1);
         assert_eq!(body["skills"][0]["slug"], "weekly-report");
 
-        let (status, _) = send(&app, "PUT", &format!("/api/groups/{group_id}/skills/ada-notes"), None).await;
+        let (status, _) = send(
+            &app,
+            "PUT",
+            &format!("/api/groups/{group_id}/skills/ada-notes"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, body) = send(&app, "GET", &list, None).await;
         assert_eq!(status, StatusCode::OK);
-        let slugs: Vec<&str> = body["skills"].as_array().unwrap().iter().map(|s| s["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, ["ada-notes", "weekly-report"], "newest updatedAt first");
+        let slugs: Vec<&str> = body["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            slugs,
+            ["ada-notes", "weekly-report"],
+            "newest updatedAt first"
+        );
 
-        let (status, _) = send(&app, "DELETE", &format!("/api/groups/{group_id}/skills/weekly-report"), None).await;
+        let (status, _) = send(
+            &app,
+            "DELETE",
+            &format!("/api/groups/{group_id}/skills/weekly-report"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, body) = send(&app, "GET", &list, None).await;
         assert_eq!(status, StatusCode::OK);
@@ -661,7 +825,8 @@ mod tests {
     #[tokio::test]
     async fn group_enable_is_idempotent_and_missing_is_404() {
         let (app, _) = app();
-        let (status, group) = send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
+        let (status, group) =
+            send(&app, "POST", "/api/groups", Some(json!({ "name": "工作" }))).await;
         assert_eq!(status, StatusCode::CREATED);
         let group_id = group["id"].as_str().unwrap();
         let (status, _) = post_skill(&app, "user", "weekly-report", "写周报", "先列三点").await;
@@ -677,10 +842,22 @@ mod tests {
         let (status, _) = send(&app, "DELETE", &uri, None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let (status, body) = send(&app, "PUT", "/api/groups/missing/skills/weekly-report", None).await;
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "/api/groups/missing/skills/weekly-report",
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "群不存在");
-        let (status, body) = send(&app, "PUT", &format!("/api/groups/{group_id}/skills/nope"), None).await;
+        let (status, body) = send(
+            &app,
+            "PUT",
+            &format!("/api/groups/{group_id}/skills/nope"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "技能不存在");
     }
@@ -689,7 +866,10 @@ mod tests {
     async fn skills_require_the_api_token() {
         let db = temp_path("db");
         let token = crate::auth::ApiToken::parse("0123456789abcdef-good").unwrap();
-        let app = crate::Host::open(&db, temp_path("volumes"), "robroz-runner:local").unwrap().with_token(token).router();
+        let app = crate::Host::open(&db, temp_path("volumes"), "robroz-runner:local")
+            .unwrap()
+            .with_token(token)
+            .router();
         for (method, uri) in [
             ("GET", "/api/skills"),
             ("POST", "/api/skills"),
@@ -736,7 +916,13 @@ mod tests {
             Some("你会这些技能：\n### 新 (n)\nN")
         );
         assert_eq!(prompt_section_with(&[newer, older], one - 1), None);
-        assert!(prompt_section(&[sample("s", "短", "x")]).unwrap().chars().count() <= SKILL_PROMPT_MAX);
+        assert!(
+            prompt_section(&[sample("s", "短", "x")])
+                .unwrap()
+                .chars()
+                .count()
+                <= SKILL_PROMPT_MAX
+        );
     }
 
     #[test]
@@ -755,14 +941,70 @@ mod tests {
         let _ = conn.execute("ALTER TABLE approvals ADD COLUMN task_id TEXT", []);
         crate::proposals::migrate(&conn).unwrap();
         let rows = [
-            ("shared", "user", "kept", "shared", None, "2026-01-01T00:00:01.000Z"),
-            ("ada-old", "bot:ada", "kept", "ada-old", None, "2026-01-01T00:00:00.000Z"),
-            ("ada-new", "bot:ada", "kept", "ada-new", None, "2026-01-01T00:00:02.000Z"),
-            ("bob", "bot:bob", "kept", "bob", None, "2026-01-01T00:00:03.000Z"),
-            ("pending", "user", "pending", "pending", None, "2026-01-01T00:00:04.000Z"),
-            ("rejected", "bot:ada", "rejected", "rejected", None, "2026-01-01T00:00:05.000Z"),
-            ("forgotten", "user", "kept", "forgotten", Some("2026-01-02T00:00:00.000Z"), "2026-01-01T00:00:06.000Z"),
-            ("off", "user", "kept", "off", None, "2026-01-01T00:00:07.000Z"),
+            (
+                "shared",
+                "user",
+                "kept",
+                "shared",
+                None,
+                "2026-01-01T00:00:01.000Z",
+            ),
+            (
+                "ada-old",
+                "bot:ada",
+                "kept",
+                "ada-old",
+                None,
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (
+                "ada-new",
+                "bot:ada",
+                "kept",
+                "ada-new",
+                None,
+                "2026-01-01T00:00:02.000Z",
+            ),
+            (
+                "bob",
+                "bot:bob",
+                "kept",
+                "bob",
+                None,
+                "2026-01-01T00:00:03.000Z",
+            ),
+            (
+                "pending",
+                "user",
+                "pending",
+                "pending",
+                None,
+                "2026-01-01T00:00:04.000Z",
+            ),
+            (
+                "rejected",
+                "bot:ada",
+                "rejected",
+                "rejected",
+                None,
+                "2026-01-01T00:00:05.000Z",
+            ),
+            (
+                "forgotten",
+                "user",
+                "kept",
+                "forgotten",
+                Some("2026-01-02T00:00:00.000Z"),
+                "2026-01-01T00:00:06.000Z",
+            ),
+            (
+                "off",
+                "user",
+                "kept",
+                "off",
+                None,
+                "2026-01-01T00:00:07.000Z",
+            ),
         ];
         for (id, scope, status, slug, forgotten, at) in rows {
             conn.execute(
@@ -772,7 +1014,15 @@ mod tests {
             )
             .unwrap();
         }
-        for slug in ["shared", "ada-old", "ada-new", "bob", "pending", "rejected", "forgotten"] {
+        for slug in [
+            "shared",
+            "ada-old",
+            "ada-new",
+            "bob",
+            "pending",
+            "rejected",
+            "forgotten",
+        ] {
             conn.execute(
                 "INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g1', ?1, '2026-01-01T00:00:00.000Z')",
                 [slug],
@@ -780,7 +1030,13 @@ mod tests {
             .unwrap();
         }
         // `off` is kept and in scope but not enabled on the group.
-        let slugs = |bot: &str| kept_for(&conn, bot, "g1").unwrap().into_iter().map(|s| s.slug).collect::<Vec<_>>();
+        let slugs = |bot: &str| {
+            kept_for(&conn, bot, "g1")
+                .unwrap()
+                .into_iter()
+                .map(|s| s.slug)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(slugs("ada"), ["ada-new", "shared", "ada-old"]);
         assert_eq!(slugs("bob"), ["bob", "shared"]);
         assert_eq!(slugs("carol"), ["shared"]);
@@ -788,8 +1044,16 @@ mod tests {
         assert!(section.contains("### ada-new (ada-new)"));
         assert!(section.contains("### shared (shared)"));
         assert!(section.contains("### ada-old (ada-old)"));
-        assert!(!section.contains("bob") && !section.contains("pending") && !section.contains("rejected"));
-        assert!(!section.contains("forgotten") && !section.contains("\noff") && !section.contains("(off)"));
+        assert!(
+            !section.contains("bob")
+                && !section.contains("pending")
+                && !section.contains("rejected")
+        );
+        assert!(
+            !section.contains("forgotten")
+                && !section.contains("\noff")
+                && !section.contains("(off)")
+        );
         assert!(kept_for(&conn, "ada", "g-missing").unwrap().is_empty());
     }
 
@@ -803,7 +1067,13 @@ mod tests {
         // Enable a forgotten skill by leaving a leftover group_skills row.
         let rows = [
             ("live", "kept", "live", None, "2026-01-01T00:00:02.000Z"),
-            ("gone", "kept", "gone", Some("2026-01-01T00:00:03.000Z"), "2026-01-01T00:00:01.000Z"),
+            (
+                "gone",
+                "kept",
+                "gone",
+                Some("2026-01-01T00:00:03.000Z"),
+                "2026-01-01T00:00:01.000Z",
+            ),
             ("other", "kept", "other", None, "2026-01-01T00:00:04.000Z"),
         ];
         for (id, status, slug, forgotten, at) in rows {
@@ -817,7 +1087,11 @@ mod tests {
         conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g1', 'live', '2026-01-01T00:00:00.000Z')", []).unwrap();
         conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g1', 'gone', '2026-01-01T00:00:00.000Z')", []).unwrap();
         conn.execute("INSERT INTO group_skills (group_id, slug, created_at) VALUES ('g2', 'other', '2026-01-01T00:00:00.000Z')", []).unwrap();
-        let slugs = enabled_for(&conn, "g1").unwrap().into_iter().map(|s| s.slug).collect::<Vec<_>>();
+        let slugs = enabled_for(&conn, "g1")
+            .unwrap()
+            .into_iter()
+            .map(|s| s.slug)
+            .collect::<Vec<_>>();
         assert_eq!(slugs, ["live"]);
         assert!(enabled_for(&conn, "g-missing").unwrap().is_empty());
     }

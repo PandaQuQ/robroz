@@ -39,8 +39,12 @@ pub fn review_with_retry(reviewer: &dyn Reviewer, action: &str, rules: &[String]
     }
     for attempt in 1..=2 {
         match reviewer.review(action, rules) {
-            Ok(Verdict::Allow(reason)) => return Verdict::Allow(clean_reason(&reason, "符合放行规则")),
-            Ok(Verdict::Block(reason)) => return Verdict::Block(clean_reason(&reason, NO_MATCH_REASON)),
+            Ok(Verdict::Allow(reason)) => {
+                return Verdict::Allow(clean_reason(&reason, "符合放行规则"))
+            }
+            Ok(Verdict::Block(reason)) => {
+                return Verdict::Block(clean_reason(&reason, NO_MATCH_REASON))
+            }
             Err(err) => eprintln!("review: attempt {attempt} failed: {err}"),
         }
     }
