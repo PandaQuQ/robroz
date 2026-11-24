@@ -21,7 +21,7 @@
 
 <!-- TODO(screenshot): main window -->
 
-桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [configuration.md](configuration.md)。
+桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
 ## 现在能用的
 
