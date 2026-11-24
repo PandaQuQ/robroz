@@ -97,6 +97,10 @@ fn english_batch_one_copy() {
         "Blocked because: "
     );
     assert_eq!(Key::StatusKindUnknown.as_str(), "Action");
+    assert_eq!(
+        crate::cards::confirm::decide_failed("timeout"),
+        "Failed: timeout"
+    );
 }
 
 #[test]

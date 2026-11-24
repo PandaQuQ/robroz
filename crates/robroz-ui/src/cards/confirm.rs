@@ -27,7 +27,7 @@ pub const DROPPED: Key = Key::ConfirmDropped;
 pub const ALREADY_ANSWERED: Key = Key::ConfirmAlreadyAnswered;
 /// 记下 / 不用 failed on the 记忆 page: 「没成功：<reason>」.
 pub fn decide_failed(reason: &str) -> String {
-    Key::InteractFailed.fill(&[&crate::i18n::host_text(reason)])
+    Key::ConfirmDecideFailed.fill(&[&crate::i18n::host_text(reason)])
 }
 /// Skill instructions show this many lines until opened.
 pub const INSTRUCTION_LINES: usize = 3;

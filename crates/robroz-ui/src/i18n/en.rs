@@ -287,6 +287,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ConfirmShowAll => "Show all",
         // 收起  [approved, batch 1]
         Key::ConfirmShowLess => "Show less",
+        // 没成功：{0}  [approved, batch 1]
+        Key::ConfirmDecideFailed => "Failed: {0}",
         // 还有 {0} 条待确认  [approved, batch 1]
         Key::ConfirmMoreLabel => "{0} more to review",
 

@@ -149,6 +149,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ConfirmAlreadyAnswered => "已经有人处理过了，正在刷新",
         Key::ConfirmShowAll => "展开",
         Key::ConfirmShowLess => "收起",
+        Key::ConfirmDecideFailed => "没成功：{0}",
         Key::ConfirmMoreLabel => "还有 {0} 条待确认",
 
         // ---- Client feed (client/src/model.rs) ----
