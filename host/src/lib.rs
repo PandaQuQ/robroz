@@ -37,6 +37,7 @@ mod steps;
 mod stream;
 mod text;
 mod tools;
+pub mod turns;
 mod unread;
 pub mod watchdog;
 
@@ -506,6 +507,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
     // Auto-review: allow rules, card expiry and review state.
     review::migrate(conn)?;
+    turns::migrate(conn)?;
     Ok(())
 }
 
@@ -1030,7 +1032,7 @@ fn group_events(
                     )
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
-             WHERE t.group_id = ?1",
+             WHERE t.group_id = ?1 AND t.turn_hidden = 0",
         )?;
         let tasks = task_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
@@ -5133,7 +5135,7 @@ mod tests {
         db: &Path,
         volumes: &Path,
         sandbox: &mut dyn super::Sandbox,
-        model: &FakeModel,
+        model: &dyn robroz_model::Model,
     ) {
         let conn = Connection::open(db).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -6561,5 +6563,232 @@ mod tests {
             .unwrap();
         conn.prepare("SELECT slug, title, instruction FROM skills")
             .unwrap();
+    }
+
+    // ---- group turns ----
+
+    /// Answers from a script, in call order, and records every prompt.
+    struct TurnModel {
+        answers: std::sync::Mutex<Vec<Result<String, String>>>,
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl TurnModel {
+        fn new(answers: &[Result<&str, &str>]) -> Self {
+            Self {
+                answers: std::sync::Mutex::new(
+                    answers
+                        .iter()
+                        .map(|a| a.map(str::to_string).map_err(str::to_string))
+                        .collect(),
+                ),
+                prompts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.lock().unwrap().clone()
+        }
+    }
+
+    impl robroz_model::Model for TurnModel {
+        fn reply(&self, prompt: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
+            self.prompts.lock().unwrap().push(prompt.to_string());
+            let mut answers = self.answers.lock().unwrap();
+            assert!(!answers.is_empty(), "unexpected model call: {prompt}");
+            answers.remove(0).map_err(robroz_model::ModelError)
+        }
+    }
+
+    /// Pump, let every running container finish, repeat.
+    fn run_rounds(
+        db: &Path,
+        volumes: &Path,
+        fake: &mut super::sandbox::FakeSandbox,
+        model: &TurnModel,
+        passes: usize,
+    ) {
+        for _ in 0..passes {
+            pump_with_model(db, volumes, fake, model);
+            fake.finish(0);
+        }
+    }
+
+    fn count(db: &Path, sql: &str) -> i64 {
+        Connection::open(db)
+            .unwrap()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn messages(events: &Value) -> usize {
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "message")
+            .count()
+    }
+
+    async fn two_bro_group(app: &Router) -> String {
+        let group = create_group(app, "研发").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        add_member(app, &group, "b-ada", "Ada").await;
+        add_member(app, &group, "b-bob", "Bob").await;
+        group
+    }
+
+    #[tokio::test]
+    async fn an_unaddressed_group_message_gives_every_bro_one_turn_and_silence_is_clean() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        let (status, said) = say_in(&app, &group, "大家好，周会改到三点").await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(
+            said["task"].is_null(),
+            "no one was named: Said.task stays null"
+        );
+        assert!(
+            statuses(&events_of(&app, &group).await).is_empty(),
+            "a turn is invisible until it speaks"
+        );
+
+        let model = TurnModel::new(&[Ok("收到，我三点到。"), Ok(" robroz-silent \n")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 4);
+
+        let prompts = model.prompts();
+        assert_eq!(prompts.len(), 2, "both bros got exactly one turn");
+        assert!(
+            prompts[0].contains("大家好，周会改到三点")
+                && prompts[0].contains(crate::turns::SILENT_REPLY)
+        );
+        assert!(
+            prompts[1].contains("【Ada】\n收到，我三点到。"),
+            "Bob sees Ada's reply: {}",
+            prompts[1]
+        );
+
+        let events = events_of(&app, &group).await;
+        assert_eq!(messages(&events), 1, "no message from the silent bro");
+        let cards = statuses(&events);
+        assert_eq!(cards.len(), 1, "only Ada's card: {cards:?}");
+        assert_eq!(cards[0]["botId"], "b-ada");
+        assert_eq!(cards[0]["state"], "done");
+        assert_eq!(deliveries(&events).len(), 1, "Bob delivered nothing");
+        let (_, unread) =
+            read_json(call(&app, get(&format!("/api/groups/{group}/unread"))).await).await;
+        assert_eq!(
+            unread["unread"], 1,
+            "only Ada's delivery is unread: {unread}"
+        );
+        assert_eq!(
+            count(&path, "SELECT COUNT(*) FROM tasks WHERE assignee_bot_id = 'b-bob' AND state = 'done' AND turn_silent = 1 AND turn_hidden = 1"),
+            1
+        );
+
+        // A bro's reply never opens another round.
+        run_rounds(&path, &volumes, &mut fake, &model, 3);
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM tasks"), 2);
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), 2);
+    }
+
+    #[tokio::test]
+    async fn the_mentioned_bro_goes_first_then_the_rest_in_join_order() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        add_member(&app, &group, "b-cara", "Cara").await;
+        let (_, said) = say_in(&app, &group, "@Bob 看看这个报错").await;
+        assert_eq!(said["task"]["assigneeBotId"], "b-bob");
+        assert_eq!(
+            said["task"]["prompt"], "看看这个报错",
+            "the named bro's task is unchanged"
+        );
+        let events = events_of(&app, &group).await;
+        let cards = statuses(&events);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(
+            cards[0]["state"], "queued",
+            "the named bro's card shows at once, as before"
+        );
+
+        let model = TurnModel::new(&[Ok("是空指针。"), Ok("robroz-silent"), Ok("补充：第 3 行。")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+
+        let prompts = model.prompts();
+        assert_eq!(prompts.len(), 3);
+        assert_eq!(prompts[0], "看看这个报错", "Bob first, plain prompt");
+        assert!(
+            prompts[1].contains("【Bob】\n是空指针。"),
+            "Ada next: {}",
+            prompts[1]
+        );
+        assert!(
+            prompts[2].contains("【Bob】\n是空指针。") && !prompts[2].contains("【Ada】"),
+            "Cara last; Ada said nothing: {}",
+            prompts[2]
+        );
+
+        let events = events_of(&app, &group).await;
+        let bots: Vec<_> = statuses(&events)
+            .iter()
+            .map(|c| c["botId"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(bots, vec!["b-bob", "b-cara"]);
+        assert_eq!(deliveries(&events).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_model_step_on_a_turn_stays_silent() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "有人在吗").await;
+        let model = TurnModel::new(&[Err("超时"), Ok("在。")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 4);
+        let events = events_of(&app, &group).await;
+        let cards = statuses(&events);
+        assert_eq!(
+            cards.len(),
+            1,
+            "no 「模型没回」 card from a turn: {cards:?}"
+        );
+        assert_eq!(cards[0]["botId"], "b-bob");
+        assert_eq!(deliveries(&events).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dms_and_direct_tasks_open_no_round() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, bro) = new_bro(&app, Some(json!({ "name": "小明" }))).await;
+        let dm = bro["dmGroupId"].as_str().unwrap();
+        let (_, said) = say_in(&app, dm, "整理周报").await;
+        assert_eq!(said["task"]["prompt"], "整理周报");
+        let group = two_bro_group(&app).await;
+        let (status, _) = read_json(
+            call(
+                &app,
+                post(
+                    &format!("/api/groups/{group}/tasks"),
+                    json!({ "assigneeBotId": "b-ada", "prompt": "写" }),
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), 0);
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM tasks"), 2);
     }
 }

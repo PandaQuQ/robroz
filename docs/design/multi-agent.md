@@ -554,6 +554,25 @@ chosen here; pick those in the later timeout PR. A follow-up on a
 `blocked` task attaches to that task and does not create a sibling; it is
 not a `resume`.
 
+## Implementation status
+
+- Done: group turns (`host/src/turns.rs`, called from `say.rs` and the
+  pump). Every person's group `/say` opens a round with one turn per member:
+  the `@`-mentioned bro first (its task is today's fast-path task, unchanged),
+  then the other members in join order. Turns run one after another; the next
+  turn's task is created only after every earlier turn's task is `done` or
+  `blocked`, and its prompt quotes the earlier bros' delivered results with
+  `robroz-` control lines removed. A non-mentioned turn stays hidden (no status
+  card, no unread) until its model step answers. The reply `robroz-silent`
+  (or an empty reply, a failed model call, or no model) ends the task `done`
+  and keeps it hidden, so a silent turn shows nothing at all. Any other reply
+  reveals the task and it carries on as a normal task. Bro deliveries,
+  `/messages`, direct `/tasks` and schedules never open a round, and DMs are
+  unchanged. No contract change: `Said.task` is still the mentioned bro's
+  task or `null`.
+- Not yet: follow-ups attaching to a bro's still-open task (PR B); the
+  per-bro Router and Workers (PR C); cancelling a timed-out step.
+
 ## Sources and attribution
 
 The ideas in this document are adapted from the following public sources.
