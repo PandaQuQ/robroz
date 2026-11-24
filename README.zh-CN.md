@@ -21,7 +21,7 @@
 
 <!-- TODO(screenshot): main window -->
 
-桌面客户端界面默认是英文。要换成中文，到设置（模型）页的 Language / 语言 那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [configuration.md](configuration.md)。
+桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
 ## 现在能用的
 
@@ -35,7 +35,13 @@
   <!-- TODO(screenshot): approval card -->
 - **模型设置。** 可以接任意 OpenAI 兼容的模型。填了地址和模型名就算配好，密钥可选。可以在客户端填，也可以用环境变量。
 
-还可以用联网搜索（Brave 或 SearXNG）、MCP 工具和例行任务。跑到 `ROBROZ_STEP_TIMEOUT_SECS` 的一半时，卡片上会出现提示；到完整时限后步骤会被取消，任务以 Finished with no result（「没写出结果」）结束，不会再跑。等审批卡的时间不算。
+还可以用联网搜索（Brave 或 SearXNG）、MCP 工具和例行任务。某一步跑得太久或卡住时，卡片上会出现一行提示；工作本身不会被取消。
+
+## 还没做的
+
+下面是已接受的设计，或正在做，**还没有**合进 `main`。细节见 [docs/design/multi-agent.md](docs/design/multi-agent.md)。
+
+- 超时后取消步骤或停掉容器。
 
 ## 快速开始
 
@@ -69,7 +75,7 @@ cargo run -p robroz-host
 
 `ROBROZ_MODEL=echo` 是测试开关（CI 会用），在没有配齐模型时把 prompt 原样写成结果。正式部署不要设。
 
-其他常用的宿主机变量：`ROBROZ_STEP_TIMEOUT_SECS`（默认 `600`）是每一步的取消时限，提示在一半时出现；`ROBROZ_STALL_SECS`（默认 `900`）只出提示，不取消；`ROBROZ_APPROVAL_TTL_SECS`（默认 `86400`）是审批卡的有效期。完整列表见 [docs/configuration.md](docs/configuration.md)。从令牌到用 `curl` 走第一个任务，见 [docs/install.md](docs/install.md)。
+其他常用的宿主机变量：`ROBROZ_STEP_TIMEOUT_SECS`（默认 `600`）和 `ROBROZ_STALL_SECS`（默认 `900`）控制卡片上多久出现「跑太久或卡住」的提示；`ROBROZ_APPROVAL_TTL_SECS`（默认 `86400`）是审批卡的有效期。完整列表见 [docs/configuration.md](docs/configuration.md)。从令牌到用 `curl` 走第一个任务，见 [docs/install.md](docs/install.md)。
 
 ## 架构
 
