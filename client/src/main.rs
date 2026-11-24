@@ -2519,8 +2519,9 @@ impl App {
         let state = self.host_state();
         if !state.shows_sidebar() {
             // Before the host answers: blank while waiting, or 「连不上宿主」
-            // with the address on a lighter line below, and a short reason
-            // 12px to the right when we have one.
+            // with the address on a lighter line below, a short reason
+            // 12px to the right when we have one, and the same Language
+            // row as the Model page so the language can still be changed.
             let notice = state.notice().map(|key| {
                 let mut detail = row![text(self.origin.as_str())
                     .size(t.type_.foot)
@@ -2534,16 +2535,27 @@ impl App {
                             .color(color(t.palette.text3)),
                     );
                 }
-                column![
+                let head = column![
                     text(key).size(t.type_.body).color(color(t.palette.text)),
                     detail,
                 ]
                 .spacing(4)
-                .align_x(Alignment::Center)
+                .align_x(Alignment::Center);
+                if state.shows_language_row() {
+                    Element::from(
+                        column![head, self.language_row(t)]
+                            .spacing(t.metrics.row_pad_h)
+                            .align_x(Alignment::Center)
+                            .width(Fill),
+                    )
+                } else {
+                    Element::from(head)
+                }
             });
             return container(
                 notice.map_or_else(|| Element::from(space::horizontal()), Element::from),
             )
+            .padding(t.metrics.stream_padding)
             .center(Fill)
             .into();
         }
