@@ -140,8 +140,8 @@ $env:ROBROZ_TOKEN = "<your-token>"
 cargo run -p robroz-client
 ```
 
-- The client uses plain HTTP only, with no TLS. Across machines, stay on a private network or add your own tunnel.
-- The client reads `ROBROZ_TOKEN` only, not `ROBROZ_TOKEN_FILE`.
+- The client speaks HTTP or HTTPS (`ROBROZ_HOST`). The host itself does not do TLS; for a remote host see [Connecting to a remote host](#connecting-to-a-remote-host).
+- The client sends `Authorization: Bearer <token>` on every request, including the live stream, when a token is set. `ROBROZ_TOKEN` wins for this run; otherwise it reads the `token` file next to `lang` in the client config folder. It does not read the host's `ROBROZ_TOKEN_FILE` variable. A 401 is shown as "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」).
 - The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set, the client shows only those groups and does not follow the host's list.
 - To look at the UI without a host: `cargo run -p robroz-client -- --fake` (or `ROBROZ_FAKE=1`).
 - If the host cannot be reached, the client keeps what is already on screen and retries after a short wait.
@@ -149,6 +149,60 @@ cargo run -p robroz-client
 Linux needs a graphical session (X11 or Wayland). CI's `ubuntu-latest` can build the client without extra system packages.
 
 In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is a first task from the UI.
+
+## Connecting to a remote host
+
+The host does not terminate TLS. It will not bind a non-loopback address (`ROBROZ_ADDR=0.0.0.0:8790`) unless a token is set (`ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE`); otherwise it exits with code 2. Once a token is set, every `/api` request needs `Authorization: Bearer <token>`, including ones from the same machine.
+
+To reach the host from another machine, keep it on loopback (`127.0.0.1:8790`) and put HTTPS in front of it. Still set a token: the proxy makes the API reachable from outside, and a missing token would leave it open. Never expose plain HTTP with the token on the public internet; the token would travel in the clear.
+
+### Cloudflare Tunnel
+
+Install `cloudflared` and point a tunnel at the local host. This is an example config only (replace the hostname and start `cloudflared` with your own tunnel); it is not a real tunnel, and no Cloudflare account is used here.
+
+```yml
+ingress:
+  - hostname: robroz.example.com
+    service: http://127.0.0.1:8790
+  - service: http_status:404
+```
+
+Start the host on loopback with a token, then run the tunnel:
+
+```sh
+(umask 077 && openssl rand -hex 24 > "$HOME/.config/robroz/token")
+ROBROZ_ADDR=127.0.0.1:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target/debug/robroz-host
+# in another terminal: cloudflared tunnel --config /path/to/config.yml run
+```
+
+### Reverse proxy (Caddy)
+
+Caddy issues a certificate automatically:
+
+```
+robroz.example.com {
+    reverse_proxy 127.0.0.1:8790
+}
+```
+
+### Giving the client the address and the token
+
+On the machine that runs the client:
+
+```sh
+ROBROZ_HOST=https://robroz.example.com ROBROZ_TOKEN='<your-token>' cargo run -p robroz-client
+```
+
+`ROBROZ_TOKEN` applies to this run only and is never written back. To keep a token, write it to `token` next to `lang` in the client config folder, mode `0600` on Unix (`~/.config/robroz/token` on Linux, `~/Library/Application Support/robroz/token` on macOS, `%APPDATA%\robroz\token` on Windows):
+
+```sh
+mkdir -p "$HOME/.config/robroz"
+(umask 077 && printf '%s\n' '<your-token>' > "$HOME/.config/robroz/token")
+ROBROZ_HOST=https://robroz.example.com cargo run -p robroz-client
+```
+
+If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's saved token. The client never logs or displays the token. A missing or wrong token shows "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」).
+
 
 ## First task
 

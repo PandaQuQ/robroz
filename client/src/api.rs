@@ -19,9 +19,9 @@ use std::sync::Mutex;
 
 use robroz_contract::{
     next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, ApprovalAction,
-    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, ErrorBody,
-    Event, McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools,
-    Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
+    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, Event,
+    McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools, Memories,
+    Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
     ReviewRuleCreated, ReviewRules, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
     MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
@@ -467,11 +467,10 @@ impl HttpApi {
                 }
             }
         }
-        let msg = serde_json::from_str::<ErrorBody>(&body)
-            .map(|e| e.error)
-            .unwrap_or_else(|_| Text::ClientHttpStatus.fill(&[&method, &url, &status]));
+        let msg = crate::conn::error_text(method, url, status, &body);
         Err(match status {
             400 => ApiError::BadRequest(msg),
+            401 => ApiError::Status(401, msg),
             404 => ApiError::NotFound(msg),
             409 => ApiError::Conflict(msg),
             _ => ApiError::Status(status, msg),
@@ -2658,7 +2657,16 @@ mod tests {
             let token = "client-test-token-0123456789";
             let base = crate::source::http_test_host_with_token(token);
             let without = HttpApi::new(Conn::new(&base));
-            assert!(matches!(without.unread(), Err(ApiError::Status(401, _))));
+            match without.unread() {
+                Err(ApiError::Status(401, msg)) => {
+                    assert_eq!(msg, crate::conn::unauthorized_message());
+                    assert_eq!(
+                        without.unread().unwrap_err().reason(),
+                        crate::conn::unauthorized_message()
+                    );
+                }
+                other => panic!("expected 401, got {other:?}"),
+            }
             let api = HttpApi::new(Conn::new(&base).with_token(Some(token.into())));
             let bro = api.create_bro().unwrap();
             let dm = bro.dm_group_id.unwrap();
@@ -2670,6 +2678,20 @@ mod tests {
             use crate::source::EventSource;
             assert!(source.groups().unwrap().iter().any(|g| g.id == dm));
             assert!(source.poll().is_ok());
+
+            // The live SSE stream uses the same Conn auth. Stop as soon as
+            // it is up, so we don't sit on an idle stream.
+            let mut last_id = None;
+            let stream = Conn::new(&base).with_token(Some(token.into())).streaming();
+            let up = crate::source::stream::read_once(&stream, &dm, &mut last_id, &mut |item| {
+                !matches!(item, crate::source::stream::StreamItem::Connected)
+            });
+            assert_eq!(up, Ok(true), "{up:?}");
+
+            let no_token = Conn::new(&base).streaming();
+            let down =
+                crate::source::stream::read_once(&no_token, &dm, &mut last_id, &mut |_| true);
+            assert_eq!(down, Err(crate::conn::unauthorized_message()));
         }
     }
 }

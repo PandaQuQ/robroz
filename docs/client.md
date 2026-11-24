@@ -170,5 +170,5 @@ The Routines panel lists each group's routines (`GET /api/groups/{id}/schedules`
 ## Platforms and tests
 
 - Running on Linux needs a graphical desktop, with `libxkbcommon-x11` (X11) or the Wayland libraries installed. The build itself does not need extra development packages.
-- The client uses plain HTTP only, and only honours `ROBROZ_TOKEN` (it does not read `ROBROZ_TOKEN_FILE`). When that is set, it is sent automatically.
+- The client speaks HTTP or HTTPS (`ROBROZ_HOST`). It sends `Authorization: Bearer <token>` on every request, including the live stream, when a token is set. `ROBROZ_TOKEN` wins for this run; otherwise it reads the `token` file next to `lang` in the client config folder (mode `0600` on Unix). It does not read the host's `ROBROZ_TOKEN_FILE` variable. The token is never logged or shown. A 401 is shown as "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」). The host itself does not do TLS; a remote setup is in [install.md, Connecting to a remote host](install.md#connecting-to-a-remote-host).
 - `cargo test -p robroz-client` starts a real host router in-process and reads it back through `HttpSource`; Docker is not required.

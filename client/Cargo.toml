@@ -14,8 +14,8 @@ iced = { version = "0.14.0", features = ["tokio", "canvas"] }
 serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt"] }
-# Plain HTTP to the local host only; no TLS stack, so no extra system deps.
-ureq = { version = "3", default-features = false }
+# rustls (same as the host) so a remote ROBROZ_HOST can be https://; no system TLS deps.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 robroz-host = { path = "../host" }

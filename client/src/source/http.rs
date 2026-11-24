@@ -1,7 +1,7 @@
 //! Live events from the host over plain HTTP: incremental polling.
 //!
-//! Base URL `ROBROZ_HOST` (default `http://127.0.0.1:8790`), token
-//! `ROBROZ_TOKEN` (see [`crate::conn`]).
+//! Base URL `ROBROZ_HOST` (default `http://127.0.0.1:8790`), token from
+//! [`crate::conn`] (`ROBROZ_TOKEN` or the config-dir `token` file).
 //! Groups come from `GET /api/groups`. `ROBROZ_GROUPS` (comma-separated `id`
 //! or `id=名字`) still overrides the list, for pinning a test setup.
 //! Each group keeps a cursor: the newest change time seen. Polls ask for
@@ -72,9 +72,8 @@ impl HttpSource {
             .read_to_string()
             .map_err(|err| SourceError(Text::ClientReadFailed.fill(&[&url, &err])))?;
         if status != 200 {
-            return Err(SourceError(format!(
-                "{}: {body}",
-                Text::ClientHttpStatus.fill(&[&"GET", &url, &status])
+            return Err(SourceError(crate::conn::error_text(
+                "GET", &url, status, &body,
             )));
         }
         serde_json::from_str::<T>(&body).map_err(|err| {
@@ -485,7 +484,8 @@ mod tests {
             let base = spawn_host();
             let mut source = HttpSource::new(Conn::new(base), parse_groups("nope"));
             let err = source.poll().unwrap_err();
-            assert!(err.0.contains("404"), "{err}");
+            // The host's JSON `error` (「群不存在」), not a raw "returned 404: {body}" line.
+            assert!(err.0.contains("群不存在") || err.0.contains("404"), "{err}");
         }
 
         #[test]

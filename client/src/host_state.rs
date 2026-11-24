@@ -57,6 +57,9 @@ impl HostState {
 /// Maps common transport errors from ureq / `std::io`; anything else is
 /// omitted so the pane never shows `io:` or `os error`.
 pub fn connect_reason(err: &str) -> Option<Text> {
+    if is_token_rejected(err) {
+        return Some(Text::ClientTokenRejected);
+    }
     let s = err.to_ascii_lowercase();
     if s.contains("connection refused") {
         Some(Text::ClientConnectionRefused)
@@ -67,6 +70,15 @@ pub fn connect_reason(err: &str) -> Option<Text> {
     } else {
         None
     }
+}
+
+fn is_token_rejected(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    err.contains(robroz_contract::host_text::TOKEN_REJECTED)
+        || err.contains("The host rejected the token")
+        || err.contains("宿主拒绝了令牌")
+        || low.contains("returned 401")
+        || low.contains(" 返回 401")
 }
 
 fn is_host_not_found(s: &str) -> bool {
@@ -179,6 +191,31 @@ mod tests {
         );
         assert_eq!(text_in(Locale::Zh, Text::ClientHostNotFound), "找不到主机");
 
+        assert_eq!(
+            connect_reason("The host rejected the token. Check `ROBROZ_TOKEN`."),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason("宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。"),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason(robroz_contract::host_text::TOKEN_REJECTED),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason("GET http://127.0.0.1:8790/api/groups returned 401"),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            text_in(Locale::En, Text::ClientTokenRejected),
+            "The host rejected the token. Check `ROBROZ_TOKEN`."
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ClientTokenRejected),
+            "宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。"
+        );
+
         // Unknown transport errors are omitted, never echoed raw.
         for s in [
             "io: UnexpectedEof (os error 0)",
@@ -191,6 +228,7 @@ mod tests {
             Text::ClientConnectionRefused,
             Text::ClientTimedOut,
             Text::ClientHostNotFound,
+            Text::ClientTokenRejected,
         ] {
             let en = text_in(Locale::En, key);
             let zh = text_in(Locale::Zh, key);
