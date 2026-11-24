@@ -2,7 +2,7 @@
 
 How to build robroz from source, start the host and the desktop client, connect a model, and send a first task. The full list of environment variables is in [configuration.md](configuration.md).
 
-The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Prerequisites
 
@@ -91,14 +91,14 @@ Until a model is configured, a task delivers No model set up yet (「还没设�
 
 ### In the client
 
-Open Model (「模型」) in the sidebar, or Set up (「去设置」) on a delivery card. The Language (「语言」) row is on this page: English is the default, and you can switch to 中文. `ROBROZ_LANG=en|zh` overrides the saved choice for one run.
+Open Model (「模型」) in the sidebar, or Set up (「去设置」) on a delivery card. The Language / 语言 row is on this page: English is the default, and you can switch to 中文. `ROBROZ_LANG=en|zh` overrides the saved choice for one run.
 
 - Three fields: URL (「地址」), Model name (「模型名」), and Key (optional) (「密钥（选填）」). The key field is shown for every provider, including Ollama.
-- Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-2.5-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says Free model names end in :free (「免费模型的名字以 :free 结尾」).
+- Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-3.8-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says Free model names end in :free (「免费模型的名字以 :free 结尾」).
 - You can save as soon as the address and model name are filled in. A local service such as Ollama can omit the key. Clearing the key does not clear the address or the model name.
 - Saving tests the connection. Success shows Working (「能用了」). Failure shows Saved, but can't connect: reason (「已保存，但连不上：原因」): the settings were written, but this attempt could not connect. If the reason is key is wrong or missing (「密钥不对或没填」), the provider returned 401 or 403: the key is wrong, or this service needs a key and you did not provide one. The page does not show a raw 401. The combined line is Saved, but can't connect: key is wrong or missing (「已保存，但连不上：密钥不对或没填」).
 
-Field priority and the API are in [configuration.md, Model](configuration.md#模型) and [client.md, Model page](client.md#model-page).
+Field priority and the API are in [configuration.md, Model](configuration.md#model) and [client.md, Model page](client.md#model-page).
 
 ### With environment variables
 
@@ -118,7 +118,7 @@ ROBROZ_MODEL_KEY_FILE="$HOME/.config/robroz/model-key" \
 - A partial environment configuration still starts; you can finish it on the settings page. Setting both key variables, an empty key file, or a key that contains whitespace makes the host refuse to start. The error names the variable, not the value.
 - When the environment already has a complete model, the startup log is `robroz-host: 环境变量里有模型 <name> @ <url>，设置页保存的值优先` (a model is set in the environment; values saved on the settings page win). The test switch logs `robroz-host: 测试回显（ROBROZ_MODEL=echo）`. With nothing configured: `robroz-host: 还没设置模型，任务会提示去设置`.
 
-Web search (Brave or SearXNG) can be set with environment variables or through the settings API after the host is running; see [configuration.md, Search](configuration.md#搜索).
+Web search (Brave or SearXNG) can be set with environment variables or through the settings API after the host is running; see [configuration.md, Search](configuration.md#search).
 
 ## Run the client
 

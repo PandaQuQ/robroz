@@ -26,9 +26,9 @@
 1. 在数据库锁里取一个 `queued` 任务，改成 `running`（同一个任务不会被取两次），然后放锁。
 2. 接了模型时先调模型，把回答写进 `ROBROZ_CONTROL/{taskId}/reply.txt`。每次运行前先删掉旧的回答，重试拿不到上一次的。模型调用和工具调用在这个任务自己的线程上跑（`host/src/steps.rs`，一个任务同时最多一个），pump 线程不等；回答好了下一轮 pump 再接着起容器。
 3. 放锁后 `docker run` / `inspect` / `rm`，最后重新加锁写结果。慢容器不会卡住 HTTP。`docker run` 失败时任务改回 `queued`，没有交付卡。
-4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失变 `done`，`failure` 为「没写出结果」，不重排队。细节见 [api.md 的「pump 做什么」](api.md#pump-做什么)。
+4. 容器退出后按结果写状态：完成发交付卡；碰到阻塞行变 `blocked`；出网超额变带 `failure` 的 `done`；非 0 退出、没写出结果、容器中途消失变 `done`，`failure` 为「没写出结果」，不重排队。细节见 [api.md 的「pump 做什么」](api.md#what-the-pump-does)。
 5. 成功完成的任务读 `proposals.jsonl`，发确认卡（见 [memory-and-skills.md](memory-and-skills.md)）。
-6. The Watchdog only hints when a model or tool step is slow (at half of `ROBROZ_STEP_TIMEOUT_SECS`) or a container's progress has not moved (it writes `progress` and a log line). It does not change the state or requeue. An old task that is `running` with `containerUp` false ends as `done` + 「没写出结果」. A step that reaches `ROBROZ_STEP_TIMEOUT_SECS` is cancelled by the pump, not the Watchdog: see step 7 (step timeout) in [api.md's What pump does](api.md#pump-做什么).
+6. The Watchdog only hints when a model or tool step is slow (at half of `ROBROZ_STEP_TIMEOUT_SECS`) or a container's progress has not moved (it writes `progress` and a log line). It does not change the state or requeue. An old task that is `running` with `containerUp` false ends as `done` + 「没写出结果」. A step that reaches `ROBROZ_STEP_TIMEOUT_SECS` is cancelled by the pump, not the Watchdog: see step 7 (step timeout) in [api.md's What pump does](api.md#what-the-pump-does).
 
 ### 容器
 
@@ -54,9 +54,9 @@
 ### 模型
 
 - `crates/robroz-model` 调 `POST {ROBROZ_MODEL_BASE_URL}/chat/completions`，单次最长等 120 秒。
-- 地址和模型名没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。密钥可选：没密钥时请求不带 `Authorization` 头。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
+- 地址和模型名没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。密钥可选：没密钥时请求不带 `Authorization` 头。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#model)。
 - system 提示 = 固定开场白（`robroz_model::SYSTEM_PROMPT`）+ 记忆段 + 技能段（`host/src/pump.rs:system_extra`）。任务的 prompt 还是用户那一条，不改。
-- 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#模型)。
+- 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#model)。
 - 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#the-models-tool-calls)。
 
 ### 例行任务
@@ -65,7 +65,7 @@
 
 ### 实时推送
 
-`GET /api/groups/{id}/stream` 不改任何写入路径：宿主机大约每 250 毫秒查一次库，把变化过的卡推出去，没变化每 15 秒发一次保活注释。见 [api.md](api.md#实时推送)。
+`GET /api/groups/{id}/stream` 不改任何写入路径：宿主机大约每 250 毫秒查一次库，把变化过的卡推出去，没变化每 15 秒发一次保活注释。见 [api.md](api.md#real-time-updates)。
 
 ## 卡片和界面层
 

@@ -2,7 +2,7 @@
 
 Names, task states and cards in robroz. Exact API fields are in [api.md](api.md). This page is about the ideas; if it disagrees with api.md or the code, those win.
 
-The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Glossary
 
@@ -73,7 +73,7 @@ The client then applies two overrides (`client/src/model.rs`):
 
 ## Cards (events)
 
-Each item in the event stream is an `Event`, distinguished by `type`. Full fields are in [api.md, event types](api.md#事件类型).
+Each item in the event stream is an `Event`, distinguished by `type`. Full fields are in [api.md, event types](api.md#event-types).
 
 | `type` | What it is | Who sends it |
 | --- | --- | --- |
@@ -102,4 +102,4 @@ Each group has one read position (a single owner for now). Unread counts only wh
 
 These do not count: your own messages; status changes through queued, running and done; un-mentioned group turns that are still hidden (including a silent reply); Allow-rule cards on the settings page (`rule_add` / `rule_delete`), which are not in any chat.
 
-`lastActivityAt` is the newest change among messages, visible tasks, deliveries, choices and approvals. A bro-issued card moved to the owner's DM also counts as activity in the original group (the notice is listed there), but it is not unread there. A silent turn does not change `lastActivityAt`. Details are in [api.md, unread](api.md#未读).
+`lastActivityAt` is the newest change among messages, visible tasks, deliveries, choices and approvals. A bro-issued card moved to the owner's DM also counts as activity in the original group (the notice is listed there), but it is not unread there. A silent turn does not change `lastActivityAt`. Details are in [api.md, unread](api.md#unread).
