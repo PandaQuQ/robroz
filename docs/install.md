@@ -150,6 +150,65 @@ Linux needs a graphical session (X11 or Wayland). CI's `ubuntu-latest` can build
 
 In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is a first task from the UI.
 
+## Connecting to a remote host
+
+The host does not terminate TLS. It will not bind a non-loopback address (`ROBROZ_ADDR=0.0.0.0:8790`) unless a token is set (`ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE`); otherwise it exits with code 2. Once a token is set, every `/api` request needs `Authorization: Bearer <token>`, including ones from the same machine.
+
+To reach the host from another machine, keep it on loopback (`127.0.0.1:8790`) and put HTTPS in front of it. Still set a token: the proxy makes the API reachable from outside, and a missing token would leave it open. Never expose plain HTTP with the token on the public internet; the token would travel in the clear.
+
+### Cloudflare Tunnel
+
+Install `cloudflared` and point a tunnel at the local host. This is an example config only (replace the hostname and start `cloudflared` with your own tunnel); it is not a real tunnel, and no Cloudflare account is used here.
+
+```yml
+ingress:
+  - hostname: robroz.example.com
+    service: http://127.0.0.1:8790
+  - service: http_status:404
+```
+
+Start the host on loopback with a token, then run the tunnel:
+
+```sh
+(umask 077 && openssl rand -hex 24 > "$HOME/.config/robroz/token")
+ROBROZ_ADDR=127.0.0.1:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target/debug/robroz-host
+# in another terminal: cloudflared tunnel --config /path/to/config.yml run
+```
+
+### Reverse proxy (Caddy)
+
+Caddy issues a certificate automatically:
+
+```
+robroz.example.com {
+    reverse_proxy 127.0.0.1:8790
+}
+```
+
+### Giving the client the address and the token
+
+The client speaks HTTPS (rustls). Point it at the proxy address, not at the host's loopback port.
+
+You can save the address and the token in the client. The address is written to a `host` file next to `lang` in the client config folder (`~/.config/robroz/host` on Linux, `~/Library/Application Support/robroz/host` on macOS, `%APPDATA%\robroz\host` on Windows). The token is stored in the OS keychain (`robroz` / `host-token`: macOS Keychain, Windows Credential Manager, or the Secret Service on Linux); if the keychain is unavailable or the write cannot be read back, it is written to a `token` file next to `lang`, mode `0600` on Unix. The client never logs or displays the token.
+
+`ROBROZ_HOST` and `ROBROZ_TOKEN` override any saved values for this run and are never written back. The client does not read the host's `ROBROZ_TOKEN_FILE` variable.
+
+```sh
+ROBROZ_HOST=https://robroz.example.com ROBROZ_TOKEN='<your-token>' cargo run -p robroz-client
+```
+
+To seed the fallback file by hand (only needed if you are not saving from the client, and the keychain is not used):
+
+```sh
+mkdir -p "$HOME/.config/robroz"
+(umask 077 && printf '%s\n' '<your-token>' > "$HOME/.config/robroz/token")
+printf '%s\n' 'https://robroz.example.com' > "$HOME/.config/robroz/host"
+cargo run -p robroz-client
+```
+
+If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's fallback file. A missing or wrong token shows "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」). A host that cannot be reached shows "Can't reach host." (「连不上宿主。」), followed by the reason.
+
+
 ## First task
 
 This walk-through uses `curl`: create a group, add a bro, send a message, and read the cards. Build the runner image first, then start the host (default address, no token). If a token is set, add `-H "Authorization: Bearer <your-token>"` to every request.
