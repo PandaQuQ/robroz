@@ -964,6 +964,7 @@ impl CardApi for FakeApi {
                 prompt,
                 state: TaskState::Queued,
             }),
+            appended_to_task_id: None,
         })
     }
 

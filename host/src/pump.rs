@@ -245,6 +245,24 @@ fn start_task(
     let Some(control_dir) = ensure_dir(&cfg.control_root.join(&task.id)) else {
         return Ok(());
     };
+    let mcp_resume = crate::mcp_tools::pending_is_approved(&control_dir);
+    // Follow-ups that joined this task while it waited go into this step's
+    // prompt. An approved MCP call resumes its own step instead; its
+    // follow-ups wait for the step after it (see `crate::follow_ups`).
+    let folded;
+    let task = match mcp_resume {
+        true => task,
+        false => match db.with(|conn| crate::follow_ups::fold(conn, &task.id))? {
+            None => task,
+            Some(prompt) => {
+                folded = TaskRow {
+                    prompt,
+                    ..task.clone()
+                };
+                &folded
+            }
+        },
+    };
     if let Err(err) = write_prompt(&control_dir, &task.prompt) {
         eprintln!(
             "pump: write prompt for {}: {err}; task stays queued",
@@ -252,7 +270,6 @@ fn start_task(
         );
         return Ok(());
     }
-    let mcp_resume = crate::mcp_tools::pending_is_approved(&control_dir);
     // A leftover intent would make this run look blocked again.
     if let Err(err) = remove_intent(&group_dir, &task.id) {
         eprintln!(
@@ -640,6 +657,12 @@ fn collect_task(
     } else {
         Vec::new()
     };
+    // A follow-up that came in during this step gets the next one; it quotes
+    // what this step wrote.
+    let reply = match outcome {
+        Outcome::Done => std::fs::read_to_string(&result_file).ok(),
+        _ => None,
+    };
     let updated_at = newer_than(&task.updated_at);
     db.with(|conn| {
         write_outcome(
@@ -650,7 +673,12 @@ fn collect_task(
             &updated_at,
             &rel,
             &proposals,
-        )
+        )?;
+        if matches!(outcome, Outcome::Done) {
+            let again_at = newer_than(&updated_at);
+            crate::follow_ups::continue_after_done(conn, &task.id, reply.as_deref(), &again_at)?;
+        }
+        Ok::<(), rusqlite::Error>(())
     })?;
     if let Err(err) = crate::proposals::remove(&group_dir, &task.id) {
         // The next start clears it again before docker run.

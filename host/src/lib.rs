@@ -18,6 +18,7 @@ mod approvals;
 pub mod auth;
 mod bros;
 mod choices;
+pub(crate) mod follow_ups;
 mod mcp;
 mod mcp_tools;
 mod memories;
@@ -508,6 +509,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Auto-review: allow rules, card expiry and review state.
     review::migrate(conn)?;
     turns::migrate(conn)?;
+    conn.execute_batch(follow_ups::SCHEMA)?;
     Ok(())
 }
 
@@ -6790,5 +6792,191 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), 0);
         assert_eq!(count(&path, "SELECT COUNT(*) FROM tasks"), 2);
+    }
+
+    // ---- follow-ups ----
+
+    fn task_ids_of(db: &Path, bot: &str) -> Vec<String> {
+        let conn = Connection::open(db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id FROM tasks WHERE assignee_bot_id = ?1 AND turn_hidden = 0 ORDER BY created_at")
+            .unwrap();
+        let ids = stmt
+            .query_map([bot], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_joins_the_queued_task_and_its_first_step_sees_it() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        let (_, first) = say_in(&app, &group, "@Ada 写周报").await;
+        let id = first["task"]["id"].as_str().unwrap().to_string();
+        assert!(
+            first.get("appendedToTaskId").is_none(),
+            "a new task: {first}"
+        );
+
+        let (status, said) = say_in(&app, &group, "@Ada 加上上周的数据").await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(said["appendedToTaskId"], id.as_str());
+        assert_eq!(
+            said["task"]["id"],
+            id.as_str(),
+            "Said.task is the task it joined"
+        );
+        assert_eq!(said["task"]["state"], "queued");
+        assert_eq!(said["task"]["prompt"], "写周报");
+        assert_eq!(task_ids_of(&path, "b-ada"), vec![id.clone()], "no new task");
+        assert_eq!(
+            statuses(&events_of(&app, &group).await).len(),
+            1,
+            "still one card"
+        );
+        assert_eq!(
+            messages(&events_of(&app, &group).await),
+            2,
+            "both messages are stored"
+        );
+
+        let model = TurnModel::new(&[
+            Ok("周报写好了，含上周数据。"),
+            Ok("robroz-silent"),
+            Ok("robroz-silent"),
+        ]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+        let prompts = model.prompts();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "Ada ran once, Bob had one turn per message: {prompts:?}"
+        );
+        assert_eq!(prompts[0], "写周报\n\n追问：\n加上上周的数据");
+        let events = events_of(&app, &group).await;
+        let cards = statuses(&events);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        assert_eq!(cards[0]["state"], "done");
+        assert_eq!(deliveries(&events).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_to_a_running_task_gets_the_next_step_of_the_same_task() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        let (_, first) = say_in(&app, &group, "@Ada 写周报").await;
+        let id = first["task"]["id"].as_str().unwrap().to_string();
+        let model = TurnModel::new(&[
+            Ok("周报初稿。"),
+            Ok("加好了：上周 12 单。"),
+            Ok("robroz-silent"),
+            Ok("robroz-silent"),
+        ]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        assert_eq!(
+            statuses(&events_of(&app, &group).await)[0]["state"],
+            "running"
+        );
+
+        let (_, said) = say_in(&app, &group, "@Ada 加上上周的数据").await;
+        assert_eq!(said["appendedToTaskId"], id.as_str());
+        assert_eq!(said["task"]["state"], "running");
+
+        fake.finish(0);
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+        let prompts = model.prompts();
+        assert_eq!(prompts.len(), 4, "{prompts:?}");
+        assert_eq!(prompts[0], "写周报", "the running step kept its prompt");
+        assert!(
+            prompts[1].starts_with("写周报")
+                && prompts[1].contains("你上一步的回复")
+                && prompts[1].contains("周报初稿。")
+                && prompts[1].ends_with("追问：\n加上上周的数据"),
+            "the next step sees its reply and the follow-up: {}",
+            prompts[1]
+        );
+        assert_eq!(
+            task_ids_of(&path, "b-ada"),
+            vec![id.clone()],
+            "same task, no sibling"
+        );
+        let events = events_of(&app, &group).await;
+        let cards = statuses(&events);
+        assert_eq!(cards.len(), 1, "one card: {cards:?}");
+        assert_eq!(cards[0]["state"], "done");
+        assert_eq!(deliveries(&events).len(), 2, "one reply per step");
+        assert_eq!(
+            count(&path, "SELECT COUNT(*) FROM follow_ups WHERE folded = 0"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_to_a_blocked_task_waits_and_a_done_task_takes_none() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        let (_, first) = say_in(&app, &group, "@Ada 发邮件").await;
+        let id = first["task"]["id"].as_str().unwrap().to_string();
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE tasks SET state = 'blocked' WHERE id = ?1", [&id])
+            .unwrap();
+        let (_, said) = say_in(&app, &group, "@Ada 抄送老王").await;
+        assert_eq!(said["appendedToTaskId"], id.as_str());
+        assert_eq!(said["task"]["state"], "blocked", "not a resume");
+        assert_eq!(task_ids_of(&path, "b-ada"), vec![id.clone()]);
+
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE tasks SET state = 'done' WHERE id = ?1", [&id])
+            .unwrap();
+        let (_, said) = say_in(&app, &group, "@Ada 再发一封").await;
+        assert!(
+            said.get("appendedToTaskId").is_none(),
+            "a done task is not open: {said}"
+        );
+        assert_ne!(said["task"]["id"], id.as_str());
+        assert_eq!(task_ids_of(&path, "b-ada").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dms_and_other_bros_never_join_a_task() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (_, bro) = new_bro(&app, Some(json!({ "name": "小明" }))).await;
+        let dm = bro["dmGroupId"].as_str().unwrap();
+        say_in(&app, dm, "整理周报").await;
+        let (_, said) = say_in(&app, dm, "再加一段").await;
+        assert!(
+            said.get("appendedToTaskId").is_none(),
+            "DMs are unchanged: {said}"
+        );
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM follow_ups"), 0);
+
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "@Ada 写周报").await;
+        let (_, said) = say_in(&app, &group, "@Bob 你看看").await;
+        assert!(
+            said.get("appendedToTaskId").is_none(),
+            "only that bro's own task: {said}"
+        );
+        assert_eq!(said["task"]["assigneeBotId"], "b-bob");
+        let (_, said) = say_in(&app, &group, "大家看看").await;
+        assert!(
+            said["task"].is_null(),
+            "an unaddressed message is not a follow-up"
+        );
+        assert_eq!(count(&path, "SELECT COUNT(*) FROM follow_ups"), 0);
     }
 }

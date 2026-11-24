@@ -1,7 +1,9 @@
 //! `POST /api/groups/{id}/say`: one call for what the person typed.
 //! Stores a text message, then queues a task when someone should act:
 //! in a DM, its bro; in a group, the member named by a leading `@名字`, and
-//! then every member gets one turn in order (see [`crate::turns`]).
+//! then every member gets one turn in order (see [`crate::turns`]). In a
+//! group, an `@名字` to a bro that still has an open task there joins that
+//! task instead (see [`crate::follow_ups`]).
 //! `/messages` and `/tasks` stay as they are.
 
 use axum::extract::{Path as AxumPath, State};
@@ -65,8 +67,25 @@ pub(crate) async fn say(
             params![message.id, group_id, message.kind.as_str(), message.body, now],
         )?;
         let (routed, in_group) = assignee(&tx, &group_id, &text)?;
+        // A follow-up in a group: the named bro's still-open task.
+        let open = match (&routed, in_group) {
+            (Some((bot, _)), true) => crate::follow_ups::open_task(&tx, &group_id, bot)?,
+            _ => None,
+        };
+        let mut appended_to_task_id = None;
         let task = match routed {
             None => None,
+            Some((bot, prompt)) if open.is_some() => {
+                let (id, task_prompt, state) = open.expect("checked");
+                crate::follow_ups::attach(&tx, &id, &message.id, &prompt, &now)?;
+                appended_to_task_id = Some(id.clone());
+                Some(Task {
+                    id,
+                    assignee_bot_id: bot,
+                    prompt: task_prompt,
+                    state: TaskState::parse(&state).unwrap_or(TaskState::Queued),
+                })
+            }
             Some((bot, prompt)) => {
                 let task = Task {
                     id: new_id(),
@@ -97,7 +116,11 @@ pub(crate) async fn say(
             )?;
         }
         tx.commit()?;
-        Ok(Some(Said { message, task }))
+        Ok(Some(Said {
+            message,
+            task,
+            appended_to_task_id,
+        }))
     })();
     drop(conn);
     match result {

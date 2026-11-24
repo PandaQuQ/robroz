@@ -297,7 +297,7 @@ fn clip(text: &str) -> String {
 
 /// Quoted text loses its `robroz-` control lines, so a quote can never ask
 /// for an outside write, a progress line or silence on the reader's behalf.
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     text.lines()
         .filter(|l| !l.trim_start().starts_with("robroz-"))
         .collect::<Vec<_>>()
