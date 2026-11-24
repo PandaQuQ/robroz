@@ -415,6 +415,57 @@ async fn a_router_step_past_the_timeout_cancels_the_task_and_its_late_reply() {
 }
 
 #[tokio::test]
+async fn the_hint_shows_at_half_the_timeout_and_the_cancel_comes_at_the_full_timeout() {
+    let (model, gate) = script(vec!["one step only"], vec![Turn::Gated(text("late"))]);
+    let h = setup(model, Mode::Offloaded).await;
+    let task_id = h.task("think slowly").await;
+    let mut sandbox = FakeSandbox::new();
+    h.host.pump_once(&mut sandbox).unwrap();
+    gate.entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("step started");
+    let progress = |h: &Harness| -> Option<String> {
+        h.conn()
+            .query_row(
+                "SELECT progress FROM tasks WHERE id = ?1",
+                [&task_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let hint = robroz_contract::host_text::step_timeout_hint(6);
+
+    // Under half of the 10-minute budget: no hint yet.
+    let now = std::time::Instant::now();
+    h.host
+        .watchdog_once(now + Duration::from_secs(4 * 60))
+        .unwrap();
+    assert_ne!(progress(&h), Some(hint.clone()));
+
+    // Past half, under the full budget: the hint is up and the step runs on.
+    h.host
+        .watchdog_once(now + Duration::from_secs(6 * 60))
+        .unwrap();
+    assert_eq!(progress(&h), Some(hint.clone()));
+    h.age_step(&task_id, 6);
+    h.host.pump_once(&mut sandbox).unwrap();
+    assert_eq!(h.row(&task_id), ("running".to_string(), None));
+    assert_eq!(progress(&h), Some(hint));
+    assert!(h.clock(&task_id).is_some());
+
+    // At the full budget: cancelled.
+    h.age_step(&task_id, 10);
+    h.host.pump_once(&mut sandbox).unwrap();
+    assert_cancelled(&h, &task_id, &sandbox);
+    gate.release.send(()).unwrap();
+    for _ in 0..20 {
+        h.host.pump_once(&mut sandbox).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_cancelled(&h, &task_id, &sandbox);
+}
+
+#[tokio::test]
 async fn waiting_on_an_approval_card_is_not_step_time() {
     let (model, _gate) = script(
         vec!["no split"],
