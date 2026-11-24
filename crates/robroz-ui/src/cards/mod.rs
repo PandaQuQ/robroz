@@ -260,7 +260,6 @@ impl ApprovalCard {
                 at,
             },
         };
-
         let kind = match extras.and_then(|e| e.action) {
             Some(ClientApprovalAction::RuleAdd) => ActionKind::RuleAdd,
             Some(ClientApprovalAction::RuleDelete) => ActionKind::RuleDelete,
@@ -269,8 +268,11 @@ impl ApprovalCard {
                 ApprovalAction::Send => ActionKind::Send,
                 ApprovalAction::Spend => ActionKind::Spend,
                 ApprovalAction::Call => ActionKind::Call,
+                ApprovalAction::RuleAdd => ActionKind::RuleAdd,
+                ApprovalAction::RuleDelete => ActionKind::RuleDelete,
                 ApprovalAction::Unknown => ActionKind::Unknown,
             },
+        };
         };
         Some(Self {
             id: id.clone(),

@@ -37,6 +37,7 @@
 | POST | `/api/groups/{id}/choices` | bro 发选项卡 | `host/src/choices.rs:create_choice` |
 | POST | `/api/choices/{id}/answer` | 回答选项卡 | `host/src/choices.rs:answer_choice` |
 | POST | `/api/groups/{id}/approvals` | bro 发审批卡 | `host/src/approvals.rs:create_approval` |
+| GET | `/api/approvals/{id}` | 读一张审批卡 | `host/src/approvals.rs:get_approval` |
 | POST | `/api/approvals/{id}/approve` | 同意审批卡 / 确认卡 | `host/src/approvals.rs:approve` |
 | POST | `/api/approvals/{id}/deny` | 拒绝审批卡 / 确认卡 | `host/src/approvals.rs:deny` |
 | POST | `/api/schedules` | 建例行任务 | `host/src/lib.rs:create_schedule` |
@@ -59,6 +60,9 @@
 | GET | `/api/settings/model` | 读模型设置 | `host/src/model_settings.rs:get_model` |
 | PUT | `/api/settings/model` | 改模型设置 | `host/src/model_settings.rs:put_model` |
 | POST | `/api/settings/model/test` | 试连模型 | `host/src/model_settings.rs:test_model` |
+| GET | `/api/settings/review-rules` | 列已确认的放行规则 | `host/src/review/rules.rs:list_rules` |
+| POST | `/api/settings/review-rules` | 提议加一条放行规则（发确认卡） | `host/src/review/rules.rs:create_rule` |
+| DELETE | `/api/settings/review-rules/{id}` | 提议删一条放行规则（发确认卡） | `host/src/review/rules.rs:delete_rule` |
 | GET | `/api/mcp/servers` | 列 MCP 服务器 | `host/src/mcp.rs:list_servers` |
 | POST | `/api/mcp/servers` | 加 MCP 服务器 | `host/src/mcp.rs:create_server` |
 | PATCH | `/api/mcp/servers/{id}` | 改 MCP 服务器 | `host/src/mcp.rs:patch_server` |
@@ -323,7 +327,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` | 每个任务恰好一张，`id` 等于 `taskId`。 |
 | `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` | 任务写出结果时一张。`summary` 通常是「已写入结果」；MCP 工具审批被拒绝时是「未执行」。`path` 是群目录里的相对路径 `tasks/{taskId}/result.txt`。`briefing` 为 true 表示例行任务的结果（简报）。 |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | 选项卡。`options` 是 `[{"id","label","primary"}]`。`choice` 未回答时 `null`，回答后是选中的 `id` 数组。 |
-| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；客户端遇到不认识的值会解析成通用卡，不会整条失败。`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。`reason` 是被拦或已结算的原因，过期时固定为契约常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）；`expiresAt` 是过期时间（RFC 3339，格式同 `createdAt`）。两者都是可选字段，没有时省略，旧 JSON 不变。本版本宿主机还不填写这两个字段。 |
+| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call` / `rule_add` / `rule_delete`（后两个是放行规则的确认卡，`summary` 是规则原文）；客户端遇到不认识的值会解析成通用卡，不会整条失败。`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。`reason` 是被拦或已结算的原因，过期时固定为契约常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）；`expiresAt` 是过期时间（RFC 3339，格式同 `createdAt`）。两者都是可选字段，没有时省略，旧 JSON 不变。宿主机在任务审批卡、MCP 工具审批卡、bro 发的审批卡和放行规则确认卡上填 `expiresAt`；自动审核拦下的卡带 `reason`（审核模型给的一句话理由）。确认卡（`confirm`）和接管不过期。 |
 | `confirm` | `id` `botId` `botName` `subject` `taskId` `decision` `createdAt` `answeredAt` `answeredBy` | 记忆：`memoryId` `kind` `text` `scope`；技能：`slug` `title` `instruction` `scope` | 确认卡，`subject` 是 `memory` 或 `skill`。显示的内容是这条记忆 / 技能**现在**的样子。 |
 
 ### 任务状态和标签
@@ -347,6 +351,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | 模型调用失败 | 「模型没回：<原因>」 | 有，交付卡也带同样的 `failure` | `host/src/pump.rs:write_reply`、`host/src/tools.rs` |
 | 任务审批卡被拒绝 | 「你拒绝了：<prompt 第一行普通内容，最多 60 字>」 | 没有 | `host/src/approvals.rs:settle_task` |
 | MCP 工具审批卡被拒绝 | 「你拒绝了：{server}.{tool}」 | 有，`summary` 为「未执行」，交付卡带同一个 `failure` | `host/src/mcp_tools.rs:finish_denied` |
+| 任务审批卡或 MCP 工具审批卡过期 | 「审批已过期」（`APPROVAL_EXPIRED_REASON`） | 任务审批卡没有；MCP 卡有，`summary` 为「未执行」 | `host/src/review/mod.rs:expire_due` |
 | 出网超额 | 「出网超额：已用 N 次，上限 M」 | 没有 | `crates/robroz-policy/src/lib.rs`（`OverQuota::failure`） |
 | 出网用了非 GET | 「出网只允许 GET：用了 <方法>」 | 没有 | 同上 |
 | 工具调用超过 8 轮 | 「工具调用超过 8 轮」 | 有，交付卡也带同样的 `failure`，结果里也写这句 | `host/src/tools.rs:ROUND_LIMIT_FAILURE` |
@@ -488,11 +493,11 @@ bro 在删除、发送或花钱之前问人。`host/src/approvals.rs:create_appr
 | 请求字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `botId` | string | 是 | 必须是群成员。 |
-| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 不认识的值返回 400「不支持这个动作」。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
+| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 不认识的值返回 400「不支持这个动作」。`call`、`rule_add`、`rule_delete` 只能由宿主机发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
 | `summary` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字。 |
 | `path` | string | 否 | 只用来展示，去掉空白后为空当没填。 |
 
-- 201 `approval` 事件（不带 `taskId`）。
+- 201 `approval` 事件（不带 `taskId`，带 `expiresAt`）。
 - 404「群不存在」；400「这个 Bot 不在群里」。
 - 400「请填写要做什么」/「说明只能一行，最多 200 字」/「不支持这个动作」。
 
@@ -508,6 +513,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 同意：写接管标记，任务重新排队，跳过这一行跑完。
 - 拒绝：任务变成 `done`，`failure`「你拒绝了：…」，没有交付卡。
 - 任务已经通过 `/resume` 被接管走了：回答只记下，不再动任务。
+- 自动审核和过期见下面「自动审核和过期」。
 
 ### MCP 工具审批卡
 
@@ -516,7 +522,33 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 同意：任务回到 `queued`，由 pump 执行这次调用，把结果交回模型继续；这次调用计一次出网 GET。写继续标记失败时 500「批准失败，无法写入继续标记」，卡保持未回答。
 - 拒绝：不执行，任务变成 `done`，交付卡 `summary` 为「未执行」，`failure` 为「你拒绝了：{server}.{tool}」。
 - 不要用 `POST /api/tasks/{id}/resume` 代替答卡（409「请先回答审批卡」）。
+- 自动审核和过期同任务审批卡，见下面「自动审核和过期」。
 - 只读 MCP 工具不出卡。行为说明见 [search-and-mcp.md](search-and-mcp.md#模型怎么调用)。
+
+### 自动审核和过期
+
+`host/src/review/`。设计见 [design/auto-review.md](design/auto-review.md)。
+
+- **没有放行规则**：任务审批卡和 MCP 工具审批卡照旧直接出卡，不调审核模型，不带 `reason`，带 `expiresAt`。
+- **有放行规则**：卡先不出（不在事件里，`approve` / `deny` 返回 404）。宿主机的审核线程把全部已确认规则的原文和这次操作交给审核模型，模型回 allow 或 block 加一句理由。不用正则或通配。
+  - allow：不出卡，跟手动同意一样写标记、任务重新排队。库里记下 `decision` 为 `approved`、理由，不带 `answeredBy`。
+  - block：出卡，带 `reason`（理由）和 `expiresAt`，`createdAt` 改成出卡时间。
+  - 审核出错或超时：重试一次，还不行就 block，`reason`「自动审核没有成功，需要你批准」。
+  - 没接模型：block，`reason`「还没设置模型，没法自动审核」。从不默认放行。
+- **过期**：卡在 `expiresAt`（出卡后 `ROBROZ_APPROVAL_TTL_SECS` 秒，默认 24 小时）还没回答，宿主机把它记成 `decision: denied`、`reason: "审批已过期"`（`APPROVAL_EXPIRED_REASON`），`answeredBy` 留空。它挡着的任务变成 `done`，`failure`「审批已过期」。之后再 `approve` / `deny` 返回 409「已经答过了」。确认卡（记忆、技能）和接管（captcha）不过期。
+
+本版本卡片仍发在任务所在的群，还没有挪到主人私聊；bro 用 `POST /api/groups/{id}/approvals` 发的卡只会过期，不经过审核。
+
+### GET /api/approvals/{id}
+
+读一张审批卡，返回和事件里一样的 `approval` 对象。`host/src/approvals.rs:get_approval`。设置页的放行规则确认卡只能从这里取到。
+
+- 200 `approval` 事件。
+- 404「审批卡不存在」：id 不存在、是确认卡（`confirm`），或这张卡还在自动审核。
+
+```sh
+curl -s $B/api/approvals/<approvalId>
+```
 
 ### POST /api/approvals/{id}/approve 和 /deny
 
@@ -527,8 +559,9 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 | `answeredBy` | string | 否 | 请求体整个可以不带，也可以是 `{}`。 |
 
 - 200 同一张卡，`decision` 为 `approved` / `denied`，`answeredAt`、`answeredBy` 已填。
-- 404「审批卡不存在」：id 不存在（确认卡也一样）。
-- 409「已经答过了」：每张只能答一次。
+- 404「审批卡不存在」：id 不存在（确认卡也一样），或这张卡还在自动审核。
+- 409「已经答过了」：每张只能答一次；已过期的卡也是这句。
+- 同意 `rule_add` 卡时加上这条规则，同意 `rule_delete` 卡时删掉那条规则；拒绝或过期时规则列表不变。
 - 400「answeredBy 只能一行，最多 40 个字」。
 - 422「请求格式不正确」（自定义）：请求体不是合法 JSON。
 - 500「批准失败，无法写入接管标记」：同意任务审批卡时写控制目录失败，卡保持未回答。
@@ -852,6 +885,41 @@ curl -s -X PUT $B/api/settings/model -H 'content-type: application/json' \
 
 ```sh
 curl -s -X POST $B/api/settings/model/test
+```
+
+### 放行规则
+
+自动审核的放行规则，每条是主人写的一句话。`host/src/review/rules.rs`。鉴权同其他 `/api/settings/*`。`POST` 和 `DELETE` 都不直接改列表：只建一张确认卡（`approval` 事件，`action` 为 `rule_add` / `rule_delete`，`summary` 为规则原文，带 `expiresAt`）。这张卡就显示在设置页里，不发到任何群或私聊，也不算未读：`botId` 是契约常量 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），`botName` 是 `SETTINGS_APPROVAL_BOT_NAME`（「设置」），没有 `taskId`。没有任何 bro 也能用。客户端用返回的 `approvalId` 调 `GET /api/approvals/{id}` 取卡，用 `POST /api/approvals/{id}/approve` / `deny` 回答；同意后才生效，拒绝或过期（24 小时）就作废。bro 调这两个接口也只能建卡。
+
+#### GET /api/settings/review-rules
+
+只列已确认的规则，按加入时间排。
+
+```sh
+curl -s $B/api/settings/review-rules
+# {"rules":[{"id":"<ruleId>","text":"允许合并 CI 全绿的 PR","createdAt":"2026-11-24T10:00:00.000Z"}]}
+```
+
+#### POST /api/settings/review-rules
+
+| 请求字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `text` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字（`REVIEW_RULE_MAX`）。 |
+
+- 202 `{"approvalId":"<approvalId>"}`：确认卡已发出，规则还没加。
+- 400「请填写规则」/「规则只能一行，最多 200 字」。
+
+```sh
+curl -s -X POST $B/api/settings/review-rules -H 'content-type: application/json' -d '{"text":"允许合并 CI 全绿的 PR"}'
+```
+
+#### DELETE /api/settings/review-rules/{id}
+
+- 202 `{"approvalId":"<approvalId>"}`：确认卡已发出，规则在同意前仍在列表里。
+- 404「规则不存在」：id 不是已确认的规则。
+
+```sh
+curl -s -X DELETE $B/api/settings/review-rules/<ruleId>
 ```
 
 ---

@@ -285,6 +285,16 @@ pub enum ApprovalAction {
     Spend,
     /// A model asked to call an MCP tool that is not read-only.
     Call,
+    /// Confirm card for adding an allow rule (`POST /api/settings/review-rules`).
+    /// `summary` is the rule sentence, verbatim. Explicit rename: `rename_all`
+    /// would give `ruleadd`.
+    #[serde(rename = "rule_add")]
+    RuleAdd,
+    /// Confirm card for deleting an allow rule
+    /// (`DELETE /api/settings/review-rules/{id}`). `summary` is the rule
+    /// sentence, verbatim.
+    #[serde(rename = "rule_delete")]
+    RuleDelete,
     /// An action value this client does not recognise. The client shows a
     /// generic approval card. The host must never emit this variant.
     #[serde(other)]
@@ -319,6 +329,48 @@ pub const APPROVAL_SUMMARY_MAX: usize = 200;
 /// the client compares `reason == APPROVAL_EXPIRED_REASON` and must not
 /// hard-code the text.
 pub const APPROVAL_EXPIRED_REASON: &str = "审批已过期";
+
+/// An allow rule for auto-review, as listed by `GET /api/settings/review-rules`.
+/// Only rules the owner confirmed on a `rule_add` card have this shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRule {
+    pub id: String,
+    /// The owner's sentence, trimmed, one line.
+    pub text: String,
+    pub created_at: String,
+}
+
+/// `GET /api/settings/review-rules`: confirmed rules, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRules {
+    pub rules: Vec<ReviewRule>,
+}
+
+/// `POST /api/settings/review-rules` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateReviewRule {
+    pub text: String,
+}
+
+/// 202 body of `POST` and `DELETE /api/settings/review-rules`: the confirm
+/// card that must be approved before the list changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRuleCreated {
+    pub approval_id: String,
+}
+
+/// `botId` on a rule card the owner raised from the settings page. That card
+/// belongs to no bro and no chat: it is shown on the settings page, fetched
+/// with `GET /api/approvals/{id}`, and never appears in a group's events.
+pub const SETTINGS_APPROVAL_BOT_ID: &str = "settings";
+/// `botName` on a settings-page rule card.
+pub const SETTINGS_APPROVAL_BOT_NAME: &str = "设置";
+
+/// A rule sentence is one line, at most this many characters (the same
+/// limit as an approval summary, because the card shows it verbatim).
+pub const REVIEW_RULE_MAX: usize = APPROVAL_SUMMARY_MAX;
 
 /// Choice cards hold 2 to 4 options with distinct, non-empty values.
 pub const CHOICE_OPTIONS_MIN: usize = 2;
@@ -1423,7 +1475,7 @@ mod tests {
             assert_eq!(back, action, "{value}");
         }
 
-        let unknown: ApprovalAction = serde_json::from_value("rule_add".into()).unwrap();
+        let unknown: ApprovalAction = serde_json::from_value("rule_edit".into()).unwrap();
         assert_eq!(unknown, ApprovalAction::Unknown);
         let also: ApprovalAction = serde_json::from_value("something_else".into()).unwrap();
         assert_eq!(also, ApprovalAction::Unknown);
@@ -1460,6 +1512,42 @@ mod tests {
             } if r == APPROVAL_EXPIRED_REASON
         ));
         assert_eq!(APPROVAL_EXPIRED_REASON, "审批已过期");
+    }
+
+    #[test]
+    fn rule_actions_use_snake_case_names() {
+        for (value, action) in [
+            ("rule_add", ApprovalAction::RuleAdd),
+            ("rule_delete", ApprovalAction::RuleDelete),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+            let back: ApprovalAction = serde_json::from_value(value.into()).unwrap();
+            assert_eq!(back, action);
+        }
+        // Not the `rename_all` spelling.
+        let odd: ApprovalAction = serde_json::from_value("ruleadd".into()).unwrap();
+        assert_eq!(odd, ApprovalAction::Unknown);
+    }
+
+    #[test]
+    fn review_rule_types_are_camel_case() {
+        let rule = ReviewRule {
+            id: "r1".into(),
+            text: "允许合并 CI 全绿的 PR".into(),
+            created_at: "2026-11-24T10:00:00.000Z".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(ReviewRules { rules: vec![rule.clone()] }).unwrap(),
+            serde_json::json!({"rules":[{"id":"r1","text":"允许合并 CI 全绿的 PR","createdAt":"2026-11-24T10:00:00.000Z"}]})
+        );
+        assert_eq!(
+            serde_json::to_value(ReviewRuleCreated { approval_id: "a1".into() }).unwrap(),
+            serde_json::json!({"approvalId":"a1"})
+        );
+        assert_eq!(SETTINGS_APPROVAL_BOT_ID, "settings");
+        assert_eq!(SETTINGS_APPROVAL_BOT_NAME, "设置");
+        let body: CreateReviewRule = serde_json::from_value(serde_json::json!({"text":"x"})).unwrap();
+        assert_eq!(body.text, "x");
     }
 
     #[test]

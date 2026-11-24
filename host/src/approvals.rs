@@ -1,6 +1,8 @@
 //! Approval cards: a bot in the group asks before it deletes, sends or spends.
 //! The person approves or denies once, each through its own endpoint.
 
+use std::path::Path;
+
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
@@ -31,10 +33,16 @@ pub(crate) const SCHEMA: &str = "
 ";
 
 /// Approval cards only: confirm cards (`subject_kind` set) live in [`crate::proposals`].
-const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
-            a.task_id, a.mcp_server, a.mcp_tool
-     FROM approvals a JOIN bots b ON b.id = a.bot_id";
-const APPROVALS_ONLY: &str = "a.subject_kind IS NULL";
+/// Settings-page rule cards have no bro: `botId` / `botName` are the
+/// contract's `SETTINGS_APPROVAL_BOT_ID` / `SETTINGS_APPROVAL_BOT_NAME`.
+const SELECT: &str = "SELECT a.id, a.bot_id, COALESCE(b.name, CASE WHEN a.bot_id = 'settings' THEN '设置' END), a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
+            a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at
+     FROM approvals a LEFT JOIN bots b ON b.id = a.bot_id
+     WHERE (b.id IS NOT NULL OR a.bot_id = 'settings')";
+/// Approval cards the owner can see: not a confirm card, and not hidden by
+/// auto-review (still being reviewed, or allowed without a card).
+const APPROVALS_ONLY: &str =
+    "a.subject_kind IS NULL AND (a.review_state IS NULL OR a.review_state = 'blocked')";
 
 fn action_text(action: ApprovalAction) -> &'static str {
     match action {
@@ -42,6 +50,8 @@ fn action_text(action: ApprovalAction) -> &'static str {
         ApprovalAction::Send => "send",
         ApprovalAction::Spend => "spend",
         ApprovalAction::Call => "call",
+        ApprovalAction::RuleAdd => "rule_add",
+        ApprovalAction::RuleDelete => "rule_delete",
         ApprovalAction::Unknown => {
             debug_assert!(false, "host must never emit ApprovalAction::Unknown");
             "unknown"
@@ -70,6 +80,8 @@ fn parse_action(text: String) -> rusqlite::Result<ApprovalAction> {
         ApprovalAction::Send,
         ApprovalAction::Spend,
         ApprovalAction::Call,
+        ApprovalAction::RuleAdd,
+        ApprovalAction::RuleDelete,
     ]
     .into_iter()
     .find(|a| action_text(*a) == text)
@@ -101,14 +113,38 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         task_id: row.get(10)?,
         mcp_server: row.get(11)?,
         mcp_tool: row.get(12)?,
-        reason: None,
-        expires_at: None,
+        reason: row.get(13)?,
+        expires_at: row.get(14)?,
     })
 }
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
     conn.query_row(
-        &format!("{SELECT} WHERE a.id = ?1 AND {APPROVALS_ONLY}"),
+        &format!("{SELECT} AND a.id = ?1 AND {APPROVALS_ONLY}"),
+        [id],
+        event_from_row,
+    )
+    .optional()
+}
+
+/// `GET /api/approvals/{id}`: one approval card the owner can see, in the
+/// same shape as in events. Settings-page rule cards are only reachable here.
+pub(crate) async fn get_approval(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let conn = lock_db(&state);
+    match load(&conn, &id) {
+        Ok(Some(event)) => (StatusCode::OK, Json(event)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "审批卡不存在"),
+        Err(err) => db_error(err),
+    }
+}
+
+/// Any approval card, including ones auto-review has hidden.
+pub(crate) fn load_any(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
+    conn.query_row(
+        &format!("{SELECT} AND a.id = ?1 AND a.subject_kind IS NULL"),
         [id],
         event_from_row,
     )
@@ -118,7 +154,7 @@ fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
 /// Approval events for one group, for the events stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
     let mut stmt = conn.prepare(&format!(
-        "{SELECT} WHERE a.group_id = ?1 AND {APPROVALS_ONLY}"
+        "{SELECT} AND a.group_id = ?1 AND {APPROVALS_ONLY}"
     ))?;
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;
@@ -182,7 +218,10 @@ pub(crate) async fn create_approval(
                 "不支持这个动作",
             )));
         }
-        if matches!(body.action, ApprovalAction::Call) {
+        if matches!(
+            body.action,
+            ApprovalAction::Call | ApprovalAction::RuleAdd | ApprovalAction::RuleDelete
+        ) {
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "这个动作只能由宿主机发出",
@@ -193,10 +232,20 @@ pub(crate) async fn create_approval(
             Err(message) => return Ok(Err(error_response(StatusCode::BAD_REQUEST, message))),
         };
         let id = new_id();
+        let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
-            params![id, group_id, bot_id, action_text(body.action), summary, path, now_rfc3339()],
+            "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8)",
+            params![
+                id,
+                group_id,
+                bot_id,
+                action_text(body.action),
+                summary,
+                path,
+                now,
+                crate::review::expires_at(&now, crate::review::approval_ttl())
+            ],
         )?;
         Ok(Ok(load(&conn, &id)?.expect("approval just inserted")))
     })();
@@ -240,10 +289,12 @@ pub(crate) fn gate_task(
     hash: &str,
     now: &str,
 ) -> rusqlite::Result<()> {
+    let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
-        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash)
-         SELECT ?1, group_id, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4 FROM tasks WHERE id = ?5",
-        params![new_id(), gate_summary(prompt), now, hash, task_id],
+        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash,
+                               review_state, expires_at)
+         SELECT ?1, group_id, assignee_bot_id, 'send', ?2, NULL, NULL, ?3, NULL, id, ?4, ?6, ?7 FROM tasks WHERE id = ?5",
+        params![new_id(), gate_summary(prompt), now, hash, task_id, gate.review_state, gate.expires_at],
     )?;
     Ok(())
 }
@@ -259,10 +310,12 @@ pub(crate) fn gate_mcp_task(
     server: &str,
     tool: &str,
 ) -> rusqlite::Result<()> {
+    let gate = crate::review::open_gate(conn, now)?;
     conn.execute(
-        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash, mcp_server, mcp_tool)
-         SELECT ?1, group_id, assignee_bot_id, 'call', ?2, NULL, NULL, ?3, NULL, id, ?4, ?5, ?6 FROM tasks WHERE id = ?7",
-        params![new_id(), summary, now, hash, server, tool, task_id],
+        "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, task_id, intent_hash, mcp_server, mcp_tool,
+                               review_state, expires_at)
+         SELECT ?1, group_id, assignee_bot_id, 'call', ?2, NULL, NULL, ?3, NULL, id, ?4, ?5, ?6, ?8, ?9 FROM tasks WHERE id = ?7",
+        params![new_id(), summary, now, hash, server, tool, task_id, gate.review_state, gate.expires_at],
     )?;
     Ok(())
 }
@@ -300,10 +353,12 @@ fn settle_task(
     task_id: &str,
     hash: &str,
     decision: ApprovalDecision,
+    failure: Option<&str>,
 ) -> rusqlite::Result<()> {
     // Denied is done without the work: say so, so the card is not a green "done".
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
+        ApprovalDecision::Denied if failure.is_some() => ("done", failure.map(String::from)),
         ApprovalDecision::Denied => {
             let prompt: String =
                 conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| {
@@ -319,6 +374,124 @@ fn settle_task(
         params![next, now_rfc3339(), task_id, hash, failure],
     )?;
     Ok(())
+}
+
+/// How [`settle`] answers a card. `Default` is a plain answer from the owner.
+pub(crate) struct Settlement<'a> {
+    pub decision: ApprovalDecision,
+    /// The client-reported `answeredBy`. `None` for auto-review and expiry.
+    pub by: Option<&'a str>,
+    /// Written to the card's `reason` when set.
+    pub reason: Option<&'a str>,
+    /// The task's `failure` on deny. `None`: 「你拒绝了：…」.
+    pub failure: Option<&'a str>,
+    /// Only settle a card in this review state (`pending` for auto-review).
+    /// `None`: only a card the owner can see.
+    pub from_review: Option<&'a str>,
+    /// New review state, when set.
+    pub to_review: Option<&'a str>,
+}
+
+impl Default for Settlement<'_> {
+    fn default() -> Self {
+        Self {
+            decision: ApprovalDecision::Denied,
+            by: None,
+            reason: None,
+            failure: None,
+            from_review: None,
+            to_review: None,
+        }
+    }
+}
+
+/// Answer one approval card and move what it gates: the task (marker, then
+/// `queued`, or `done` with `failure`), the MCP call, or the rule list.
+/// The owner's approve and deny, auto-review's allow, and expiry all go
+/// through here. `Err` is `(status, message)` and leaves the card open.
+pub(crate) fn settle(
+    conn: &mut Connection,
+    control_root: &Path,
+    id: &str,
+    card: &Event,
+    how: &Settlement<'_>,
+) -> rusqlite::Result<Result<(), (StatusCode, &'static str)>> {
+    let decision = how.decision;
+    let gate = gate_of(conn, id)?;
+    let mcp = is_mcp_card(card);
+    // Marker first: if it can't be written nothing changes and the card stays open.
+    if let (Some((task_id, hash)), ApprovalDecision::Approved) = (&gate, decision) {
+        if mcp {
+            if let Err(err) = crate::mcp_tools::mark_approved(&control_root.join(task_id)) {
+                eprintln!("approve {id}: mcp pending for {task_id}: {err}");
+                return Ok(Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "批准失败，无法写入继续标记",
+                )));
+            }
+        } else if let Err(err) = robroz_runner::append_takeover(&control_root.join(task_id), hash) {
+            eprintln!("approve {id}: takeover for {task_id}: {err}");
+            return Ok(Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "批准失败，无法写入接管标记",
+            )));
+        }
+    }
+    let now = now_rfc3339();
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
+        "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4,
+                              reason = COALESCE(?5, reason), review_state = COALESCE(?7, review_state)
+         WHERE id = ?3 AND decision IS NULL
+           AND ((?6 IS NULL AND (review_state IS NULL OR review_state = 'blocked')) OR review_state = ?6)",
+        params![
+            decision_text(decision),
+            now,
+            id,
+            how.by,
+            how.reason,
+            how.from_review,
+            how.to_review
+        ],
+    )?;
+    if changed == 0 {
+        return Ok(Err((StatusCode::CONFLICT, "已经答过了")));
+    }
+    if let Some((task_id, hash)) = &gate {
+        if mcp {
+            match decision {
+                ApprovalDecision::Approved => {
+                    crate::mcp_tools::queue_approved(&tx, task_id, hash, &now)?;
+                }
+                ApprovalDecision::Denied => {
+                    let failure = match how.failure {
+                        Some(f) => f.to_string(),
+                        None => {
+                            let line = match card {
+                                Event::Approval {
+                                    mcp_server: Some(s),
+                                    mcp_tool: Some(tool),
+                                    ..
+                                } => format!("{s}.{tool}"),
+                                Event::Approval { summary, .. } => summary.clone(),
+                                _ => "MCP 工具".into(),
+                            };
+                            format!("你拒绝了：{line}")
+                        }
+                    };
+                    crate::mcp_tools::finish_denied(&tx, task_id, hash, &failure, &now)?;
+                    let _ = crate::mcp_tools::remove_pending(&control_root.join(task_id));
+                }
+            }
+        } else {
+            settle_task(&tx, task_id, hash, decision, how.failure)?;
+        }
+    }
+    if decision == ApprovalDecision::Approved {
+        crate::review::rules::apply_confirmed(&tx, id, &now)?;
+    }
+    tx.commit()?;
+    Ok(Ok(()))
 }
 
 /// One answer per card: the update only matches an unanswered row, so a
@@ -352,66 +525,20 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
         ) {
             return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
         }
-        let gate = gate_of(&conn, id)?;
-        let mcp = is_mcp_card(&card);
-        // Marker first: if it can't be written nothing changes and the card stays open.
-        if let (Some((task_id, _hash)), ApprovalDecision::Approved) = (&gate, decision) {
-            if mcp {
-                if let Err(err) = crate::mcp_tools::mark_approved(&state.control_root.join(task_id))
-                {
-                    eprintln!("approve {id}: mcp pending for {task_id}: {err}");
-                    return Ok(Err(error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "批准失败，无法写入继续标记",
-                    )));
-                }
-            } else if let Err(err) =
-                robroz_runner::append_takeover(&state.control_root.join(task_id), _hash)
-            {
-                eprintln!("approve {id}: takeover for {task_id}: {err}");
-                return Ok(Err(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "批准失败，无法写入接管标记",
-                )));
-            }
-        }
-        let now = now_rfc3339();
-        let tx = conn.transaction()?;
-        let changed = tx.execute(
-            "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4 WHERE id = ?3 AND decision IS NULL",
-            params![decision_text(decision), now, id, by],
+        let settled = settle(
+            &mut conn,
+            &state.control_root,
+            id,
+            &card,
+            &Settlement {
+                decision,
+                by: by.as_deref(),
+                ..Settlement::default()
+            },
         )?;
-        if changed == 0 {
-            return Ok(Err(error_response(StatusCode::CONFLICT, "已经答过了")));
+        if let Err((status, message)) = settled {
+            return Ok(Err(error_response(status, message)));
         }
-        if let Some((task_id, hash)) = &gate {
-            if mcp {
-                match decision {
-                    ApprovalDecision::Approved => {
-                        crate::mcp_tools::queue_approved(&tx, task_id, hash, &now)?;
-                    }
-                    ApprovalDecision::Denied => {
-                        let line = match &card {
-                            Event::Approval {
-                                mcp_server: Some(s),
-                                mcp_tool: Some(tool),
-                                ..
-                            } => {
-                                format!("{s}.{tool}")
-                            }
-                            Event::Approval { summary, .. } => summary.clone(),
-                            _ => "MCP 工具".into(),
-                        };
-                        let failure = format!("你拒绝了：{line}");
-                        crate::mcp_tools::finish_denied(&tx, task_id, hash, &failure, &now)?;
-                        let _ = crate::mcp_tools::remove_pending(&state.control_root.join(task_id));
-                    }
-                }
-            } else {
-                settle_task(&tx, task_id, hash, decision)?;
-            }
-        }
-        tx.commit()?;
         Ok(Ok(load(&conn, id)?.expect("approval exists")))
     })();
     drop(conn);
