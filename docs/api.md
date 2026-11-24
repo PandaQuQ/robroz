@@ -554,7 +554,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 
 读一张审批卡，返回和事件里一样的 `approval` 对象。`host/src/approvals.rs:get_approval`。设置页的放行规则确认卡只能从这里取到。
 
-- 200 `approval` 事件。
+- 200 `approval` 对象。
 - 404「审批卡不存在」：id 不存在、是确认卡（`confirm`），或这张卡还在自动审核。
 
 ```sh
@@ -900,7 +900,7 @@ curl -s -X POST $B/api/settings/model/test
 
 ### 放行规则
 
-自动审核的放行规则，每条是主人写的一句话。`host/src/review/rules.rs`。鉴权同其他 `/api/settings/*`。`POST` 和 `DELETE` 都不直接改列表：只建一张确认卡（`approval` 事件，`action` 为 `rule_add` / `rule_delete`，`summary` 为规则原文，带 `expiresAt`）。这张卡就显示在设置页里，不发到任何群或私聊，也不算未读：`botId` 是契约常量 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），`botName` 是 `SETTINGS_APPROVAL_BOT_NAME`（「设置」），没有 `taskId`。没有任何 bro 也能用。客户端用返回的 `approvalId` 调 `GET /api/approvals/{id}` 取卡，用 `POST /api/approvals/{id}/approve` / `deny` 回答；同意后才生效，拒绝或过期（24 小时）就作废。bro 调这两个接口也只能建卡。
+自动审核的放行规则，每条是主人写的一句话。`host/src/review/rules.rs`。鉴权同其他 `/api/settings/*`。`POST` 和 `DELETE` 都不直接改列表：只建一张确认卡（`approval` 对象，`action` 为 `rule_add` / `rule_delete`，`summary` 为规则原文，带 `expiresAt`）。这张卡就显示在设置页里，不发到任何群或私聊，也不算未读：`botId` 是契约常量 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），`botName` 是 `SETTINGS_APPROVAL_BOT_NAME`（「设置」），没有 `taskId`。没有任何 bro 也能用。客户端用返回的 `approvalId` 调 `GET /api/approvals/{id}` 取卡，用 `POST /api/approvals/{id}/approve` / `deny` 回答；同意后才生效，拒绝或过期（24 小时）就作废。bro 调这两个接口也只能建卡。
 
 #### GET /api/settings/review-rules
 

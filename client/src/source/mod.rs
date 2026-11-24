@@ -16,7 +16,7 @@ use std::fmt;
 use std::time::Duration;
 
 use robroz_contract::Event;
-use robroz_ui::cards::Card;
+use robroz_ui::cards::{ApprovalExtras, Card};
 
 /// One group or DM the client knows: id and display name, from
 /// `GET /api/groups` (or `ROBROZ_GROUPS` when pinned).
@@ -31,6 +31,8 @@ pub struct GroupTab {
 pub struct GroupEvent {
     pub group_id: String,
     pub event: Event,
+    /// Client-side approval fields the contract event cannot carry yet.
+    pub approval_extras: Option<ApprovalExtras>,
 }
 
 /// A new-kind card the contract has no event for yet (approval, draft),

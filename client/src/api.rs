@@ -18,22 +18,27 @@
 use std::sync::Mutex;
 
 use robroz_contract::{
-    next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, Bro, Bros, CreateBro,
-    CreateMemory, CreateSkill, ErrorBody, Event, McpCommandNotApproved, McpServer, McpServers,
-    McpTestResult, McpTool, McpTools, Memories, Memory, MemoryKind, MemorySource, MemoryStatus,
-    Message, MessageKind, RenameBro, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
+    next_bro_name, parse_skill_slug, route_mention, Answer, AnswerChoice, ApprovalAction,
+    ApprovalDecision, Bro, Bros, CreateBro, CreateMemory, CreateReviewRule, CreateSkill, ErrorBody,
+    Event, McpCommandNotApproved, McpServer, McpServers, McpTestResult, McpTool, McpTools,
+    Memories, Memory, MemoryKind, MemorySource, MemoryStatus, Message, MessageKind, RenameBro,
+    ReviewRuleCreated, ReviewRules, Said, Say, ScheduleEntry, Schedules, Skill, Skills, Task,
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
-    MCP_COMMAND_NOT_APPROVED,
+    MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
 };
 use robroz_contract::{
     ModelSettings, ModelSettingsSource, ModelTestResult, SearchSettings, SearchTestResult,
 };
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
+
 use robroz_ui::cards::model as model_page;
-use robroz_ui::cards::search;
+use robroz_ui::cards::review_rules;
 
 use crate::conn::Conn;
+use crate::event_decode;
+use robroz_ui::cards::search;
+use robroz_ui::cards::ApprovalExtras;
 
 pub mod paths {
     /// robroz#62: list and write memories.
@@ -107,6 +112,9 @@ pub mod paths {
         format!("/api/groups/{group_id}/say")
     }
     /// robroz#32: approve or deny an approval card, once.
+    pub fn approval(id: &str) -> String {
+        format!("/api/approvals/{id}")
+    }
     pub fn approval_decision(id: &str, approve: bool) -> String {
         let verb = if approve { "approve" } else { "deny" };
         format!("/api/approvals/{id}/{verb}")
@@ -115,10 +123,18 @@ pub mod paths {
     pub const SEARCH_SETTINGS: &str = "/api/settings/search";
     /// robroz#76: try the effective config once.
     pub const SEARCH_TEST: &str = "/api/settings/search/test";
+
+    /// GET confirmed rules; POST proposes an add (202 + approvalId).
+    pub const REVIEW_RULES: &str = "/api/settings/review-rules";
+    /// DELETE proposes removing a confirmed rule (202 + approvalId).
+    pub fn review_rule(id: &str) -> String {
+        format!("/api/settings/review-rules/{id}")
+    }
     /// robroz#102: read (GET) or change (PUT) the model config.
     pub const MODEL_SETTINGS: &str = "/api/settings/model";
     /// robroz#102: try the effective config once.
     pub const MODEL_TEST: &str = "/api/settings/model/test";
+
     /// SPEC §9 suggestion; not in the backend yet.
     pub fn send_draft(id: &str) -> String {
         format!("/api/cards/{id}/send")
@@ -238,7 +254,11 @@ pub trait CardApi: Send + Sync {
     /// Returns the updated `choice` event when the host sends it back.
     fn answer_choice(&self, id: &str, choice: &[String]) -> Result<Option<Event>, ApiError>;
     /// Returns the answered `approval` event when the host sends it back.
-    fn decide(&self, id: &str, approve: bool) -> Result<Option<Event>, ApiError>;
+    fn decide(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError>;
     fn send_draft(&self, id: &str) -> Result<(), ApiError>;
     fn schedules(&self, group_id: &str) -> Result<Vec<ScheduleEntry>, ApiError>;
     fn set_paused(&self, id: &str, paused: bool) -> Result<ScheduleEntry, ApiError>;
@@ -284,6 +304,15 @@ pub trait CardApi: Send + Sync {
     fn put_search(&self, put: &search::Put) -> Result<search::Current, ApiError>;
     /// `{ok, error?}`: 「能用了」 or 「连不上：原因」.
     fn test_search(&self) -> Result<(bool, Option<String>), ApiError>;
+
+    /// Confirmed allow rules only.
+    fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError>;
+    /// Propose adding a rule. Returns the pending approval id (202).
+    fn propose_review_rule(&self, text: &str) -> Result<String, ApiError>;
+    /// Propose deleting a confirmed rule. Returns the pending approval id (202).
+    fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError>;
+    /// `GET /api/approvals/{id}`: the confirm card, same JSON as the event.
+    fn approval(&self, id: &str) -> Result<Event, ApiError>;
     /// 模型 page: what is in effect; never the key (robroz#102).
     fn model_settings(&self) -> Result<model_page::Current, ApiError>;
     fn put_model(&self, put: &model_page::Put) -> Result<model_page::Current, ApiError>;
@@ -292,6 +321,33 @@ pub trait CardApi: Send + Sync {
 
 /// `GET`/`PUT /api/settings/search` body. `source` is read only when the
 /// host sends it; absent or unknown stays `None` (no label, no guess).
+fn decode_review_rules(body: &str) -> Result<Vec<review_rules::Rule>, ApiError> {
+    let list: ReviewRules = decode(body)?;
+    Ok(list
+        .rules
+        .into_iter()
+        .map(|r| review_rules::Rule {
+            id: r.id,
+            text: r.text,
+            created_at: r.created_at,
+        })
+        .collect())
+}
+
+fn decode_approval_id(body: &str) -> Result<String, ApiError> {
+    let created: ReviewRuleCreated = decode(body)?;
+    if created.approval_id.is_empty() {
+        return Err(ApiError::Decode("与契约不符: 需要 approvalId".into()));
+    }
+    Ok(created.approval_id)
+}
+
+fn decode_approval_event(body: &str) -> Result<Event, ApiError> {
+    event_decode::parse_event_str(body)
+        .map(|(event, _)| event)
+        .map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
+}
+
 pub fn decode_search(body: &str) -> Result<search::Current, ApiError> {
     let s: SearchSettings = decode(body)?;
     let raw: serde_json::Value = decode(body)?;
@@ -553,12 +609,21 @@ impl CardApi for HttpApi {
         Ok(decode::<Event>(&body).ok())
     }
 
-    fn decide(&self, id: &str, approve: bool) -> Result<Option<Event>, ApiError> {
+    fn decide(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError> {
         let body = self.post(
             &paths::approval_decision(id, approve),
             bodies::decision(self.name.as_deref()),
         )?;
-        decode(&body).map(Some)
+        if body.trim().is_empty() {
+            return Ok(None);
+        }
+        event_decode::parse_event_str(&body)
+            .map(Some)
+            .map_err(|e| ApiError::Decode(format!("与契约不符: {e}")))
     }
 
     fn send_draft(&self, id: &str) -> Result<(), ApiError> {
@@ -711,6 +776,34 @@ impl CardApi for HttpApi {
         Ok((r.ok, r.error))
     }
 
+    fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
+        decode_review_rules(&self.get(paths::REVIEW_RULES)?)
+    }
+
+    fn propose_review_rule(&self, text: &str) -> Result<String, ApiError> {
+        let n = text.chars().count();
+        if n > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::too_long_note(
+                n - review_rules::REVIEW_RULE_MAX,
+            )));
+        }
+        let payload = serde_json::to_string(&CreateReviewRule {
+            text: text.to_string(),
+        })
+        .expect("serialize CreateReviewRule");
+        let body = self.post(paths::REVIEW_RULES, Some(payload))?;
+        decode_approval_id(&body)
+    }
+
+    fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError> {
+        let body = self.delete(&paths::review_rule(id))?;
+        decode_approval_id(&body)
+    }
+
+    fn approval(&self, id: &str) -> Result<Event, ApiError> {
+        decode_approval_event(&self.get(&paths::approval(id))?)
+    }
+
     fn model_settings(&self) -> Result<model_page::Current, ApiError> {
         decode_model(&self.get(paths::MODEL_SETTINGS)?)
     }
@@ -734,7 +827,11 @@ pub struct FakeApi {
     mcp_servers: Mutex<Vec<McpServer>>,
     mcp_group: Mutex<std::collections::HashSet<(String, String)>>,
     search: Mutex<search::Current>,
+
+    review_rules: Mutex<Vec<review_rules::Rule>>,
+    pending_review: Mutex<Vec<FakeRuleApproval>>,
     model: Mutex<model_page::Current>,
+
     schedules: Mutex<Vec<ScheduleEntry>>,
     unread: Mutex<Vec<Unread>>,
     bros: Mutex<Vec<Bro>>,
@@ -749,7 +846,11 @@ impl FakeApi {
             mcp_servers: Mutex::new(Vec::new()),
             mcp_group: Mutex::new(std::collections::HashSet::new()),
             search: Mutex::new(search::Current::default()),
+
+            review_rules: Mutex::new(Vec::new()),
+            pending_review: Mutex::new(Vec::new()),
             model: Mutex::new(model_page::Current::default()),
+
             schedules: Mutex::new(schedules),
             unread: Mutex::new(Vec::new()),
             bros: Mutex::new(Vec::new()),
@@ -767,6 +868,13 @@ impl FakeApi {
     #[allow(dead_code)]
     pub fn with_model(self, cur: model_page::Current) -> Self {
         *self.model.lock().expect("fake model lock") = cur;
+        self
+    }
+
+    /// Seed confirmed allow-rules for `--fake` screenshots or a review script.
+    #[allow(dead_code)]
+    pub fn with_review_rules(self, rules: Vec<review_rules::Rule>) -> Self {
+        *self.review_rules.lock().expect("fake review rules lock") = rules;
         self
     }
 }
@@ -863,7 +971,14 @@ impl CardApi for FakeApi {
         Ok(None)
     }
 
-    fn decide(&self, _: &str, _: bool) -> Result<Option<Event>, ApiError> {
+    fn decide(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError> {
+        if let Some(reply) = decide_fake_review_rule(self, id, approve)? {
+            return Ok(Some(reply));
+        }
         Ok(None)
     }
 
@@ -1254,6 +1369,80 @@ impl CardApi for FakeApi {
         })
     }
 
+    fn review_rules(&self) -> Result<Vec<review_rules::Rule>, ApiError> {
+        Ok(self
+            .review_rules
+            .lock()
+            .expect("fake review rules lock")
+            .clone())
+    }
+
+    fn propose_review_rule(&self, text: &str) -> Result<String, ApiError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(ApiError::BadRequest(review_rules::NEED_TEXT.into()));
+        }
+        let n = text.chars().count();
+        if n > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::too_long_note(
+                n - review_rules::REVIEW_RULE_MAX,
+            )));
+        }
+        let id = format!("apr-add-{}", uuid_ish());
+        self.pending_review
+            .lock()
+            .expect("fake pending review lock")
+            .push(FakeRuleApproval {
+                id: id.clone(),
+                text: text.to_string(),
+                delete_id: None,
+                decided: false,
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            });
+        Ok(id)
+    }
+
+    fn propose_delete_review_rule(&self, id: &str) -> Result<String, ApiError> {
+        let all = self.review_rules.lock().expect("fake review rules lock");
+        let Some(rule) = all.iter().find(|r| r.id == id) else {
+            return Err(ApiError::NotFound("规则不存在".into()));
+        };
+        let approval_id = format!("apr-del-{}", uuid_ish());
+        self.pending_review
+            .lock()
+            .expect("fake pending review lock")
+            .push(FakeRuleApproval {
+                id: approval_id.clone(),
+                text: rule.text.clone(),
+                delete_id: Some(id.to_string()),
+                decided: false,
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            });
+        Ok(approval_id)
+    }
+
+    fn approval(&self, id: &str) -> Result<Event, ApiError> {
+        let pending = self
+            .pending_review
+            .lock()
+            .expect("fake pending review lock");
+        let Some(p) = pending.iter().find(|p| p.id == id) else {
+            return Err(ApiError::NotFound("审批卡不存在".into()));
+        };
+        if p.decided {
+            // Host returns the settled card; we only need pending cards on
+            // the settings page after 202, so treat decided as gone.
+            return Err(ApiError::NotFound("审批卡不存在".into()));
+        }
+        Ok(fake_review_event(
+            &p.id,
+            &p.text,
+            p.delete_id.is_some(),
+            &p.created_at,
+            None,
+        ))
+    }
+
     fn model_settings(&self) -> Result<model_page::Current, ApiError> {
         Ok(self.model.lock().expect("fake model lock").clone())
     }
@@ -1406,6 +1595,87 @@ fn last4(value: &str) -> Option<String> {
     Some(value.chars().skip(n.saturating_sub(4)).collect())
 }
 
+struct FakeRuleApproval {
+    id: String,
+    text: String,
+    delete_id: Option<String>,
+    decided: bool,
+    created_at: String,
+}
+
+fn decide_fake_review_rule(
+    api: &FakeApi,
+    id: &str,
+    approve: bool,
+) -> Result<Option<(Event, Option<ApprovalExtras>)>, ApiError> {
+    let mut pending = api.pending_review.lock().expect("fake pending review lock");
+    let Some(idx) = pending.iter().position(|p| p.id == id) else {
+        return Ok(None);
+    };
+    if pending[idx].decided {
+        return Err(ApiError::Conflict(review_rules::ALREADY_ANSWERED.into()));
+    }
+    pending[idx].decided = true;
+    let text = pending[idx].text.clone();
+    let delete_id = pending[idx].delete_id.clone();
+    drop(pending);
+    if approve {
+        let mut rules = api.review_rules.lock().expect("fake review rules lock");
+        if let Some(del) = &delete_id {
+            rules.retain(|r| &r.id != del);
+        } else {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            rules.push(review_rules::Rule {
+                id: format!("r-{}", uuid_ish()),
+                text: text.clone(),
+                created_at: now,
+            });
+        }
+    }
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    Ok(Some((
+        fake_review_event(id, &text, delete_id.is_some(), &now, Some(approve)),
+        None,
+    )))
+}
+
+fn fake_review_event(
+    id: &str,
+    text: &str,
+    delete: bool,
+    now: &str,
+    approve: Option<bool>,
+) -> Event {
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(86_400);
+    Event::Approval {
+        id: id.to_string(),
+        bot_id: SETTINGS_APPROVAL_BOT_ID.into(),
+        bot_name: SETTINGS_APPROVAL_BOT_NAME.into(),
+        action: if delete {
+            ApprovalAction::RuleDelete
+        } else {
+            ApprovalAction::RuleAdd
+        },
+        summary: text.to_string(),
+        path: None,
+        decision: approve.map(|ok| {
+            if ok {
+                ApprovalDecision::Approved
+            } else {
+                ApprovalDecision::Denied
+            }
+        }),
+        created_at: now.to_string(),
+        answered_at: approve.map(|_| now.to_string()),
+        answered_by: approve.map(|_| "我".into()),
+        task_id: None,
+        mcp_server: None,
+        mcp_tool: None,
+        reason: None,
+        expires_at: Some(expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+    }
+}
+
 /// Unique-enough id for fake echoes.
 fn uuid_ish() -> u128 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1459,8 +1729,100 @@ mod tests {
         assert_eq!(bodies::rename("Ada"), r#"{"name":"Ada"}"#);
         assert_eq!(paths::SEARCH_SETTINGS, "/api/settings/search");
         assert_eq!(paths::SEARCH_TEST, "/api/settings/search/test");
+
+        assert_eq!(paths::REVIEW_RULES, "/api/settings/review-rules");
+        assert_eq!(paths::review_rule("r1"), "/api/settings/review-rules/r1");
+        assert_eq!(paths::approval("apr-1"), "/api/approvals/apr-1");
         assert_eq!(paths::MODEL_SETTINGS, "/api/settings/model");
         assert_eq!(paths::MODEL_TEST, "/api/settings/model/test");
+    }
+
+    #[test]
+    fn review_rules_decode_and_approval_id() {
+        let rules = decode_review_rules(
+            r#"{"rules":[{"id":"r1","text":"允许发周报","createdAt":"2026-11-20T08:00:00Z"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "r1");
+        assert_eq!(rules[0].text, "允许发周报");
+        assert_eq!(rules[0].created_at, "2026-11-20T08:00:00Z");
+        assert_eq!(
+            decode_approval_id(r#"{"approvalId":"apr-1"}"#).unwrap(),
+            "apr-1"
+        );
+        assert!(decode_approval_id(r#"{"id":"apr-1"}"#).is_err());
+        assert!(
+            decode_review_rules(r#"[{"id":"r1","text":"允许发周报"}]"#).is_err(),
+            "bare array is not the contract wrapper"
+        );
+    }
+
+    #[test]
+    fn fake_review_rules_confirm_then_apply() {
+        let api = FakeApi::new(Vec::new()).with_review_rules(vec![review_rules::Rule {
+            id: "r1".into(),
+            text: "允许发周报".into(),
+            created_at: "2026-11-20T08:00:00Z".into(),
+        }]);
+        assert_eq!(api.review_rules().unwrap().len(), 1);
+
+        let add_id = api.propose_review_rule("允许合并 CI 全绿的 PR").unwrap();
+        assert!(add_id.starts_with("apr-add-"));
+        assert_eq!(
+            api.review_rules().unwrap().len(),
+            1,
+            "unconfirmed add stays off the list"
+        );
+
+        let event = api.approval(&add_id).unwrap();
+        assert!(event_decode::is_settings_approval(&event));
+        assert!(matches!(
+            event,
+            Event::Approval {
+                action: ApprovalAction::RuleAdd,
+                bot_id,
+                task_id: None,
+                ..
+            } if bot_id == SETTINGS_APPROVAL_BOT_ID
+        ));
+
+        let (event, extras) = api.decide(&add_id, true).unwrap().unwrap();
+        assert!(extras.is_none());
+        assert!(matches!(
+            event,
+            Event::Approval {
+                decision: Some(ApprovalDecision::Approved),
+                action: ApprovalAction::RuleAdd,
+                ..
+            }
+        ));
+        let rules = api.review_rules().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().any(|r| r.text == "允许合并 CI 全绿的 PR"));
+        assert!(matches!(
+            api.decide(&add_id, true),
+            Err(ApiError::Conflict(_))
+        ));
+
+        let del_id = api.propose_delete_review_rule("r1").unwrap();
+        assert_eq!(api.review_rules().unwrap().len(), 2);
+        api.decide(&del_id, false).unwrap();
+        assert_eq!(
+            api.review_rules().unwrap().len(),
+            2,
+            "denied delete leaves the rule"
+        );
+        let del_id = api.propose_delete_review_rule("r1").unwrap();
+        api.decide(&del_id, true).unwrap();
+        let rules = api.review_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(!rules.iter().any(|r| r.id == "r1"));
+
+        assert!(matches!(
+            api.propose_review_rule(&"字".repeat(review_rules::REVIEW_RULE_MAX + 1)),
+            Err(ApiError::BadRequest(msg)) if msg == review_rules::too_long_note(1)
+        ));
     }
 
     #[test]
@@ -2018,7 +2380,7 @@ mod tests {
             let named = HttpApi::new(Conn::new(&base)).answering_as("Panda 的 Mac");
             let a1 = approval("一");
             match named.decide(&a1, true).unwrap() {
-                Some(Event::Approval { answered_by, .. }) => {
+                Some((Event::Approval { answered_by, .. }, _)) => {
                     assert_eq!(answered_by.as_deref(), Some("Panda 的 Mac"))
                 }
                 other => panic!("expected answered approval, got {other:?}"),
@@ -2026,7 +2388,7 @@ mod tests {
             // No name: the old empty request, `answeredBy` stays null.
             let a2 = approval("二");
             match HttpApi::new(Conn::new(&base)).decide(&a2, false).unwrap() {
-                Some(Event::Approval { answered_by, .. }) => assert_eq!(answered_by, None),
+                Some((Event::Approval { answered_by, .. }, _)) => assert_eq!(answered_by, None),
                 other => panic!("expected answered approval, got {other:?}"),
             }
             let created: Event = post(
@@ -2256,11 +2618,14 @@ mod tests {
             assert_eq!(decision, None);
             let api = HttpApi::new(Conn::new(&base));
             match api.decide(&id, false).unwrap() {
-                Some(Event::Approval {
-                    decision,
-                    answered_at,
-                    ..
-                }) => {
+                Some((
+                    Event::Approval {
+                        decision,
+                        answered_at,
+                        ..
+                    },
+                    _,
+                )) => {
                     assert_eq!(decision, Some(robroz_contract::ApprovalDecision::Denied));
                     assert!(answered_at.is_some());
                 }

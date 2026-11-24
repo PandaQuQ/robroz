@@ -142,6 +142,7 @@ impl FakeSource {
                         state: ApprovalState::Pending,
                         mcp_server: None,
                         mcp_tool: None,
+                        reason: None,
                     }),
                 },
             ),
@@ -275,6 +276,7 @@ fn choice(group: &str, id: &str, multi: bool) -> GroupEvent {
             answered_at: None,
             answered_by: None,
         },
+        approval_extras: None,
     }
 }
 
@@ -333,6 +335,7 @@ fn msg(group: &str, id: &str, kind: MessageKind, body: &str) -> GroupEvent {
             body: body.into(),
             created_at: at("00"),
         },
+        approval_extras: None,
     }
 }
 
@@ -360,6 +363,7 @@ fn status(
             progress: None,
             waiting_for: None,
         },
+        approval_extras: None,
     }
 }
 
@@ -375,6 +379,7 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
             failure: None,
             needs_setup: None,
         },
+        approval_extras: None,
     }
 }
 

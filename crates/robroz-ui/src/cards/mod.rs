@@ -9,7 +9,10 @@ pub mod confirm;
 pub mod interact;
 pub mod mcp;
 pub mod memories;
+
 pub mod model;
+pub mod review_rules;
+
 pub mod routines;
 pub mod search;
 pub mod secret;
@@ -136,6 +139,11 @@ pub enum ActionKind {
     Send,
     Spend,
     Call,
+
+    /// Propose adding an allow rule (`ApprovalAction::RuleAdd`).
+    RuleAdd,
+    /// Propose deleting an allow rule (`ApprovalAction::RuleDelete`).
+    RuleDelete,
     /// An action value this client does not recognise. Shown with the
     /// generic verb 「操作」.
     Unknown,
@@ -154,6 +162,9 @@ pub struct ApprovalCard {
     /// host summary in monospace. Absent on other actions.
     pub mcp_server: Option<String>,
     pub mcp_tool: Option<String>,
+    /// Why a blocked action was stopped, or the expiry reason. Absent on
+    /// older cards. Compared to [`review_rules::APPROVAL_EXPIRED_REASON`].
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,7 +181,17 @@ pub enum ApprovalState {
         at: i64,
     },
     NeedsOwner,
+    /// `denied` + `reason == APPROVAL_EXPIRED_REASON`. The owner never
+    /// clicked; do not present this as a rejection.
+    Expired {
+        at: i64,
+    },
 }
+
+/// Unused leftover from the pre-contract `rule_*` stash. Callers still
+/// thread this through event decode; it is always empty.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApprovalExtras {}
 
 impl ApprovalCard {
     /// Show this client's own name (`me`) as 「我」.
@@ -186,6 +207,12 @@ impl ApprovalCard {
     /// Build from the `approval` event. Returns `None` for any other event.
     /// `by` is the host's raw `answeredBy`; see [`ApprovalCard::seen_by`].
     pub fn from_event(event: &Event) -> Option<Self> {
+        Self::from_event_with(event, None)
+    }
+
+    /// Like [`Self::from_event`]. `extras` is ignored; rule actions come
+    /// from the contract enum.
+    pub fn from_event_with(event: &Event, _extras: Option<&ApprovalExtras>) -> Option<Self> {
         let Event::Approval {
             id,
             bot_name,
@@ -197,13 +224,18 @@ impl ApprovalCard {
             answered_by,
             mcp_server,
             mcp_tool,
+            reason,
+            expires_at,
             ..
         } = event
         else {
             return None;
         };
+        let reason = reason.clone();
+        let expired = reason.as_deref() == Some(review_rules::APPROVAL_EXPIRED_REASON);
         let at = answered_at
             .as_deref()
+            .or(expires_at.as_deref())
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .map_or(0, |t| t.timestamp());
         let state = match decision {
@@ -212,6 +244,7 @@ impl ApprovalCard {
                 by: answered_by.clone(),
                 at,
             },
+            Some(ApprovalDecision::Denied) if expired => ApprovalState::Expired { at },
             Some(ApprovalDecision::Denied) => ApprovalState::Denied {
                 by: answered_by.clone(),
                 at,
@@ -222,10 +255,9 @@ impl ApprovalCard {
             ApprovalAction::Send => ActionKind::Send,
             ApprovalAction::Spend => ActionKind::Spend,
             ApprovalAction::Call => ActionKind::Call,
-            // Rule confirm cards get their own layout with the review-rules page.
-            ApprovalAction::RuleAdd | ApprovalAction::RuleDelete | ApprovalAction::Unknown => {
-                ActionKind::Unknown
-            }
+            ApprovalAction::RuleAdd => ActionKind::RuleAdd,
+            ApprovalAction::RuleDelete => ActionKind::RuleDelete,
+            ApprovalAction::Unknown => ActionKind::Unknown,
         };
         Some(Self {
             id: id.clone(),
@@ -236,7 +268,12 @@ impl ApprovalCard {
             state,
             mcp_server: mcp_server.clone(),
             mcp_tool: mcp_tool.clone(),
+            reason,
         })
+    }
+
+    pub fn is_rule(&self) -> bool {
+        matches!(self.kind, ActionKind::RuleAdd | ActionKind::RuleDelete)
     }
 }
 
@@ -476,6 +513,84 @@ mod tests {
         assert!(cut.ends_with('…'), "{cut}");
         assert!(!cut.contains('\n'), "{cut}");
         assert!(cut.chars().count() < long.chars().count());
+    }
+
+    fn approval_event() -> Event {
+        Event::Approval {
+            id: "a-exp".into(),
+            bot_id: "bot-doc".into(),
+            bot_name: "文档哥".into(),
+            action: ApprovalAction::Call,
+            summary: "允许合并已经过 CI 的 PR".into(),
+            path: None,
+            decision: Some(ApprovalDecision::Denied),
+            created_at: "2026-11-20T08:00:00Z".into(),
+            answered_at: Some("2026-11-21T08:00:00Z".into()),
+            answered_by: None,
+            task_id: None,
+            mcp_server: None,
+            mcp_tool: None,
+            reason: None,
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn expired_reason_is_not_a_rejection() {
+        let mut ev = approval_event();
+        if let Event::Approval { reason, .. } = &mut ev {
+            *reason = Some(review_rules::APPROVAL_EXPIRED_REASON.into());
+        }
+        let card = ApprovalCard::from_event(&ev).unwrap();
+        assert!(matches!(card.state, ApprovalState::Expired { .. }));
+        assert_eq!(
+            status::approval_status(&card.state),
+            (review_rules::EXPIRED, status::Dot::Void)
+        );
+        let foot = status::approval_footnote(&card.state, &chrono::Utc).unwrap();
+        assert_eq!(foot.text, review_rules::EXPIRED_FOOT);
+        assert_ne!(foot.text.contains("拒绝"), true);
+        assert_eq!(
+            card.reason.as_deref(),
+            Some(review_rules::APPROVAL_EXPIRED_REASON)
+        );
+    }
+
+    #[test]
+    fn denied_without_expired_reason_stays_denied() {
+        let mut ev = approval_event();
+        if let Event::Approval { reason, .. } = &mut ev {
+            *reason = Some("这条会改生产数据".into());
+        }
+        let card = ApprovalCard::from_event(&ev).unwrap();
+        assert!(matches!(card.state, ApprovalState::Denied { .. }));
+        assert_eq!(card.reason.as_deref(), Some("这条会改生产数据"));
+    }
+
+    #[test]
+    fn rule_add_from_contract_action() {
+        let mut ev = approval_event();
+        if let Event::Approval {
+            action,
+            decision,
+            answered_at,
+            bot_id,
+            bot_name,
+            task_id,
+            ..
+        } = &mut ev
+        {
+            *action = ApprovalAction::RuleAdd;
+            *decision = None;
+            *answered_at = None;
+            *bot_id = robroz_contract::SETTINGS_APPROVAL_BOT_ID.into();
+            *bot_name = robroz_contract::SETTINGS_APPROVAL_BOT_NAME.into();
+            *task_id = None;
+        }
+        let card = ApprovalCard::from_event(&ev).unwrap();
+        assert_eq!(card.kind, ActionKind::RuleAdd);
+        assert!(card.is_rule());
+        assert_eq!(card.bot, robroz_contract::SETTINGS_APPROVAL_BOT_NAME);
     }
 
     #[test]
