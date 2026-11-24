@@ -1,6 +1,6 @@
 # 客户端
 
-`client/`（`robroz-client`）的界面行为。iced 0.14 原生程序，Windows、Linux、macOS 同一套代码，不套网页。怎么构建和运行见 [install.md](install.md#跑客户端)，环境变量见 [configuration.md 的「客户端」](configuration.md#客户端robroz-client)，事件来源和外观层见 [architecture.md](architecture.md#客户端)。
+`client/`（`robroz-client`）的界面行为。iced 0.14 原生程序，Windows、Linux、macOS 同一套代码，不套网页。怎么构建和运行见 [install.md](install.md#run-the-client)，环境变量见 [configuration.md 的「客户端」](configuration.md#客户端robroz-client)，事件来源和外观层见 [architecture.md](architecture.md#客户端)。
 
 卡片的颜色、状态那句话和动作都来自 `robroz-card`，布局和尺寸来自 `robroz-ui` 的 `Skin`，客户端不自己定。下文的界面文字以代码为准。
 
