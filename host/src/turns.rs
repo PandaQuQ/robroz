@@ -459,24 +459,29 @@ pub(crate) fn prompt(
 ) -> String {
     let mut text = match speaker {
         None => format!(
-            "你在群「{group_name}」里。有人发了一条消息，群里每个 bro 按顺序各轮一次，现在轮到你。\n\
-             没有要补充的就不说话：整条回复只写一行 {SILENT_REPLY}。\n\
-             不要替别的 bro 回答，也不要重复前面 bro 说过的话。\n\n\
-             消息：\n{}\n",
+            "You are in the group \"{group_name}\". Someone posted a message, and every bro \
+             in the group takes one turn in order. It is your turn now.\n\
+             If you have nothing to add, stay silent: your whole reply is one line, {SILENT_REPLY}.\n\
+             Don't answer for another bro, and don't repeat what earlier bros said. \
+             Reply in the language the message is written in.\n\n\
+             Message:\n{}\n",
             quote(body)
         ),
         Some(name) => format!(
-            "你在群「{group_name}」里。bro「{name}」刚在群里回复了下面这段话，其他 bro 按顺序各轮一次，现在轮到你。\n\
-             只有确实需要接话时才说话：它点名问你、说错了要纠正、或者你有它没说到的关键内容。\n\
-             其他情况一律不说话：整条回复只写一行 {SILENT_REPLY}。不要客套、附和或重复。\n\n\
-             「{name}」的回复：\n{}\n",
+            "You are in the group \"{group_name}\". The bro \"{name}\" just posted the reply \
+             below, and the other bros take one turn each in order. It is your turn now.\n\
+             Speak only if you really need to: it asks you by name, it got something wrong \
+             that needs correcting, or you have something important it left out.\n\
+             Otherwise stay silent: your whole reply is one line, {SILENT_REPLY}. \
+             No pleasantries, agreeing or repeating. Reply in the language of the conversation.\n\n\
+             Reply from \"{name}\":\n{}\n",
             quote(body)
         ),
     };
     if !replies.is_empty() {
-        text.push_str("\n前面 bro 的回复：\n");
+        text.push_str("\nEarlier bros' replies:\n");
         for (name, reply) in replies {
-            text.push_str(&format!("【{name}】\n{}\n", quote(reply)));
+            text.push_str(&format!("[{name}]\n{}\n", quote(reply)));
         }
     }
     text

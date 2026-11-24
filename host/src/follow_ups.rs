@@ -76,7 +76,7 @@ fn waiting(conn: &Connection, task_id: &str) -> rusqlite::Result<Vec<(String, St
 /// The text a follow-up adds to the prompt. A person's own words, kept as
 /// they are, exactly like the prompt of a new `@name` task.
 pub(crate) fn section(body: &str) -> String {
-    format!("\n\n追问：\n{body}")
+    format!("\n\nFollow-up:\n{body}")
 }
 
 /// Fold waiting follow-ups into a `queued` task's prompt before it starts.
@@ -120,7 +120,8 @@ pub(crate) fn continue_after_done(
         return Ok(false);
     }
     let quoted = crate::turns::quote(reply.unwrap_or("").trim());
-    let extra = format!("\n\n你上一步的回复（已经发到群里，不用重复）：\n{quoted}");
+    let extra =
+        format!("\n\nYour reply to the last step (already posted, don't repeat it):\n{quoted}");
     let changed = conn.execute(
         "UPDATE tasks SET state = 'queued', prompt = prompt || ?3, updated_at = ?2, progress = NULL
          WHERE id = ?1 AND state = 'done' AND failure IS NULL AND needs_setup IS NULL",

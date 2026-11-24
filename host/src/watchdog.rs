@@ -3,13 +3,16 @@
 //! It looks at running work for three things:
 //!
 //! - a step (the model call and its tool calls, see [`crate::steps`]) that has
-//!   run longer than [`WatchdogConfig::step_timeout`];
+//!   run for half of [`WatchdogConfig::step_timeout`] ([`WatchdogConfig::hint_after`]);
 //! - a live container whose progress text has not changed for
 //!   [`WatchdogConfig::stall_after`];
 //! - a dead run: `running` with `containerUp` false.
 //!
 //! The first two only log and put a one-line hint in the task's existing
 //! `progress` text. They never change the task's state and never re-queue it.
+//! Cancelling a step at the full timeout is the pump's job
+//! ([`crate::timeouts`]); the hint comes at half of it, so the card shows it
+//! before the step is cancelled.
 //! A dead run is ended as `done` with the `failure` [`DEAD_RUN_FAILURE`], in a
 //! compare-and-set write. It is not re-queued and no container is started.
 //!
@@ -33,7 +36,8 @@ pub const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WatchdogConfig {
-    /// A step running longer than this gets a hint.
+    /// A step running this long is cancelled by the pump; at half of it the
+    /// Watchdog puts up a hint ([`Self::hint_after`]).
     pub step_timeout: Duration,
     /// A live container whose progress has not moved for this long gets a hint.
     pub stall_after: Duration,
@@ -49,6 +53,12 @@ impl Default for WatchdogConfig {
 }
 
 impl WatchdogConfig {
+    /// When a step gets the 「模型和工具还没回」 hint: half of
+    /// [`Self::step_timeout`], so it shows before the cancel.
+    pub fn hint_after(&self) -> Duration {
+        self.step_timeout / 2
+    }
+
     /// `ROBROZ_STEP_TIMEOUT_SECS` and `ROBROZ_STALL_SECS`; a missing, zero or
     /// unparsable value keeps the default.
     pub fn from_env() -> Self {
@@ -165,7 +175,7 @@ impl Watchdog {
                 .map(|(_, at)| *at);
             if let Some(started) = step {
                 let elapsed = now.saturating_duration_since(started);
-                if elapsed >= self.cfg.step_timeout && seen.flagged_step != Some(started) {
+                if elapsed >= self.cfg.hint_after() && seen.flagged_step != Some(started) {
                     let hint = step_timeout_hint(elapsed);
                     seen.flagged_step = Some(started);
                     seen.hint = Some(hint.clone());
@@ -217,8 +227,9 @@ impl Watchdog {
         for f in &findings {
             match f.kind {
                 FindingKind::StepTimeout => eprintln!(
-                    "watchdog: {} step past {}s; hint only, state unchanged",
+                    "watchdog: {} step past {}s; hint only, cancelled at {}s",
                     f.task_id,
+                    self.cfg.hint_after().as_secs(),
                     self.cfg.step_timeout.as_secs()
                 ),
                 FindingKind::Stalled => eprintln!(
@@ -318,19 +329,20 @@ mod tests {
     }
 
     #[test]
-    fn step_past_timeout_is_flagged_once() {
+    fn step_past_half_the_timeout_is_flagged_once() {
         let mut dog = Watchdog::new(cfg());
+        assert_eq!(cfg().hint_after(), 5 * MIN);
         let t0 = Instant::now();
         let tasks = [live("t1", "在想怎么回")];
         let steps = [("t1".to_string(), t0)];
-        assert!(dog.check(&tasks, &steps, t0 + 9 * MIN).is_empty());
-        let found = dog.check(&tasks, &steps, t0 + 10 * MIN);
+        assert!(dog.check(&tasks, &steps, t0 + 4 * MIN).is_empty());
+        let found = dog.check(&tasks, &steps, t0 + 5 * MIN);
         assert_eq!(
             found,
             vec![Finding {
                 task_id: "t1".into(),
                 kind: FindingKind::StepTimeout,
-                hint: "模型和工具还没回，已等 10 分钟".into(),
+                hint: "模型和工具还没回，已等 5 分钟".into(),
             }]
         );
         // The card now shows the hint; the same step is not flagged again,
@@ -347,12 +359,12 @@ mod tests {
         let t0 = Instant::now();
         let tasks = [live("t1", "在想怎么回")];
         assert_eq!(
-            dog.check(&tasks, &[("t1".into(), t0)], t0 + 10 * MIN).len(),
+            dog.check(&tasks, &[("t1".into(), t0)], t0 + 5 * MIN).len(),
             1
         );
         let t1 = t0 + 20 * MIN;
         assert_eq!(
-            dog.check(&tasks, &[("t1".into(), t1)], t1 + 10 * MIN).len(),
+            dog.check(&tasks, &[("t1".into(), t1)], t1 + 5 * MIN).len(),
             1
         );
     }

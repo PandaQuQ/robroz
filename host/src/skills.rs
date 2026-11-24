@@ -170,7 +170,7 @@ pub(crate) fn kept_for(
 /// values. Over this, oldest whole skills are dropped; a skill is never cut.
 pub(crate) const SKILL_PROMPT_MAX: usize = 8000;
 
-const SKILL_PROMPT_HEADER: &str = "你会这些技能：";
+const SKILL_PROMPT_HEADER: &str = "Your skills:";
 
 fn prompt_block(skill: &Skill) -> String {
     format!(
@@ -900,7 +900,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             section,
-            "你会这些技能：\n### 新技能 (new-one)\n新说明\n\n### 旧技能 (old-one)\n旧说明"
+            "Your skills:\n### 新技能 (new-one)\n新说明\n\n### 旧技能 (old-one)\n旧说明"
         );
     }
 
@@ -915,11 +915,11 @@ mod tests {
         let two = one + 2 + older_block.chars().count();
         assert_eq!(
             prompt_section_with(&[newer.clone(), older.clone()], two).as_deref(),
-            Some("你会这些技能：\n### 新 (n)\nN\n\n### 旧 (o)\nO")
+            Some("Your skills:\n### 新 (n)\nN\n\n### 旧 (o)\nO")
         );
         assert_eq!(
             prompt_section_with(&[newer.clone(), older.clone()], two - 1).as_deref(),
-            Some("你会这些技能：\n### 新 (n)\nN")
+            Some("Your skills:\n### 新 (n)\nN")
         );
         assert_eq!(prompt_section_with(&[newer, older], one - 1), None);
         assert!(

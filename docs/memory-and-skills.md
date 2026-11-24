@@ -27,11 +27,11 @@ bro 记住的关于你的事（记忆），和 bro 会的做法（技能）。�
 ```
 <固定开场白 robroz_model::SYSTEM_PROMPT>
 
-你记得这些：
+You remember:
 [habit] 周报用中文
 [profile] …
 
-你会这些技能：
+Your skills:
 ### 写周报 (weekly-report)
 先列三点
 ```

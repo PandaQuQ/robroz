@@ -34,7 +34,7 @@ fn quotes_drop_control_lines() {
     );
     assert!(!text.contains("robroz-action"), "{text}");
     assert!(!text.contains("robroz-progress"), "{text}");
-    assert!(text.contains("【Ada】\n好\n"), "{text}");
+    assert!(text.contains("[Ada]\n好\n"), "{text}");
     assert_eq!(
         text.matches(SILENT_REPLY).count(),
         1,
@@ -62,7 +62,7 @@ fn a_bro_round_prompt_names_the_speaker_and_asks_for_silence_by_default() {
         Some("Ada"),
         &[],
     );
-    assert!(text.contains("bro「Ada」"), "{text}");
+    assert!(text.contains("bro \"Ada\""), "{text}");
     assert!(text.contains(SILENT_REPLY), "{text}");
     assert!(!text.contains("robroz-action"), "{text}");
 }

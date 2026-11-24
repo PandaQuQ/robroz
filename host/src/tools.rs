@@ -18,7 +18,7 @@ pub const MAX_TOOL_ROUNDS: usize = 8;
 /// Longest tool result, in characters, including the truncation marker.
 pub const MAX_TOOL_RESULT_CHARS: usize = 16_000;
 
-const TRUNCATED_MARK: &str = "\n…（已截断）";
+const TRUNCATED_MARK: &str = "\n…(truncated)";
 
 /// Why a tool-calling loop stopped without a text reply.
 pub const ROUND_LIMIT_FAILURE: &str = robroz_contract::host_text::TOOL_ROUND_LIMIT;
@@ -57,6 +57,9 @@ pub struct ToolCtx {
     pub limit: u64,
     pub needs_setup: Option<String>,
     pub over_quota: Option<robroz_policy::OverQuota>,
+    /// Set by the host when the step timed out ([`crate::timeouts`]): the
+    /// loop stops before its next model or tool call.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ToolCtx {
@@ -66,7 +69,15 @@ impl ToolCtx {
             limit,
             needs_setup: None,
             over_quota: None,
+            cancel: None,
         }
+    }
+
+    /// Whether the host cancelled this step.
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Charge one GET against the same meter the sandbox uses.
@@ -166,11 +177,11 @@ impl ToolRegistry {
 
     fn invoke_inner(&self, call: &ToolCall, ctx: &mut ToolCtx, approved: bool) -> InvokeOutcome {
         let Some(tool) = self.get(&call.name) else {
-            return InvokeOutcome::Text(format!("没有这个工具：{}", call.name));
+            return InvokeOutcome::Text(format!("No such tool: {}", call.name));
         };
         let args = match serde_json::from_str::<Value>(&call.arguments) {
             Ok(value) => value,
-            Err(err) => return InvokeOutcome::Text(format!("参数不是 JSON：{err}")),
+            Err(err) => return InvokeOutcome::Text(format!("Arguments are not JSON: {err}")),
         };
         if !approved && tier(tool.effect()) == Tier::Takeover {
             return InvokeOutcome::NeedsApproval {
@@ -225,6 +236,8 @@ pub enum CompleteError {
     OverQuota(robroz_policy::OverQuota),
     /// The loop stopped so a person can approve a Takeover tool call.
     NeedsApproval(Box<PendingApproval>),
+    /// The host cancelled the step after its timeout.
+    Cancelled,
 }
 
 impl CompleteError {
@@ -236,6 +249,7 @@ impl CompleteError {
             }
             CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
             CompleteError::OverQuota(over) => over.failure(),
+            CompleteError::Cancelled => robroz_card::NO_RESULT.to_string(),
             CompleteError::NeedsApproval(pending) => {
                 format!(
                     "{}{}",
@@ -320,6 +334,9 @@ fn complete_loop(
     let defs = tools.definitions();
     let mut next_round = start_round;
     if let Some((call, rest)) = resume.take() {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         on_using(&tools.display_name_of(&call.name));
         let content = tools.invoke_approved(call, ctx);
         messages.push(ChatMessage::Tool {
@@ -333,6 +350,9 @@ fn complete_loop(
         next_round = start_round.saturating_add(1);
     }
     for round in next_round..=MAX_TOOL_ROUNDS {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         let turn = model.chat(&messages, &defs).map_err(CompleteError::Model)?;
         match turn {
             AssistantTurn::Text(text) => return Ok(text),
@@ -359,6 +379,9 @@ fn fill_calls(
     round: usize,
 ) -> Result<(), CompleteError> {
     for (index, call) in calls.iter().enumerate() {
+        if ctx.cancelled() {
+            return Err(CompleteError::Cancelled);
+        }
         on_using(&tools.display_name_of(&call.name));
         match tools.invoke(call, ctx) {
             InvokeOutcome::Text(content) => {
@@ -590,7 +613,7 @@ mod tests {
             text
         };
         assert_eq!(exact.chars().count(), MAX_TOOL_RESULT_CHARS);
-        assert!(!exact.contains("已截断"), "{exact}");
+        assert!(!exact.contains("(truncated)"), "{exact}");
     }
 
     #[test]
@@ -704,7 +727,7 @@ mod tests {
         let tools = ToolRegistry::new();
         assert_eq!(
             tools.invoke(&call("nope", "c1", "{}"), &mut ToolCtx::new(8)),
-            InvokeOutcome::Text("没有这个工具：nope".into())
+            InvokeOutcome::Text("No such tool: nope".into())
         );
         let mut tools = ToolRegistry::new();
         tools.register(FakeTool::ok("echo", "hi"));
@@ -712,7 +735,7 @@ mod tests {
         let InvokeOutcome::Text(out) = out else {
             panic!("{out:?}");
         };
-        assert!(out.starts_with("参数不是 JSON："), "{out}");
+        assert!(out.starts_with("Arguments are not JSON: "), "{out}");
         assert_eq!(
             tools.invoke(&call("echo", "c1", "{}"), &mut ToolCtx::new(8)),
             InvokeOutcome::Text("hi".into())
