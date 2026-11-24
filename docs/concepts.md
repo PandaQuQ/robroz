@@ -50,7 +50,8 @@ bot 的名字是全局的：同一个 `botId` 在所有群里叫同一个名字�
 - 规范成一行：换行和连续空白变一个空格，去掉首尾空白，最多 60 个字（超了截到 59 个字加「…」），不报错。
 - 文字没变就不改 `updatedAt`，不多推一次。
 - 任务结束、卡住、容器没了时清掉；重新开跑从头报。例外：MCP 工具等审批的 `blocked` 保留「在用 {server}.{tool}」这一行，答卡后清掉。
-- 代码：`host/src/progress.rs`。
+- Watchdog 也可能把这一行写成「模型和工具还没回，已等 N 分钟」或「N 分钟没有新进度」。只提示，不改任务状态，不会取消这一步，也不会停掉容器。变量见 [configuration.md](configuration.md)。
+- 代码：`host/src/progress.rs`、`host/src/watchdog.rs`。
 
 ## 卡片（事件）
 

@@ -18,7 +18,7 @@
 ## 宿主机
 
 - HTTP：axum，路由在 `host/src/lib.rs:router_from`，外面套一层令牌校验 `host/src/auth.rs:require_token`。
-- 存储：SQLite，路径 `ROBROZ_DB`。主要的表：`groups`、`bots`、`memberships`、`messages`、`tasks`、`deliveries`、`schedules`（`host/src/lib.rs`），`choices`、`approvals`（审批卡和确认卡同一张表），`group_reads`（已读位置），`memories`，`skills`、`group_skills`，`settings`（搜索设置），`mcp_servers`、`group_mcp`。旧库启动时自动补新加的列，原有数据不动。`tenant_id` 固定 `local`。
+- 存储：SQLite，路径 `ROBROZ_DB`。主要的表：`groups`、`bots`、`memberships`、`messages`、`tasks`、`deliveries`、`schedules`（`host/src/lib.rs`），`choices`、`approvals`（审批卡和确认卡同一张表），`group_reads`（已读位置），`memories`，`skills`、`group_skills`，`settings`（搜索和模型设置），`mcp_servers`、`group_mcp`。旧库启动时自动补新加的列，原有数据不动。`tenant_id` 固定 `local`。
 - 主循环：`host/src/main.rs:main` 每秒调一次 `tick`（例行任务）、`pump`（任务）和 Watchdog。实现在 `host/src/pump.rs` 和 `host/src/watchdog.rs`。
 
 ### pump
@@ -54,7 +54,7 @@
 ### 模型
 
 - `crates/robroz-model` 调 `POST {ROBROZ_MODEL_BASE_URL}/chat/completions`，单次最长等 120 秒。
-- 地址、模型名、密钥没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
+- 地址和模型名没有配齐时不接模型，任务交付「还没设置模型」，交付卡带 `needsSetup:"model"`。密钥可选：没密钥时请求不带 `Authorization` 头。测试和 CI 设 `ROBROZ_MODEL=echo` 时仍把 prompt 原样写成结果。设置接口优先于环境变量，改完不用重启，见 [configuration.md 的「模型」](configuration.md#模型)。
 - system 提示 = 固定开场白（`robroz_model::SYSTEM_PROMPT`）+ 记忆段 + 技能段（`host/src/pump.rs:system_extra`）。任务的 prompt 还是用户那一条，不改。
 - 密钥不进容器、不进群目录，不出现在日志和报错里。启动校验和变量见 [configuration.md 的「模型」](configuration.md#模型)。
 - 工具调用循环在 `host/src/tools.rs`，上限和截断见 [permissions.md](permissions.md#模型的工具调用)。

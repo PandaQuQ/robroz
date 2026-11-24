@@ -3,7 +3,7 @@
 Status: **Accepted**  
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `0aed709`. This document
+Existing behaviour below is taken from `main` at `81eb2c2`. This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -48,7 +48,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`0aed709`). There is no Router session and no Worker pool.
+Verified on `main` (`81eb2c2`). There is no Router session and no Worker pool.
 
 - A person creates work by naming a bro. `POST /api/groups/{id}/say`
   (`host/src/say.rs`) stores the message, then maybe inserts one `queued` task.
@@ -67,10 +67,10 @@ Verified on `main` (`0aed709`). There is no Router session and no Worker pool.
   voice.
 - The pump is a single OS thread (`host/src/main.rs`). One pass starts every
   `queued` task, then inspects every live `running` task, then sleeps one
-  second. `start_task` runs the model-and-tool loop to completion
-  (`write_reply` → `tools::complete` / `complete_resume`) before `docker run -d`.
-  That loop blocks the pump thread, so another queued task waits. The database
-  lock is not held across Docker or the model call, so HTTP keeps serving.
+  second. Each task's model-and-tool loop runs on its own thread
+  (`host/src/steps.rs`), at most one in-flight step per task; the pump does
+  not wait. The database lock is not held across Docker or the model call,
+  so HTTP keeps serving.
 
 ### How to change it
 
@@ -273,52 +273,57 @@ described separately:
 
 ### How robroz does it today
 
-- Host tools are synchronous. `Tool::call` in `host/src/tools.rs` returns a
-  `String` and the model loop (`complete` / `complete_loop`) waits for it.
-  One task may call the model at most eight times (`MAX_TOOL_ROUNDS`). Each
-  model HTTP call waits up to 120 seconds (`crates/robroz-model/src/lib.rs`).
-  A single tool result is capped at 16,000 characters. MCP tools and web
-  search run inside this loop on the pump thread, before the sandbox starts.
-- The sandbox itself is already detached: `docker run -d` in
-  `host/src/sandbox.rs`. Later pump passes inspect the container and collect
-  the result. There is no wall-clock timeout on a running container, and no
-  deadline on `start_task` as a whole.
-- Because the model-and-tool loop runs on the one pump thread, a long call
-  delays starting or collecting every other task. HTTP is not blocked
+- Host tools are still synchronous on the step thread. `Tool::call` in
+  `host/src/tools.rs` returns a `String` and the model loop (`complete` /
+  `complete_loop`) waits for it. One task may call the model at most eight
+  times (`MAX_TOOL_ROUNDS`). Each model HTTP call waits up to 120 seconds
+  (`crates/robroz-model/src/lib.rs`). A single tool result is capped at
+  16,000 characters. MCP tools and web search run inside this loop, before
+  the sandbox starts.
+- Each task's model-and-tool loop runs on its own thread
+  (`host/src/steps.rs`), at most one in-flight step per task. The pump does
+  not wait. Claiming a task sets `container_up = 1` before `docker run`, so
+  an in-flight model step is not treated as a dead run. HTTP is not blocked
   (the database lock is dropped first; see the comment in `host/src/main.rs`
   and `host/src/pump.rs`).
-- Progress text exists (`host/src/progress.rs`, optional `progress` on the
-  status card) but nothing judges whether it is moving.
+- The sandbox itself is already detached: `docker run -d` in
+  `host/src/sandbox.rs`. Later pump passes inspect the container and collect
+  the result. There is no wall-clock timeout that cancels a running
+  container or an in-flight step.
+- A Watchdog runs in the same pump loop (`host/src/watchdog.rs`). For a
+  live task (`running` and `containerUp` true) it may write a hint into the
+  existing `progress` field: 「模型和工具还没回，已等 N 分钟」 after
+  `ROBROZ_STEP_TIMEOUT_SECS` (default 600), or 「N 分钟没有新进度」 after
+  `ROBROZ_STALL_SECS` (default 900). It only logs and hints; it does not
+  change state, cancel the step, or stop the container.
 - A container that exits non-zero, writes no result file, or disappears
-  mid-run is a dead run. This is the node 4 (permissions) rule already
-  frozen on `main`: the task stays `running` with `containerUp` false, the
-  status card shows the grey line 「没写出结果」, there is no fifth state,
-  the task is not re-queued, no new container is started, and `resume`
-  returns 409 ("这次不能恢复"). Verified in
-  [`docs/concepts.md`](../concepts.md) ("运行失败"),
-  [`docs/api.md`](../api.md) (the "pump 做什么" section and the status
-  `label` table), [`docs/architecture.md`](../architecture.md),
-  [`docs/client.md`](../client.md), and
-  [`docs/permissions.md`](../permissions.md) (a claimed block with no
-  remaining blocking line). The host implements it in `host/src/pump.rs`
-  as `Outcome::Dead`, which clears `container_up` but leaves `state` as
-  `running`, with a comment that a rerun must not repeat a half-changed
-  volume. The grey branch and copy live in
-  `crates/robroz-card/src/lib.rs`: `appearance(Running, false)` is
-  `Tone::Gray` with no action, and `status_line(Running, false)` is
-  「没写出结果」. A `docker run` that fails to start is the exception: the
-  task is put back to `queued`.
+  mid-run is a dead run. It ends as `done` + `failure` (`robroz_card::NO_RESULT`
+  「没写出结果」). There is no fifth state, the task is not re-queued, no
+  new container is started, and `resume` returns 409 ("这次不能恢复"). The
+  write is a compare-and-set, only while the task is still `running` (and
+  for leftover cleanup, `containerUp` is also false). The card shows the
+  grey line 「没写出结果」, not 「没做成：没写出结果」
+  (`robroz_card::failure_line`). The host implements this in
+  `host/src/pump.rs` as `Outcome::Dead` and in `host/src/watchdog.rs` for
+  leftover `running` + `containerUp` false tasks from an older host. A
+  `docker run` that fails to start is the exception: the task is put back
+  to `queued`.
 - `tick` only creates scheduled tasks. It skips a fire if the previous run is
-  still `queued`, or `running` with `containerUp` true. It does not look for
-  stalled workers.
+  still `queued`, or `running` with `containerUp` true.
 - `blocked` already waits for a person (approval or takeover). That is not a
   stall; the Watchdog must not re-dispatch it.
 
 ### How to change it
 
-A host-side timeout can land first. The accepted dead-task transition is
-described under Watchdog below; it must ship with the card-copy change, not
-ahead of it.
+Part of this has landed on `main` in #118 (`41c8e7f`): per-task step
+threads, Watchdog hints on `progress`, and the dead-task transition
+(`done` + `failure`, card 「没写出结果」). What has not landed: cancelling
+a timed-out step or stopping the container; a start/cancel/result shape
+for long tools; a host timeout that ends a still-running model call as
+`done` + `failure`.
+
+A host-side timeout that *cancels* the step can still land separately. The
+dead-task transition below has already shipped with the card-copy change.
 
 **Async tools (and a non-blocking pump):**
 
@@ -428,10 +433,10 @@ merges. It is not a schedule.
 | Router and Worker as an internal dispatch layer inside one bro | Yes | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths already name an assignee and stay as the fast path. |
 | Turn-taking on a group message with no `@`; the `@`-mentioned bro speaks first | Yes | Accepted. Each bro gets one turn and may stay silent. This changes `/say` behaviour (see [Decisions](#decisions)). |
 | Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Yes | Accepted. A DM or a second `@name` today starts a parallel task in the same group volume, with no link to the work already running. |
-| Non-blocking model and tool loops, so one long call cannot stall the pump | Yes | Containers are already detached; the model-and-tool loop on the single pump thread is what serialises work. |
-| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | A host/pump path, not a Watchdog state change. Not a contract change (see section 3). Can ship as a small host PR after this document merges. |
-| Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Yes | There is no stall check today. Liveness of the container is not the same as progress. The Watchdog does not change task state except for the dead-task rule. |
-| Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Yes | Accepted. Overturns the node 4 rule. Must ship in the same PR as the `robroz-card` copy, with a compare-and-set write, never alone. No auto-requeue. |
+| Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
+| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
+| Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Done (#118) | Hints go in the existing `progress` field. Defaults: `ROBROZ_STEP_TIMEOUT_SECS` 600, `ROBROZ_STALL_SECS` 900. Does not change state except for the dead-task rule, and does not cancel the step. |
+| Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Done (#118) | Compare-and-set while still `running`. `Outcome::Dead` and leftover cleanup write `robroz_card::NO_RESULT`. The card uses `failure_line`, not 「没做成：没写出结果」. No auto-requeue. |
 | A group-level Router that picks one assignee for an unaddressed message and posts the only reply | No | Superseded by turn-taking. No agent speaks for another. |
 | Auto-requeue of a dead or stalled run | No | The Worker may already have written to the group volume. This is why `pump` does not re-queue a missing container today. A rerun is the user's choice. |
 | A fifth task state | No | Frozen in `AGENTS.md` and `robroz-contract`. Use `done` + `failure`. |
@@ -465,9 +470,11 @@ themselves.
    `done` + `failure`. The card shows 「没写出结果」. There is no
    auto-requeue; a rerun is the user's choice. There is no fifth task state.
 
-The first timeout budgets for a model loop, a tool, and a container are not
-chosen here. Pick values in the timeout PR. A follow-up on a `blocked` task
-attaches to that task and does not create a sibling; it is not a `resume`.
+Hint budgets shipped in #118: `ROBROZ_STEP_TIMEOUT_SECS` defaults to 600,
+`ROBROZ_STALL_SECS` to 900. Budgets that *cancel* a timed-out step are not
+chosen here; pick those in the later timeout PR. A follow-up on a
+`blocked` task attaches to that task and does not create a sibling; it is
+not a `resume`.
 
 ## Sources and attribution
 
@@ -487,9 +494,10 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `0aed709` on
+robroz behaviour cited above was checked against the tree at `81eb2c2` on
 `main`, in particular `host/src/say.rs`, `host/src/pump.rs`,
-`host/src/main.rs`, `host/src/tools.rs`, `host/src/sandbox.rs`,
+`host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
+`host/src/watchdog.rs`, `host/src/sandbox.rs`,
 `host/src/progress.rs`, `host/src/schedule.rs`,
 `crates/robroz-contract/src/lib.rs`, `crates/robroz-model/src/lib.rs`,
 `crates/robroz-card/src/lib.rs`,
