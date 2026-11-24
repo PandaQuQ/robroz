@@ -287,7 +287,7 @@ The JSON names must be `rule_add` and `rule_delete`. Because of
 
 ## Implementation status
 
-On `main` at `659662a` after [#123](https://github.com/PandaQuQ/robroz/pull/123):
+On `main` at `a2a7e9a` after [#125](https://github.com/PandaQuQ/robroz/pull/125):
 
 - Done: `rule_add` / `rule_delete` in the contract, with `ReviewRule`,
   `ReviewRules`, `CreateReviewRule`, `ReviewRuleCreated` and
@@ -311,12 +311,13 @@ On `main` at `659662a` after [#123](https://github.com/PandaQuQ/robroz/pull/123)
   `progress` 「已发到主人私聊」 (`APPROVAL_SENT_TO_OWNER_DM_NOTICE`). A task
   that runs in a DM keeps its card there. Bro-issued cards stay where they
   were posted.
-- Not yet: review of
-  bro-issued `delete` / `send` / `spend` cards (they only expire). A bro
-  proposing a rule in conversation, with the card in that bro's DM with the
-  owner: there is no bro path for proposing rules yet, so it is not
-  built. The client's expired and rule-card layouts
-  ([#120](https://github.com/PandaQuQ/robroz/pull/120)).
+- Not yet: review of bro-issued `delete` / `send` / `spend` cards
+  (they only expire, and they stay in the group). The #120 client draws
+  a pending approval in a group with no buttons, so the owner cannot
+  answer those bro-issued cards anywhere until a later PR reviews them
+  and sends them to the owner's DM. A bro proposing a rule in
+  conversation, with the card in that bro's DM with the owner: there is
+  no bro path for proposing rules yet, so it is not built.
 
 ## Rollout
 

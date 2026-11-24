@@ -515,7 +515,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 - 任务本来就在私聊里跑：卡留在这个私聊，不显示这行提示。
 - bro 还没有私聊（用 `POST /api/groups/{id}/members` 直接按 `botId` 加进群的 bro）：宿主机先给它建一个私聊，和 `POST /api/bros/{id}/dm` 一样；找不到这个 bro 时卡留在任务所在的群。
 - 同意、拒绝、过期、409 都不变；同意后任务在原来的群里重新排队、在原来的群目录跑完，交付卡也在群里。
-- bro 用 `POST /api/groups/{id}/approvals` 自己发的卡还是留在那个群。
+- bro 用 `POST /api/groups/{id}/approvals` 自己发的卡还是留在那个群。#120 的客户端把群里未回答的审批卡画成没有按钮，主人现在哪里都答不了；等后面一张后端 PR 给这些卡走审核并发到私聊。
 
 ### 任务审批卡
 
