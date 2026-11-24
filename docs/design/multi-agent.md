@@ -1,9 +1,11 @@
 # Multi-agent design: Router, Thread subscriptions, and Watchdog
 
-Status: **Accepted**  
+Status: **Accepted**. Group turns, follow-up attachment, and the internal
+Router (PR A, B, and C below) are accepted design and are **not built**
+on `main`. See [Implementation plan](#implementation-plan).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `81eb2c2`. This document
+Existing behaviour below is taken from `main` at `6b66129`. This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -20,8 +22,9 @@ end.
 
 robroz is a single-machine, multi-bro IM workspace, not a single Super-agent
 facing the user. The mappings below keep that product shape: a person still
-addresses a named bro with `@name`; a group message with no `@` gives every
-bro in the room one turn; and the four task states stay frozen.
+addresses a named bro with `@name`; the accepted design gives every bro in
+the room one turn on a group message with no `@` (not built yet; today that
+message is only stored); and the four task states stay frozen.
 
 ## 1. Router and Worker
 
@@ -48,7 +51,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` (`81eb2c2`). There is no Router session and no Worker pool.
+Verified on `main` (`6b66129`). There is no Router session and no Worker pool.
 
 - A person creates work by naming a bro. `POST /api/groups/{id}/say`
   (`host/src/say.rs`) stores the message, then maybe inserts one `queued` task.
@@ -74,6 +77,9 @@ Verified on `main` (`81eb2c2`). There is no Router session and no Worker pool.
 
 ### How to change it
 
+This section is accepted design. It is not built on `main`. The order and
+done standards are in the [Implementation plan](#implementation-plan).
+
 Keep the existing `@name` and DM paths as a deterministic fast path: the person
 already named the assignee, so the host does not ask a model to re-route that
 message.
@@ -83,13 +89,16 @@ are not room members, they do not appear in the member list, and they do not
 speak in the group. A Worker reports to the bro that dispatched it; that bro
 speaks. No agent speaks for another.
 
-Group messages keep today's `@` routing, plus turn-taking:
+Group messages keep today's `@` routing, plus turn-taking (PR A):
 
 - A group message with no `@` gives every bro in the room one turn. Each bro
   decides to speak or stay silent. Nothing is answered on anyone else's
   behalf.
-- If the message `@`-mentions a bro, that bro speaks first. Other bros may
-  still take their turn afterwards and may stay silent.
+- If the message `@`-mentions a bro, that bro speaks first. The rest take
+  their turn in join order, and may stay silent.
+- Staying silent produces nothing at all: no message, no card, no unread.
+- A bro's own message never triggers a new round. Direct messages are
+  unchanged by PR A.
 - Do not introduce a group-level Router that picks one assignee and posts the
   only user-visible reply.
 
@@ -178,6 +187,9 @@ in-flight task.
   ([`docs/roadmap-phase2.md`](../roadmap-phase2.md)).
 
 ### How to change it
+
+This section is accepted design. Follow-up attachment in a group is PR B
+and is not built on `main`. See the [Implementation plan](#implementation-plan).
 
 Introduce Thread as a host-internal correlation, not as a new user-facing
 session.
@@ -417,11 +429,72 @@ Auto-requeue of a dead or stalled run would also be a contract change
 (`resume` is refused today, and dead runs are not re-queued). It is not
 proposed. A rerun is the user's choice.
 
-**No contract change** for: moving the model loop off the pump thread;
-adding a timeout that still surfaces as today's `done` + `failure`
-「模型没回：…」 on a call that already fails that way (this can be done
-first, after this document lands); and a Watchdog that only logs and adds a
-card hint, until the dead-task PR lands.
+**No contract change** for: moving the model loop off the pump thread
+(shipped in #118); adding a timeout that still surfaces as today's
+`done` + `failure` 「模型没回：…」 on a call that already fails that
+way (after PR C; #118 only hints); and a Watchdog that only logs and
+adds a card hint (shipped in #118, with the dead-task change).
+
+## Implementation plan
+
+Verified on `main` at `6b66129` in `host/src/say.rs` and
+`robroz_contract::route_mention`:
+
+- In a group, a task is created only when the message starts with `@name`
+  or `＠name` that matches a member. An unaddressed group message is
+  stored and no bro is dispatched.
+- One message routes to at most one bro.
+- In a DM, every `/say` still inserts a new `queued` task for that bro.
+
+PR A, B, and C below are **Not yet**. Land them in that order. A timeout
+that *cancels* a still-running step or stops the container comes after
+PR C (#118 only hints). This docs change should merge together with
+host PR A.
+
+### PR A: Group turns (Not yet, first)
+
+Every group message gives every bro in the group one turn. A bro may
+stay silent. Bros `@`-mentioned in the message go first; the rest take
+their turn in join order.
+
+Staying silent produces nothing at all: no message, no card, and no
+unread. A bro's own message never triggers a new round. Direct messages
+are unchanged.
+
+**Done when:** in a group with two bros, one message with no `@` gives
+both bros a turn, and at least one of them can choose to stay silent
+(posts nothing).
+
+### PR B: Follow-ups (Not yet, after A)
+
+A follow-up in the group attaches to that bro's still-open task
+(`queued`, `running`, or `blocked`). The host does not create a new
+task. A `done` task is not still-open, and a follow-up is not a
+`resume`.
+
+**Done when:** a follow-up in the group attaches to that bro's open
+task and does not start a new one.
+
+### PR C: Router (Not yet, after A and B)
+
+Router and Worker stay an internal dispatch layer *inside one bro*.
+Group behaviour from PR A and PR B is unchanged.
+
+1. The bro's model splits the task into Workers, at most three steps
+   per task.
+2. Each step is a sub-step inside the task: one status card, and one
+   merged delivery at the end. The contract is unchanged.
+3. The Router uses the bro's own configured model. If the model errors
+   or cannot split the work, fall back to one Worker, behaving exactly
+   as today.
+4. `progress` shows a line of the form 「2/3 步」.
+5. If any step fails, the whole card ends as `done` + `failure`
+   「没写出结果」, with no requeue.
+
+**Done when:** a task can be split into at most three sub-steps with one
+status card and one delivery; a failed or impossible split falls back to
+one Worker; a failed step ends the task as 「没写出结果」 and does not
+requeue.
 
 ## Next phase, and what we will not do
 
@@ -430,11 +503,11 @@ merges. It is not a schedule.
 
 | Item | In the next phase? | Why |
 | --- | --- | --- |
-| Router and Worker as an internal dispatch layer inside one bro | Yes | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths already name an assignee and stay as the fast path. |
-| Turn-taking on a group message with no `@`; the `@`-mentioned bro speaks first | Yes | Accepted. Each bro gets one turn and may stay silent. This changes `/say` behaviour (see [Decisions](#decisions)). |
-| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Yes | Accepted. A DM or a second `@name` today starts a parallel task in the same group volume, with no link to the work already running. |
+| Turn-taking on a group message with no `@`; `@`-mentioned bros first, the rest in join order | Not yet (PR A, first) | Accepted design, not built. Today an unaddressed group message is only stored, and one message goes to at most one bro (`host/src/say.rs`, `route_mention`). See [Implementation plan](#implementation-plan). |
+| Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Not yet (PR B) | Accepted design, not built. A second `/say` today starts a parallel task in the same group volume, with no link to the work already running. |
+| Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
-| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | Yes, and first | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
+| New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | After PR C | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
 | Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Done (#118) | Hints go in the existing `progress` field. Defaults: `ROBROZ_STEP_TIMEOUT_SECS` 600, `ROBROZ_STALL_SECS` 900. Does not change state except for the dead-task rule, and does not cancel the step. |
 | Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Done (#118) | Compare-and-set while still `running`. `Outcome::Dead` and leftover cleanup write `robroz_card::NO_RESULT`. The card uses `failure_line`, not 「没做成：没写出结果」. No auto-requeue. |
 | A group-level Router that picks one assignee for an unaddressed message and posts the only reply | No | Superseded by turn-taking. No agent speaks for another. |
@@ -453,13 +526,18 @@ merges. It is not a schedule.
 These replace the open questions in the draft. They follow Grok Bot's group
 behaviour: every bro in the room sees the message and gets one turn; a bro
 that has nothing to add stays silent; whoever does the work speaks for
-themselves.
+themselves. They are accepted design, not built on `main`. The PR order
+and done standards are in the [Implementation plan](#implementation-plan).
 
 1. **Group turns and follow-ups.** A group message with no `@` gives every
-   bro in the room one turn. Each bro decides to speak or stay silent. If the
-   message `@`-mentions a bro, that bro speaks first. A follow-up attaches to
-   that bro's own still-open task (`queued`, `running`, or `blocked`); the
-   host does not create a new task. Only genuinely new work creates a task.
+   bro in the room one turn. Each bro decides to speak or stay silent.
+   Staying silent produces nothing at all: no message, no card, no unread.
+   If the message `@`-mentions a bro, that bro speaks first; the rest take
+   their turn in join order. A bro's own message never triggers a new
+   round. Direct messages are unchanged by the group-turns PR. A follow-up
+   in the group attaches to that bro's own still-open task (`queued`,
+   `running`, or `blocked`); the host does not create a new task. Only
+   genuinely new work creates a task.
 2. **Who speaks, and where Router sits.** In a group, whoever does the work
    replies themselves. No agent speaks for another. Router and Worker are
    only an internal dispatch layer inside one bro: their background workers
@@ -494,7 +572,7 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `81eb2c2` on
+robroz behaviour cited above was checked against the tree at `6b66129` on
 `main`, in particular `host/src/say.rs`, `host/src/pump.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
 `host/src/watchdog.rs`, `host/src/sandbox.rs`,
