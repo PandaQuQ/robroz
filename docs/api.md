@@ -37,6 +37,7 @@
 | POST | `/api/groups/{id}/choices` | bro 发选项卡 | `host/src/choices.rs:create_choice` |
 | POST | `/api/choices/{id}/answer` | 回答选项卡 | `host/src/choices.rs:answer_choice` |
 | POST | `/api/groups/{id}/approvals` | bro 发审批卡 | `host/src/approvals.rs:create_approval` |
+| GET | `/api/approvals/{id}` | 读一张审批卡 | `host/src/approvals.rs:get_approval` |
 | POST | `/api/approvals/{id}/approve` | 同意审批卡 / 确认卡 | `host/src/approvals.rs:approve` |
 | POST | `/api/approvals/{id}/deny` | 拒绝审批卡 / 确认卡 | `host/src/approvals.rs:deny` |
 | POST | `/api/schedules` | 建例行任务 | `host/src/lib.rs:create_schedule` |
@@ -538,6 +539,17 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 
 本版本卡片仍发在任务所在的群，还没有挪到主人私聊；bro 用 `POST /api/groups/{id}/approvals` 发的卡只会过期，不经过审核。
 
+### GET /api/approvals/{id}
+
+读一张审批卡，返回和事件里一样的 `approval` 对象。`host/src/approvals.rs:get_approval`。设置页的放行规则确认卡只能从这里取到。
+
+- 200 `approval` 事件。
+- 404「审批卡不存在」：id 不存在、是确认卡（`confirm`），或这张卡还在自动审核。
+
+```sh
+curl -s $B/api/approvals/<approvalId>
+```
+
 ### POST /api/approvals/{id}/approve 和 /deny
 
 回答审批卡，也用来回答确认卡（见「确认卡」）。`host/src/approvals.rs:approve`、`deny`，共同逻辑在 `decide`。
@@ -877,7 +889,7 @@ curl -s -X POST $B/api/settings/model/test
 
 ### 放行规则
 
-自动审核的放行规则，每条是主人写的一句话。`host/src/review/rules.rs`。鉴权同其他 `/api/settings/*`。`POST` 和 `DELETE` 都不直接改列表：只发一张确认卡（`approval` 事件，`action` 为 `rule_add` / `rule_delete`，`summary` 为规则原文，带 `expiresAt`），发在最早那个 bro 的私聊里。主人用 `POST /api/approvals/{id}/approve` 同意后才生效；拒绝或过期就作废。bro 调这两个接口也只能发卡。
+自动审核的放行规则，每条是主人写的一句话。`host/src/review/rules.rs`。鉴权同其他 `/api/settings/*`。`POST` 和 `DELETE` 都不直接改列表：只建一张确认卡（`approval` 事件，`action` 为 `rule_add` / `rule_delete`，`summary` 为规则原文，带 `expiresAt`）。这张卡就显示在设置页里，不发到任何群或私聊，也不算未读：`botId` 是契约常量 `SETTINGS_APPROVAL_BOT_ID`（`"settings"`），`botName` 是 `SETTINGS_APPROVAL_BOT_NAME`（「设置」），没有 `taskId`。没有任何 bro 也能用。客户端用返回的 `approvalId` 调 `GET /api/approvals/{id}` 取卡，用 `POST /api/approvals/{id}/approve` / `deny` 回答；同意后才生效，拒绝或过期（24 小时）就作废。bro 调这两个接口也只能建卡。
 
 #### GET /api/settings/review-rules
 
@@ -896,7 +908,6 @@ curl -s $B/api/settings/review-rules
 
 - 202 `{"approvalId":"<approvalId>"}`：确认卡已发出，规则还没加。
 - 400「请填写规则」/「规则只能一行，最多 200 字」。
-- 409「还没有 bro，没法发确认卡」：还没有任何 bro，没有私聊可以发卡。
 
 ```sh
 curl -s -X POST $B/api/settings/review-rules -H 'content-type: application/json' -d '{"text":"允许合并 CI 全绿的 PR"}'
@@ -906,7 +917,6 @@ curl -s -X POST $B/api/settings/review-rules -H 'content-type: application/json'
 
 - 202 `{"approvalId":"<approvalId>"}`：确认卡已发出，规则在同意前仍在列表里。
 - 404「规则不存在」：id 不是已确认的规则。
-- 409「还没有 bro，没法发确认卡」。
 
 ```sh
 curl -s -X DELETE $B/api/settings/review-rules/<ruleId>

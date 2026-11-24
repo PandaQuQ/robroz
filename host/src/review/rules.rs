@@ -4,9 +4,10 @@
 //! - `POST   /api/settings/review-rules`       `{text}` → 202 `{approvalId}`, a `rule_add` card
 //! - `DELETE /api/settings/review-rules/{id}`  → 202 `{approvalId}`, a `rule_delete` card
 //!
-//! `POST` and `DELETE` never change the list. They raise a confirm card in
-//! the owner's DM (the oldest bro's private chat), answered with the existing
-//! `POST /api/approvals/{id}/approve` or `/deny`. Approve applies the change
+//! `POST` and `DELETE` never change the list. They raise a confirm card that
+//! is shown on the settings page itself, not in any chat: the client fetches
+//! it with `GET /api/approvals/{id}` and answers it with the existing
+//! `POST /api/approvals/{id}/approve` or `/deny`. No bro is needed. Approve applies the change
 //! ([`apply_confirmed`]); deny or expiry discards it. The pending text and
 //! the rule id are stored on the approval row (`summary`, `rule_id`).
 
@@ -14,10 +15,13 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use robroz_contract::{CreateReviewRule, ReviewRule, ReviewRuleCreated, ReviewRules, REVIEW_RULE_MAX};
+use robroz_contract::{
+    CreateReviewRule, ReviewRule, ReviewRuleCreated, ReviewRules, REVIEW_RULE_MAX,
+    SETTINGS_APPROVAL_BOT_ID,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{db_error, error_response, lock_db, new_id, now_rfc3339, AppState, TENANT_ID};
+use crate::{db_error, error_response, lock_db, new_id, now_rfc3339, AppState};
 
 pub(crate) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS review_rules (
@@ -61,45 +65,27 @@ pub fn validate(text: &str) -> Result<String, &'static str> {
     Ok(text.to_string())
 }
 
-/// The owner's DM for confirm cards: the oldest bro's private chat.
-/// `None` when there is no bro yet.
-fn owner_dm(conn: &Connection) -> rusqlite::Result<Option<(String, String)>> {
-    let Some((bot_id, name)) = conn
-        .query_row(
-            "SELECT id, name FROM bots WHERE tenant_id = ?1 ORDER BY rowid LIMIT 1",
-            [TENANT_ID],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-    crate::bros::ensure_dm(conn, &bot_id, &name)?;
-    let group_id: String =
-        conn.query_row("SELECT id FROM groups WHERE dm_bot_id = ?1", [&bot_id], |r| r.get(0))?;
-    Ok(Some((group_id, bot_id)))
-}
+/// `approvals.group_id` of a settings-page rule card. Group ids are UUIDs,
+/// so no group's events or stream ever match it.
+pub(crate) const SETTINGS_GROUP: &str = SETTINGS_APPROVAL_BOT_ID;
 
-/// Insert a `rule_add` / `rule_delete` card. `None`: no bro to show it to.
+/// Insert a `rule_add` / `rule_delete` card raised from the settings page.
+/// It belongs to no bro and no chat (`botId` is `SETTINGS_APPROVAL_BOT_ID`).
 fn raise(
     conn: &Connection,
     action: &str,
     text: &str,
     rule_id: Option<&str>,
-) -> rusqlite::Result<Option<String>> {
-    let tx = conn.unchecked_transaction()?;
-    let Some((group_id, bot_id)) = owner_dm(&tx)? else {
-        return Ok(None);
-    };
+) -> rusqlite::Result<String> {
     let id = new_id();
     let now = now_rfc3339();
-    tx.execute(
+    conn.execute(
         "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at, rule_id, expires_at)
          VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, NULL, ?7, ?8)",
         params![
             id,
-            group_id,
-            bot_id,
+            SETTINGS_GROUP,
+            SETTINGS_APPROVAL_BOT_ID,
             action,
             text,
             now,
@@ -107,11 +93,8 @@ fn raise(
             super::expires_at(&now, super::approval_ttl())
         ],
     )?;
-    tx.commit()?;
-    Ok(Some(id))
+    Ok(id)
 }
-
-const NO_BRO: &str = "还没有 bro，没法发确认卡";
 
 fn accepted(id: String) -> Response {
     (StatusCode::ACCEPTED, Json(ReviewRuleCreated { approval_id: id })).into_response()
@@ -135,8 +118,7 @@ pub(crate) async fn create_rule(
     };
     let conn = lock_db(&state);
     match raise(&conn, "rule_add", &text, None) {
-        Ok(Some(id)) => accepted(id),
-        Ok(None) => error_response(StatusCode::CONFLICT, NO_BRO),
+        Ok(id) => accepted(id),
         Err(err) => db_error(err),
     }
 }
@@ -151,10 +133,7 @@ pub(crate) async fn delete_rule(
             .query_row("SELECT text FROM review_rules WHERE id = ?1", [&rule_id], |r| r.get(0))
             .optional()?;
         let Some(text) = text else { return Ok(Err(error_response(StatusCode::NOT_FOUND, "规则不存在"))) };
-        Ok(match raise(&conn, "rule_delete", &text, Some(&rule_id))? {
-            Some(id) => Ok(id),
-            None => Err(error_response(StatusCode::CONFLICT, NO_BRO)),
-        })
+        Ok(Ok(raise(&conn, "rule_delete", &text, Some(&rule_id))?))
     })();
     match result {
         Ok(Ok(id)) => accepted(id),

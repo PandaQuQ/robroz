@@ -93,6 +93,13 @@ impl Harness {
         body["approvalId"].as_str().unwrap().into()
     }
 
+    /// `GET /api/approvals/{id}`.
+    async fn card(&self, id: &str) -> Value {
+        let (status, body) = self.call("GET", &format!("/api/approvals/{id}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
     async fn answer(&self, id: &str, verb: &str) -> (StatusCode, Value) {
         self.call("POST", &format!("/api/approvals/{id}/{verb}"), None).await
     }
@@ -178,15 +185,18 @@ impl Reviewer for Fake {
 
 #[tokio::test]
 async fn adding_a_rule_only_raises_a_card_until_the_owner_approves() {
+    // No bro at all: the settings page still works.
     let h = harness();
-    let (_, dm) = h.bro("ada").await;
     let id = h.propose("  允许合并 CI 全绿的 PR ").await;
     assert!(h.rules().await.is_empty(), "unconfirmed rules are not listed");
 
-    let cards = h.approvals(&dm).await;
-    assert_eq!(cards.len(), 1);
-    let card = &cards[0];
+    let card = h.card(&id).await;
     assert_eq!(card["id"], id.as_str());
+    assert_eq!(card["type"], "approval");
+    assert_eq!(card["botId"], robroz_contract::SETTINGS_APPROVAL_BOT_ID);
+    assert_eq!(card["botName"], robroz_contract::SETTINGS_APPROVAL_BOT_NAME);
+    assert!(card.get("taskId").is_none());
+    let card = &card;
     assert_eq!(card["action"], "rule_add");
     assert_eq!(card["summary"], "允许合并 CI 全绿的 PR", "rule text verbatim (trimmed)");
     assert_eq!(card["decision"], Value::Null);
@@ -202,9 +212,50 @@ async fn adding_a_rule_only_raises_a_card_until_the_owner_approves() {
 }
 
 #[tokio::test]
+async fn settings_rule_cards_stay_out_of_every_chat() {
+    let h = harness();
+    let (bot, dm) = h.bro("ada").await;
+    let (status, group) = h.call("POST", "/api/groups", Some(json!({ "name": "群" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group = group["id"].as_str().unwrap().to_string();
+    h.call("POST", &format!("/api/groups/{group}/members"), Some(json!({ "botId": bot, "name": "ada" }))).await;
+    let id = h.propose("允许发周报").await;
+    for chat in [&dm, &group] {
+        assert!(h.approvals(chat).await.is_empty(), "not in {chat}");
+        let (_, unread) = h.call("GET", &format!("/api/groups/{chat}/unread"), None).await;
+        assert_eq!(unread["unread"], 0, "{unread}");
+    }
+    // The live stream reads the same query as events; check the backlog too.
+    let conn = h.db();
+    for chat in [&dm, &group] {
+        let timed = crate::approvals::timed_events(&conn, chat).unwrap();
+        assert!(timed.iter().all(|t| t.id != id));
+    }
+    drop(conn);
+    assert_eq!(h.card(&id).await["action"], "rule_add");
+}
+
+#[tokio::test]
+async fn get_approval_returns_the_event_shape_or_404() {
+    let h = harness();
+    let (status, body) = h.call("GET", "/api/approvals/nope", None).await;
+    assert_eq!((status, body), (StatusCode::NOT_FOUND, json!({ "error": "审批卡不存在" })));
+    let (bot, dm) = h.bro("ada").await;
+    let (_, posted) = h
+        .call("POST", &format!("/api/groups/{dm}/approvals"), Some(json!({ "botId": bot, "action": "send", "summary": "发邮件" })))
+        .await;
+    let id = posted["id"].as_str().unwrap();
+    assert_eq!(h.card(id).await, posted, "same shape as the create response");
+    // Hidden while under review.
+    h.add_rule("允许发周报");
+    let (_, approval, _) = h.blocked_task(&dm, &bot);
+    let (status, _) = h.call("GET", &format!("/api/approvals/{approval}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn denying_a_rule_card_discards_it() {
     let h = harness();
-    h.bro("ada").await;
     let id = h.propose("允许发周报").await;
     let (status, _) = h.answer(&id, "deny").await;
     assert_eq!(status, StatusCode::OK);
@@ -217,7 +268,6 @@ async fn denying_a_rule_card_discards_it() {
 #[tokio::test]
 async fn deleting_a_rule_needs_a_confirmed_card_too() {
     let h = harness();
-    let (_, dm) = h.bro("ada").await;
     let add = h.propose("允许发周报").await;
     h.answer(&add, "approve").await;
     let rule_id = h.rules().await[0]["id"].as_str().unwrap().to_string();
@@ -229,7 +279,7 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let first = body["approvalId"].as_str().unwrap().to_string();
     assert_eq!(h.rules().await.len(), 1, "still listed until approved");
-    let card = h.approvals(&dm).await.into_iter().find(|c| c["id"] == first.as_str()).unwrap();
+    let card = h.card(&first).await;
     assert_eq!(card["action"], "rule_delete");
     assert_eq!(card["summary"], "允许发周报");
 
@@ -246,9 +296,6 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
 #[tokio::test]
 async fn rule_text_is_validated() {
     let h = harness();
-    let (status, body) = h.call("POST", "/api/settings/review-rules", Some(json!({ "text": "允许" }))).await;
-    assert_eq!((status, body), (StatusCode::CONFLICT, json!({ "error": "还没有 bro，没法发确认卡" })));
-    h.bro("ada").await;
     for (text, error) in [
         ("   ", "请填写规则"),
         ("两行\n不行", "规则只能一行，最多 200 字"),
@@ -281,12 +328,11 @@ async fn bros_cannot_post_rule_cards_themselves() {
 #[tokio::test]
 async fn an_expired_rule_card_is_denied_and_a_later_answer_is_409() {
     let h = harness();
-    let (_, dm) = h.bro("ada").await;
     let id = h.propose("允许发周报").await;
     assert!(h.expire(Duration::hours(23)).is_empty(), "not yet");
     assert_eq!(h.expire(Duration::hours(25)), vec![id.clone()]);
 
-    let card = h.approvals(&dm).await.into_iter().find(|c| c["id"] == id.as_str()).unwrap();
+    let card = h.card(&id).await;
     assert_eq!(card["decision"], "denied");
     assert_eq!(card["reason"], APPROVAL_EXPIRED_REASON);
     assert_eq!(card["answeredBy"], Value::Null);

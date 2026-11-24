@@ -318,6 +318,7 @@ fn router_from(state: AppState) -> Router {
         .route("/api/groups/{id}/choices", post(choices::create_choice))
         .route("/api/choices/{id}/answer", post(choices::answer_choice))
         .route("/api/groups/{id}/approvals", post(approvals::create_approval))
+        .route("/api/approvals/{id}", get(approvals::get_approval))
         .route("/api/approvals/{id}/approve", post(approvals::approve))
         .route("/api/approvals/{id}/deny", post(approvals::deny))
         .route("/api/memories", get(memories::list_memories).post(memories::create_memory))

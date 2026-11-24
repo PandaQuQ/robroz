@@ -33,9 +33,12 @@ pub(crate) const SCHEMA: &str = "
 ";
 
 /// Approval cards only: confirm cards (`subject_kind` set) live in [`crate::proposals`].
-const SELECT: &str = "SELECT a.id, a.bot_id, b.name, a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
+/// Settings-page rule cards have no bro: `botId` / `botName` are the
+/// contract's `SETTINGS_APPROVAL_BOT_ID` / `SETTINGS_APPROVAL_BOT_NAME`.
+const SELECT: &str = "SELECT a.id, a.bot_id, COALESCE(b.name, CASE WHEN a.bot_id = 'settings' THEN '设置' END), a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
             a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at
-     FROM approvals a JOIN bots b ON b.id = a.bot_id";
+     FROM approvals a LEFT JOIN bots b ON b.id = a.bot_id
+     WHERE (b.id IS NOT NULL OR a.bot_id = 'settings')";
 /// Approval cards the owner can see: not a confirm card, and not hidden by
 /// auto-review (still being reviewed, or allowed without a card).
 const APPROVALS_ONLY: &str =
@@ -117,17 +120,31 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
     conn.query_row(
-        &format!("{SELECT} WHERE a.id = ?1 AND {APPROVALS_ONLY}"),
+        &format!("{SELECT} AND a.id = ?1 AND {APPROVALS_ONLY}"),
         [id],
         event_from_row,
     )
     .optional()
 }
 
+/// `GET /api/approvals/{id}`: one approval card the owner can see, in the
+/// same shape as in events. Settings-page rule cards are only reachable here.
+pub(crate) async fn get_approval(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let conn = lock_db(&state);
+    match load(&conn, &id) {
+        Ok(Some(event)) => (StatusCode::OK, Json(event)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "审批卡不存在"),
+        Err(err) => db_error(err),
+    }
+}
+
 /// Any approval card, including ones auto-review has hidden.
 pub(crate) fn load_any(conn: &Connection, id: &str) -> rusqlite::Result<Option<Event>> {
     conn.query_row(
-        &format!("{SELECT} WHERE a.id = ?1 AND a.subject_kind IS NULL"),
+        &format!("{SELECT} AND a.id = ?1 AND a.subject_kind IS NULL"),
         [id],
         event_from_row,
     )
@@ -137,7 +154,7 @@ pub(crate) fn load_any(conn: &Connection, id: &str) -> rusqlite::Result<Option<E
 /// Approval events for one group, for the events stream.
 pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Result<Vec<TimedEvent>> {
     let mut stmt = conn.prepare(&format!(
-        "{SELECT} WHERE a.group_id = ?1 AND {APPROVALS_ONLY}"
+        "{SELECT} AND a.group_id = ?1 AND {APPROVALS_ONLY}"
     ))?;
     let rows = stmt.query_map([group_id], |row| {
         let id: String = row.get(0)?;

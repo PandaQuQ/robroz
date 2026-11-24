@@ -361,6 +361,13 @@ pub struct ReviewRuleCreated {
     pub approval_id: String,
 }
 
+/// `botId` on a rule card the owner raised from the settings page. That card
+/// belongs to no bro and no chat: it is shown on the settings page, fetched
+/// with `GET /api/approvals/{id}`, and never appears in a group's events.
+pub const SETTINGS_APPROVAL_BOT_ID: &str = "settings";
+/// `botName` on a settings-page rule card.
+pub const SETTINGS_APPROVAL_BOT_NAME: &str = "设置";
+
 /// A rule sentence is one line, at most this many characters (the same
 /// limit as an approval summary, because the card shows it verbatim).
 pub const REVIEW_RULE_MAX: usize = APPROVAL_SUMMARY_MAX;
@@ -1537,6 +1544,8 @@ mod tests {
             serde_json::to_value(ReviewRuleCreated { approval_id: "a1".into() }).unwrap(),
             serde_json::json!({"approvalId":"a1"})
         );
+        assert_eq!(SETTINGS_APPROVAL_BOT_ID, "settings");
+        assert_eq!(SETTINGS_APPROVAL_BOT_NAME, "设置");
         let body: CreateReviewRule = serde_json::from_value(serde_json::json!({"text":"x"})).unwrap();
         assert_eq!(body.text, "x");
     }
