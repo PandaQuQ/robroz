@@ -31,7 +31,7 @@ robroz 是单机私有化的多智能体协同，交互是 IM：人在「群」�
    git -c user.name=PandaQuQ -c user.email=105594350+PandaQuQ@users.noreply.github.com commit
    ```
 5. **不 force-push。** 分支落后 `main` 时把 `main` merge 进来，不 rebase 已推送的提交。
-6. **只有顶级GitHub哥合并**，并且要先同步 `main`、CI 全绿。agent 自己不合并 PR。
+6. **只有顶级GitHub哥合并**，并且要先同步 `main`、CI 全绿。agent 自己不合并 PR。`main` 有 ruleset `main-protection`：只能走 PR，五个检查（`host`、`cla`、`client (ubuntu-latest)`、`e2e`、`cargo-deny`）必须全绿，禁止 force-push 和删除分支，bypass 列表为空，管理员也绕不过。直接 `git push` 到 `main` 会被拒绝，推送前先跑 `git branch --show-current` 确认不在 `main`。
 7. **不提交密钥。** 不提交 `.env`、`.pem`、`.dev.vars`，也不把任何密钥、令牌写进代码、测试、文档或提交信息。文档里一律用 `<你的密钥>`、`<你的令牌>` 这类占位符。
 8. **密钥只有两个去处：** 宿主机的环境变量（或 `*_FILE` 指向的文件），或用户自己在设置接口里填。不要发到群里，也不要写进仓库。
 9. **净室：** 参考产品只看它们的 README、公开文档、LICENSE 和公开截图，不看、不抄、不翻译源码。参考清单和规则见 [`docs/reference-features.md`](docs/reference-features.md)。
