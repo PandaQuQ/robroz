@@ -21,13 +21,14 @@ It is for people who want several AI agents in one workspace they control, and w
 
 <!-- TODO(screenshot): main window -->
 
-The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional).
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Works today
 
 - **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
 - **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
+- **Bigger tasks in steps.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
 - **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
@@ -40,7 +41,6 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
-- An internal Router inside one bro (at most three sub-steps, one status card, one delivery).
 - Cancelling a timed-out step or stopping the container.
 
 ## Quick start
@@ -56,13 +56,13 @@ cargo run -p robroz-client   # in a second terminal; default host http://127.0.0
 
 The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. A loopback listener needs no token; listening on a non-loopback address without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` refuses to start.
 
-In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」 (Chats) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is 「还没设置模型」 (the model isn't set up yet) and the card offers 「去设置」 (Go to settings).
+In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is No model set up yet (「还没设置模型」) and the card offers Set up (「去设置」).
 
 ### Configure a model
 
 <!-- TODO(screenshot): settings page -->
 
-Open 「模型」 (Model) in the client, or the 「去设置」 (Go to settings) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
+Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
 ```sh
 mkdir -p "$HOME/.config/robroz"

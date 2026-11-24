@@ -2,7 +2,7 @@
 
 How to build robroz from source, start the host and the desktop client, connect a model, and send a first task. The full list of environment variables is in [configuration.md](configuration.md).
 
-The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional). Quoted UI text below is the Chinese the client shows today, with an English gloss.
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Prerequisites
 
@@ -87,18 +87,18 @@ Keep token files and the model-key file below outside the repository, and do not
 
 ## Connect a model
 
-Until a model is configured, a task delivers 「还没设置模型」 (the model isn't set up yet). The delivery card has `needsSetup:"model"`, and the client shows 「去设置」 (Go to settings). A base URL and a model name are enough; the key is optional. You can fill this in after startup from the client or the settings API (`GET` / `PUT /api/settings/model`), without restarting. CI and e2e set `ROBROZ_MODEL=echo`, which echoes the prompt as the result. That is a test switch; do not set it in a real deployment.
+Until a model is configured, a task delivers No model set up yet (「还没设置模型」). The delivery card has `needsSetup:"model"`, and the client shows Set up (「去设置」). A base URL and a model name are enough; the key is optional. You can fill this in after startup from the client or the settings API (`GET` / `PUT /api/settings/model`), without restarting. CI and e2e set `ROBROZ_MODEL=echo`, which echoes the prompt as the result. That is a test switch; do not set it in a real deployment.
 
 ### In the client
 
-Open 「模型」 (Model) in the sidebar, or 「去设置」 (Go to settings) on a delivery card.
+Open Model (「模型」) in the sidebar, or Set up (「去设置」) on a delivery card. The Language (「语言」) row is on this page: English is the default, and you can switch to 中文. `ROBROZ_LANG=en|zh` overrides the saved choice for one run.
 
-- Three fields: 「地址」 (Address), 「模型名」 (Model), and 「密钥（选填）」 (Key (optional)). The key field is shown for every provider, including Ollama.
-- Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-2.5-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says 「免费模型的名字以 :free 结尾」 (Free model names end with :free).
+- Three fields: URL (「地址」), Model name (「模型名」), and Key (optional) (「密钥（选填）」). The key field is shown for every provider, including Ollama.
+- Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-2.5-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says Free model names end in :free (「免费模型的名字以 :free 结尾」).
 - You can save as soon as the address and model name are filled in. A local service such as Ollama can omit the key. Clearing the key does not clear the address or the model name.
-- Saving tests the connection. Success shows 「能用了」 (It works). Failure shows 「已保存，但连不上：原因」 (Saved, but can't connect: reason): the settings were written, but this attempt could not connect. If the reason is 「密钥不对或没填」 (key is wrong or missing), the provider returned 401 or 403: the key is wrong, or this service needs a key and you did not provide one. The page does not show a raw 401. The combined line 「已保存，但连不上：密钥不对或没填」 is Saved, but can't connect: key is wrong or missing.
+- Saving tests the connection. Success shows Working (「能用了」). Failure shows Saved, but can't connect: reason (「已保存，但连不上：原因」): the settings were written, but this attempt could not connect. If the reason is key is wrong or missing (「密钥不对或没填」), the provider returned 401 or 403: the key is wrong, or this service needs a key and you did not provide one. The page does not show a raw 401. The combined line is Saved, but can't connect: key is wrong or missing (「已保存，但连不上：密钥不对或没填」).
 
-Field priority and the API are in [configuration.md, Model](configuration.md#模型) and [client.md, Model page](client.md#模型页).
+Field priority and the API are in [configuration.md, Model](configuration.md#模型) and [client.md, Model page](client.md#model-page).
 
 ### With environment variables
 
@@ -148,7 +148,7 @@ cargo run -p robroz-client
 
 Linux needs a graphical session (X11 or Wayland). CI's `ubuntu-latest` can build the client without extra system packages.
 
-In the client, click 「引入一个 bro」 (add a bro) next to the 「聊天」 (Chats) heading, open the DM and send a message. That is a first task from the UI.
+In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is a first task from the UI.
 
 ## First task
 
@@ -198,9 +198,9 @@ curl -s $B/api/groups/$GID/events | jq -c '.events[] | {type, state, label, path
 {"type":"delivery","state":null,"label":null,"path":"tasks/<taskId>/result.txt"}
 ```
 
-- A `status` card is the task's status, with `botId`, `botName`, `state`, `label` and `containerUp`. 「完成」 means the task is done.
-- A `delivery` card means the result was written, in the group folder: `./data/groups/<groupId>/tasks/<taskId>/result.txt`. If no model is configured and `ROBROZ_MODEL=echo` is off, the file is 「还没设置模型」 and the delivery has `needsSetup:"model"`. Only with the test switch on is the file the prompt itself, here `Write a welcome line`.
-- The status card may also show a light-grey hint under the bro's name, 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). The stall hint is only a hint. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` (default 600 seconds) is cancelled: the container is stopped and the task ends as 「没写出结果」. A grey 「没写出结果」 (Finished with no result) means the container exited non-zero, wrote no result, or disappeared. The task has already ended as `done`; it is not started again automatically, and `resume` is refused. It is not shown as 「没做成：没写出结果」.
+- A `status` card is the task's status, with `botId`, `botName`, `state`, `label` and `containerUp`. The API `label` 「完成」 means the task is done; the client shows Done.
+- A `delivery` card means the result was written, in the group folder: `./data/groups/<groupId>/tasks/<taskId>/result.txt`. If no model is configured and `ROBROZ_MODEL=echo` is off, the file is still 「还没设置模型」 (the client shows No model set up yet), and the delivery has `needsSetup:"model"`. Only with the test switch on is the file the prompt itself, here `Write a welcome line`.
+- The status card may also show a light-grey hint under the bro's name, No reply from the model or tools for N min (「模型和工具还没回，已等 N 分钟」) or No new progress for N min (「N 分钟没有新进度」). The stall hint is only a hint. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` (default 600 seconds) is cancelled: the container is stopped and the task ends as Finished with no result (「没写出结果」). A grey Finished with no result (「没写出结果」) means the container exited non-zero, wrote no result, or disappeared. The task has already ended as `done`; it is not started again automatically, and `resume` is refused. It is not shown as Couldn't finish: Finished with no result (「没做成：没写出结果」).
 - For a live feed of cards, use `GET /api/groups/{id}/stream`. For only what changed, `GET …/events?since=<RFC3339 timestamp>`.
 
 Another way to start is to create a bro; the host also opens a DM for it:

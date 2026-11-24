@@ -2,22 +2,22 @@
 
 Names, task states and cards in robroz. Exact API fields are in [api.md](api.md). This page is about the ideas; if it disagrees with api.md or the code, those win.
 
-The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional). Quoted UI text below is the Chinese the client shows today, with an English gloss.
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Glossary
 
 | Term | What it is | Where it is used |
 | --- | --- | --- |
-| bro | An agent, which is a bot. Adding one is 「引入一个 bro」 (Add a bro). | UI only. The conversation list is titled 「聊天」 (Chats); the new button is 「引入一个 bro」 (`crates/robroz-ui/src/conversations.rs`, `TITLE` and `NEW_BRO`); an empty list shows 「还没有 bro，引入第一个」 (No bros yet. Add your first one.). Click the name at the top of a DM to rename. A bro profile page is not built yet; it is planned in phase 2 (“manage a bot as a contact”), see [roadmap-phase2.md](roadmap-phase2.md). |
+| bro | An agent, which is a bot. Adding one is Add a bro (「引入一个 bro」). | UI only. The conversation list is titled Chats (「聊天」); the new button is Add a bro (「引入一个 bro」) (`crates/robroz-ui/src/conversations.rs`, `TITLE` and `NEW_BRO`); an empty list shows No bros yet. Add your first one. (「还没有 bro，引入第一个」). Click the name at the top of a DM to rename. A bro profile page is not built yet; it is planned in phase 2 (“manage a bot as a contact”), see [roadmap-phase2.md](roadmap-phase2.md). |
 | Default name | The name filled in on create: the first is `bro`, then `bro 2`, `bro 3`, the first one not already taken. You can rename it at any time. | Only a default at create time; no extra field. |
 | `botId` / `botName` | Frozen field names in the contract. | Code, the API and the database keep these names; they are not renamed to bro. |
-| Group | A conversation. It can have people and more than one bro. | Code and the API use “group”. The conversation list is titled 「聊天」 (Chats); some other UI strings still say 群. |
-| DM (「私聊」) | A group with only you and one bro, not a different kind of object. | The UI tags it 「私聊」. In code it is a group. Messages, tasks, events, the live stream and unread all work on it as they do on any group. |
+| Group | A conversation. It can have people and more than one bro. | Code and the API use “group”. The conversation list is titled Chats (「聊天」); some other UI strings still say 群. |
+| DM (「私聊」) | A group with only you and one bro, not a different kind of object. | The UI tags it DM (「私聊」). In code it is a group. Messages, tasks, events, the live stream and unread all work on it as they do on any group. |
 | Group directory | One folder per group, `ROBROZ_VOLUMES/{groupId}`, mounted in the container at `/workspace`. The folder stays after the container is removed. | A delivery card's `path` is relative to this folder. |
 | Control directory | One folder per task, `ROBROZ_CONTROL/{taskId}`. Only the host writes it; it is mounted read-only at `/control` in the container. | Holds `prompt.txt`, `reply.txt` and the takeover marker `takeover`. See [architecture.md](architecture.md). |
-| Routine | A scheduled task. When it is due, the host creates an ordinary task. | The UI button is 「例行任务」 (Routines). The API is `/api/schedules`. |
-| Briefing | A delivery card after a successful routine, with `briefing` set to true. Not a new card type. | The client shows a corner badge 「简报」 (Briefing) (`robroz_card::briefing_badge`). |
-| Allow rules (「放行规则」) | Short sentences you write so auto-review can approve a risky action without showing you a card. | The settings page title is 「放行规则」 (Allow rules). See [api.md](api.md) and [design/auto-review.md](design/auto-review.md). |
+| Routine | A scheduled task. When it is due, the host creates an ordinary task. | The UI button is Routines (「例行任务」). The API is `/api/schedules`. |
+| Briefing | A delivery card after a successful routine, with `briefing` set to true. Not a new card type. | The client shows a corner badge Briefing (「简报」) (`robroz_card::briefing_badge`). |
+| Allow rules (「放行规则」) | Short sentences you write so auto-review can approve a risky action without showing you a card. | The settings page title is Allow rules (「放行规则」). See [api.md](api.md) and [design/auto-review.md](design/auto-review.md). |
 
 ## Bro names
 
@@ -39,8 +39,8 @@ A first-task walk-through is in [install.md](install.md#first-task). The code is
 
 Failure is not a state. It is expressed in two ways:
 
-- **A dead run:** the container exited non-zero, wrote no result, or disappeared (the host or Docker restarted, or the container was deleted). The task ends as `done`, `failure` is 「没写出结果」 (Finished with no result), and there is no delivery card. It is not queued again, a container is not started again, and `resume` returns 409 「这次不能恢复」 (this run can't be resumed). There is no fifth state.
-- **Couldn't finish:** the task is `done` but carries a `failure`. See [permissions.md, “Couldn't finish”](permissions.md#couldnt-finish-failure). The client shows 「没写出结果」 as it is; any other reason is shown as 「没做成：原因」 (Couldn't finish: reason). It is not shown as 「没做成：没写出结果」.
+- **A dead run:** the container exited non-zero, wrote no result, or disappeared (the host or Docker restarted, or the container was deleted). The task ends as `done`, `failure` is 「没写出结果」 (the client shows Finished with no result), and there is no delivery card. It is not queued again, a container is not started again, and `resume` returns 409 「这次不能恢复」 (the client shows This one can't be resumed). There is no fifth state.
+- **Couldn't finish:** the task is `done` but carries a `failure`. See [permissions.md, “Couldn't finish”](permissions.md#couldnt-finish-failure). The client shows Finished with no result (「没写出结果」) as it is; any other reason is shown as Couldn't finish: {reason} (「没做成：原因」). It is not shown as Couldn't finish: Finished with no result (「没做成：没写出结果」).
 
 ## Status card fields
 
@@ -49,27 +49,27 @@ A task has exactly one status card. Its `id` equals `taskId`. The client updates
 | Field | Meaning |
 | --- | --- |
 | `containerUp` | `true` only while the task is `running` and the container is still up. `false` when queued, done, blocked, or when a run has already died. |
-| `label` | The API status line from `robroz_card::status_line(state, containerUp)`: 「排队」 (Queued), 「进行」 (Running) when the container is up, 「没写出结果」 (Finished with no result) when a `running` card has no container (old dead-run data), 「卡住」 (Stuck), 「完成」 (Done). The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
+| `label` | The API field is still the Chinese line from `robroz_card::status_line(state, containerUp)`: 「排队」, 「进行」 when the container is up, 「没写出结果」 when a `running` card has no container (old dead-run data), 「卡住」, 「完成」. The client shows Queued, Running, Finished with no result, Stuck or Done. The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
 | `failure` | Optional. Why a `done` task did not finish. |
 | `waitingFor` | Optional. Why a `blocked` task is waiting: `approval` (answer an approval card) or `takeover` (take over in the DM). |
-| `progress` | Optional. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (Using {server}.{tool}). When the approval card was moved to the owner's DM, this line is 「已发到主人私聊」 (Sent to owner's DM). |
+| `progress` | Optional. The API field is still Chinese. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (the client shows Using {server}.{tool}). When the approval card was moved to the owner's DM, this line is 「已发到主人私聊」 (the client shows Sent to owner's DM). |
 
-Colours and actions come from `robroz-card` (`appearance`, `palette`); the client does not pick its own palette. `appearance` by itself is: queued, grey; running with a live container, ink (dark); a dead run (`running` with no container), grey, same as queued; done, green; blocked, amber, with the action 「去私聊接管」 (Take over in DM).
+Colours and actions come from `robroz-card` (`appearance`, `palette`); the client does not pick its own palette. `appearance` by itself is: queued, grey; running with a live container, ink (dark); a dead run (`running` with no container), grey, same as queued; done, green; blocked, amber, with the action Take over in DM (「去私聊接管」).
 
 The client then applies two overrides (`client/src/model.rs`):
 
-- A `done` task with a `failure` is grey, with no action. The line is `failure_line`, never the green 「完成」.
-- A task blocked with `waitingFor: "approval"` is grey, with no takeover button. The line is 「等你批准」 (Needs your approval). Amber and 「去私聊接管」 stay only for a real takeover (`waitingFor: "takeover"`).
+- A `done` task with a `failure` is grey, with no action. The line is `failure_line`, never the green Done (「完成」).
+- A task blocked with `waitingFor: "approval"` is grey, with no takeover button. The line is Needs your approval (「等你批准」). Amber and Take over in DM (「去私聊接管」) stay only for a real takeover (`waitingFor: "takeover"`).
 
 ### progress
 
-- The host reports key moments itself: 「开始干活」 (Getting started) when the run begins, or 「在想怎么回」 (Thinking about a reply) when a model is attached; 「在沙箱里跑」 (Running in the sandbox) after the sandbox is up; 「在用 <工具名>」 (Using <tool name>) when a tool is called (MCP tools use the display name `{server}.{tool}`).
-- The bro can report too: a line `robroz-progress:text` in the prompt or in the model reply. The runner writes the last progress line to the group folder `tasks/{taskId}/progress`, and the host reads it while the task is running. A progress line in the model reply is applied when the sandbox comes up; it wins over 「在沙箱里跑」. Progress lines do not go into `result.txt`.
+- The host reports key moments itself: Getting started (「开始干活」) when the run begins, or Thinking about a reply (「在想怎么回」) when a model is attached; Running in the sandbox (「在沙箱里跑」) after the sandbox is up; Using <tool name> (「在用 <工具名>」) when a tool is called (MCP tools use the display name `{server}.{tool}`).
+- The bro can report too: a line `robroz-progress:text` in the prompt or in the model reply. The runner writes the last progress line to the group folder `tasks/{taskId}/progress`, and the host reads it while the task is running. A progress line in the model reply is applied when the sandbox comes up; it wins over Running in the sandbox (「在沙箱里跑」). Progress lines do not go into `result.txt`.
 - The text is normalized to one line: newlines and consecutive whitespace become a single space, ends are trimmed, at most 60 characters (longer text is cut to 59 characters plus 「…」). This is not an error.
 - If the text is unchanged, `updatedAt` is not moved and no extra event is pushed.
-- The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps 「在用 {server}.{tool}」; the line is cleared after the card is answered. If that card was moved to the owner's DM, the line is 「已发到主人私聊」 instead.
-- The host may also write 「模型和工具还没回，已等 N 分钟」 (still waiting for the model and tools after N minutes) or 「N 分钟没有新进度」 (no new progress for N minutes). The stall hint is only a hint. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` is cancelled: the container is stopped and the task ends as 「没写出结果」 (Finished with no result), with no delivery and no rerun. Time waiting on an approval card does not count. The variables are in [configuration.md](configuration.md).
-- Code: `host/src/progress.rs`, `host/src/watchdog.rs`.
+- The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps Using {server}.{tool} (「在用 {server}.{tool}」); the line is cleared after the card is answered. If that card was moved to the owner's DM, the line is Sent to owner's DM (「已发到主人私聊」) instead.
+- The host may also write No reply from the model or tools for N min (「模型和工具还没回，已等 N 分钟」) or No new progress for N min (「N 分钟没有新进度」). The stall hint is only a hint. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` is cancelled: the container is stopped and the task ends as Finished with no result (「没写出结果」), with no delivery and no rerun. Time waiting on an approval card does not count. The variables are in [configuration.md](configuration.md).
+- Code: `host/src/progress.rs`, `host/src/watchdog.rs`, `host/src/timeouts.rs`.
 
 ## Cards (events)
 
@@ -84,7 +84,7 @@ Each item in the event stream is an `Event`, distinguished by `type`. Full field
 | `approval` | An approval card: ask a person before deleting, sending, spending, or calling a tool. The host also issues one when a task wants to write outside (with `taskId`). | A bro or the host |
 | `confirm` | A confirm card: a bro proposed a memory or a skill, and a person decides. | The host, after a successful task |
 
-Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it goes to the owner's DM, with `expiresAt` set. The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows 「已发到主人私聊」 (Sent to owner's DM). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card that expires has `reason` 「审批已过期」 (Approval expired). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
+Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it goes to the owner's DM, with `expiresAt` set. The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows Sent to owner's DM (「已发到主人私聊」). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card that expires has `reason` Approval expired (「审批已过期」). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
 
 Rules:
 

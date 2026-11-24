@@ -2,7 +2,7 @@
 
 What a bro may do, when it stops to ask a person, and how a person takes over. The tiers live in `crates/robroz-policy`; they are applied in `host/src/pump.rs`, `host/src/approvals.rs`, `host/src/tools.rs` and `host/src/mcp_tools.rs`. API details are in [api.md](api.md).
 
-The desktop client UI is currently in Chinese; English UI is in progress (English default, Chinese optional). Quoted UI text below is the Chinese the client shows today, with an English gloss.
+The desktop client UI is English by default. Switch to 中文 with the Language row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Permission tiers
 
@@ -14,7 +14,7 @@ The desktop client UI is currently in Chinese; English UI is in progress (Englis
 | `Metered` | Outbound requests (`Outbound`), including `web_search` / `web_fetch`, and MCP tools marked `readOnlyHint: true` | GET only, counted per task, cap `ROBROZ_GET_LIMIT` (default 8). A read-only MCP tool counts as one outbound GET each time it is called, runs immediately, and does not raise an approval card. Using the full limit is still a success; going over it, or using a method other than GET, removes the container, ends the task as `done` with a `failure`, and does not issue a delivery card. The task is not moved to `blocked`. |
 | `Takeover` | Writing outside (`ExternalWrite`, including MCP tools not marked `readOnlyHint: true`) and captchas (`Captcha`) | The host does not fill in credentials. The task becomes `blocked`. An external write in the prompt also raises a task approval card; a write MCP tool raises an approval card with `action` `call` (see below). A captcha still needs a person to take over in the DM and then `resume`. |
 
-How the meter works: outbound counts are stored in the group folder at `tasks/{taskId}/outbound.txt` and tallied per task by `robroz_policy::meter`. The (N+1)th GET, where N is the limit, ends the task, and `failure` is 「出网超额：已用 N+1 次，上限 N」 (over the outbound limit: used N+1, cap N). With the default cap that is 「出网超额：已用 9 次，上限 8」. A non-GET is 「出网只允许 GET：用了 POST」 (outbound is GET only: used POST) when the method was `POST`. Method matching is exact: `GET` is allowed, `get` is not.
+How the meter works: outbound counts are stored in the group folder at `tasks/{taskId}/outbound.txt` and tallied per task by `robroz_policy::meter`. The (N+1)th GET, where N is the limit, ends the task, and `failure` is 「出网超额：已用 N+1 次，上限 N」 (assembled in `robroz-policy`; with the default cap that is 「出网超额：已用 9 次，上限 8」). A non-GET is 「出网只允许 GET：用了 POST」 when the method was `POST`. Those full policy sentences are not in `host_text` and are not mapped yet; the client shows Couldn't finish: plus the stored Chinese text. Method matching is exact: `GET` is allowed, `get` is not.
 
 ## Blocking lines
 
@@ -25,7 +25,7 @@ Where it stopped is computed by the host, not trusted from the container:
 1. When the runner stops, it writes `tasks/{taskId}/intent` in the group folder. That file only means “this run is stuck”; the host never reads its contents.
 2. After the container exits, the host takes the prompt stored in the database and the hashes in `ROBROZ_CONTROL/{taskId}/takeover`, and finds the first blocking line whose sha256 is not already in that takeover file (`robroz_policy::blocking_line`; the runner uses the same function to decide where to stop).
 3. The computed kind, exact line and hash are stored on the task as `intent_kind` / `intent_line` / `intent_hash`, then the `intent` file in the group folder is deleted (it is also cleared again before the next container start).
-4. If an `intent` file is present but no such line can be computed (the container claimed it was stuck, but there is no blocking line that has not already been taken over): treat it as a dead run: `done`, `failure` is 「没写出结果」 (Finished with no result), not `blocked`.
+4. If an `intent` file is present but no such line can be computed (the container claimed it was stuck, but there is no blocking line that has not already been taken over): treat it as a dead run: `done`, `failure` is Finished with no result (「没写出结果」), not `blocked`.
 
 The takeover marker `takeover`:
 
@@ -37,24 +37,24 @@ The takeover marker `takeover`:
 
 ## Resume
 
-`POST /api/tasks/{id}/resume` only accepts a task in `blocked`. On success the host appends the stored `intent_hash` to `takeover`, clears the stuck record, and returns the task to `queued` with `containerUp` false. Resume does not read the group folder and does not start a container; the pump later starts a new container on the same group folder. The container is still `--network none` and does not mount `docker.sock`. A task blocked on an MCP tool cannot be resumed this way: the call returns 409 「请先回答审批卡」 (Answer the approval card first). A task that is not `blocked` returns 409 「这次不能恢复」 (this run can't be resumed). Status codes and error strings are in [api.md, resume](api.md#post-apitasksidresume).
+`POST /api/tasks/{id}/resume` only accepts a task in `blocked`. On success the host appends the stored `intent_hash` to `takeover`, clears the stuck record, and returns the task to `queued` with `containerUp` false. Resume does not read the group folder and does not start a container; the pump later starts a new container on the same group folder. The container is still `--network none` and does not mount `docker.sock`. A task blocked on an MCP tool cannot be resumed this way: the call returns 409 Answer the approval card first (「请先回答审批卡」). A task that is not `blocked` returns 409 This one can't be resumed (「这次不能恢复」). Status codes and error strings are in [api.md, resume](api.md#post-apitasksidresume).
 
 ## Approval cards
 
-Approvals are checked against your Allow rules (「放行规则」) first, including cards a bro issues itself. If a rule allows the action, no card is shown; the action goes ahead (a task card is settled as approved, so the task returns to `queued`), and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it is shown to the owner with `expiresAt` set. A card that expires is denied with `reason` 「审批已过期」 (Approval expired); a task it was gating ends as `done` with that same `failure`. Confirm cards and a takeover do not expire.
+Approvals are checked against your Allow rules (「放行规则」) first, including cards a bro issues itself. If a rule allows the action, no card is shown; the action goes ahead (a task card is settled as approved, so the task returns to `queued`), and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it is shown to the owner with `expiresAt` set. A card that expires is denied with `reason` Approval expired (「审批已过期」); a task it was gating ends as `done` with that same `failure`. Confirm cards and a takeover do not expire.
 
 ### Cards a bro issues
 
-`POST /api/groups/{id}/approvals`, with `action` `delete`, `send` or `spend`. The card is only a question; answering it does not make the host do the action. Bro-issued cards go through auto-review like a task card. If the card is blocked or there are no rules, it is sent to the owner's DM with that bro (`host/src/approvals.rs:bro_card_group`; a DM is created if needed). The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows 「已发到主人私聊」 (Sent to owner's DM). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card posted in a DM stays in that DM and is not listed elsewhere. Fields and errors are in [api.md](api.md#post-apigroupsidapprovals).
+`POST /api/groups/{id}/approvals`, with `action` `delete`, `send` or `spend`. The card is only a question; answering it does not make the host do the action. Bro-issued cards go through auto-review like a task card. If the card is blocked or there are no rules, it is sent to the owner's DM with that bro (`host/src/approvals.rs:bro_card_group`; a DM is created if needed). The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows Sent to owner's DM (「已发到主人私聊」). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card posted in a DM stays in that DM and is not listed elsewhere. Fields and errors are in [api.md](api.md#post-apigroupsidapprovals).
 
 ### Cards the host issues for a task
 
 When a task reaches `robroz-action:external`, the host issues an approval card for it; the person no longer has to take over in the DM first:
 
-- `action` is `send`, `summary` is 「要对外写入：要做的事」 (Writes to an outside service: {what it will do}), `botId` is the task's assignee, and the optional field `taskId` is set (a card a bro issues itself does not have `taskId`).
-- The task is `blocked` with `waitingFor` set to `approval`. If the task is in a group, the approval card itself is placed in the owner's DM with that bro (a DM is created if needed). The group does not list a second copy of the card; its status card shows 「已发到主人私聊」 (Sent to owner's DM). Unread for the card is only in the DM; the group still counts the blocked task. A card raised in a DM stays in that DM.
+- `action` is `send`, `summary` is Writes to an outside service: {what it will do} (「要对外写入：要做的事」), `botId` is the task's assignee, and the optional field `taskId` is set (a card a bro issues itself does not have `taskId`).
+- The task is `blocked` with `waitingFor` set to `approval`. If the task is in a group, the approval card itself is placed in the owner's DM with that bro (a DM is created if needed). The group does not list a second copy of the card; its status card shows Sent to owner's DM (「已发到主人私聊」). Unread for the card is only in the DM; the group still counts the blocked task. A card raised in a DM stays in that DM.
 - Approve: the host records the takeover (appends the hash) and the task is queued again so it can finish the run.
-- Deny: the task ends as `done` without doing that step, there is no delivery card, and the status card has `failure` 「你拒绝了：…」 (You denied: …).
+- Deny: the task ends as `done` without doing that step, there is no delivery card, and the status card has `failure` You denied: … (「你拒绝了：…」).
 - If the task was already taken over with `/resume`, answering the card only records the decision and does not change the task again.
 - A captcha (`robroz-action:captcha`) does not raise an approval card, because someone has to type the response. It stays “blocked, take over in the DM”.
 
@@ -62,19 +62,19 @@ When a task reaches `robroz-action:external`, the host issues an approval card f
 
 When the model wants to call an MCP tool that is not marked `readOnlyHint: true`, the host raises an approval card first (`host/src/mcp_tools.rs`, `host/src/approvals.rs:gate_mcp_task`) and does not make the call:
 
-- `action` is `call`, `summary` is 「调用 {server}.{tool}」 plus a short parameter summary, and the optional fields `mcpServer`, `mcpTool` and `taskId` are set.
-- The task is `blocked` with `waitingFor` set to `approval`, and the progress line is 「在用 {server}.{tool}」 (Using {server}.{tool}). The card is placed the same way as a task approval card (owner DM when the task is in a group; the group status card shows 「已发到主人私聊」).
+- `action` is `call`, `summary` is still 「调用 {server}.{tool}」 plus a short parameter summary (the client shows Call {server}.{tool}), and the optional fields `mcpServer`, `mcpTool` and `taskId` are set.
+- The task is `blocked` with `waitingFor` set to `approval`, and the progress line is Using {server}.{tool} (「在用 {server}.{tool}」). The card is placed the same way as a task approval card (owner DM when the task is in a group; the group status card shows 「已发到主人私聊」).
 - Approve: the task returns to `queued` and the pump continues: it makes this call and hands the result back to the model. The call also counts as one outbound GET and shares `ROBROZ_GET_LIMIT` with read-only tools.
-- Deny: the call is not made, the task is `done`, the delivery card's `summary` is 「未执行」 (Didn't run), and `failure` is 「你拒绝了：{server}.{tool}」 (You denied: {server}.{tool}) on both the status card and the delivery card.
-- Answering a second time is 409. Do not use `POST /api/tasks/{id}/resume` in place of answering the card: that returns 409 「请先回答审批卡」 (Answer the approval card first).
+- Deny: the call is not made, the task is `done`, the delivery card's `summary` is Didn't run (「未执行」), and `failure` is You denied: {server}.{tool} (「你拒绝了：{server}.{tool}」) on both the status card and the delivery card.
+- Answering a second time is 409. Do not use `POST /api/tasks/{id}/resume` in place of answering the card: that returns 409 Answer the approval card first (「请先回答审批卡」).
 - A read-only MCP tool does not raise a card. It is called immediately and counts as one outbound GET.
-- A call error (can't connect, timeout, or the server returned an error) does not fail the task: the model is given 「调用失败：{原因}」 (Call failed: {reason}) and continues. Secrets in the reason are redacted.
+- A call error (can't connect, timeout, or the server returned an error) does not fail the task: the model is given Call failed: {reason} (「调用失败：{原因}」) and continues. Secrets in the reason are redacted.
 
 Details are in [search-and-mcp.md](search-and-mcp.md#模型怎么调用).
 
 ### answeredBy
 
-The host has a single shared token and cannot tell who is acting. `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](client.md#处理人).
+The host has a single shared token and cannot tell who is acting. `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](client.md#who-answered).
 
 ## waitingFor
 
@@ -91,23 +91,23 @@ When a task is `done` but the work was not finished, the status card has `failur
 
 | Situation | `failure` | Delivery card |
 | --- | --- | --- |
-| The model call failed | 「模型没回：原因」 (No reply from the model: reason); the same sentence is written into the result | Yes |
-| A task approval card was denied | 「你拒绝了：…」 (You denied: …) | No |
-| An MCP tool approval card was denied | 「你拒绝了：{server}.{tool}」 (You denied: {server}.{tool}) | Yes, `summary` is 「未执行」 (Didn't run); the delivery card has the same `failure` |
-| Over the outbound limit | 「出网超额：已用 N 次，上限 M」 (over the outbound limit: used N, cap M) | No |
-| Outbound used a method other than GET | 「出网只允许 GET：用了 POST」 (outbound is GET only: used POST), with the method actually used | No |
-| More than 8 rounds of tool calls | 「工具调用超过 8 轮」 (Stopped after 8 rounds of tool calls); the same sentence is written into the result | Yes |
-| A dead run (container exited non-zero, wrote no result, or disappeared) | 「没写出结果」 (Finished with no result) | No |
-| An approval card expired | 「审批已过期」 (Approval expired) | No |
+| The model call failed | No reply from the model: reason (「模型没回：原因」); the same sentence is written into the result | Yes |
+| A task approval card was denied | You denied: … (「你拒绝了：…」) | No |
+| An MCP tool approval card was denied | You denied: {server}.{tool} (「你拒绝了：{server}.{tool}」) | Yes, `summary` is Didn't run (「未执行」); the delivery card has the same `failure` |
+| Over the outbound limit | 「出网超额：已用 N 次，上限 M」 (not mapped yet; the client shows Couldn't finish: plus this text) | No |
+| Outbound used a method other than GET | 「出网只允许 GET：用了 POST」, with the method actually used (not mapped yet; the client shows Couldn't finish: plus this text) | No |
+| More than 8 rounds of tool calls | Stopped after 8 rounds of tool calls (「工具调用超过 8 轮」); the same sentence is written into the result | Yes |
+| A dead run (container exited non-zero, wrote no result, or disappeared) | Finished with no result (「没写出结果」) | No |
+| An approval card expired | Approval expired (「审批已过期」) | No |
 
-When the client sees `failure`, it shows a grey 「没做成：原因」 (Couldn't finish: reason), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, that line is shown as it is (`robroz_card::failure_line`).
+When the client sees `failure`, it shows a grey Couldn't finish: reason (「没做成：原因」), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, the client shows Finished with no result as it is (`robroz_card::failure_line`).
 
 ## The model's tool calls
 
 When the host calls the model it can register tools (`host/src/tools.rs`). Those tools use the same three tiers:
 
 - A Takeover MCP tool raises an approval card and is not executed until it is approved. The host's own tools today are Metered (`web_search` / `web_fetch`); any other Takeover tool is not executed.
-- A task may request at most 8 model rounds. If the 8th reply is still a tool call, the task ends as `done` with `failure` 「工具调用超过 8 轮」 (Stopped after 8 rounds of tool calls). An 8th reply that is plain text is accepted.
+- A task may request at most 8 model rounds. If the 8th reply is still a tool call, the task ends as `done` with `failure` Stopped after 8 rounds of tool calls (「工具调用超过 8 轮」). An 8th reply that is plain text is accepted.
 - A single tool result is at most 16,000 characters. Longer text is cut and `…(truncated)` is appended, still within that 16,000-character cap.
 - If no tools are registered, the request does not include a `tools` field, and the behaviour is the same as a call with no tools.
 
