@@ -6,7 +6,9 @@
 
 use chrono::Local;
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{button, canvas, column, container, hover, row, space, text, text_input, Space};
+use iced::widget::{
+    button, canvas, column, container, hover, pick_list, row, space, text, text_input, Space,
+};
 use iced::{
     font, Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Pixels,
     Shadow as IcedShadow, Theme as IcedTheme, Vector,
@@ -16,6 +18,7 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
+use crate::cards::model;
 use crate::cards::routines::{self, Routines};
 use crate::cards::search;
 use crate::cards::secret;
@@ -260,6 +263,22 @@ pub enum Action {
     SearchClearKey,
     SearchCancelKey,
     SearchSave,
+    /// 模型 page.
+    ModelPick {
+        preset: model::Preset,
+    },
+    ModelUrl {
+        text: String,
+    },
+    ModelName {
+        text: String,
+    },
+    ModelKey {
+        text: String,
+    },
+    ModelClearKey,
+    ModelCancelKey,
+    ModelSave,
 }
 
 /// Monospace advance as a fraction of font size (layout estimate only).
@@ -2449,7 +2468,8 @@ fn masked_key_row<'a>(
         let mut input = text_input(placeholder, &key.draft)
             .secure(true)
             .size(t.type_.body)
-            .padding(Padding::from([8.0, 10.0]));
+            .padding(field_padding())
+            .style(field_input_style(*t));
         if !busy {
             input = input.on_input(on_draft);
             if let Some(submit) = on_submit {
@@ -3324,7 +3344,8 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
         Some(Provider::Searxng) => {
             let mut input = text_input(search::URL_PLACEHOLDER, &page.url)
                 .size(t.type_.body)
-                .padding(Padding::from([8.0, 10.0]));
+                .padding(field_padding())
+                .style(field_input_style(*t));
             if !busy {
                 input = input
                     .on_input(|text| Action::SearchUrl { text })
@@ -3349,6 +3370,206 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
             _ => t.palette.text2,
         };
         foot = foot.push(text(line).size(t.type_.foot).color(color(c)));
+    }
+    body = body.push(foot);
+    if let Some(note) = &page.note {
+        body = body.push(inline_note(t, note));
+    }
+    col = col.push(container(body).padding(pad));
+    container(col).width(Fill).style(card_style(*t)).into()
+}
+
+// ---------- 模型 page ----------
+
+/// Shared fill for settings fields: the same white (or dark-theme base) as
+/// iced's default text input, not the beige card `surface`.
+fn field_fill(theme: &IcedTheme) -> Color {
+    theme.extended_palette().background.base.color
+}
+
+fn field_padding() -> Padding {
+    Padding::from([8.0, 10.0])
+}
+
+fn field_border(t: &Skin, c: Rgb) -> Border {
+    Border {
+        color: color(c),
+        width: t.stroke.control,
+        radius: 2.0.into(),
+    }
+}
+
+fn field_pick_style(t: Skin) -> impl Fn(&IcedTheme, pick_list::Status) -> pick_list::Style {
+    move |theme, status| {
+        let border = match status {
+            pick_list::Status::Hovered | pick_list::Status::Opened { .. } => t.palette.text,
+            pick_list::Status::Active => t.palette.border,
+        };
+        pick_list::Style {
+            text_color: color(t.palette.text),
+            placeholder_color: color(t.palette.text3),
+            handle_color: color(t.palette.text),
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
+        }
+    }
+}
+
+fn field_pick_menu_style(t: Skin) -> impl Fn(&IcedTheme) -> iced::widget::overlay::menu::Style {
+    move |theme| iced::widget::overlay::menu::Style {
+        background: field_fill(theme).into(),
+        border: field_border(&t, t.palette.border),
+        text_color: color(t.palette.text),
+        selected_text_color: color(t.palette.text),
+        selected_background: color(t.palette.control_hover).into(),
+        shadow: IcedShadow::default(),
+    }
+}
+
+fn field_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let border = match status {
+            text_input::Status::Focused { .. } => t.palette.focus,
+            text_input::Status::Hovered => t.palette.text,
+            text_input::Status::Active | text_input::Status::Disabled => t.palette.border,
+        };
+        let sel = t.palette.selection;
+        text_input::Style {
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
+            icon: color(t.palette.text),
+            placeholder: color(t.palette.text3),
+            value: color(t.palette.text),
+            selection: faded(sel.rgb, sel.alpha),
+        }
+    }
+}
+
+/// The 模型 page: preset, address, model name, masked key, one test after each save.
+pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
+    let m = t.metrics;
+    let busy = page.busy;
+    let mut head = row![text(model::TITLE)
+        .size(t.type_.list_title)
+        .font(bold())
+        .color(color(t.palette.text))]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    if page.from_env() {
+        head = head.push(
+            container(
+                text(model::FROM_ENV)
+                    .size(t.type_.tag)
+                    .color(color(t.palette.text2)),
+            )
+            .padding(Padding::from([2.0, m.tag_pad_h]))
+            .style(card_style(*t)),
+        );
+    }
+    let mut col = column![
+        container(head)
+            .height(Length::Fixed(m.panel_head_height))
+            .padding(Padding::from([0.0, m.row_pad_h]))
+            .align_y(Alignment::Center),
+        divider(t, 0.0),
+    ];
+    let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
+    let mut body = column![].spacing(10);
+    if page.not_set() {
+        body = body.push(text(model::NOT_SET).color(color(t.palette.text2)));
+    }
+    let preset = pick_list(model::Preset::ALL, page.preset, |preset| {
+        Action::ModelPick { preset }
+    })
+    .placeholder(model::LABEL_PRESET)
+    .text_size(t.type_.body)
+    .padding(field_padding())
+    .width(Fill)
+    .handle(pick_list::Handle::Arrow { size: None })
+    .style(field_pick_style(*t))
+    .menu_style(field_pick_menu_style(*t));
+    body = body.push(labelled(t, model::LABEL_PRESET, preset));
+
+    let mut url = text_input(model::URL_PLACEHOLDER, &page.url)
+        .size(t.type_.body)
+        .padding(field_padding())
+        .style(field_input_style(*t));
+    if !busy {
+        url = url.on_input(|text| Action::ModelUrl { text });
+    }
+    body = body.push(labelled(t, model::LABEL_URL, url));
+
+    let mut name = text_input(page.model_placeholder(), &page.model)
+        .size(t.type_.body)
+        .padding(field_padding())
+        .style(field_input_style(*t));
+    if !busy {
+        name = name
+            .on_input(|text| Action::ModelName { text })
+            .on_submit(Action::ModelSave);
+    }
+    let mut name_block = column![labelled(t, model::LABEL_MODEL, name)];
+    if page.preset == Some(model::Preset::OpenRouter) {
+        name_block = name_block.push(
+            text(model::OPENROUTER_HINT)
+                .size(t.type_.foot)
+                .color(color(t.palette.text3)),
+        );
+    }
+    body = body.push(name_block.spacing(2.0));
+
+    if page.shows_key() {
+        body = body.push(labelled(
+            t,
+            model::LABEL_KEY,
+            masked_key_row(
+                t,
+                &page.key,
+                model::KEY_PLACEHOLDER,
+                busy,
+                |text| Action::ModelKey { text },
+                Action::ModelClearKey,
+                Action::ModelCancelKey,
+                Some(Action::ModelSave),
+            ),
+        ));
+    }
+
+    let mut foot = row![btn(
+        t,
+        model::SAVE.into(),
+        Look::Primary,
+        Leading::None,
+        page.can_save().then_some(Action::ModelSave),
+    )]
+    .spacing(t.controls.button_gap)
+    .align_y(Alignment::Center);
+    match &page.test {
+        Some(model::Test::Ok) => {
+            foot = foot.push(
+                row![
+                    dot(t, Dot::Done),
+                    text(model::WORKS)
+                        .size(t.type_.foot)
+                        .color(color(t.palette.text)),
+                ]
+                .spacing(6.0)
+                .align_y(Alignment::Center),
+            );
+        }
+        Some(model::Test::Failed(_)) => {
+            if let Some(line) = page.test_line() {
+                foot = foot.push(text(line).size(t.type_.foot).color(color(t.palette.accent)));
+            }
+        }
+        Some(model::Test::Running) => {
+            foot = foot.push(
+                text(model::TESTING)
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        }
+        None => {}
     }
     body = body.push(foot);
     if let Some(note) = &page.note {

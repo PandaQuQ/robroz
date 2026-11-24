@@ -32,6 +32,8 @@ pub struct DeliveryCard {
     pub failure: Option<String>,
     /// `needsSetup: "search"` (robroz#76): offer 「去设置」 on the card.
     pub needs_search_setup: bool,
+    /// `needsSetup: "model"` (robroz#102): offer 「去设置」 on the card.
+    pub needs_model_setup: bool,
 }
 
 /// Status line while the task waits on an approval card (`waitingFor:
@@ -341,6 +343,7 @@ fn to_row(event: &Event) -> (Key, Row) {
                 badge: briefing.then(robroz_card::briefing_badge),
                 failure: failure.clone(),
                 needs_search_setup: needs_setup.as_deref() == Some("search"),
+                needs_model_setup: needs_setup.as_deref() == Some("model"),
             };
             (Key::Event(id.clone()), Row::Delivery(card))
         }
@@ -784,7 +787,7 @@ mod tests {
             "去设置 when needsSetup is set, even without failure"
         );
 
-        let mut text_only = ev;
+        let mut text_only = ev.clone();
         if let Event::Delivery {
             failure,
             needs_setup,
@@ -805,6 +808,31 @@ mod tests {
                 }))
             ),
             "no 去设置 without needsSetup"
+        );
+
+        let mut model_setup = ev.clone();
+        if let Event::Delivery {
+            failure,
+            needs_setup,
+            ..
+        } = &mut model_setup
+        {
+            *failure = None;
+            *needs_setup = Some("model".into());
+        }
+        let mut feed = Feed::default();
+        feed.apply(&model_setup);
+        assert!(
+            matches!(
+                feed.rows().next(),
+                Some(Row::Delivery(DeliveryCard {
+                    needs_model_setup: true,
+                    needs_search_setup: false,
+                    failure: None,
+                    ..
+                }))
+            ),
+            "去设置 when needsSetup is model"
         );
 
         let old_status: Event = serde_json::from_value(serde_json::json!({
