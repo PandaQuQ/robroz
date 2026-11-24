@@ -3492,6 +3492,32 @@ fn field_input_style(t: Skin) -> impl Fn(&IcedTheme, text_input::Status) -> text
     }
 }
 
+/// Settings-page rule input: white fill even when disabled; text and
+/// placeholder drop to 40% opacity. The 「添加」 button keeps its usual
+/// disabled look.
+fn review_rule_input_style(
+    t: Skin,
+) -> impl Fn(&IcedTheme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let disabled = matches!(status, text_input::Status::Disabled);
+        let border = match status {
+            text_input::Status::Focused { .. } => t.palette.focus,
+            text_input::Status::Hovered => t.palette.text,
+            text_input::Status::Active | text_input::Status::Disabled => t.palette.border,
+        };
+        let alpha = if disabled { 0.4 } else { 1.0 };
+        let sel = t.palette.selection;
+        text_input::Style {
+            background: field_fill(theme).into(),
+            border: field_border(&t, border),
+            icon: faded(t.palette.text, alpha),
+            placeholder: faded(t.palette.text3, alpha),
+            value: faded(t.palette.text, alpha),
+            selection: faded(sel.rgb, sel.alpha),
+        }
+    }
+}
+
 /// The 模型 page: preset, address, model name, masked key, one test after each save.
 pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     let m = t.metrics;
@@ -3778,7 +3804,8 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
     let mut body_col = column![].spacing(12);
     let mut input = text_input(review_rules::PLACEHOLDER, &page.draft)
         .size(t.type_.body)
-        .padding(Padding::from([8.0, 10.0]));
+        .padding(Padding::from([8.0, 10.0]))
+        .style(review_rule_input_style(*t));
     if !locked {
         input = input
             .on_input(|text| Action::ReviewDraft { text })
@@ -3799,7 +3826,15 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
         .align_y(Alignment::Center),
     );
     if let Some(note) = &page.note {
-        body_col = body_col.push(inline_note(t, note));
+        if note == review_rules::ALREADY_ANSWERED {
+            body_col = body_col.push(
+                text(note.as_str())
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        } else {
+            body_col = body_col.push(inline_note(t, note));
+        }
     }
     let add_pending = page.pending.as_ref().filter(|p| p.is_add());
     if let Some(pending) = add_pending {

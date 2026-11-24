@@ -12,13 +12,19 @@ pub const ADD: &str = "添加";
 pub const DELETE: &str = "删除";
 /// Empty state, wording from 最优雅UI姐.
 pub const EMPTY: &str = "还没有放行规则。有风险的操作都会先问你。";
-/// Validation when the draft is longer than [`REVIEW_RULE_MAX`].
-/// Proposed copy; needs 最优雅UI姐 to confirm.
-pub const TOO_LONG: &str = "最多 200 字";
-/// Shown after approve/deny returns 409 (already answered elsewhere).
-pub const ALREADY_ANSWERED: &str = "别处已回答";
 /// Host limit on rule text.
 pub use robroz_contract::REVIEW_RULE_MAX;
+
+/// Red validation under the input when the draft is longer than
+/// [`REVIEW_RULE_MAX`]. `over` is how many characters to delete.
+/// Wording from 最优雅UI姐.
+pub fn too_long_note(over: usize) -> String {
+    format!("最多 {REVIEW_RULE_MAX} 字，还要删掉 {over} 字")
+}
+
+/// Shown after approve/deny returns 409 on this page, in grey.
+/// Wording from 最优雅UI姐.
+pub const ALREADY_ANSWERED: &str = "这张卡已经处理过了";
 /// Placeholder, wording from 最优雅UI姐.
 pub const PLACEHOLDER: &str = "用一句话写，比如：允许合并 CI 全绿的 PR";
 pub const NEED_TEXT: &str = "请填写规则";
@@ -158,10 +164,12 @@ impl Page {
 
     pub fn set_draft(&mut self, text: String) {
         self.draft = text;
-        if matches!(
-            self.note.as_deref(),
-            Some(NEED_TEXT | TOO_LONG | ALREADY_ANSWERED)
-        ) {
+        let n = self.draft.trim().chars().count();
+        if n > REVIEW_RULE_MAX {
+            self.note = Some(too_long_note(n - REVIEW_RULE_MAX));
+        } else if matches!(self.note.as_deref(), Some(NEED_TEXT | ALREADY_ANSWERED))
+            || self.note.as_deref().is_some_and(|n| n.starts_with("最多 "))
+        {
             self.note = None;
         }
     }
@@ -178,8 +186,9 @@ impl Page {
             self.note = Some(NEED_TEXT.into());
             return None;
         }
-        if text.chars().count() > REVIEW_RULE_MAX {
-            self.note = Some(TOO_LONG.into());
+        let n = text.chars().count();
+        if n > REVIEW_RULE_MAX {
+            self.note = Some(too_long_note(n - REVIEW_RULE_MAX));
             return None;
         }
         self.note = None;
@@ -337,9 +346,13 @@ mod tests {
         let mut page = Page::default();
         page.opened(Vec::new());
         page.set_draft("字".repeat(REVIEW_RULE_MAX + 1));
+        assert_eq!(page.note.as_deref(), Some(too_long_note(1).as_str()));
         assert_eq!(page.to_add(), None);
-        assert_eq!(page.note.as_deref(), Some(TOO_LONG));
+        assert_eq!(page.note.as_deref(), Some(too_long_note(1).as_str()));
+        page.set_draft("字".repeat(REVIEW_RULE_MAX + 5));
+        assert_eq!(page.note.as_deref(), Some(too_long_note(5).as_str()));
         page.set_draft("字".repeat(REVIEW_RULE_MAX));
+        assert_eq!(page.note, None);
         assert_eq!(
             page.to_add().as_deref(),
             Some("字".repeat(REVIEW_RULE_MAX).as_str())
@@ -427,8 +440,8 @@ mod tests {
         assert_eq!(ADD_HINT, "确认后加入放行规则");
         assert_eq!(DELETE_HINT, "确认后删除这条规则");
         assert_eq!(PLACEHOLDER, "用一句话写，比如：允许合并 CI 全绿的 PR");
-        assert_eq!(TOO_LONG, "最多 200 字");
+        assert_eq!(too_long_note(3), "最多 200 字，还要删掉 3 字");
         assert_eq!(REVIEW_RULE_MAX, 200);
-        assert_eq!(ALREADY_ANSWERED, "别处已回答");
+        assert_eq!(ALREADY_ANSWERED, "这张卡已经处理过了");
     }
 }

@@ -781,8 +781,11 @@ impl CardApi for HttpApi {
     }
 
     fn propose_review_rule(&self, text: &str) -> Result<String, ApiError> {
-        if text.chars().count() > review_rules::REVIEW_RULE_MAX {
-            return Err(ApiError::BadRequest(review_rules::TOO_LONG.into()));
+        let n = text.chars().count();
+        if n > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::too_long_note(
+                n - review_rules::REVIEW_RULE_MAX,
+            )));
         }
         let payload = serde_json::to_string(&CreateReviewRule {
             text: text.to_string(),
@@ -1379,8 +1382,11 @@ impl CardApi for FakeApi {
         if text.is_empty() {
             return Err(ApiError::BadRequest(review_rules::NEED_TEXT.into()));
         }
-        if text.chars().count() > review_rules::REVIEW_RULE_MAX {
-            return Err(ApiError::BadRequest(review_rules::TOO_LONG.into()));
+        let n = text.chars().count();
+        if n > review_rules::REVIEW_RULE_MAX {
+            return Err(ApiError::BadRequest(review_rules::too_long_note(
+                n - review_rules::REVIEW_RULE_MAX,
+            )));
         }
         let id = format!("apr-add-{}", uuid_ish());
         self.pending_review
@@ -1815,7 +1821,7 @@ mod tests {
 
         assert!(matches!(
             api.propose_review_rule(&"字".repeat(review_rules::REVIEW_RULE_MAX + 1)),
-            Err(ApiError::BadRequest(msg)) if msg == review_rules::TOO_LONG
+            Err(ApiError::BadRequest(msg)) if msg == review_rules::too_long_note(1)
         ));
     }
 
