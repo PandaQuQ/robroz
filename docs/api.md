@@ -323,7 +323,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` | 每个任务恰好一张，`id` 等于 `taskId`。 |
 | `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` | 任务写出结果时一张。`summary` 通常是「已写入结果」；MCP 工具审批被拒绝时是「未执行」。`path` 是群目录里的相对路径 `tasks/{taskId}/result.txt`。`briefing` 为 true 表示例行任务的结果（简报）。 |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | 选项卡。`options` 是 `[{"id","label","primary"}]`。`choice` 未回答时 `null`，回答后是选中的 `id` 数组。 |
-| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。 |
+| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` | 审批卡。`action` 是 `delete` / `send` / `spend` / `call`；客户端遇到不认识的值会解析成通用卡，不会整条失败。`decision` 是 `approved` / `denied` 或 `null`。宿主机为任务发的卡带 `taskId`。MCP 写工具的卡带 `mcpServer`、`mcpTool`，没有这两个键时是其它审批卡。`reason` 是被拦或已结算的原因，过期时固定为契约常量 `APPROVAL_EXPIRED_REASON`（「审批已过期」）；`expiresAt` 是过期时间（RFC 3339，格式同 `createdAt`）。两者都是可选字段，没有时省略，旧 JSON 不变。本版本宿主机还不填写这两个字段。 |
 | `confirm` | `id` `botId` `botName` `subject` `taskId` `decision` `createdAt` `answeredAt` `answeredBy` | 记忆：`memoryId` `kind` `text` `scope`；技能：`slug` `title` `instruction` `scope` | 确认卡，`subject` 是 `memory` 或 `skill`。显示的内容是这条记忆 / 技能**现在**的样子。 |
 
 ### 任务状态和标签
@@ -488,13 +488,13 @@ bro 在删除、发送或花钱之前问人。`host/src/approvals.rs:create_appr
 | 请求字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `botId` | string | 是 | 必须是群成员。 |
-| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 别的值 axum 返回 422 纯文本。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
+| `action` | `"delete"` \| `"send"` \| `"spend"` | 是 | 不认识的值返回 400「不支持这个动作」。`call` 只能由宿主机为 MCP 工具发出，用这个接口传会 400「这个动作只能由宿主机发出」。 |
 | `summary` | string | 是 | 去掉首尾空白后非空，一行，最多 200 字。 |
 | `path` | string | 否 | 只用来展示，去掉空白后为空当没填。 |
 
 - 201 `approval` 事件（不带 `taskId`）。
 - 404「群不存在」；400「这个 Bot 不在群里」。
-- 400「请填写要做什么」/「说明只能一行，最多 200 字」。
+- 400「请填写要做什么」/「说明只能一行，最多 200 字」/「不支持这个动作」。
 
 ```sh
 curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/json' \

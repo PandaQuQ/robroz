@@ -42,6 +42,10 @@ fn action_text(action: ApprovalAction) -> &'static str {
         ApprovalAction::Send => "send",
         ApprovalAction::Spend => "spend",
         ApprovalAction::Call => "call",
+        ApprovalAction::Unknown => {
+            debug_assert!(false, "host must never emit ApprovalAction::Unknown");
+            "unknown"
+        }
     }
 }
 
@@ -97,6 +101,8 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         task_id: row.get(10)?,
         mcp_server: row.get(11)?,
         mcp_tool: row.get(12)?,
+        reason: None,
+        expires_at: None,
     })
 }
 
@@ -168,6 +174,12 @@ pub(crate) async fn create_approval(
             return Ok(Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "这个 Bot 不在群里",
+            )));
+        }
+        if matches!(body.action, ApprovalAction::Unknown) {
+            return Ok(Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "不支持这个动作",
             )));
         }
         if matches!(body.action, ApprovalAction::Call) {

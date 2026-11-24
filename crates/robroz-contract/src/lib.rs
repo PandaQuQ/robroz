@@ -285,6 +285,10 @@ pub enum ApprovalAction {
     Spend,
     /// A model asked to call an MCP tool that is not read-only.
     Call,
+    /// An action value this client does not recognise. The client shows a
+    /// generic approval card. The host must never emit this variant.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The person's answer on an approval card.
@@ -310,6 +314,11 @@ pub struct CreateApproval {
 
 /// Approval summaries are one line on the card.
 pub const APPROVAL_SUMMARY_MAX: usize = 200;
+
+/// `reason` on an expired approval card. The host writes this exact string;
+/// the client compares `reason == APPROVAL_EXPIRED_REASON` and must not
+/// hard-code the text.
+pub const APPROVAL_EXPIRED_REASON: &str = "审批已过期";
 
 /// Choice cards hold 2 to 4 options with distinct, non-empty values.
 pub const CHOICE_OPTIONS_MIN: usize = 2;
@@ -1094,6 +1103,16 @@ pub enum Event {
         mcp_server: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mcp_tool: Option<String>,
+        /// Why review blocked this action, or why the card settled (for
+        /// example [`APPROVAL_EXPIRED_REASON`]). Absent when there is none,
+        /// so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// When this approval card expires (RFC 3339, same style as
+        /// `createdAt`). Absent on cards that do not expire, so old JSON
+        /// is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1329,6 +1348,8 @@ mod tests {
                 task_id: None,
                 mcp_server: None,
                 mcp_tool: None,
+                reason: None,
+                expires_at: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1367,6 +1388,8 @@ mod tests {
                 task_id: Some("task-1".into()),
                 mcp_server: Some("notes".into()),
                 mcp_tool: Some("write_note".into()),
+                reason: None,
+                expires_at: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1385,6 +1408,58 @@ mod tests {
                 "mcpTool": "write_note",
             }),
         );
+    }
+
+    #[test]
+    fn approval_action_is_forward_compatible() {
+        for (value, action) in [
+            ("delete", ApprovalAction::Delete),
+            ("send", ApprovalAction::Send),
+            ("spend", ApprovalAction::Spend),
+            ("call", ApprovalAction::Call),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+            let back: ApprovalAction = serde_json::from_value(value.into()).unwrap();
+            assert_eq!(back, action, "{value}");
+        }
+
+        let unknown: ApprovalAction = serde_json::from_value("rule_add".into()).unwrap();
+        assert_eq!(unknown, ApprovalAction::Unknown);
+        let also: ApprovalAction = serde_json::from_value("something_else".into()).unwrap();
+        assert_eq!(also, ApprovalAction::Unknown);
+
+        let old = serde_json::json!({
+            "type": "approval", "id": "a1", "botId": "b", "botName": "B", "action": "send",
+            "summary": "发邮件", "path": null, "decision": null,
+            "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": null, "answeredBy": null
+        });
+        let event: Event = serde_json::from_value(old.clone()).unwrap();
+        assert!(
+            matches!(event, Event::Approval { reason: None, expires_at: None, .. }),
+            "old JSON without reason/expiresAt parses"
+        );
+        assert_eq!(serde_json::to_value(&event).unwrap(), old, "omitted fields stay absent");
+        // Field order is the Event struct order, with no reason/expiresAt keys.
+        let expected = r#"{"type":"approval","id":"a1","botId":"b","botName":"B","action":"send","summary":"发邮件","path":null,"decision":null,"createdAt":"2026-11-20T08:30:00.000Z","answeredAt":null,"answeredBy":null}"#;
+        assert_eq!(serde_json::to_string(&event).unwrap(), expected, "JSON without the new fields is unchanged");
+
+        let with_fields: Event = serde_json::from_value(serde_json::json!({
+            "type": "approval", "id": "a1", "botId": "b", "botName": "B", "action": "send",
+            "summary": "发邮件", "path": null, "decision": "denied",
+            "createdAt": "2026-11-20T08:30:00.000Z", "answeredAt": "2026-11-21T08:30:00.000Z",
+            "answeredBy": null, "reason": APPROVAL_EXPIRED_REASON,
+            "expiresAt": "2026-11-21T08:30:00.000Z"
+        }))
+        .unwrap();
+        assert!(matches!(
+            with_fields,
+            Event::Approval {
+                reason: Some(ref r),
+                expires_at: Some(_),
+                ..
+            } if r == APPROVAL_EXPIRED_REASON
+        ));
+        assert_eq!(APPROVAL_EXPIRED_REASON, "审批已过期");
     }
 
     #[test]
