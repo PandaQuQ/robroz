@@ -18,6 +18,7 @@ use crate::cards::confirm::{self, ConfirmCard};
 use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
+use crate::i18n::{host_text, Key};
 
 use crate::cards::model;
 use crate::cards::review_rules;
@@ -446,6 +447,9 @@ fn header<'a>(
             .font(bold())
             .color(color(t.palette.text))
     };
+    // The settings page's own cards carry the host's 「设置」 as bot name.
+    let bot = host_text(bot);
+    let bot = bot.as_ref();
     // Narrow screens: names over 8 characters are cut; tapping toggles the
     // full name. Wide screens always show it whole.
     let bot_name: Element<'a, Action> = match status::short_bot_name(bot).filter(|_| t.narrow) {
@@ -506,10 +510,22 @@ fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element
         card.mcp_server.as_deref(),
         card.mcp_tool.as_deref(),
     ) else {
-        return body(t, &card.summary);
+        return text(host_text(&card.summary).into_owned())
+            .size(t.type_.body)
+            .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
+            .color(color(t.palette.text))
+            .into();
+    };
+    // The host writes `MCP_CALL_SUMMARY_PREFIX` server.tool
+    // `MCP_CALL_ARGS_SEPARATOR` args; only the words around the tool name
+    // are translated.
+    let prefix: &str = if parts.prefix == robroz_contract::host_text::MCP_CALL_SUMMARY_PREFIX {
+        Key::ViewCallPrefix.as_str()
+    } else {
+        parts.prefix
     };
     let mut line = row![
-        text(parts.prefix)
+        text(prefix)
             .size(t.type_.body)
             .line_height(LineHeight::Absolute(Pixels(t.type_.body_line)))
             .color(color(t.palette.text)),
@@ -521,8 +537,12 @@ fn approval_summary<'a>(t: &Skin, card: &'a ApprovalCard, inner: f32) -> Element
     .spacing(0)
     .align_y(Alignment::Center);
     if let Some(args) = parts.args {
-        let cols = call_args_cols(t, inner, parts.prefix, parts.tool);
-        let clipped = status::clamp_lines(args, cols, 1);
+        let cols = call_args_cols(t, inner, prefix, parts.tool);
+        let args = match args.strip_prefix(robroz_contract::host_text::MCP_CALL_ARGS_SEPARATOR) {
+            Some(rest) => format!("{}{rest}", Key::ViewCallArgsSep),
+            None => args.to_string(),
+        };
+        let clipped = status::clamp_lines(&args, cols, 1);
         line = line.push(
             text(clipped)
                 .size(t.type_.body)
@@ -1088,7 +1108,7 @@ pub fn approval<'a>(
         // Stuck: one line and one secondary button. No approve/deny, no
         // code input, no terminal.
         col = col
-            .push(body(t, status::NEEDS_OWNER_LINE))
+            .push(body(t, status::NEEDS_OWNER_LINE.as_str()))
             .push(gap(t.metrics.body_gap))
             .push(btn(
                 t,
@@ -1144,7 +1164,7 @@ pub fn approval<'a>(
                 vec![
                     btn(
                         t,
-                        "批准".into(),
+                        Key::ViewApprove.into(),
                         Look::Primary,
                         Leading::None,
                         enabled.then(|| Action::Decide {
@@ -1154,7 +1174,7 @@ pub fn approval<'a>(
                     ),
                     btn(
                         t,
-                        "拒绝".into(),
+                        Key::ViewDeny.into(),
                         if enabled {
                             Look::Secondary
                         } else {
@@ -1228,7 +1248,7 @@ pub fn draft<'a>(
         gap(t.metrics.head_gap),
         row![
             tag(t, status::channel_label(card.channel), t.palette.text2),
-            text("发给")
+            text(Key::ViewDraftTo)
                 .size(t.type_.foot)
                 .color(color(t.palette.text2)),
             mono(t, &card.to),
@@ -1246,14 +1266,14 @@ pub fn draft<'a>(
             vec![
                 btn(
                     t,
-                    "发送".into(),
+                    Key::ViewDraftSend.into(),
                     Look::Primary,
                     Leading::None,
                     enabled.then(|| Action::SendDraft { card: id.clone() }),
                 ),
                 btn(
                     t,
-                    "修改".into(),
+                    Key::ViewDraftEdit.into(),
                     Look::Secondary,
                     Leading::None,
                     Some(Action::EditDraftInDm { card: id.clone() }),
@@ -1369,7 +1389,7 @@ pub fn routines_panel<'a>(t: &Skin, routines: &'a Routines, now: i64) -> Element
                 Some(s) => {
                     Element::from(text(s).size(t.type_.row_time).color(color(t.palette.text2)))
                 }
-                None => tag(t, routines::PAUSED_TAG, t.palette.text3),
+                None => tag(t, routines::PAUSED_TAG.as_str(), t.palette.text3),
             });
             let toggle = hit_area(
                 t,
@@ -1482,7 +1502,7 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
     }
 
     if let Some(new) = &book.adding {
-        let mut input = text_input(memories::NEW_PLACEHOLDER, &new.text)
+        let mut input = text_input(memories::NEW_PLACEHOLDER.as_str(), &new.text)
             .size(t.type_.body)
             .padding(Padding::from([8.0, 10.0]));
         if !busy {
@@ -1595,7 +1615,7 @@ pub fn memories_panel<'a>(t: &Skin, book: &'a Book, now: i64) -> Element<'a, Act
             .spacing(m.row_time_gap)
             .align_y(Alignment::Center);
         if pending {
-            top = top.push(tag(t, memories::PENDING_TAG, t.palette.accent));
+            top = top.push(tag(t, memories::PENDING_TAG.as_str(), t.palette.accent));
         }
         top = top.push(space::horizontal());
         if book.just_saved.as_deref() == Some(mem.id.as_str()) {
@@ -1858,15 +1878,16 @@ pub fn skills_panel<'a>(
     }
 
     if let Some(new) = &book.adding {
-        let mut slug = text_input(skills::SLUG_PLACEHOLDER, &new.slug)
+        let mut slug = text_input(skills::SLUG_PLACEHOLDER.as_str(), &new.slug)
             .size(t.type_.body)
             .padding(Padding::from([8.0, 10.0]));
-        let mut title = text_input(skills::TITLE_PLACEHOLDER, &new.title)
+        let mut title = text_input(skills::TITLE_PLACEHOLDER.as_str(), &new.title)
             .size(t.type_.body)
             .padding(Padding::from([8.0, 10.0]));
-        let mut instruction = text_input(skills::INSTRUCTION_PLACEHOLDER, &new.instruction)
-            .size(t.type_.body)
-            .padding(Padding::from([8.0, 10.0]));
+        let mut instruction =
+            text_input(skills::INSTRUCTION_PLACEHOLDER.as_str(), &new.instruction)
+                .size(t.type_.body)
+                .padding(Padding::from([8.0, 10.0]));
         if !busy {
             slug = slug.on_input(|text| Action::SkillAddSlug { text });
             title = title.on_input(|text| Action::SkillAddTitle { text });
@@ -1970,7 +1991,7 @@ pub fn skills_panel<'a>(
         .spacing(m.row_time_gap)
         .align_y(Alignment::Center);
         if pending {
-            top = top.push(tag(t, skills::PENDING_TAG, t.palette.accent));
+            top = top.push(tag(t, skills::PENDING_TAG.as_str(), t.palette.accent));
         }
         top = top.push(space::horizontal());
         if book.just_saved.as_deref() == Some(skill.slug.as_str()) {
@@ -1989,11 +2010,11 @@ pub fn skills_panel<'a>(
         let asking = book.confirm_delete.as_deref() == Some(skill.slug.as_str());
         let body: Element<'a, Action> = match editing {
             Some(edit) => {
-                let mut title = text_input(skills::TITLE_PLACEHOLDER, &edit.title)
+                let mut title = text_input(skills::TITLE_PLACEHOLDER.as_str(), &edit.title)
                     .size(t.type_.body)
                     .padding(Padding::from([6.0, 8.0]));
                 let mut instruction =
-                    text_input(skills::INSTRUCTION_PLACEHOLDER, &edit.instruction)
+                    text_input(skills::INSTRUCTION_PLACEHOLDER.as_str(), &edit.instruction)
                         .size(t.type_.body)
                         .padding(Padding::from([6.0, 8.0]));
                 if !busy {
@@ -2377,7 +2398,7 @@ pub fn mcp_panel<'a>(t: &Skin, book: &'a McpBook, _now: i64, _width: f32) -> Ele
 fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> {
     let m = t.metrics;
     let form = book.form.as_ref().expect("form open");
-    let mut name = text_input(mcp::NAME_PLACEHOLDER, &form.name)
+    let mut name = text_input(mcp::NAME_PLACEHOLDER.as_str(), &form.name)
         .size(t.type_.body)
         .padding(Padding::from([8.0, 10.0]));
     if !busy {
@@ -2400,13 +2421,14 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
             Some(Action::McpFormTransport { http }),
         ));
     }
-    let mut fields = column![labelled(t, mcp::LABEL_NAME, name), transports].spacing(m.head_gap);
+    let mut fields =
+        column![labelled(t, mcp::LABEL_NAME.as_str(), name), transports].spacing(m.head_gap);
     match form.transport {
         mcp::Transport::Stdio => {
-            let mut command = text_input(mcp::COMMAND_PLACEHOLDER, &form.command)
+            let mut command = text_input(mcp::COMMAND_PLACEHOLDER.as_str(), &form.command)
                 .size(t.type_.body)
                 .padding(Padding::from([8.0, 10.0]));
-            let mut args = text_input(mcp::ARGS_PLACEHOLDER, &form.args)
+            let mut args = text_input(mcp::ARGS_PLACEHOLDER.as_str(), &form.args)
                 .size(t.type_.body)
                 .padding(Padding::from([8.0, 10.0]));
             if !busy {
@@ -2414,17 +2436,17 @@ fn mcp_form<'a>(t: &Skin, book: &'a McpBook, busy: bool) -> Element<'a, Action> 
                 args = args.on_input(|text| Action::McpFormArgs { text });
             }
             fields = fields
-                .push(labelled(t, mcp::LABEL_COMMAND, command))
-                .push(labelled(t, mcp::LABEL_ARGS, args));
+                .push(labelled(t, mcp::LABEL_COMMAND.as_str(), command))
+                .push(labelled(t, mcp::LABEL_ARGS.as_str(), args));
         }
         mcp::Transport::Http => {
-            let mut url = text_input(mcp::URL_PLACEHOLDER, &form.url)
+            let mut url = text_input(mcp::URL_PLACEHOLDER.as_str(), &form.url)
                 .size(t.type_.body)
                 .padding(Padding::from([8.0, 10.0]));
             if !busy {
                 url = url.on_input(|text| Action::McpFormUrl { text });
             }
-            fields = fields.push(labelled(t, mcp::LABEL_URL, url));
+            fields = fields.push(labelled(t, mcp::LABEL_URL.as_str(), url));
         }
     }
     for (index, secret) in form.secrets.iter().enumerate() {
@@ -2533,7 +2555,7 @@ fn mcp_secret_row<'a>(
     secret: &'a mcp::SecretDraft,
     busy: bool,
 ) -> Element<'a, Action> {
-    let mut name = text_input(mcp::SECRET_NAME_PLACEHOLDER, &secret.name)
+    let mut name = text_input(mcp::SECRET_NAME_PLACEHOLDER.as_str(), &secret.name)
         .size(t.type_.body)
         .padding(Padding::from([8.0, 10.0]));
     if !busy {
@@ -2583,7 +2605,7 @@ fn mcp_secret_row<'a>(
     let key_row = masked_key_row(
         t,
         &secret.key,
-        mcp::SECRET_KEY_PLACEHOLDER,
+        mcp::SECRET_KEY_PLACEHOLDER.as_str(),
         busy,
         move |text| Action::McpSecretKey { index, text },
         Action::McpSecretClear { index },
@@ -2591,9 +2613,9 @@ fn mcp_secret_row<'a>(
         None,
     );
     column![
-        labelled(t, mcp::LABEL_SECRET_NAME, name),
+        labelled(t, mcp::LABEL_SECRET_NAME.as_str(), name),
         place,
-        labelled(t, mcp::LABEL_SECRET_KEY, key_row),
+        labelled(t, mcp::LABEL_SECRET_KEY.as_str(), key_row),
     ]
     .spacing(t.metrics.head_gap)
     .into()
@@ -2662,7 +2684,7 @@ fn mcp_row<'a>(
     .spacing(t.controls.button_gap)
     .align_y(Alignment::Center);
     if unapproved {
-        name = name.push(tag(t, mcp::COMMAND_UNAPPROVED, t.palette.accent));
+        name = name.push(tag(t, mcp::COMMAND_UNAPPROVED.as_str(), t.palette.accent));
     }
     let mut title = column![name].spacing(2.0);
     title = title.push(
@@ -2768,11 +2790,11 @@ fn mcp_command_prompt<'a>(
 ) -> Element<'a, Action> {
     let prompt = book.command_prompt_for(&server.id).expect("prompt");
     let command_block = column![
-        field_label(t, mcp::LABEL_PROMPT_COMMAND),
+        field_label(t, mcp::LABEL_PROMPT_COMMAND.as_str()),
         mono_wrap(t, prompt.command.as_str()),
     ]
     .spacing(2.0);
-    let mut args_block = column![field_label(t, mcp::LABEL_PROMPT_ARGS)].spacing(2.0);
+    let mut args_block = column![field_label(t, mcp::LABEL_PROMPT_ARGS.as_str())].spacing(2.0);
     for arg in &prompt.args {
         args_block = args_block.push(mono_wrap(t, arg.as_str()));
     }
@@ -2824,7 +2846,7 @@ fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, server: &'a McpServer) -> Element<
             .size(t.type_.foot)
             .color(color(t.palette.text2))
             .into(),
-        Some(Ok(tools)) if tools.is_empty() => text("这台服务器还没有工具")
+        Some(Ok(tools)) if tools.is_empty() => text(Key::ViewMcpNoTools)
             .size(t.type_.foot)
             .color(color(t.palette.text3))
             .into(),
@@ -2837,7 +2859,7 @@ fn mcp_tools<'a>(t: &Skin, book: &'a McpBook, server: &'a McpServer) -> Element<
                 .spacing(t.controls.button_gap)
                 .align_y(Alignment::Center);
                 if tool.needs_approval {
-                    row = row.push(tag(t, mcp::NEEDS_APPROVAL, t.palette.accent));
+                    row = row.push(tag(t, mcp::NEEDS_APPROVAL.as_str(), t.palette.accent));
                 }
                 let mut item = column![row];
                 if let Some(desc) = &tool.description {
@@ -3185,7 +3207,7 @@ pub fn chat_header<'a>(
     if back {
         bar = bar.push(
             button(
-                text("‹ 聊天")
+                text(Key::ViewBackToChats)
                     .size(t.type_.row_name)
                     .height(Fill)
                     .align_y(Alignment::Center),
@@ -3209,7 +3231,7 @@ pub fn chat_header<'a>(
             saving,
             ..
         }) => {
-            let mut input = text_input(conversations::RENAME_PLACEHOLDER, draft)
+            let mut input = text_input(conversations::RENAME_PLACEHOLDER.as_str(), draft)
                 .id(RENAME_INPUT)
                 .size(t.type_.row_name)
                 .padding(Padding::from([6.0, 8.0]));
@@ -3223,14 +3245,14 @@ pub fn chat_header<'a>(
                 .push(container(input).width(Fill))
                 .push(btn(
                     t,
-                    "保存".into(),
+                    Key::ViewRenameSave.into(),
                     Look::Primary,
                     Leading::None,
                     (!saving && changed).then_some(Action::RenameSave),
                 ))
                 .push(btn(
                     t,
-                    "取消".into(),
+                    Key::ViewRenameCancel.into(),
                     Look::Secondary,
                     Leading::None,
                     (!saving).then_some(Action::RenameCancel),
@@ -3257,7 +3279,7 @@ pub fn chat_header<'a>(
     }
     let editing = matches!(rename, Some(HeaderRename { draft: Some(_), .. }));
     if dm && !editing {
-        bar = bar.push(tag(t, "私聊", t.palette.text2));
+        bar = bar.push(tag(t, Key::ViewDmTag.as_str(), t.palette.text2));
     }
     let mut col = column![container(bar)
         .width(Fill)
@@ -3380,7 +3402,7 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
             body = body.push(masked_key_row(
                 t,
                 &page.key,
-                search::KEY_PLACEHOLDER,
+                search::KEY_PLACEHOLDER.as_str(),
                 busy,
                 |text| Action::SearchKey { text },
                 Action::SearchClearKey,
@@ -3389,7 +3411,7 @@ pub fn search_panel<'a>(t: &Skin, page: &'a search::Page) -> Element<'a, Action>
             ));
         }
         Some(Provider::Searxng) => {
-            let mut input = text_input(search::URL_PLACEHOLDER, &page.url)
+            let mut input = text_input(search::URL_PLACEHOLDER.as_str(), &page.url)
                 .size(t.type_.body)
                 .padding(field_padding())
                 .style(field_input_style(*t));
@@ -3554,14 +3576,14 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     let preset = pick_list(model::Preset::ALL, page.preset, |preset| {
         Action::ModelPick { preset }
     })
-    .placeholder(model::LABEL_PRESET)
+    .placeholder(model::PRESET_PLACEHOLDER)
     .text_size(t.type_.body)
     .padding(field_padding())
     .width(Fill)
     .handle(pick_list::Handle::Arrow { size: None })
     .style(field_pick_style(*t))
     .menu_style(field_pick_menu_style(*t));
-    body = body.push(labelled(t, model::LABEL_PRESET, preset));
+    body = body.push(labelled(t, model::LABEL_PRESET.as_str(), preset));
 
     let mut url = text_input(model::URL_PLACEHOLDER, &page.url)
         .size(t.type_.body)
@@ -3570,7 +3592,7 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     if !busy {
         url = url.on_input(|text| Action::ModelUrl { text });
     }
-    body = body.push(labelled(t, model::LABEL_URL, url));
+    body = body.push(labelled(t, model::LABEL_URL.as_str(), url));
 
     let mut name = text_input(page.model_placeholder(), &page.model)
         .size(t.type_.body)
@@ -3581,7 +3603,7 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
             .on_input(|text| Action::ModelName { text })
             .on_submit(Action::ModelSave);
     }
-    let mut name_block = column![labelled(t, model::LABEL_MODEL, name)];
+    let mut name_block = column![labelled(t, model::LABEL_MODEL.as_str(), name)];
     if page.preset == Some(model::Preset::OpenRouter) {
         name_block = name_block.push(
             text(model::OPENROUTER_HINT)
@@ -3594,7 +3616,7 @@ pub fn model_panel<'a>(t: &Skin, page: &'a model::Page) -> Element<'a, Action> {
     if page.shows_key() {
         body = body.push(labelled(
             t,
-            model::LABEL_KEY,
+            model::LABEL_KEY.as_str(),
             masked_key_row(
                 t,
                 &page.key,
@@ -3802,7 +3824,7 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
     ];
     let pad = Padding::from([m.row_pad_h * 0.75, m.row_pad_h]);
     let mut body_col = column![].spacing(12);
-    let mut input = text_input(review_rules::PLACEHOLDER, &page.draft)
+    let mut input = text_input(review_rules::PLACEHOLDER.as_str(), &page.draft)
         .size(t.type_.body)
         .padding(Padding::from([8.0, 10.0]))
         .style(review_rule_input_style(*t));
@@ -3826,7 +3848,7 @@ pub fn review_rules_panel<'a>(t: &Skin, page: &'a review_rules::Page) -> Element
         .align_y(Alignment::Center),
     );
     if let Some(note) = &page.note {
-        if note == review_rules::ALREADY_ANSWERED {
+        if *note == review_rules::ALREADY_ANSWERED {
             body_col = body_col.push(
                 text(note.as_str())
                     .size(t.type_.foot)

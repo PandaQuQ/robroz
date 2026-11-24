@@ -4,14 +4,15 @@
 //! The owner answers it here through the normal approvals endpoint.
 //! The list shows confirmed rules only.
 
-use chrono::{DateTime, TimeZone};
+use crate::i18n::Key;
+use chrono::{DateTime, Datelike, TimeZone};
 
 /// Sidebar and page title, directly under 「MCP」.
-pub const TITLE: &str = "放行规则";
-pub const ADD: &str = "添加";
-pub const DELETE: &str = "删除";
+pub const TITLE: Key = Key::ReviewRulesTitle;
+pub const ADD: Key = Key::ReviewRulesAdd;
+pub const DELETE: Key = Key::ReviewRulesDelete;
 /// Empty state, wording from 最优雅UI姐.
-pub const EMPTY: &str = "还没有放行规则。有风险的操作都会先问你。";
+pub const EMPTY: Key = Key::ReviewRulesEmpty;
 /// Host limit on rule text.
 pub use robroz_contract::REVIEW_RULE_MAX;
 
@@ -19,43 +20,50 @@ pub use robroz_contract::REVIEW_RULE_MAX;
 /// [`REVIEW_RULE_MAX`]. `over` is how many characters to delete.
 /// Wording from 最优雅UI姐.
 pub fn too_long_note(over: usize) -> String {
-    format!("最多 {REVIEW_RULE_MAX} 字，还要删掉 {over} 字")
+    Key::ReviewRulesTooLong.fill(&[&REVIEW_RULE_MAX, &over])
+}
+
+/// Whether `note` is a [`too_long_note`] in the active locale.
+fn is_too_long_note(note: &str) -> bool {
+    let template = Key::ReviewRulesTooLong.as_str();
+    let head = template.split('{').next().unwrap_or(template);
+    !head.is_empty() && note.starts_with(head)
 }
 
 /// Shown after approve/deny returns 409 on this page, in grey.
 /// Wording from 最优雅UI姐.
-pub const ALREADY_ANSWERED: &str = "这张卡已经处理过了";
+pub const ALREADY_ANSWERED: Key = Key::ReviewRulesAlreadyAnswered;
 /// Placeholder, wording from 最优雅UI姐.
-pub const PLACEHOLDER: &str = "用一句话写，比如：允许合并 CI 全绿的 PR";
-pub const NEED_TEXT: &str = "请填写规则";
-pub const LOADING: &str = "读取中";
-pub const LOAD_FAILED: &str = "读不到";
+pub const PLACEHOLDER: Key = Key::ReviewRulesPlaceholder;
+pub const NEED_TEXT: Key = Key::ReviewRulesNeedText;
+pub const LOADING: Key = Key::ReviewRulesLoading;
+pub const LOAD_FAILED: Key = Key::ReviewRulesLoadFailed;
 
 /// Grey line on an add confirm card, wording from 最优雅UI姐.
-pub const ADD_HINT: &str = "确认后加入放行规则";
+pub const ADD_HINT: Key = Key::ReviewRulesAddHint;
 /// Grey line on a delete confirm card, wording from 最优雅UI姐.
-pub const DELETE_HINT: &str = "确认后删除这条规则";
+pub const DELETE_HINT: Key = Key::ReviewRulesDeleteHint;
 /// Primary button on an add card, wording from 最优雅UI姐.
-pub const ADD_ACTION: &str = "添加";
+pub const ADD_ACTION: Key = Key::ReviewRulesAddAction;
 /// Primary (red) button on a delete card, wording from the design.
-pub const DELETE_ACTION: &str = "删除规则";
+pub const DELETE_ACTION: Key = Key::ReviewRulesDeleteAction;
 /// Deny button on rule confirm cards, wording from 最优雅UI姐.
-pub const DROP: &str = "不用";
+pub const DROP: Key = Key::ReviewRulesDrop;
 
 /// Prefix on a blocked-action DM card's reason line, wording from 最优雅UI姐.
-pub const BLOCKED_REASON_PREFIX: &str = "被拦原因：";
+pub const BLOCKED_REASON_PREFIX: Key = Key::ReviewRulesBlockedReasonPrefix;
 
 /// Grey reason line for a blocked-action card. `reason` is the host value.
 pub fn blocked_reason_line(reason: &str) -> String {
-    format!("{BLOCKED_REASON_PREFIX}{reason}")
+    format!("{BLOCKED_REASON_PREFIX}{}", crate::i18n::host_text(reason))
 }
 
 /// Group-thread line under 「等你批准」, wording from the design.
-pub const SENT_TO_OWNER: &str = "已发到主人私聊";
+pub const SENT_TO_OWNER: Key = Key::ReviewRulesSentToOwner;
 /// Top-right status on an expired card, wording from the design.
-pub const EXPIRED: &str = "已过期";
+pub const EXPIRED: Key = Key::ReviewRulesExpired;
 /// Footnote text on an expired card, wording from the design.
-pub const EXPIRED_FOOT: &str = "没人批准，已过期";
+pub const EXPIRED_FOOT: Key = Key::ReviewRulesExpiredFoot;
 
 /// Host writes this exact string on an expired card. Compare with `==`,
 /// never hand-write the text at call sites.
@@ -85,7 +93,7 @@ where
     DateTime::parse_from_rfc3339(created_at)
         .map(|t| {
             let local = t.with_timezone(tz);
-            format!("添加于 {}", local.format("%-m月%-d日"))
+            Key::ReviewRulesAddedOn.fill(&[&crate::i18n::month_day(local.month(), local.day())])
         })
         .unwrap_or_default()
 }
@@ -158,7 +166,7 @@ impl Page {
         self.note = Some(if reason.is_empty() {
             LOAD_FAILED.to_string()
         } else {
-            format!("{LOAD_FAILED}：{reason}")
+            Key::ReviewRulesLoadFailedBecause.fill(&[&crate::i18n::host_text(reason)])
         });
     }
 
@@ -167,8 +175,10 @@ impl Page {
         let n = self.draft.trim().chars().count();
         if n > REVIEW_RULE_MAX {
             self.note = Some(too_long_note(n - REVIEW_RULE_MAX));
-        } else if matches!(self.note.as_deref(), Some(NEED_TEXT | ALREADY_ANSWERED))
-            || self.note.as_deref().is_some_and(|n| n.starts_with("最多 "))
+        } else if self
+            .note
+            .as_deref()
+            .is_some_and(|n| n == NEED_TEXT || n == ALREADY_ANSWERED || is_too_long_note(n))
         {
             self.note = None;
         }
@@ -225,7 +235,7 @@ impl Page {
     /// After 202, the confirm card loaded from `GET /api/approvals/{id}`.
     pub fn proposed_event(&mut self, event: &robroz_contract::Event) {
         let Some(card) = super::ApprovalCard::from_event(event) else {
-            self.propose_failed("审批卡不存在");
+            self.propose_failed(Key::ReviewRulesCardMissing.as_str());
             return;
         };
         self.busy = false;
@@ -315,6 +325,7 @@ mod tests {
 
     #[test]
     fn list_keeps_text_and_added_on() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut page = Page::default();
         page.opened(vec![rule(
             "r1",
@@ -331,7 +342,7 @@ mod tests {
         let mut page = Page::default();
         page.opened(Vec::new());
         assert_eq!(page.to_add(), None);
-        assert_eq!(page.note.as_deref(), Some(NEED_TEXT));
+        assert_eq!(page.note.as_deref(), Some(NEED_TEXT.as_str()));
         page.set_draft("   ".into());
         assert_eq!(page.to_add(), None);
         page.set_draft("允许发周报\n第二行".into());
@@ -407,7 +418,7 @@ mod tests {
         page.proposed("apr-1".into());
         page.answered_elsewhere();
         assert!(page.pending.is_none());
-        assert_eq!(page.note.as_deref(), Some(ALREADY_ANSWERED));
+        assert_eq!(page.note.as_deref(), Some(ALREADY_ANSWERED.as_str()));
         assert!(!page.locked());
     }
 
@@ -429,6 +440,7 @@ mod tests {
 
     #[test]
     fn blocked_reason_line_uses_the_settled_prefix() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(
             blocked_reason_line("这条操作会改生产数据"),
             "被拦原因：这条操作会改生产数据"
@@ -437,6 +449,7 @@ mod tests {
 
     #[test]
     fn confirm_hints_are_the_settled_copy() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(ADD_HINT, "确认后加入放行规则");
         assert_eq!(DELETE_HINT, "确认后删除这条规则");
         assert_eq!(PLACEHOLDER, "用一句话写，比如：允许合并 CI 全绿的 PR");

@@ -90,6 +90,8 @@ prompt 不走环境变量。宿主机把它写进 `ROBROZ_CONTROL/{taskId}/promp
 | `ROBROZ_GROUPS` | `client/src/source/http.rs:HttpSource::from_env` | 不设，群列表来自 `GET /api/groups` | 只显示这几个群，不再从宿主机同步群列表。逗号分隔，每项是 `id` 或 `id=名字`。 | `<groupId>=官网,<groupId2>` |
 | `ROBROZ_USER_NAME` | `client/src/main.rs:user_name` | 电脑的主机名，拿不到时是 `robroz` | 这台客户端的名字。答审批卡、选项卡时作为 `answeredBy` 发出，卡片回来时和它一样就显示「我」。只取第一行非空内容，最多 40 个字。两台设备不要用同一个名字。 | `书房电脑` |
 | `ROBROZ_THEME` | `client/src/main.rs:App::boot`（解析在 `crates/robroz-ui/src/theme.rs:Mode::from_env_value`） | 浅色 | `dark`（不分大小写）启动时用深色，其他值都是浅色。 | `dark` |
+| `ROBROZ_LANG` | `client/src/prefs.rs:initial_locale` | English, or the language last picked with the language setting on the Settings page | UI language for this run: `en` or `zh` (`zh-CN`, `en_GB.UTF-8` and similar also work). Wins over the saved choice and is never written back. Unknown values are ignored. | `zh` |
+| `ROBROZ_CONFIG_DIR` | `client/src/prefs.rs:config_dir` | `$XDG_CONFIG_HOME/robroz` or `~/.config/robroz` (Linux), `~/Library/Application Support/robroz` (macOS), `%APPDATA%\robroz` (Windows) | Folder for client preferences. The language setting on the Settings page saves `en` or `zh` in its `lang` file. Fake and gallery runs neither read nor write it. | `/tmp/robroz-client` |
 | `ROBROZ_SCALE` | `client/src/main.rs:App::boot` | `1.0` | 界面缩放倍数，小数。解析不了时用 `1.0`。 | `1.25` |
 | `ROBROZ_TOUCH` | `client/src/main.rs:App::boot` | 关 | 设为 `1` 时一开始就按触屏放大点击区域。不设也会在检测到触摸输入后自动切换。 | `1` |
 

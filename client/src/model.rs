@@ -7,6 +7,7 @@ use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::confirm::ConfirmCard;
 use robroz_ui::cards::{ApprovalCard, ApprovalExtras, Card, ChoiceCard};
+use robroz_ui::i18n::{host_text, Key as Text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusCard {
@@ -91,10 +92,58 @@ pub fn preview_wins(new: (&str, u8), cur: Option<(&str, u8)>) -> bool {
     }
 }
 
+/// The event behind each chat's list preview. The event is kept, not its
+/// text, so a language switch can redraw every preview at once.
+#[derive(Debug, Default)]
+pub struct Previews {
+    by_group: std::collections::HashMap<String, (String, u8, Event)>,
+}
+
+impl Previews {
+    /// Offer `event` for `group`'s preview; the preview text if it wins.
+    pub fn offer(&mut self, group: &str, event: &Event) -> Option<String> {
+        let at = change_time(event);
+        let rank = preview_rank(event);
+        let cur = self.by_group.get(group);
+        if !preview_wins((at, rank), cur.map(|(t, r, _)| (t.as_str(), *r))) {
+            return None;
+        }
+        self.by_group
+            .insert(group.to_string(), (at.to_string(), rank, event.clone()));
+        Some(preview(event))
+    }
+
+    /// Every chat's preview, drawn again in the active language.
+    pub fn redraw(&self) -> impl Iterator<Item = (&str, String)> + '_ {
+        self.by_group
+            .iter()
+            .map(|(g, (_, _, ev))| (g.as_str(), preview(ev)))
+    }
+}
+
 /// The grey line for a task the host says did not get done. A dead run reads
 /// 「没写出结果」, anything else 「没做成：原因」 (from `robroz-card`).
+///
+/// Cards keep this Chinese line as built; [`display`] translates it when
+/// drawn, so a language switch applies to cards already on screen.
 pub fn failure_line(failure: &str) -> String {
     robroz_card::failure_line(failure)
+}
+
+/// A status-card line (`status_line`, `progress`, a failure) in the active
+/// locale: [`AWAITING_APPROVAL`], `robroz-card` copy and known host strings
+/// are translated, anything else is shown as sent.
+pub fn display(s: &str) -> std::borrow::Cow<'_, str> {
+    if s == AWAITING_APPROVAL {
+        std::borrow::Cow::Borrowed(Text::ClientAwaitingApproval.as_str())
+    } else {
+        host_text(s)
+    }
+}
+
+/// 「名字：内容」 for the chat list preview.
+fn line(bot_name: &str, rest: &str) -> String {
+    Text::ClientPreviewLine.fill(&[&bot_name, &rest])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,13 +262,13 @@ pub fn preview(event: &Event) -> String {
             bot_name,
             failure: Some(failure),
             ..
-        } => format!("{bot_name}：{}", failure_line(failure)),
+        } => line(bot_name, &display(&failure_line(failure))),
         Event::Status {
             bot_name,
             state,
             waiting_for,
             ..
-        } if awaits_approval(*state, *waiting_for) => format!("{bot_name}：{AWAITING_APPROVAL}"),
+        } if awaits_approval(*state, *waiting_for) => line(bot_name, &display(AWAITING_APPROVAL)),
         // A live run with a progress line: say what the bro is doing, not 进行.
         Event::Status {
             bot_name,
@@ -238,43 +287,43 @@ pub fn preview(event: &Event) -> String {
         )
         .is_some() =>
         {
-            let line = progress_line(
+            let progress = progress_line(
                 *state,
                 *container_up,
                 failure.as_deref(),
                 *waiting_for,
                 progress,
             );
-            format!("{bot_name}：{}", line.unwrap_or_default())
+            line(bot_name, &host_text(&progress.unwrap_or_default()))
         }
         Event::Status {
             bot_name,
             state,
             container_up,
             ..
-        } => format!(
-            "{bot_name}：{}",
-            robroz_card::status_line(*state, *container_up)
+        } => line(
+            bot_name,
+            &display(robroz_card::status_line(*state, *container_up)),
         ),
         Event::Delivery {
             failure: Some(failure),
             ..
-        } => failure_line(failure),
+        } => display(&failure_line(failure)).into_owned(),
         Event::Delivery { summary, .. } => summary.clone(),
         Event::Choice {
             bot_name, prompt, ..
-        } => format!("{bot_name}：{prompt}"),
+        } => line(bot_name, prompt),
         Event::Approval {
             bot_name, summary, ..
-        } => format!("{bot_name}：{summary}"),
+        } => line(bot_name, &host_text(summary)),
         Event::Confirm {
             bot_name,
             text,
             title,
             ..
-        } => format!(
-            "{bot_name}：{}",
-            text.as_deref().or(title.as_deref()).unwrap_or_default()
+        } => line(
+            bot_name,
+            text.as_deref().or(title.as_deref()).unwrap_or_default(),
         ),
     }
 }
@@ -406,14 +455,38 @@ fn progress_line(
 /// Plain label for an attachment row. Not a task state, so it lives here.
 pub fn attachment_label(kind: MessageKind) -> &'static str {
     match kind {
-        MessageKind::Image => "图片",
-        MessageKind::File => "文件",
-        MessageKind::Text => "文本",
+        MessageKind::Image => Text::ClientAttachImage.as_str(),
+        MessageKind::File => Text::ClientAttachFile.as_str(),
+        MessageKind::Text => Text::ClientAttachText.as_str(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_translates_card_lines_and_keeps_the_rest() {
+        use robroz_ui::i18n::{scoped, Locale};
+        let _en = scoped(Locale::En);
+        assert_eq!(display(AWAITING_APPROVAL), "Needs your approval");
+        assert_eq!(display(robroz_card::NO_RESULT), "Finished with no result");
+        assert_eq!(
+            display(robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE),
+            "Sent to owner's DM"
+        );
+        // Host-crate text is matched by value; pin it to the host constant.
+        assert_eq!(
+            display(robroz_host::review::NO_MODEL_REASON),
+            "No model set up, so auto-review can't run"
+        );
+        assert_eq!(
+            display(&failure_line("工具调用超过 8 轮")),
+            "Couldn't finish: Stopped after 8 rounds of tool calls"
+        );
+        assert_eq!(display("Ada 的草稿"), "Ada 的草稿");
+        let _zh = scoped(Locale::Zh);
+        assert_eq!(display(AWAITING_APPROVAL), AWAITING_APPROVAL);
+    }
+
     use super::*;
 
     fn confirm(decision: Option<robroz_contract::ApprovalDecision>) -> Event {
@@ -439,6 +512,7 @@ mod tests {
 
     #[test]
     fn confirm_card_is_drawn_and_answered_in_place() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         use robroz_ui::cards::confirm::ConfirmState;
         let mut feed = Feed::default();
         feed.apply(&confirm(None));
@@ -623,6 +697,7 @@ mod tests {
 
     #[test]
     fn list_preview_shows_progress_while_running() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let run = status("t1", "Ada", TaskState::Running, true);
         assert_eq!(
             preview(&with_progress(run.clone(), Some("在查上周的\n工单"))),
@@ -651,6 +726,7 @@ mod tests {
 
     #[test]
     fn long_progress_preview_is_cut_with_an_ellipsis() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let long = "在查上周的工单，按客户和优先级整理成一份周报草稿，再把超时没回的单子单独列出来，最后发给你确认";
         let run = with_progress(status("t1", "Ada", TaskState::Running, true), Some(long));
         // The list row fits the stored preview to its width with `…`.
@@ -691,6 +767,7 @@ mod tests {
 
     #[test]
     fn failed_task_is_grey_without_action_or_done() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let mut ev = status("t4", "Ada", TaskState::Done, false);
         if let Event::Status { failure, .. } = &mut ev {
             *failure = Some("模型没回：模型服务返回 500".into());
@@ -710,6 +787,7 @@ mod tests {
 
     #[test]
     fn dead_run_ended_as_done_still_reads_no_result() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let mut ev = status("t5", "Cy", TaskState::Done, false);
         if let Event::Status { failure, .. } = &mut ev {
             *failure = Some("没写出结果".into());
@@ -727,6 +805,7 @@ mod tests {
 
     #[test]
     fn failed_delivery_carries_failure_and_old_json_is_unchanged() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let mut ev = delivery("d9", "tasks/t9/result.txt", false);
         if let Event::Delivery { failure, .. } = &mut ev {
             *failure = Some("你拒绝了：发送周报".into());
@@ -869,6 +948,7 @@ mod tests {
 
     #[test]
     fn waiting_for_approval_is_grey_without_take_over() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let ev = blocked_waiting(Some(WaitingFor::Approval));
         let mut feed = Feed::default();
         feed.apply(&ev);
@@ -904,6 +984,7 @@ mod tests {
 
     #[test]
     fn awaiting_approval_keeps_the_host_progress_line() {
+        let _zh = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::Zh);
         let ev = with_progress(
             blocked_waiting(Some(WaitingFor::Approval)),
             Some("在用 notes.write_note"),
@@ -1201,5 +1282,27 @@ mod tests {
         feed.apply(&event);
         assert_eq!(feed.len(), 1);
         assert!(feed.card("apr-settings").is_none());
+    }
+
+    #[test]
+    fn previews_redraw_in_the_new_language() {
+        use robroz_ui::i18n::{scoped, Locale};
+        let status: Event = serde_json::from_value(serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "b", "botName": "Ada",
+            "state": "queued", "label": "排队", "createdAt": "2026-10-07T19:00:00.000Z",
+            "updatedAt": "2026-10-07T19:00:00.000Z", "containerUp": false
+        }))
+        .unwrap();
+        let mut previews = Previews::default();
+        let shown = {
+            let _en = scoped(Locale::En);
+            previews.offer("g1", &status).unwrap()
+        };
+        let _zh = scoped(Locale::Zh);
+        let redrawn: Vec<_> = previews.redraw().collect();
+        assert_ne!(redrawn[0].1, shown);
+        assert_eq!(redrawn, vec![("g1", preview(&status))]);
+        // Same time and rank: the newer arrival still wins.
+        assert!(previews.offer("g1", &status).is_some(), "tie, same rank");
     }
 }

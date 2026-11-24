@@ -5,32 +5,33 @@
 //! The host sends unread counts and activity times (`GET /api/unread`); the
 //! client fills names, DM flags and previews from what it has seen.
 
-use chrono::{DateTime, TimeZone};
+use crate::i18n::Key;
+use chrono::{DateTime, Datelike, TimeZone};
 
 /// Empty-state line when there is nothing to talk to yet.
-pub const EMPTY_HINT: &str = "还没有 bro，引入第一个";
+pub const EMPTY_HINT: Key = Key::ConversationsEmptyHint;
 /// Button that creates a bro and opens its DM (PM wording).
-pub const NEW_BRO: &str = "引入一个 bro";
+pub const NEW_BRO: Key = Key::ConversationsNewBro;
 /// Tooltip-ish hint after a bro DM's name: click the name to rename.
-pub const RENAME_HINT: &str = "改名";
+pub const RENAME_HINT: Key = Key::ConversationsRenameHint;
 /// Rename input placeholder.
-pub const RENAME_PLACEHOLDER: &str = "bro 的新名字，回车保存，Esc 取消";
+pub const RENAME_PLACEHOLDER: Key = Key::ConversationsRenamePlaceholder;
 
 /// Composer placeholder in a group (a DM says 「发给 {name}…」).
-pub const GROUP_HINT: &str = "发消息，@名字 派活";
+pub const GROUP_HINT: Key = Key::ConversationsGroupHint;
 
 /// Composer placeholder for this chat.
 pub fn composer_hint(name: &str, dm: bool) -> String {
     if dm {
-        format!("发给 {name}…")
+        Key::ConversationsDmHint.fill(&[&name])
     } else {
         GROUP_HINT.to_string()
     }
 }
 /// Composer button.
-pub const SEND: &str = "发送";
+pub const SEND: Key = Key::ConversationsSend;
 /// List heading.
-pub const TITLE: &str = "聊天";
+pub const TITLE: Key = Key::ConversationsTitle;
 /// Stored preview cut, in characters; the view fits it to the row width.
 pub const PREVIEW_CHARS: usize = 120;
 
@@ -107,6 +108,13 @@ impl Conversations {
             bump(&mut c.last_at, at);
         }
         self.sort();
+    }
+
+    /// Replace a chat's preview without moving it (language switch).
+    pub fn set_preview(&mut self, group_id: &str, preview: String) {
+        if let Some(c) = self.rows.iter_mut().find(|c| c.group_id == group_id) {
+            c.preview = Some(clip(&preview, PREVIEW_CHARS));
+        }
     }
 
     /// Opened, or the host confirmed a read: the badge goes away.
@@ -214,9 +222,9 @@ where
     if day == today {
         t.format("%H:%M").to_string()
     } else if today.pred_opt() == Some(day) {
-        "昨天".into()
+        Key::ConversationsYesterday.into()
     } else if t.format("%Y").to_string() == n.format("%Y").to_string() {
-        t.format("%-m月%-d日").to_string()
+        crate::i18n::month_day(t.month(), t.day())
     } else {
         t.format("%Y/%-m/%-d").to_string()
     }
@@ -270,6 +278,7 @@ mod tests {
 
     #[test]
     fn badge_preview_initial() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(badge(0), None);
         assert_eq!(badge(7).as_deref(), Some("7"));
         assert_eq!(badge(100).as_deref(), Some("99+"));
@@ -293,6 +302,7 @@ mod tests {
 
     #[test]
     fn list_times() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let now = DateTime::parse_from_rfc3339("2026-11-20T10:00:00Z")
             .unwrap()
             .timestamp();

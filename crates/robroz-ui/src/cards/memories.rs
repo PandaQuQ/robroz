@@ -2,40 +2,41 @@
 //! remember about the person, grouped by who may use it, with inline edit,
 //! a one-step confirm before 忘掉, and a small form to write one down.
 
-use chrono::{DateTime, Local, TimeZone};
+use crate::i18n::Key;
+use chrono::{DateTime, Datelike, Local, TimeZone};
 use robroz_contract::{Memory, MemoryKind, MemoryScope, MemoryStatus};
 
-pub const TITLE: &str = "记忆";
-pub const EMPTY_TITLE: &str = "还没有记下任何东西";
-pub const EMPTY_HINT: &str = "点「记一条」写下想让 bro 记住的事";
-pub const ALL_BROS: &str = "所有 bro";
-pub const PENDING_TAG: &str = "待确认";
-pub const PENDING_HEAD: &str = "待确认";
-pub const KEPT_HEAD: &str = "已记下";
-pub const ADD: &str = "记一条";
-pub const EDIT: &str = "改";
-pub const SAVE: &str = "保存";
-pub const CANCEL: &str = "取消";
-pub const FORGET: &str = "忘掉";
-pub const FORGET_ASK: &str = "忘掉这条？bro 以后不会再用到它。";
-pub const NEW_PLACEHOLDER: &str = "想让 bro 记住什么";
-pub const TOO_LONG: &str = "最多 2000 字";
-pub const EMPTY_TEXT: &str = "写点什么再保存";
+pub const TITLE: Key = Key::MemoriesTitle;
+pub const EMPTY_TITLE: Key = Key::MemoriesEmptyTitle;
+pub const EMPTY_HINT: Key = Key::MemoriesEmptyHint;
+pub const ALL_BROS: Key = Key::MemoriesAllBros;
+pub const PENDING_TAG: Key = Key::MemoriesPendingTag;
+pub const PENDING_HEAD: Key = Key::MemoriesPendingHead;
+pub const KEPT_HEAD: Key = Key::MemoriesKeptHead;
+pub const ADD: Key = Key::MemoriesAdd;
+pub const EDIT: Key = Key::MemoriesEdit;
+pub const SAVE: Key = Key::MemoriesSave;
+pub const CANCEL: Key = Key::MemoriesCancel;
+pub const FORGET: Key = Key::MemoriesForget;
+pub const FORGET_ASK: Key = Key::MemoriesForgetAsk;
+pub const NEW_PLACEHOLDER: Key = Key::MemoriesNewPlaceholder;
+pub const TOO_LONG: Key = Key::MemoriesTooLong;
+pub const EMPTY_TEXT: Key = Key::MemoriesEmptyText;
 /// Shown next to the time right after a save.
-pub const SAVED: &str = "已保存";
+pub const SAVED: Key = Key::MemoriesSaved;
 /// Under the scope choices until one is picked.
-pub const PICK_SCOPE: &str = "选一下谁能用这条";
+pub const PICK_SCOPE: Key = Key::MemoriesPickScope;
 /// Inline failure: 「没保存：<reason>」.
 pub fn failed(reason: &str) -> String {
-    format!("没保存：{reason}")
+    Key::NotSaved.fill(&[&crate::i18n::host_text(reason)])
 }
 
 /// 资料 / 习惯 / 项目.
 pub fn kind_label(kind: MemoryKind) -> &'static str {
     match kind {
-        MemoryKind::Profile => "资料",
-        MemoryKind::Habit => "习惯",
-        MemoryKind::Project => "项目",
+        MemoryKind::Profile => Key::MemoriesKindProfile.as_str(),
+        MemoryKind::Habit => Key::MemoriesKindHabit.as_str(),
+        MemoryKind::Project => Key::MemoriesKindProject.as_str(),
     }
 }
 
@@ -47,7 +48,7 @@ pub fn scope_label(scope: &str, bros: &[(String, String)]) -> String {
                 .iter()
                 .find(|(b, _)| *b == id)
                 .map_or(id.as_str(), |(_, n)| n.as_str());
-            format!("只给 {name}")
+            Key::MemoriesOnlyFor.fill(&[&name])
         }
         _ => ALL_BROS.to_string(),
     }
@@ -57,8 +58,14 @@ pub fn scope_label(scope: &str, bros: &[(String, String)]) -> String {
 /// or 「只给 Bob 用」. Same row as [`PICK_SCOPE`], so 保存 never moves.
 pub fn chosen_scope_text(scope: &str, bros: &[(String, String)]) -> String {
     match MemoryScope::parse(scope) {
-        Some(MemoryScope::Bot(_)) => format!("{} 用", scope_label(scope, bros)),
-        _ => format!("{ALL_BROS} 都能用"),
+        Some(MemoryScope::Bot(id)) => {
+            let name = bros
+                .iter()
+                .find(|(b, _)| *b == id)
+                .map_or(id.as_str(), |(_, n)| n.as_str());
+            Key::MemoriesChosenBot.fill(&[&name])
+        }
+        _ => Key::MemoriesChosenAll.into(),
     }
 }
 
@@ -77,9 +84,13 @@ where
         .map(|n| n.date_naive() == local.date_naive())
         .unwrap_or(false);
     if today {
-        local.format("今天 %H:%M").to_string()
+        Key::StatusToday.fill(&[&local.format("%H:%M")])
     } else {
-        local.format("%-m月%-d日 %H:%M").to_string()
+        format!(
+            "{} {}",
+            crate::i18n::month_day(local.month(), local.day()),
+            local.format("%H:%M")
+        )
     }
 }
 
@@ -104,10 +115,10 @@ impl Group<'_> {
     pub fn heads(&self) -> Vec<(&'static str, usize)> {
         let mut out = Vec::new();
         if !self.pending.is_empty() {
-            out.push((PENDING_HEAD, self.pending.len()));
+            out.push((PENDING_HEAD.as_str(), self.pending.len()));
         }
         if !self.kept.is_empty() {
-            out.push((KEPT_HEAD, self.kept.len()));
+            out.push((KEPT_HEAD.as_str(), self.kept.len()));
         }
         out
     }
@@ -160,9 +171,9 @@ pub struct Book {
 pub fn text_problem(text: &str) -> Option<&'static str> {
     let t = text.trim();
     if t.is_empty() {
-        Some(EMPTY_TEXT)
+        Some(EMPTY_TEXT.as_str())
     } else if t.chars().count() > robroz_contract::MEMORY_TEXT_MAX {
-        Some(TOO_LONG)
+        Some(TOO_LONG.as_str())
     } else {
         None
     }
@@ -439,11 +450,12 @@ impl Book {
 
     pub fn scope_choices(&self) -> Vec<(String, String)> {
         let mut out = vec![(MemoryScope::User.to_string(), ALL_BROS.to_string())];
-        out.extend(
-            self.bros
-                .iter()
-                .map(|(id, name)| (MemoryScope::for_bot(id).to_string(), format!("只给 {name}"))),
-        );
+        out.extend(self.bros.iter().map(|(id, name)| {
+            (
+                MemoryScope::for_bot(id).to_string(),
+                Key::MemoriesOnlyFor.fill(&[name]),
+            )
+        }));
         out
     }
 }
@@ -524,6 +536,7 @@ mod tests {
 
     #[test]
     fn labels() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(kind_label(MemoryKind::Profile), "资料");
         assert_eq!(kind_label(MemoryKind::Habit), "习惯");
         assert_eq!(kind_label(MemoryKind::Project), "项目");
@@ -535,6 +548,7 @@ mod tests {
 
     #[test]
     fn all_bros_first_then_each_bro_pending_apart_from_kept() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let b = book();
         let g = b.groups();
         let titles: Vec<_> = g.iter().map(|g| g.title.as_str()).collect();
@@ -570,7 +584,7 @@ mod tests {
                 assert!(heads.iter().all(|(h, _)| *h != KEPT_HEAD), "{}", g.title);
             } else {
                 assert!(
-                    heads.contains(&(KEPT_HEAD, g.kept.len())),
+                    heads.contains(&(KEPT_HEAD.as_str(), g.kept.len())),
                     "{}: {heads:?}",
                     g.title
                 );
@@ -580,11 +594,14 @@ mod tests {
             .iter()
             .find(|g| g.pending.is_empty() && !g.kept.is_empty())
             .unwrap();
-        assert_eq!(only_kept.heads(), [(KEPT_HEAD, only_kept.kept.len())]);
+        assert_eq!(
+            only_kept.heads(),
+            [(KEPT_HEAD.as_str(), only_kept.kept.len())]
+        );
         let ada = groups.iter().find(|g| g.scope == "bot:bot-ada").unwrap();
         assert_eq!(
             ada.heads()[0],
-            (PENDING_HEAD, ada.pending.len()),
+            (PENDING_HEAD.as_str(), ada.pending.len()),
             "pending first"
         );
     }
@@ -650,6 +667,7 @@ mod tests {
 
     #[test]
     fn failed_save_stays_open_with_an_inline_note() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         b.start_edit("2");
         b.edit_text("新的".into());
@@ -679,6 +697,7 @@ mod tests {
 
     #[test]
     fn pending_entry_is_kept_or_dropped_through_its_confirm_card() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         let mut p = mem(
             "p",
@@ -729,10 +748,11 @@ mod tests {
 
     #[test]
     fn add_form_hint_row_stays_and_shows_the_picked_scope() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         assert_eq!(b.add_scope_hint(), None, "form closed");
         b.open_add();
-        assert_eq!(b.add_scope_hint().as_deref(), Some(PICK_SCOPE));
+        assert_eq!(b.add_scope_hint().as_deref(), Some(PICK_SCOPE.as_str()));
         b.adding.as_mut().unwrap().scope = Some("user".into());
         assert_eq!(b.add_scope_hint().as_deref(), Some("所有 bro 都能用"));
         b.adding.as_mut().unwrap().scope = Some("bot:bot-bob".into());
@@ -747,6 +767,7 @@ mod tests {
 
     #[test]
     fn add_needs_a_scope_and_text_then_inserts_on_top() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         assert!(!b.can_add(), "form closed");
         b.open_add();
@@ -784,6 +805,7 @@ mod tests {
 
     #[test]
     fn updated_time_is_local() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let tz = chrono::FixedOffset::east_opt(0).unwrap();
         let now = DateTime::parse_from_rfc3339("2026-11-20T15:00:00Z")
             .unwrap()

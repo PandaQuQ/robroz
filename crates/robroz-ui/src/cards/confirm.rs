@@ -3,6 +3,7 @@
 //! endpoints (`approve` = 记下 / 保存, `deny` = 不用), so a 409 and the
 //! answered-by footnote follow the approval card's rules.
 
+use crate::i18n::Key;
 use std::collections::{HashMap, HashSet};
 
 use chrono::TimeZone;
@@ -13,31 +14,31 @@ use super::status::{clock_in, Dot};
 use super::{as_me, memories};
 
 /// Top-left tag, same style as the approval card's 「发送」「删除」.
-pub const MEMORY_TAG: &str = "记忆";
-pub const SKILL_TAG: &str = "技能";
-pub const PENDING: &str = "待确认";
-pub const KEEP: &str = "记下";
-pub const SAVE: &str = "保存";
-pub const DROP: &str = "不用";
-pub const KEPT: &str = "记下了";
-pub const SAVED: &str = "保存了";
-pub const DROPPED: &str = "不用了";
+pub const MEMORY_TAG: Key = Key::ConfirmMemoryTag;
+pub const SKILL_TAG: Key = Key::ConfirmSkillTag;
+pub const PENDING: Key = Key::ConfirmPending;
+pub const KEEP: Key = Key::ConfirmKeep;
+pub const SAVE: Key = Key::ConfirmSave;
+pub const DROP: Key = Key::ConfirmDrop;
+pub const KEPT: Key = Key::ConfirmKept;
+pub const SAVED: Key = Key::ConfirmSaved;
+pub const DROPPED: Key = Key::ConfirmDropped;
 /// 409 from the 记忆 page: the card was answered elsewhere.
-pub const ALREADY_ANSWERED: &str = "已经有人处理过了，正在刷新";
+pub const ALREADY_ANSWERED: Key = Key::ConfirmAlreadyAnswered;
 /// 记下 / 不用 failed on the 记忆 page: 「没成功：<reason>」.
 pub fn decide_failed(reason: &str) -> String {
-    format!("没成功：{reason}")
+    Key::ConfirmDecideFailed.fill(&[&crate::i18n::host_text(reason)])
 }
 /// Skill instructions show this many lines until opened.
 pub const INSTRUCTION_LINES: usize = 3;
-pub const SHOW_ALL: &str = "展开";
-pub const SHOW_LESS: &str = "收起";
+pub const SHOW_ALL: Key = Key::ConfirmShowAll;
+pub const SHOW_LESS: Key = Key::ConfirmShowLess;
 /// Pending cards shown per task before the rest fold away.
 pub const FOLD_AFTER: usize = 3;
 
 /// 「还有 N 条待确认」.
 pub fn more_label(n: usize) -> String {
-    format!("还有 {n} 条待确认")
+    Key::ConfirmMoreLabel.fill(&[&n])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,32 +139,32 @@ impl ConfirmCard {
 
     pub fn tag(&self) -> &'static str {
         match self.subject {
-            ConfirmSubject::Memory => MEMORY_TAG,
-            ConfirmSubject::Skill => SKILL_TAG,
+            ConfirmSubject::Memory => MEMORY_TAG.as_str(),
+            ConfirmSubject::Skill => SKILL_TAG.as_str(),
         }
     }
 
     /// The approve button: 记下 for memories, 保存 for skills.
     pub fn keep_label(&self) -> &'static str {
         match self.subject {
-            ConfirmSubject::Memory => KEEP,
-            ConfirmSubject::Skill => SAVE,
+            ConfirmSubject::Memory => KEEP.as_str(),
+            ConfirmSubject::Skill => SAVE.as_str(),
         }
     }
 
     fn kept_word(&self) -> &'static str {
         match self.subject {
-            ConfirmSubject::Memory => KEPT,
-            ConfirmSubject::Skill => SAVED,
+            ConfirmSubject::Memory => KEPT.as_str(),
+            ConfirmSubject::Skill => SAVED.as_str(),
         }
     }
 
     /// Header status: 待确认 / 记下了 (保存了) / 不用了 (grey).
     pub fn status(&self) -> (&'static str, Dot) {
         match self.state {
-            ConfirmState::Pending => (PENDING, Dot::Waiting),
+            ConfirmState::Pending => (PENDING.as_str(), Dot::Waiting),
             ConfirmState::Kept { .. } => (self.kept_word(), Dot::Done),
-            ConfirmState::Dropped { .. } => (DROPPED, Dot::Void),
+            ConfirmState::Dropped { .. } => (DROPPED.as_str(), Dot::Void),
         }
     }
 
@@ -176,10 +177,10 @@ impl ConfirmCard {
         let (word, by, at) = match &self.state {
             ConfirmState::Pending => return None,
             ConfirmState::Kept { by, at } => (self.kept_word(), by, *at),
-            ConfirmState::Dropped { by, at } => (DROPPED, by, *at),
+            ConfirmState::Dropped { by, at } => (DROPPED.as_str(), by, *at),
         };
         let mut parts = vec![word.to_string()];
-        parts.extend(by.clone());
+        parts.extend(by.as_deref().map(|b| super::who(b).to_string()));
         let time = clock_in(at, tz);
         if !time.is_empty() {
             parts.push(time);
@@ -270,11 +271,15 @@ mod tests {
 
     #[test]
     fn memory_card_from_contract() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let c = ConfirmCard::from_event(&event("c1", None, None)).unwrap();
-        assert_eq!((c.tag(), c.keep_label()), (MEMORY_TAG, KEEP));
+        assert_eq!(
+            (c.tag(), c.keep_label()),
+            (MEMORY_TAG.as_str(), KEEP.as_str())
+        );
         assert_eq!(c.text.as_deref(), Some("周报先说结论"));
         assert_eq!(c.scope_line.as_deref(), Some("只给 Ada"));
-        assert_eq!(c.status(), (PENDING, Dot::Waiting));
+        assert_eq!(c.status(), (PENDING.as_str(), Dot::Waiting));
         assert_eq!(c.footnote_in(&chrono::Utc), None);
         let mut user = event("c2", None, None);
         if let Event::Confirm { scope, .. } = &mut user {
@@ -293,6 +298,7 @@ mod tests {
 
     #[test]
     fn answered_footnote_names_me_other_or_nobody() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let me = "Panda 的 Mac";
         let utc = chrono::Utc;
         for (d, by, status, want) in [
@@ -330,6 +336,7 @@ mod tests {
 
     #[test]
     fn skill_card_uses_save_and_its_own_fields() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut skill = Event::Confirm {
             id: "s1".into(),
             bot_id: "b".into(),
@@ -349,7 +356,10 @@ mod tests {
             answered_by: None,
         };
         let c = ConfirmCard::from_event(&skill).unwrap();
-        assert_eq!((c.tag(), c.keep_label()), (SKILL_TAG, SAVE));
+        assert_eq!(
+            (c.tag(), c.keep_label()),
+            (SKILL_TAG.as_str(), SAVE.as_str())
+        );
         assert_eq!(c.scope_line, None);
         assert_eq!(
             c.footnote_in(&chrono::Utc).as_deref(),
@@ -396,6 +406,7 @@ mod tests {
 
     #[test]
     fn more_than_three_pending_per_task_fold() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let open = HashSet::new();
         let rows = [
             Some(("t1", true)),

@@ -19,6 +19,7 @@ mod conn;
 mod event_decode;
 mod gallery;
 mod model;
+mod prefs;
 mod source;
 
 use std::collections::{HashMap, HashSet};
@@ -45,13 +46,14 @@ use robroz_ui::cards::skills::Book as SkillBook;
 use robroz_ui::cards::{ApprovalCard, ApprovalExtras};
 use robroz_ui::cards::{ApprovalState, Card, ChoiceState, DraftState};
 use robroz_ui::conversations::Conversations;
+use robroz_ui::i18n::{self, Key as Text, Locale};
 use robroz_ui::view::{self, color, Action, Caps};
 use robroz_ui::{Mode, Skin};
 
 use api::{ApiError, CardApi, FakeApi, HttpApi};
 use conn::Conn;
 use gallery::Gallery;
-use model::{attachment_label, change_time, preview, DeliveryCard, Feed, Row, StatusCard};
+use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
 use source::stream::{self, StreamItem};
 use source::{
     fake_chats, fake_schedules, EventSource, FakeSource, GroupCard, GroupEvent, GroupTab,
@@ -296,6 +298,8 @@ enum Message {
     /// Narrow screens: back from a chat to the list.
     Back,
     ToggleTheme,
+    /// Language row on the Settings (模型) page: English / 中文.
+    SetLocale(Locale),
     Resized(Size),
     TouchSeen,
     Shoot(Option<window::Id>),
@@ -332,8 +336,8 @@ struct App {
     interval: Duration,
     groups: Vec<GroupTab>,
     feeds: HashMap<String, Feed>,
-    /// Change time and rank of the event behind each chat's list preview.
-    preview_key: HashMap<String, (String, u8)>,
+    /// The event behind each chat's list preview (see `model::Previews`).
+    previews: model::Previews,
     selected: Option<String>,
     page: Page,
     ui: HashMap<String, CardUi>,
@@ -399,13 +403,16 @@ impl App {
     fn boot() -> (Self, Task<Message>) {
         let gallery = has_flag("--gallery").then(Gallery::new);
         let fake = wants_fake() || gallery.is_some();
+        // Before anything builds text: fake and gallery runs ignore the
+        // saved choice so their screenshots are reproducible.
+        i18n::set_locale(prefs::initial_locale(!fake));
         type Parts = (Box<dyn EventSource>, Arc<dyn CardApi>, String, Option<Conn>);
         let (source, api, origin, conn): Parts = if fake {
             let (unread, bros) = fake_chats();
             (
                 Box::new(FakeSource::new()),
                 Arc::new(FakeApi::new(fake_schedules()).with_chats(unread, bros)),
-                "假事件".into(),
+                Text::ClientFakeOrigin.into(),
                 None,
             )
         } else {
@@ -441,7 +448,7 @@ impl App {
             interval,
             groups: Vec::new(),
             feeds: HashMap::new(),
-            preview_key: HashMap::new(),
+            previews: model::Previews::default(),
             selected: None,
             page: Page::Group,
             ui: HashMap::new(),
@@ -643,14 +650,7 @@ impl App {
         // Newest change time wins the list preview; a tie goes to the
         // outcome (see `model::preview_wins`), not to arrival order.
         let at = change_time(event);
-        let rank = model::preview_rank(event);
-        let cur = self.preview_key.get(&group);
-        let wins = model::preview_wins((at, rank), cur.map(|(t, r)| (t.as_str(), *r)));
-        let shown = wins.then(|| preview(event));
-        if wins {
-            self.preview_key
-                .insert(group.clone(), (at.to_string(), rank));
-        }
+        let shown = self.previews.offer(&group, event);
         self.convs.touch(&group, shown, Some(at));
         self.feeds
             .entry(group)
@@ -1657,7 +1657,8 @@ impl App {
                 }
                 Err(ApiError::Conflict(_)) => {
                     // Answered elsewhere: say so here and fetch the real state.
-                    self.memories.decide_failed(&id, confirm::ALREADY_ANSWERED);
+                    self.memories
+                        .decide_failed(&id, confirm::ALREADY_ANSWERED.as_str());
                     return Task::perform(
                         call(&self.api, |api| api.memories()),
                         Message::MemoriesLoaded,
@@ -1700,7 +1701,8 @@ impl App {
                     }
                 }
                 Err(ApiError::Conflict(_)) => {
-                    self.skills.decide_failed(&slug, confirm::ALREADY_ANSWERED);
+                    self.skills
+                        .decide_failed(&slug, confirm::ALREADY_ANSWERED.as_str());
                     return Task::perform(
                         call(&self.api, |api| api.skills()),
                         Message::SkillsLoaded,
@@ -1897,7 +1899,7 @@ impl App {
                     let open = self.open_chat(dm);
                     return Task::batch([learn, open]);
                 }
-                Err(err) => self.error = Some(format!("没能引入新 bro：{}", err.reason())),
+                Err(err) => self.error = Some(Text::ClientNewBroFailed.fill(&[&err.reason()])),
             },
             Message::GroupsReloaded(result) => {
                 if let Ok(groups) = result {
@@ -1926,7 +1928,8 @@ impl App {
                         );
                     }
                     Err(err) => {
-                        self.rename_note = Some((group, format!("没改成：{}", err.reason())));
+                        self.rename_note =
+                            Some((group, Text::ClientRenameFailed.fill(&[&err.reason()])));
                     }
                 }
             }
@@ -1948,7 +1951,7 @@ impl App {
                     }
                     Err(err) => {
                         self.send_note
-                            .insert(group, format!("没发出去：{}", err.reason()));
+                            .insert(group, Text::ClientSendFailed.fill(&[&err.reason()]));
                     }
                 }
             }
@@ -2035,7 +2038,7 @@ impl App {
                                 c.state = ChoiceState::Answered {
                                     selected: sent,
                                     at: Some(chrono::Utc::now().to_rfc3339()),
-                                    by: Some(robroz_ui::cards::ME.into()),
+                                    by: Some(robroz_ui::cards::ME_MARK.into()),
                                 };
                                 self.set_card(&group, Card::Choice(c));
                             }
@@ -2095,19 +2098,19 @@ impl App {
                                 let at = now_unix();
                                 c.state = if approve {
                                     ApprovalState::Approved {
-                                        by: Some(robroz_ui::cards::ME.into()),
+                                        by: Some(robroz_ui::cards::ME_MARK.into()),
                                         at,
                                     }
                                 } else {
                                     ApprovalState::Denied {
-                                        by: Some(robroz_ui::cards::ME.into()),
+                                        by: Some(robroz_ui::cards::ME_MARK.into()),
                                         at,
                                     }
                                 };
                                 self.set_card(&group, Card::Approval(c));
                             }
                             (None, Some((group, Card::Confirm(mut c)))) => {
-                                let (by, at) = (Some(robroz_ui::cards::ME.into()), now_unix());
+                                let (by, at) = (Some(robroz_ui::cards::ME_MARK.into()), now_unix());
                                 c.state = if approve {
                                     ConfirmState::Kept { by, at }
                                 } else {
@@ -2194,6 +2197,19 @@ impl App {
             },
             Message::ClearPauseNote(id) => self.routines.clear_failed(&id),
             Message::ToggleTheme => self.mode = self.mode.toggled(),
+            Message::SetLocale(locale) => {
+                if locale != i18n::locale() {
+                    i18n::set_locale(locale);
+                    // Stored text was drawn in the old language. Cards and
+                    // statuses render on the fly; previews are cached.
+                    for (group, line) in self.previews.redraw() {
+                        self.convs.set_preview(group, line);
+                    }
+                    if !self.fake {
+                        prefs::save(locale);
+                    }
+                }
+            }
             Message::Resized(size) => self.width = size.width,
             Message::TouchSeen => self.touch = true,
             Message::Shoot(Some(id)) => return window::screenshot(id).map(Message::Shot),
@@ -2268,7 +2284,7 @@ impl App {
             if self.narrow_open && self.page == Page::Group {
                 self.page_view(&t)
             } else if self.narrow_open {
-                let back = button(text("‹ 聊天").size(t.type_.row_name))
+                let back = button(text(Text::ViewBackToChats).size(t.type_.row_name))
                     .height(Length::Fixed(
                         t.controls.touch_target.max(t.controls.button_h),
                     ))
@@ -2293,8 +2309,8 @@ impl App {
         };
         let live = match (&self.conn, self.stream_up) {
             (None, _) => "",
-            (Some(_), true) => " · 实时",
-            (Some(_), false) => " · 轮询",
+            (Some(_), true) => Text::ClientLive.as_str(),
+            (Some(_), false) => Text::ClientPolling.as_str(),
         };
         let status = match &self.error {
             Some(err) => err.clone(),
@@ -2307,8 +2323,8 @@ impl App {
             space::horizontal(),
             button(
                 text(match self.mode {
-                    Mode::Light => "深色",
-                    Mode::Dark => "浅色",
+                    Mode::Light => Text::ClientThemeDark.as_str(),
+                    Mode::Dark => Text::ClientThemeLight.as_str(),
                 })
                 .size(t.type_.foot),
             )
@@ -2321,6 +2337,39 @@ impl App {
             container(footer).padding(Padding::from([4.0, 10.0]))
         ])
         .style(view::page_style(t))
+        .into()
+    }
+
+    /// The one Settings row for the UI language: label on the left,
+    /// English / 中文 (each in its own language) on the right, the active
+    /// one highlighted. Sizes follow the text, so longer copy never clips.
+    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
+        let active = i18n::locale();
+        let mut choices = row![]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+        for locale in Locale::ALL {
+            choices = choices.push(
+                button(text(locale.native_name()).size(t.type_.body))
+                    .height(Length::Fixed(t.controls.button_h))
+                    .style(view::nav_button_style(*t, locale == active))
+                    .on_press(Message::SetLocale(locale)),
+            );
+        }
+        let r = row![
+            text(Text::SettingsLanguage)
+                .size(t.type_.body)
+                .color(color(t.palette.text)),
+            space::horizontal(),
+            choices,
+        ]
+        .align_y(Alignment::Center);
+        container(container(r).padding(Padding::from([
+            t.metrics.row_pad_h * 0.75,
+            t.metrics.row_pad_h,
+        ])))
+        .width(Fill)
+        .style(view::card_style(*t))
         .into()
     }
 
@@ -2458,9 +2507,15 @@ impl App {
         }
         if self.page == Page::Model {
             return scrollable(
-                container(view::model_panel(t, &self.model_settings).map(Message::Ui))
-                    .padding(t.metrics.stream_padding)
-                    .width(Fill),
+                container(
+                    column![
+                        view::model_panel(t, &self.model_settings).map(Message::Ui),
+                        self.language_row(t),
+                    ]
+                    .spacing(t.metrics.row_pad_h),
+                )
+                .padding(t.metrics.stream_padding)
+                .width(Fill),
             )
             .height(Fill)
             .width(Fill)
@@ -2497,7 +2552,7 @@ impl App {
             .into();
         }
         let Some(id) = &self.selected else {
-            return container(text("选一个聊天").color(color(t.palette.text2)))
+            return container(text(Text::ClientPickChat).color(color(t.palette.text2)))
                 .center(Fill)
                 .into();
         };
@@ -2685,12 +2740,12 @@ fn row_view<'a>(
 /// Frozen status card: palette from `robroz-card`, outline from the skin.
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     let line = progress_cell(t, card, width);
-    let mut line = row![line, text(&card.status_line)]
+    let mut line = row![line, text(model::display(&card.status_line).into_owned())]
         .spacing(12)
         .align_y(Alignment::Center);
     if let Some(action) = card.action {
         line = line.push(
-            button(text(action).size(t.type_.button))
+            button(text(model::display(action).into_owned()).size(t.type_.button))
                 .height(Length::Fixed(
                     t.controls.touch_target.max(t.controls.button_h),
                 ))
@@ -2726,14 +2781,16 @@ fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, 
             .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
             .sum::<f32>()
     };
-    let right = unit(&card.status_line) * t.type_.body * t.type_.unit_width
+    let right = unit(&model::display(&card.status_line)) * t.type_.body * t.type_.unit_width
         + card.action.map_or(0.0, |a| {
-            unit(a) * t.type_.button * t.type_.unit_width + 2.0 * t.controls.card_pad_h + 12.0
+            unit(&model::display(a)) * t.type_.button * t.type_.unit_width
+                + 2.0 * t.controls.card_pad_h
+                + 12.0
         })
         + 12.0;
     let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
-    let fitted = robroz_ui::cards::status::clamp_lines(progress, cols, 1);
+    let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
     let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
     let line = text(fitted)
         .size(size)
@@ -2750,7 +2807,7 @@ fn progress_line_height(size: f32) -> f32 {
     (size * 1.5).round()
 }
 
-fn delivery_setup(card: &DeliveryCard) -> Vec<(Message, &'static str, &'static str)> {
+fn delivery_setup(card: &DeliveryCard) -> Vec<(Message, Text, Text)> {
     let mut out = Vec::new();
     if card.needs_model_setup {
         out.push((
@@ -2773,7 +2830,7 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
     // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
     if let Some(failure) = &card.failure {
         let gray = robroz_card::palette(robroz_card::Tone::Gray);
-        let line = text(model::failure_line(failure));
+        let line = text(model::display(&model::failure_line(failure)).into_owned());
         let setup = delivery_setup(card);
         let body: Element<'a, Message> = if setup.is_empty() {
             line.into()

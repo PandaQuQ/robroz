@@ -2,6 +2,7 @@
 //! functions (SPEC §8: "客户端只画，不自己挑颜色"). The view never picks a
 //! colour or a string for a state on its own.
 
+use crate::i18n::Key;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone};
 
 use super::{ActionKind, ApprovalState, ChoiceCard, ChoiceState, DraftChannel, DraftState};
@@ -21,59 +22,59 @@ pub enum Dot {
 
 pub fn choice_status(state: &ChoiceState) -> (&'static str, Dot) {
     match state {
-        ChoiceState::Open => ("等你选", Dot::Waiting),
-        ChoiceState::Answered { .. } => ("已选", Dot::Done),
-        ChoiceState::Expired => ("已失效", Dot::Void),
+        ChoiceState::Open => (Key::StatusChoiceOpen.as_str(), Dot::Waiting),
+        ChoiceState::Answered { .. } => (Key::StatusChoiceAnswered.as_str(), Dot::Done),
+        ChoiceState::Expired => (Key::StatusChoiceExpired.as_str(), Dot::Void),
     }
 }
 
 pub fn approval_status(state: &ApprovalState) -> (&'static str, Dot) {
     match state {
-        ApprovalState::Pending => ("等你批准", Dot::Waiting),
-        ApprovalState::Approved { .. } => ("已批准", Dot::Done),
-        ApprovalState::Denied { .. } => ("已拒绝", Dot::Void),
-        ApprovalState::NeedsOwner => ("卡住", Dot::Stuck),
+        ApprovalState::Pending => (Key::StatusApprovalPending.as_str(), Dot::Waiting),
+        ApprovalState::Approved { .. } => (Key::StatusApprovalApproved.as_str(), Dot::Done),
+        ApprovalState::Denied { .. } => (Key::StatusApprovalDenied.as_str(), Dot::Void),
+        ApprovalState::NeedsOwner => (Key::StatusApprovalStuck.as_str(), Dot::Stuck),
         // Grey Void, same as other settled-void states; never the denied copy.
-        ApprovalState::Expired { .. } => (crate::cards::review_rules::EXPIRED, Dot::Void),
+        ApprovalState::Expired { .. } => (crate::cards::review_rules::EXPIRED.as_str(), Dot::Void),
     }
 }
 
 pub fn draft_status(state: &DraftState) -> (&'static str, Dot) {
     match state {
-        DraftState::Pending => ("草稿待确认", Dot::Waiting),
-        DraftState::Sent { .. } => ("已发送", Dot::Done),
-        DraftState::Discarded { .. } => ("已放弃", Dot::Void),
+        DraftState::Pending => (Key::StatusDraftPending.as_str(), Dot::Waiting),
+        DraftState::Sent { .. } => (Key::StatusDraftSent.as_str(), Dot::Done),
+        DraftState::Discarded { .. } => (Key::StatusDraftDiscarded.as_str(), Dot::Void),
     }
 }
 
 pub fn action_kind_label(kind: ActionKind) -> &'static str {
     match kind {
-        ActionKind::Delete => "删除",
-        ActionKind::Send => "发送",
-        ActionKind::Spend => "付款",
-        ActionKind::Call => "调用",
+        ActionKind::Delete => Key::StatusKindDelete.as_str(),
+        ActionKind::Send => Key::StatusKindSend.as_str(),
+        ActionKind::Spend => Key::StatusKindSpend.as_str(),
+        ActionKind::Call => Key::StatusKindCall.as_str(),
 
-        ActionKind::Unknown => "操作",
+        ActionKind::Unknown => Key::StatusKindUnknown.as_str(),
         ActionKind::RuleAdd | ActionKind::RuleDelete => "",
     }
 }
 
 pub fn channel_label(channel: DraftChannel) -> &'static str {
     match channel {
-        DraftChannel::Email => "邮件",
-        DraftChannel::Message => "消息",
+        DraftChannel::Email => Key::StatusChannelEmail.as_str(),
+        DraftChannel::Message => Key::StatusChannelMessage.as_str(),
     }
 }
 
 /// The only action a stuck card offers (SPEC §0).
-pub const TAKE_OVER: &str = "去私聊接管";
-pub const NEEDS_OWNER_LINE: &str = "这一步需要你本人登录，群里不处理";
-pub const MULTI_HINT: &str = "可多选";
-pub const RETRY_NOTE: &str = "没发出去，再点一次";
-pub const PAUSE_FAILED_NOTE: &str = "没改成功";
+pub const TAKE_OVER: Key = Key::StatusTakeOver;
+pub const NEEDS_OWNER_LINE: Key = Key::StatusNeedsOwnerLine;
+pub const MULTI_HINT: Key = Key::StatusMultiHint;
+pub const RETRY_NOTE: Key = Key::StatusRetryNote;
+pub const PAUSE_FAILED_NOTE: Key = Key::StatusPauseFailedNote;
 
 pub fn confirm_label(picked: usize) -> String {
-    format!("确认（{picked}）")
+    Key::StatusConfirmPicked.fill(&[&picked])
 }
 
 /// Local `HH:MM` for a Unix-seconds timestamp.
@@ -115,20 +116,20 @@ where
 {
     match &card.state {
         ChoiceState::Open => None,
-        ChoiceState::Expired => Some("已过期，没有人作答".into()),
+        ChoiceState::Expired => Some(Key::StatusChoiceExpiredFoot.into()),
         ChoiceState::Answered { selected, at, by } => {
             let labels = selected
                 .iter()
                 .map(|id| card.label_of(id).unwrap_or(id).to_string())
                 .collect::<Vec<_>>()
-                .join("、");
+                .join(Key::StatusListSeparator.as_str());
             let time = at
                 .as_deref()
                 .map(|a| clock_iso_in(a, tz))
                 .unwrap_or_default();
             let text = match by {
-                Some(by) => format!("{by} 选了「{labels}」"),
-                None => format!("已选「{labels}」"),
+                Some(by) => Key::StatusChoiceByFoot.fill(&[&super::who(by), &labels]),
+                None => Key::StatusChoiceFoot.fill(&[&labels]),
             };
             Some(with_time(text, &time))
         }
@@ -159,17 +160,19 @@ where
 {
     match state {
         ApprovalState::Approved { by, at } => {
-            let text = by
-                .as_ref()
-                .map_or("已批准".into(), |b| format!("{b}已批准"));
+            let text = by.as_ref().map_or(Key::StatusApprovedFoot.into(), |b| {
+                Key::StatusApprovedByFoot.fill(&[&super::who(b)])
+            });
             Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
         ApprovalState::Denied { by, at } => {
-            let text = by.as_ref().map_or("已拒绝".into(), |b| format!("{b} 拒绝"));
+            let text = by.as_ref().map_or(Key::StatusDeniedFoot.into(), |b| {
+                Key::StatusDeniedByFoot.fill(&[&super::who(b)])
+            });
             Some(ApprovalFootnote::new(text, clock_in(*at, tz)))
         }
         ApprovalState::Expired { at } => Some(ApprovalFootnote::new(
-            crate::cards::review_rules::EXPIRED_FOOT.to_string(),
+            crate::cards::review_rules::EXPIRED_FOOT.into(),
             clock_in(*at, tz),
         )),
         ApprovalState::Pending | ApprovalState::NeedsOwner => None,
@@ -181,12 +184,14 @@ where
     Tz::Offset: std::fmt::Display,
 {
     match state {
-        DraftState::Sent { by, at } => {
-            Some(with_time(format!("{by} 确认发送"), &clock_in(*at, tz)))
-        }
-        DraftState::Discarded { by, at } => {
-            Some(with_time(format!("{by} 放弃"), &clock_in(*at, tz)))
-        }
+        DraftState::Sent { by, at } => Some(with_time(
+            Key::StatusDraftSentFoot.fill(&[&super::who(by)]),
+            &clock_in(*at, tz),
+        )),
+        DraftState::Discarded { by, at } => Some(with_time(
+            Key::StatusDraftDiscardedFoot.fill(&[&super::who(by)]),
+            &clock_in(*at, tz),
+        )),
         DraftState::Pending => None,
     }
 }
@@ -205,14 +210,22 @@ pub fn format_next_run(next: NaiveDateTime, now: NaiveDateTime) -> String {
     let days = (next.date() - now.date()).num_days();
     let hm = next.format("%H:%M");
     match days {
-        0 => format!("今天 {hm}"),
-        1 => format!("明天 {hm}"),
+        0 => Key::StatusToday.fill(&[&hm]),
+        1 => Key::StatusTomorrow.fill(&[&hm]),
         2..=6 => {
-            const WEEK: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+            const WEEK: [Key; 7] = [
+                Key::StatusMon,
+                Key::StatusTue,
+                Key::StatusWed,
+                Key::StatusThu,
+                Key::StatusFri,
+                Key::StatusSat,
+                Key::StatusSun,
+            ];
             let w = WEEK[next.weekday().num_days_from_monday() as usize];
             format!("{w} {hm}")
         }
-        _ => format!("{}月{}日 {hm}", next.month(), next.day()),
+        _ => format!("{} {hm}", crate::i18n::month_day(next.month(), next.day())),
     }
 }
 
@@ -416,6 +429,7 @@ mod tests {
 
     #[test]
     fn status_text_and_dot_per_state() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(choice_status(&ChoiceState::Open), ("等你选", Dot::Waiting));
         assert_eq!(
             choice_status(&ChoiceState::Answered {
@@ -468,6 +482,7 @@ mod tests {
 
     #[test]
     fn labels() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         assert_eq!(action_kind_label(ActionKind::Delete), "删除");
         assert_eq!(action_kind_label(ActionKind::Send), "发送");
         assert_eq!(action_kind_label(ActionKind::Spend), "付款");
@@ -480,6 +495,7 @@ mod tests {
 
     #[test]
     fn footnotes() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let at = dt(2026, 11, 20, 1, 52).and_utc().timestamp();
         let foot = |text: &str, time: &str| ApprovalFootnote {
             text: text.into(),
@@ -498,6 +514,23 @@ mod tests {
             approval_footnote(&ApprovalState::Approved { by: by("我"), at }, &Utc),
             Some(foot("我已批准", "01:52"))
         );
+        // This client's own answer is stored as a mark and drawn in the
+        // active language, so a switch changes it without a refresh.
+        let mine = ApprovalState::Approved {
+            by: by(super::super::ME_MARK),
+            at,
+        };
+        assert_eq!(
+            approval_footnote(&mine, &Utc),
+            Some(foot("我已批准", "01:52"))
+        );
+        {
+            let _en = crate::i18n::scoped(crate::i18n::Locale::En);
+            assert_eq!(
+                approval_footnote(&mine, &Utc).map(|f| f.text),
+                Some("Approved by You".into())
+            );
+        }
         assert_eq!(
             approval_footnote(
                 &ApprovalState::Denied {
@@ -542,6 +575,7 @@ mod tests {
 
     #[test]
     fn choice_footnotes() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut card = ChoiceCard {
             id: "c".into(),
             bot: "文档哥".into(),
@@ -588,6 +622,7 @@ mod tests {
 
     #[test]
     fn next_run_format() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         // 2026-11-20 is a Friday.
         let now = dt(2026, 11, 20, 1, 0);
         assert_eq!(format_next_run(dt(2026, 11, 20, 23, 0), now), "今天 23:00");

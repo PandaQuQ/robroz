@@ -3,6 +3,7 @@
 //! one-step confirm before 删除, a small form to write one down, and a
 //! per-group enable toggle.
 
+use crate::i18n::Key;
 use std::collections::{HashMap, HashSet};
 
 use robroz_contract::{
@@ -11,41 +12,41 @@ use robroz_contract::{
 
 use super::memories::{self, ALL_BROS, PICK_SCOPE};
 
-pub const TITLE: &str = "技能";
-pub const EMPTY_TITLE: &str = "还没有保存任何技能";
-pub const EMPTY_HINT: &str = "点「加一项」写下想让 bro 会的做法";
-pub const PENDING_TAG: &str = "待确认";
-pub const PENDING_HEAD: &str = "待确认";
-pub const KEPT_HEAD: &str = "已保存";
-pub const ADD: &str = "加一项";
-pub const EDIT: &str = "改";
-pub const SAVE: &str = "保存";
-pub const CANCEL: &str = "取消";
-pub const DELETE: &str = "删除";
-pub const DELETE_ASK: &str = "删除这项？bro 以后不会再用到它。";
-pub const SLUG_PLACEHOLDER: &str = "英文短名，比如 weekly-report";
-pub const TITLE_PLACEHOLDER: &str = "标题";
-pub const INSTRUCTION_PLACEHOLDER: &str = "想让 bro 怎么做";
-pub const EMPTY_SLUG: &str = "先填一个英文短名";
-pub const BAD_SLUG: &str = "短名只能是小写字母、数字和连字符";
-pub const EMPTY_TITLE_TEXT: &str = "写个标题再保存";
-pub const EMPTY_INSTRUCTION: &str = "写点说明再保存";
-pub const TITLE_TOO_LONG: &str = "标题最多 80 个字";
-pub const INSTRUCTION_TOO_LONG: &str = "说明最多 8000 个字";
+pub const TITLE: Key = Key::SkillsTitle;
+pub const EMPTY_TITLE: Key = Key::SkillsEmptyTitle;
+pub const EMPTY_HINT: Key = Key::SkillsEmptyHint;
+pub const PENDING_TAG: Key = Key::SkillsPendingTag;
+pub const PENDING_HEAD: Key = Key::SkillsPendingHead;
+pub const KEPT_HEAD: Key = Key::SkillsKeptHead;
+pub const ADD: Key = Key::SkillsAdd;
+pub const EDIT: Key = Key::SkillsEdit;
+pub const SAVE: Key = Key::SkillsSave;
+pub const CANCEL: Key = Key::SkillsCancel;
+pub const DELETE: Key = Key::SkillsDelete;
+pub const DELETE_ASK: Key = Key::SkillsDeleteAsk;
+pub const SLUG_PLACEHOLDER: Key = Key::SkillsSlugPlaceholder;
+pub const TITLE_PLACEHOLDER: Key = Key::SkillsTitlePlaceholder;
+pub const INSTRUCTION_PLACEHOLDER: Key = Key::SkillsInstructionPlaceholder;
+pub const EMPTY_SLUG: Key = Key::SkillsEmptySlug;
+pub const BAD_SLUG: Key = Key::SkillsBadSlug;
+pub const EMPTY_TITLE_TEXT: Key = Key::SkillsEmptyTitleText;
+pub const EMPTY_INSTRUCTION: Key = Key::SkillsEmptyInstruction;
+pub const TITLE_TOO_LONG: Key = Key::SkillsTitleTooLong;
+pub const INSTRUCTION_TOO_LONG: Key = Key::SkillsInstructionTooLong;
 /// Shown next to the time right after a save.
-pub const SAVED: &str = "已保存";
+pub const SAVED: Key = Key::SkillsSaved;
 /// Section label above the per-group switches on a kept skill.
-pub const GROUP_ENABLE: &str = "在这些群里用";
+pub const GROUP_ENABLE: Key = Key::SkillsGroupEnable;
 /// Shown next to a switch whose state has not been loaded yet.
-pub const LOADING: &str = "读取中";
+pub const LOADING: Key = Key::SkillsLoading;
 /// Shown next to a switch whose group list could not be loaded.
-pub const LOAD_FAILED: &str = "读不到";
+pub const LOAD_FAILED: Key = Key::SkillsLoadFailed;
 /// Skill instructions show this many lines until opened.
 pub const INSTRUCTION_LINES: usize = 3;
 
 /// Inline failure: 「没保存：<reason>」.
 pub fn failed(reason: &str) -> String {
-    format!("没保存：{reason}")
+    Key::NotSaved.fill(&[&crate::i18n::host_text(reason)])
 }
 
 /// Whether a skill is on in a given group. `Unknown` until that group's
@@ -105,10 +106,10 @@ impl Group<'_> {
     pub fn heads(&self) -> Vec<(&'static str, usize)> {
         let mut out = Vec::new();
         if !self.pending.is_empty() {
-            out.push((PENDING_HEAD, self.pending.len()));
+            out.push((PENDING_HEAD.as_str(), self.pending.len()));
         }
         if !self.kept.is_empty() {
-            out.push((KEPT_HEAD, self.kept.len()));
+            out.push((KEPT_HEAD.as_str(), self.kept.len()));
         }
         out
     }
@@ -170,9 +171,9 @@ pub struct Book {
 pub fn title_problem(title: &str) -> Option<&'static str> {
     let t = title.trim();
     if t.is_empty() {
-        Some(EMPTY_TITLE_TEXT)
+        Some(EMPTY_TITLE_TEXT.as_str())
     } else if t.chars().count() > SKILL_TITLE_MAX {
-        Some(TITLE_TOO_LONG)
+        Some(TITLE_TOO_LONG.as_str())
     } else {
         None
     }
@@ -182,9 +183,9 @@ pub fn title_problem(title: &str) -> Option<&'static str> {
 pub fn instruction_problem(instruction: &str) -> Option<&'static str> {
     let t = instruction.trim();
     if t.is_empty() {
-        Some(EMPTY_INSTRUCTION)
+        Some(EMPTY_INSTRUCTION.as_str())
     } else if t.chars().count() > SKILL_INSTRUCTION_MAX {
-        Some(INSTRUCTION_TOO_LONG)
+        Some(INSTRUCTION_TOO_LONG.as_str())
     } else {
         None
     }
@@ -194,9 +195,9 @@ pub fn instruction_problem(instruction: &str) -> Option<&'static str> {
 pub fn slug_problem(slug: &str) -> Option<&'static str> {
     let t = slug.trim();
     if t.is_empty() {
-        Some(EMPTY_SLUG)
+        Some(EMPTY_SLUG.as_str())
     } else if parse_skill_slug(t).is_none() {
-        Some(BAD_SLUG)
+        Some(BAD_SLUG.as_str())
     } else {
         None
     }
@@ -638,11 +639,12 @@ impl Book {
 
     pub fn scope_choices(&self) -> Vec<(String, String)> {
         let mut out = vec![(MemoryScope::User.to_string(), ALL_BROS.to_string())];
-        out.extend(
-            self.bros
-                .iter()
-                .map(|(id, name)| (MemoryScope::for_bot(id).to_string(), format!("只给 {name}"))),
-        );
+        out.extend(self.bros.iter().map(|(id, name)| {
+            (
+                MemoryScope::for_bot(id).to_string(),
+                Key::MemoriesOnlyFor.fill(&[name]),
+            )
+        }));
         out
     }
 }
@@ -734,22 +736,26 @@ mod tests {
 
     #[test]
     fn field_problems() {
-        assert_eq!(slug_problem(""), Some(EMPTY_SLUG));
-        assert_eq!(slug_problem("Weekly"), Some(BAD_SLUG));
+        assert_eq!(slug_problem(""), Some(EMPTY_SLUG.as_str()));
+        assert_eq!(slug_problem("Weekly"), Some(BAD_SLUG.as_str()));
         assert_eq!(slug_problem("weekly-report"), None);
-        assert_eq!(title_problem("  "), Some(EMPTY_TITLE_TEXT));
-        assert_eq!(title_problem(&"字".repeat(81)), Some(TITLE_TOO_LONG));
+        assert_eq!(title_problem("  "), Some(EMPTY_TITLE_TEXT.as_str()));
+        assert_eq!(
+            title_problem(&"字".repeat(81)),
+            Some(TITLE_TOO_LONG.as_str())
+        );
         assert_eq!(title_problem("写周报"), None);
-        assert_eq!(instruction_problem(""), Some(EMPTY_INSTRUCTION));
+        assert_eq!(instruction_problem(""), Some(EMPTY_INSTRUCTION.as_str()));
         assert_eq!(
             instruction_problem(&"字".repeat(8001)),
-            Some(INSTRUCTION_TOO_LONG)
+            Some(INSTRUCTION_TOO_LONG.as_str())
         );
         assert_eq!(instruction_problem("先列三点"), None);
     }
 
     #[test]
     fn all_bros_first_then_each_bro_pending_apart_from_kept() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let b = book();
         let g = b.groups();
         let titles: Vec<_> = g.iter().map(|g| g.title.as_str()).collect();
@@ -771,10 +777,13 @@ mod tests {
             .iter()
             .find(|g| g.pending.is_empty() && !g.kept.is_empty())
             .unwrap();
-        assert_eq!(only_kept.heads(), [(KEPT_HEAD, only_kept.kept.len())]);
+        assert_eq!(
+            only_kept.heads(),
+            [(KEPT_HEAD.as_str(), only_kept.kept.len())]
+        );
         let ada = groups.iter().find(|g| g.scope == "bot:bot-ada").unwrap();
-        assert_eq!(ada.heads()[0], (PENDING_HEAD, ada.pending.len()));
-        assert!(ada.heads().contains(&(KEPT_HEAD, ada.kept.len())));
+        assert_eq!(ada.heads()[0], (PENDING_HEAD.as_str(), ada.pending.len()));
+        assert!(ada.heads().contains(&(KEPT_HEAD.as_str(), ada.kept.len())));
     }
 
     #[test]
@@ -829,6 +838,7 @@ mod tests {
 
     #[test]
     fn add_needs_scope_slug_title_and_instruction() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         b.open_add();
         assert!(!b.can_add());

@@ -2,6 +2,7 @@
 //! delete (with a confirm), test the connection, inspect tools, and
 //! enable a server in a chat.
 
+use crate::i18n::Key;
 use std::collections::{HashMap, HashSet};
 
 use robroz_contract::{McpSecretIn, McpServer, McpTestResult, McpTool};
@@ -9,72 +10,72 @@ use robroz_contract::{McpSecretIn, McpServer, McpTestResult, McpTool};
 use super::secret::MaskedKey;
 
 pub const TITLE: &str = "MCP";
-pub const ADD: &str = "加一台";
-pub const EMPTY_TITLE: &str = "还没有 MCP 服务器";
-pub const EMPTY_HINT: &str = "点「加一台」接上 bro 可以用的工具服务";
-pub const SAVE: &str = "保存";
-pub const CANCEL: &str = "取消";
-pub const DELETE: &str = "删除";
-pub const DELETE_ASK: &str = "删除这台服务器？群里也不会再用到它。";
-pub const EDIT: &str = "改";
+pub const ADD: Key = Key::McpAdd;
+pub const EMPTY_TITLE: Key = Key::McpEmptyTitle;
+pub const EMPTY_HINT: Key = Key::McpEmptyHint;
+pub const SAVE: Key = Key::McpSave;
+pub const CANCEL: Key = Key::McpCancel;
+pub const DELETE: Key = Key::McpDelete;
+pub const DELETE_ASK: Key = Key::McpDeleteAsk;
+pub const EDIT: Key = Key::McpEdit;
 pub const STDIO: &str = "stdio";
 pub const HTTP: &str = "HTTP";
-pub const NEEDS_APPROVAL: &str = "要你批准";
-pub const GROUP_ENABLE: &str = "在这些群里用";
-pub const LOADING: &str = "读取中";
-pub const LOAD_FAILED: &str = "读不到";
-pub const TESTING: &str = "试连中…";
-pub const WORKS: &str = "能用了";
-pub const ADD_SECRET: &str = "加一项密钥";
-pub const REMOVE_SECRET: &str = "去掉";
+pub const NEEDS_APPROVAL: Key = Key::McpNeedsApproval;
+pub const GROUP_ENABLE: Key = Key::McpGroupEnable;
+pub const LOADING: Key = Key::McpLoading;
+pub const LOAD_FAILED: Key = Key::McpLoadFailed;
+pub const TESTING: Key = Key::McpTesting;
+pub const WORKS: Key = Key::McpWorks;
+pub const ADD_SECRET: Key = Key::McpAddSecret;
+pub const REMOVE_SECRET: Key = Key::McpRemoveSecret;
 /// Small labels above form fields, so a filled box is still identifiable.
-pub const LABEL_NAME: &str = "名称";
-pub const LABEL_COMMAND: &str = "命令";
-pub const LABEL_ARGS: &str = "参数（用空格分开）";
-pub const LABEL_URL: &str = "地址";
-pub const LABEL_SECRET_NAME: &str = "密钥名称";
-pub const LABEL_SECRET_KEY: &str = "密钥";
+pub const LABEL_NAME: Key = Key::McpLabelName;
+pub const LABEL_COMMAND: Key = Key::McpLabelCommand;
+pub const LABEL_ARGS: Key = Key::McpLabelArgs;
+pub const LABEL_URL: Key = Key::McpLabelUrl;
+pub const LABEL_SECRET_NAME: Key = Key::McpLabelSecretName;
+pub const LABEL_SECRET_KEY: Key = Key::McpLabelSecretKey;
 /// Placeholders match the field labels, so an empty box is still identifiable.
-pub const NAME_PLACEHOLDER: &str = LABEL_NAME;
-pub const COMMAND_PLACEHOLDER: &str = LABEL_COMMAND;
-pub const ARGS_PLACEHOLDER: &str = LABEL_ARGS;
-pub const URL_PLACEHOLDER: &str = LABEL_URL;
-pub const SECRET_NAME_PLACEHOLDER: &str = LABEL_SECRET_NAME;
-pub const SECRET_KEY_PLACEHOLDER: &str = LABEL_SECRET_KEY;
+pub const NAME_PLACEHOLDER: Key = LABEL_NAME;
+pub const COMMAND_PLACEHOLDER: Key = LABEL_COMMAND;
+pub const ARGS_PLACEHOLDER: Key = LABEL_ARGS;
+pub const URL_PLACEHOLDER: Key = LABEL_URL;
+pub const SECRET_NAME_PLACEHOLDER: Key = LABEL_SECRET_NAME;
+pub const SECRET_KEY_PLACEHOLDER: Key = LABEL_SECRET_KEY;
 /// Shorter labels in the 409 command-approval block.
-pub const LABEL_PROMPT_COMMAND: &str = "命令";
-pub const LABEL_PROMPT_ARGS: &str = "参数";
-pub const ENV: &str = "环境变量";
-pub const HEADER: &str = "请求头";
-pub const EMPTY_NAME: &str = "请填写名称";
-pub const NAME_TOO_LONG: &str = "名称最多 80 个字";
-pub const NEED_COMMAND: &str = "请填写启动命令";
-pub const NEED_URL: &str = "请填写地址";
-pub const BAD_URL: &str = "地址要以 http:// 或 https:// 开头";
-pub const EMPTY_SECRET_NAME: &str = "请填写密钥名称";
-pub const BAD_SECRET_NAME: &str = "密钥名称里不能有空白";
-pub const NEED_SECRET_KEY: &str = "新增密钥时请填写值";
-pub const COMMAND_UNAPPROVED: &str = "命令未批准";
-pub const TOOLS_NEED_APPROVAL: &str = "批准命令后才能读取工具";
-pub const COMMAND_RUNS_LOCAL: &str = "这条命令会在你的电脑上运行";
-pub const APPROVE_RUN: &str = "批准运行";
+pub const LABEL_PROMPT_COMMAND: Key = Key::McpLabelPromptCommand;
+pub const LABEL_PROMPT_ARGS: Key = Key::McpLabelPromptArgs;
+pub const ENV: Key = Key::McpEnv;
+pub const HEADER: Key = Key::McpHeader;
+pub const EMPTY_NAME: Key = Key::McpEmptyName;
+pub const NAME_TOO_LONG: Key = Key::McpNameTooLong;
+pub const NEED_COMMAND: Key = Key::McpNeedCommand;
+pub const NEED_URL: Key = Key::McpNeedUrl;
+pub const BAD_URL: Key = Key::McpBadUrl;
+pub const EMPTY_SECRET_NAME: Key = Key::McpEmptySecretName;
+pub const BAD_SECRET_NAME: Key = Key::McpBadSecretName;
+pub const NEED_SECRET_KEY: Key = Key::McpNeedSecretKey;
+pub const COMMAND_UNAPPROVED: Key = Key::McpCommandUnapproved;
+pub const TOOLS_NEED_APPROVAL: Key = Key::McpToolsNeedApproval;
+pub const COMMAND_RUNS_LOCAL: Key = Key::McpCommandRunsLocal;
+pub const APPROVE_RUN: Key = Key::McpApproveRun;
 
 pub fn approve_failed(reason: &str) -> String {
-    format!("批准失败：{reason}")
+    Key::McpApproveFailed.fill(&[&crate::i18n::host_text(reason)])
 }
 
 pub fn cannot_connect(reason: &str) -> String {
-    format!("连不上：{reason}")
+    Key::CannotConnect.fill(&[&crate::i18n::host_text(reason)])
 }
 
 pub fn failed(reason: &str) -> String {
-    format!("没保存：{reason}")
+    Key::NotSaved.fill(&[&crate::i18n::host_text(reason)])
 }
 
 pub fn tool_count_text(n: Option<u32>) -> String {
     match n {
-        Some(n) => format!("{n} 个工具"),
-        None => "还没数过".into(),
+        Some(n) => tool_count(n),
+        None => Key::McpToolsNotCounted.into(),
     }
 }
 
@@ -89,7 +90,7 @@ pub fn row_subtitle(s: &McpServer) -> String {
 
 pub fn works_text(count: Option<u32>) -> String {
     match count {
-        Some(n) => format!("{WORKS} · {n} 个工具"),
+        Some(n) => format!("{WORKS} · {}", tool_count(n)),
         None => WORKS.into(),
     }
 }
@@ -175,7 +176,11 @@ impl TestState {
                 tool_count: r.tool_count,
             }
         } else {
-            TestState::Failed(r.error.clone().unwrap_or_else(|| "原因不明".into()))
+            TestState::Failed(
+                r.error
+                    .clone()
+                    .unwrap_or_else(|| Key::McpUnknownReason.into()),
+            )
         }
     }
 }
@@ -257,23 +262,23 @@ impl Form {
     pub fn problem(&self) -> Option<&'static str> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Some(EMPTY_NAME);
+            return Some(EMPTY_NAME.as_str());
         }
         if name.chars().count() > 80 || name.contains('\n') || name.contains('\r') {
             return Some(if name.chars().count() > 80 {
-                NAME_TOO_LONG
+                NAME_TOO_LONG.as_str()
             } else {
-                EMPTY_NAME
+                EMPTY_NAME.as_str()
             });
         }
         match self.transport {
-            Transport::Stdio if self.command.trim().is_empty() => Some(NEED_COMMAND),
+            Transport::Stdio if self.command.trim().is_empty() => Some(NEED_COMMAND.as_str()),
             Transport::Http => {
                 let url = self.url.trim();
                 if url.is_empty() {
-                    Some(NEED_URL)
+                    Some(NEED_URL.as_str())
                 } else if !url.starts_with("http://") && !url.starts_with("https://") {
-                    Some(BAD_URL)
+                    Some(BAD_URL.as_str())
                 } else {
                     self.secret_problem()
                 }
@@ -289,14 +294,14 @@ impl Form {
                 continue;
             }
             if name.is_empty() {
-                return Some(EMPTY_SECRET_NAME);
+                return Some(EMPTY_SECRET_NAME.as_str());
             }
             if name.chars().any(char::is_whitespace) {
-                return Some(BAD_SECRET_NAME);
+                return Some(BAD_SECRET_NAME.as_str());
             }
             let is_new = !s.key.has_key;
             if is_new && s.key.to_send().and_then(|k| k).is_none() {
-                return Some(NEED_SECRET_KEY);
+                return Some(NEED_SECRET_KEY.as_str());
             }
         }
         None
@@ -731,6 +736,14 @@ impl Book {
     }
 }
 
+/// "1 tool" / "{n} tools".
+fn tool_count(n: impl Into<u64>) -> String {
+    match n.into() {
+        1 => Key::McpToolCountOne.to_string(),
+        n => Key::McpToolCount.fill(&[&n]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,10 +808,10 @@ mod tests {
         let mut b = book();
         b.open_add();
         assert_eq!(b.save_to_send(), None);
-        assert_eq!(b.form_note.as_deref(), Some(EMPTY_NAME));
+        assert_eq!(b.form_note.as_deref(), Some(EMPTY_NAME.as_str()));
         let f = b.form.as_mut().unwrap();
         f.name = "  文档  ".into();
-        assert_eq!(f.problem(), Some(NEED_COMMAND));
+        assert_eq!(f.problem(), Some(NEED_COMMAND.as_str()));
         f.command = "/usr/bin/docs".into();
         f.args = "  --ok  --quiet ".into();
         let save = f.into_save().unwrap();
@@ -809,15 +822,16 @@ mod tests {
             Some(&["--ok".into(), "--quiet".into()][..])
         );
         f.transport = Transport::Http;
-        assert_eq!(f.problem(), Some(NEED_URL));
+        assert_eq!(f.problem(), Some(NEED_URL.as_str()));
         f.url = "not-a-url".into();
-        assert_eq!(f.problem(), Some(BAD_URL));
+        assert_eq!(f.problem(), Some(BAD_URL.as_str()));
         f.url = "http://127.0.0.1:9".into();
         assert!(f.into_save().is_some());
     }
 
     #[test]
     fn secret_is_masked_and_only_sent_when_changed() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         b.start_edit("s1");
         let f = b.form.as_mut().unwrap();
@@ -843,7 +857,7 @@ mod tests {
             placement: McpSecretIn::Env,
             key: MaskedKey::default(),
         });
-        assert_eq!(f.problem(), Some(NEED_SECRET_KEY));
+        assert_eq!(f.problem(), Some(NEED_SECRET_KEY.as_str()));
         f.secrets[0].key.draft = "abc".into();
         assert!(f.problem().is_none());
     }
@@ -863,6 +877,7 @@ mod tests {
 
     #[test]
     fn save_then_test_shows_ok_or_fail() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         b.open_add();
         let f = b.form.as_mut().unwrap();
@@ -902,6 +917,7 @@ mod tests {
 
     #[test]
     fn tools_mark_which_need_approval() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         assert!(b.open_server("s1"));
         b.tools_loaded(
@@ -950,6 +966,7 @@ mod tests {
 
     #[test]
     fn server_enable_switch_flips_from_known_state() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = book();
         assert_eq!(b.toggle_enabled_to_send("s1"), Some(false));
         assert!(b.busy);
@@ -961,6 +978,7 @@ mod tests {
 
     #[test]
     fn unapproved_stdio_shows_prompt_until_approved_or_cancelled() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = Book::default();
         b.load(vec![unapproved("s3", "回声")]);
         assert!(command_unapproved(
@@ -1011,6 +1029,7 @@ mod tests {
 
     #[test]
     fn unapproved_row_subtitle_explains_why_there_is_no_tool_count() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let s = unapproved("s5", "回声");
         assert_eq!(row_subtitle(&s), TOOLS_NEED_APPROVAL);
         let mut ready = unapproved("s6", "夹具");
@@ -1031,6 +1050,7 @@ mod tests {
 
     #[test]
     fn approve_failure_is_shown_under_the_button() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let mut b = Book::default();
         b.load(vec![unapproved("s3", "回声")]);
         b.show_command_prompt("s3", "echo".into(), vec!["hello".into()]);

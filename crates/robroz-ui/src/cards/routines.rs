@@ -1,6 +1,7 @@
 //! Routines list view model (SPEC §7) built from robroz#15's
 //! `ScheduleEntry`, with optimistic pause toggling.
 
+use crate::i18n::Key;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use robroz_contract::ScheduleEntry;
 
@@ -53,10 +54,10 @@ impl RoutineRow {
     }
 }
 
-pub const PAUSED_TAG: &str = "已暂停";
-pub const TITLE: &str = "例行任务";
-pub const EMPTY_TITLE: &str = "还没有例行任务";
-pub const EMPTY_HINT: &str = "在群里对 bro 说「每天 8 点给我发简报」就会出现在这里";
+pub const PAUSED_TAG: Key = Key::RoutinesPausedTag;
+pub const TITLE: Key = Key::RoutinesTitle;
+pub const EMPTY_TITLE: Key = Key::RoutinesEmptyTitle;
+pub const EMPTY_HINT: Key = Key::RoutinesEmptyHint;
 
 /// Rows plus in-flight pause toggles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,6 +145,7 @@ mod tests {
 
     #[test]
     fn row_from_contract_entry() {
+        let _zh = crate::i18n::scoped(crate::i18n::Locale::Zh);
         let row = RoutineRow::from_entry(&entry("s1", "2026-11-21T08:00:00.000Z", false));
         assert_eq!(row.name, "每日简报");
         assert_eq!(row.group_id, "g1");
