@@ -34,6 +34,20 @@ pub(crate) fn dm_owner(conn: &Connection, group_id: &str) -> rusqlite::Result<Op
         .flatten())
 }
 
+/// The owner's DM with `bot_id`, created if the bro has none yet (bots added
+/// straight into a group by `botId` have no DM). `None` if the bot is unknown.
+pub(crate) fn owner_dm_for(conn: &Connection, bot_id: &str) -> rusqlite::Result<Option<String>> {
+    let Some(name) = conn
+        .query_row("SELECT name FROM bots WHERE id = ?1", [bot_id], |r| r.get::<_, String>(0))
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    ensure_dm(conn, bot_id, &name)?;
+    conn.query_row("SELECT id FROM groups WHERE dm_bot_id = ?1", [bot_id], |r| r.get(0))
+        .optional()
+}
+
 fn clean_name(raw: &str) -> Result<String, &'static str> {
     let name = raw.trim();
     if name.is_empty() {

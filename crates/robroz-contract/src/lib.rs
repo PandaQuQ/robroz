@@ -372,6 +372,11 @@ pub const SETTINGS_APPROVAL_BOT_NAME: &str = "设置";
 /// limit as an approval summary, because the card shows it verbatim).
 pub const REVIEW_RULE_MAX: usize = APPROVAL_SUMMARY_MAX;
 
+/// `progress` on a group's status card while its task waits for an approval
+/// card that the host sent to the owner's DM with that bro instead of the
+/// group. Old clients already show `progress` under 「等你批准」.
+pub const APPROVAL_SENT_TO_OWNER_DM_NOTICE: &str = "已发到主人私聊";
+
 /// Choice cards hold 2 to 4 options with distinct, non-empty values.
 pub const CHOICE_OPTIONS_MIN: usize = 2;
 pub const CHOICE_OPTIONS_MAX: usize = 4;
@@ -1545,6 +1550,7 @@ mod tests {
             serde_json::json!({"approvalId":"a1"})
         );
         assert_eq!(SETTINGS_APPROVAL_BOT_ID, "settings");
+        assert_eq!(APPROVAL_SENT_TO_OWNER_DM_NOTICE, "已发到主人私聊");
         assert_eq!(SETTINGS_APPROVAL_BOT_NAME, "设置");
         let body: CreateReviewRule = serde_json::from_value(serde_json::json!({"text":"x"})).unwrap();
         assert_eq!(body.text, "x");

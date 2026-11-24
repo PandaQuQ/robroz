@@ -292,8 +292,13 @@ On `main` after the auto-review PR (`feat/auto-review`):
   `SETTINGS_APPROVAL_BOT_NAME` (「设置」), and the client reads them with the
   new `GET /api/approvals/{id}`. A card under review returns 404 there and
   on `approve` / `deny`.
-- Not yet: moving approval cards to the owner's DM and the group's
-  「已发到主人私聊」 status (cards still appear in the task's group). Review of
+- Done: task and MCP `call` approval cards go to the owner's DM with the
+  task's bro (created if that bro has none; the task's group if the bro is
+  unknown). The group's status card keeps `waitingFor: approval` and shows
+  `progress` 「已发到主人私聊」 (`APPROVAL_SENT_TO_OWNER_DM_NOTICE`). A task
+  that runs in a DM keeps its card there. Bro-issued cards stay where they
+  were posted.
+- Not yet: review of
   bro-issued `delete` / `send` / `spend` cards (they only expire). A bro
   proposing a rule in conversation, with the card in that bro's DM with the
   owner: there is no bro path for proposing rules yet, so it is not built. The client's expired and rule-card layouts
