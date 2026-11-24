@@ -7,7 +7,7 @@ are built; see Implementation status. The internal Router (PR C) is
 accepted design and is **not built** on `main`. See [Implementation status](#implementation-status).
 Author: PandaQuQ
 
-Existing behaviour below is taken from `main` at `67dde00` (#130) plus [#132](https://github.com/PandaQuQ/robroz/pull/132). This document
+Existing behaviour below is taken from `main` at `7536c31` plus [#132](https://github.com/PandaQuQ/robroz/pull/132). This document
 does not itself change code or the frozen contract. Where a description of
 current code disagrees with [`docs/api.md`](../api.md),
 [`docs/concepts.md`](../concepts.md), or `crates/robroz-contract`, those win.
@@ -53,7 +53,7 @@ human.
 
 ### How robroz does it today
 
-Verified on `main` at `67dde00` plus #132. There is no Router session and no Worker pool.
+Verified on `main` at `7536c31` plus #132. There is no Router session and no Worker pool.
 
 - A person creates work with `POST /api/groups/{id}/say` (`host/src/say.rs`).
   In a DM, every message becomes a new task for that bro (unchanged). In a
@@ -485,7 +485,7 @@ merges. It is not a schedule.
 | --- | --- | --- |
 | Turn-taking on a group message: the bro named by a leading `@name` first (existing fast path), the rest one at a time in join order | Done (#129, `41edf6f`) | Every person's group `/say` opens a round (`host/src/turns.rs`). A silent turn posts nothing, shows no card, adds no unread, and leaves `lastActivityAt` unchanged. See [Implementation status](#implementation-status). |
 | Follow-ups attach to that bro's own still-open task; only genuinely new work creates a task | Done (PR B, #130) | A DM `/say`, or a group `@name`, to a bro with a visible `queued` / `running` / `blocked` task there joins it (`host/src/follow_ups.rs`); the task's next step sees it. |
-| A bro's message also wakes the other bros, with a round cap on recorded `depth` | Done (#132) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. Today only a person's `/say` opens a round (`PERSON_DEPTH` 0). |
+| A bro's message also wakes the other bros, with a round cap on recorded `depth` | Done (#132) | As in Grok Bot, so bros can reply to each other. At the cap the round wraps up, and bros speak only when necessary. A person's `/say` opens round 0 (`PERSON_DEPTH`); a bro's clean reply opens a round one level deeper for the other bros, up to `MAX_BRO_DEPTH = 2`. |
 | Router and Worker as an internal dispatch layer inside one bro | Not yet (PR C, after A and B) | Workers are not room members; they report to that bro; that bro speaks. Today's `@name` and DM paths stay as the fast path. At most three steps; fallback to one Worker; `progress` 「2/3 步」. |
 | Non-blocking model and tool loops, so one long call cannot stall the pump | Done (#118) | Each task's loop runs on its own thread (`host/src/steps.rs`); the pump does not wait. Tools themselves are still synchronous on that thread. |
 | New timeout on a model, tool, or live container, surfaced as today's `done` + `failure` (「模型没回：…」) without changing dead-run semantics | After PR C | A host/pump path, not a Watchdog state change. #118 only hints; it does not cancel the step or stop the container. Not a contract change (see section 3). |
@@ -546,7 +546,7 @@ not a `resume`.
 
 ## Implementation status
 
-Verified on `main` at `67dde00` plus #132 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
+Verified on `main` at `7536c31` plus #132 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
 `host/src/pump.rs`, `host/src/unread.rs`).
 
 - Done ([#129](https://github.com/PandaQuQ/robroz/pull/129), merged as
@@ -679,7 +679,7 @@ of source text or code.
   that the prototype is for reference, is not an official DeepSeek product,
   and is not identical to the writeup.
 
-robroz behaviour cited above was checked against the tree at `67dde00` plus #132 on
+robroz behaviour cited above was checked against the tree at `7536c31` plus #132 on
 `main`, in particular `host/src/say.rs`, `host/src/turns.rs`,
 `host/src/pump.rs`, `host/src/unread.rs`,
 `host/src/main.rs`, `host/src/tools.rs`, `host/src/steps.rs`,
