@@ -414,8 +414,12 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+        // Answers every request the same way: a live model also gets the
+        // Router's split call before the task's own call.
+        std::thread::spawn(move || loop {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut head = String::new();
             let mut len = 0;
@@ -433,7 +437,7 @@ mod tests {
             let mut buf = vec![0; len];
             reader.read_exact(&mut buf).unwrap();
             head.push_str(&String::from_utf8(buf).unwrap());
-            tx.send(head).unwrap();
+            let _ = tx.send(head);
             let mut stream = stream;
             write!(
                 stream,

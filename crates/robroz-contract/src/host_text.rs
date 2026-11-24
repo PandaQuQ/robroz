@@ -285,8 +285,38 @@ pub fn using_tool(name: &str) -> String {
     format!("{PROGRESS_USING_PREFIX}{name}")
 }
 
+/// Task progress while a task split by the Router runs step `n` of `m`:
+/// 「{n}/{m} 步」. It is the whole `progress` text, never combined with other
+/// text, and only set while the task is `running` with its container up.
+/// Clients can spot it with [`parse_router_step_progress`].
+pub fn router_step_progress(n: usize, m: usize) -> String {
+    format!("{n}/{m} 步")
+}
+
+/// `Some((n, m))` when `progress` is exactly [`router_step_progress`]`(n, m)`.
+pub fn parse_router_step_progress(progress: &str) -> Option<(usize, usize)> {
+    let (n, m) = progress.strip_suffix(" 步")?.split_once('/')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(n) || !digits(m) {
+        return None;
+    }
+    let (n, m) = (n.parse().ok()?, m.parse().ok()?);
+    (n >= 1 && n <= m).then_some((n, m))
+}
+
 /// Every host-written client string, as `(constant name, text)`. Includes
 /// the older constants at the crate root that the host also writes.
+/// Lines built at run time ([`step_timeout_hint`], [`stall_hint`],
+/// [`using_tool`], [`router_step_progress`]) are functions, not listed here.
+/// Tool result when a tool call returns an error, before the error text.
+/// The host hands it to the model as the tool's result
+/// (`host/src/tools.rs`); it is listed here because a reply can carry it
+/// onto a card.
+pub const TOOL_CALL_FAILED_PREFIX: &str = "调用失败：";
+/// Tool result when an approved call still hits the approval gate
+/// (`host/src/tools.rs`).
+pub const TOOL_STILL_NEEDS_APPROVAL: &str = "调用失败：这个工具还需要批准";
+
 pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("GROUP_NOT_FOUND", GROUP_NOT_FOUND),
     ("BOT_NOT_IN_GROUP", BOT_NOT_IN_GROUP),
@@ -397,6 +427,8 @@ pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("PROGRESS_THINKING", PROGRESS_THINKING),
     ("PROGRESS_IN_SANDBOX", PROGRESS_IN_SANDBOX),
     ("PROGRESS_USING_PREFIX", PROGRESS_USING_PREFIX),
+    ("TOOL_CALL_FAILED_PREFIX", TOOL_CALL_FAILED_PREFIX),
+    ("TOOL_STILL_NEEDS_APPROVAL", TOOL_STILL_NEEDS_APPROVAL),
     ("WATCHDOG_STEP_TIMEOUT_PREFIX", WATCHDOG_STEP_TIMEOUT_PREFIX),
     ("WATCHDOG_STEP_TIMEOUT_SUFFIX", WATCHDOG_STEP_TIMEOUT_SUFFIX),
     ("WATCHDOG_STALL_SUFFIX", WATCHDOG_STALL_SUFFIX),
@@ -489,5 +521,27 @@ mod tests {
         assert_eq!(step_timeout_hint(10), "模型和工具还没回，已等 10 分钟");
         assert_eq!(stall_hint(15), "15 分钟没有新进度");
         assert_eq!(using_tool("web_search"), "在用 web_search");
+        assert_eq!(router_step_progress(2, 3), "2/3 步");
+    }
+
+    #[test]
+    fn router_step_progress_round_trips() {
+        for (n, m) in [(1, 2), (2, 3), (3, 3)] {
+            assert_eq!(
+                parse_router_step_progress(&router_step_progress(n, m)),
+                Some((n, m))
+            );
+        }
+        for text in [
+            "2/3步",
+            "x/3 步",
+            "0/3 步",
+            "4/3 步",
+            "/3 步",
+            "在用 2/3 步",
+            "2/3 步 ",
+        ] {
+            assert_eq!(parse_router_step_progress(text), None, "{text}");
+        }
     }
 }
