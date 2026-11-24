@@ -1,6 +1,6 @@
 # 记忆和技能
 
-bro 记住的关于你的事（记忆），和 bro 会的做法（技能）。两者都只是拼进模型 system 提示的文字，不开放任何权限；权限只由 [permissions.md](permissions.md) 里的策略决定。接口字段和报错见 [api.md 的「记忆」「技能」「确认卡」](api.md#记忆)，客户端页面见 [client.md](client.md#记忆页)。
+bro 记住的关于你的事（记忆），和 bro 会的做法（技能）。两者都只是拼进模型 system 提示的文字，不开放任何权限；权限只由 [permissions.md](permissions.md) 里的策略决定。接口字段和报错见 [api.md 的「记忆」「技能」「确认卡」](api.md#记忆)，客户端页面见 [client.md](client.md#memories-page)。
 
 ## 记忆
 

@@ -415,7 +415,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 - `"search"`：任务调用了 `web_search` 但还没设置联网搜索（`web_fetch` 不会记）。一般情况下任务照常写出结果，只带 `needsSetup` 不带 `failure`。
 - `"model"`：还没设置模型（也没有打开测试开关 `ROBROZ_MODEL=echo`）。结果文件是「还没设置模型」，不把 prompt 原样写成结果。
 
-客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#联网搜索页)；模型见 [client.md 的「模型页」](client.md#模型页)。
+客户端应按这个字段引导用户去填对应的设置，不要匹配文字。搜索的客户端做法见 [client.md 的「联网搜索页」](client.md#web-search-page)；模型见 [client.md 的「模型页」](client.md#model-page)。
 
 ---
 
