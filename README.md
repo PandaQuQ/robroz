@@ -28,6 +28,7 @@ The desktop client UI is English by default. Switch to 中文 with the Language 
 - **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
 - **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
+- **Bigger tasks in steps.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
 - **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
@@ -40,7 +41,6 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
-- An internal Router inside one bro (at most three sub-steps, one status card, one delivery).
 - Cancelling a timed-out step or stopping the container.
 
 ## Quick start
