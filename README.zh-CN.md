@@ -147,6 +147,7 @@ cargo deny check advisories   # 只报告，不挡合并
 - 每位贡献者都要签一次[贡献者许可协议](CLA.md)：勾选 pull request 模板里的 CLA 框，或把 `CLA.md` 里那行声明加到正文里。没有签署的 pull request 不会合并。
 - 提交信息、pull request 标题和正文都用英文，按 [Conventional Commits](https://www.conventionalcommits.org/) 写：`feat(host): …`、`fix(client): …`、`docs: …`。pull request 用 squash merge 合并，标题就是合并后的提交信息。
 - 契约只增不改：可以新增卡片类型、接口和可选字段；已有字段、任务状态和 `botId` / `botName` 都冻住不改。
+- `main` 受保护：只能通过 pull request 合入，五个 CI 检查（`host`、`cla`、`client (ubuntu-latest)`、`e2e`、`cargo-deny`）全部通过才能合并，管理员也不能绕过。
 - 不 force-push。分支落后时把 `main` merge 进来。
 - 不提交 `.env`、`.pem`、`.dev.vars`、密钥或令牌。
 - `README.md` 和 `README.zh-CN.md` 保持一致，在同一个 pull request 里一起改。
