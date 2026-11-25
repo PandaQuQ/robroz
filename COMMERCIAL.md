@@ -9,9 +9,9 @@ The copyright holder can offer both because every contributor signs the [Contrib
 
 ## What the commercial licence covers
 
-The commercial licence covers the host and what it runs: `host/`, `runner/`, `deploy/`, and the shared crates the host builds on (`crates/robroz-contract`, `crates/robroz-policy`, `crates/robroz-card`, `crates/robroz-model`, `crates/robroz-mcp`).
+The commercial licence covers this repository, [PandaQuQ/robroz](https://github.com/PandaQuQ/robroz): the host, the runner, the deployment files and the shared crates, including `robroz-contract`.
 
-The clients are not covered and are available only under the AGPL-3.0: the desktop client (`client/`), the mobile client (`mobile/`), and the client-only crates (`crates/robroz-ui`, `crates/robroz-tokens`). The copyright holder does not sell a commercial licence for them. The clients use [Slint](https://slint.dev) under its GPL-3.0 option, which is compatible with the AGPL-3.0.
+The clients in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) (desktop and mobile) are not covered and are available only under the AGPL-3.0. The copyright holder does not sell a commercial licence for them.
 
 ## What the AGPL asks of you
 
@@ -47,9 +47,9 @@ robroz 的宿主机采用双许可，客户端只有开源许可：
 1. **开源许可：AGPL-3.0-only。** 任何人都可以使用、学习、修改和分享，包括商用，前提是遵守 AGPL：保留版权和许可证声明；分发软件（包括改过的版本）时要同时提供完整源码；基于 robroz 的作品整体也必须用 AGPL-3.0；**第 13 条：把改过的 robroz 通过网络给别人用（比如做成在线服务），也必须向这些用户免费提供改过的完整源码**，不分发安装包也不能免除。
 2. **商业授权。** 想闭源使用、私下修改后对外提供服务、或者和 AGPL 不兼容的代码合在一起，需要向著作权人 PandaQuQ 单独购买宿主机的商业授权。
 
-商业授权覆盖宿主机及其运行的部分：`host/`、`runner/`、`deploy/`，以及宿主机依赖的共享 crate（`crates/robroz-contract`、`crates/robroz-policy`、`crates/robroz-card`、`crates/robroz-model`、`crates/robroz-mcp`）。
+商业授权覆盖本仓库 [PandaQuQ/robroz](https://github.com/PandaQuQ/robroz)：宿主机、runner、部署文件和共享 crate（包括 `robroz-contract`）。
 
-客户端不在商业授权范围内，只用 AGPL-3.0：桌面客户端（`client/`）、手机客户端（`mobile/`）和只给客户端用的 crate（`crates/robroz-ui`、`crates/robroz-tokens`）。著作权人不单独出售客户端的商业授权。客户端按 GPL-3.0 选项使用 [Slint](https://slint.dev)，与 AGPL-3.0 兼容。
+[PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) 里的客户端（桌面和手机）不在商业授权范围内，只用 AGPL-3.0。著作权人不单独出售客户端的商业授权。
 
 原样使用，或者愿意把全部改动按 AGPL-3.0 公开的，即使是商用也不需要商业授权。所有贡献者都签了[贡献者许可协议](CLA.md)，所以著作权人可以同时提供这两种许可。
 
