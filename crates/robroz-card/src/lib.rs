@@ -16,7 +16,10 @@ pub struct Appearance {
 
 /// The dead-run line. The host ends a dead run as `done` with exactly this
 /// `failure`; older data may still have it as `running` with no container.
-pub const NO_RESULT: &str = "没写出结果";
+///
+/// The text lives in `robroz_contract::legacy` so the host does not need this
+/// crate; this is the same constant.
+pub const NO_RESULT: &str = robroz_contract::legacy::NO_RESULT;
 
 /// The grey line for a `done` task that carries a `failure`. A dead run shows
 /// [`NO_RESULT`] as it is; every other reason reads 「没做成：原因」.
@@ -167,6 +170,25 @@ mod tests {
         assert_eq!(status_line(TaskState::Running, false), "没写出结果");
         assert_eq!(status_line(TaskState::Done, false), "完成");
         assert_eq!(status_line(TaskState::Blocked, false), "卡住");
+    }
+
+    #[test]
+    fn card_copy_is_the_contract_legacy_copy() {
+        for state in [
+            TaskState::Queued,
+            TaskState::Running,
+            TaskState::Blocked,
+            TaskState::Done,
+        ] {
+            for up in [false, true] {
+                assert_eq!(
+                    status_line(state, up),
+                    robroz_contract::legacy::status_line(state, up)
+                );
+            }
+        }
+        assert_eq!(NO_RESULT, robroz_contract::legacy::NO_RESULT);
+        assert_eq!(briefing_badge(), robroz_contract::legacy::briefing_badge());
     }
 
     #[test]

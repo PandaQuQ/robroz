@@ -154,6 +154,9 @@ mod tests {
             failure: None,
             waiting_for: None,
             progress: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         }
     }
 
@@ -245,6 +248,8 @@ mod tests {
             kind: robroz_contract::MessageKind::Text,
             body: "hi".into(),
             created_at: "2026-11-20T10:00:00.000Z".into(),
+            author_user_id: None,
+            author_name: None,
         };
         assert!(StatusCard::from_event(&msg).is_none());
         assert_eq!(latest_status(&[msg]), None);
