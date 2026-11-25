@@ -695,7 +695,7 @@ mod tests {
             ConnError::Unreachable(robroz_ui::i18n::Key::ClientConnectionRefused.to_string())
         );
         let shown = ConnError::Unauthorized.to_string();
-        assert_eq!(shown, "The host rejected the token. Check `ROBROZ_TOKEN`.");
+        assert_eq!(shown, "The host rejected the token. Check ROBROZ_TOKEN.");
         let reach = ConnError::Unreachable("Connection refused".into()).to_string();
         assert!(
             reach.starts_with("Can't reach host."),

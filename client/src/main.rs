@@ -2490,6 +2490,9 @@ impl App {
     /// Save (when the fields are not env-locked) and probe the host off the
     /// UI thread, then rebuild [`Conn`] with [`Conn::from_env`].
     fn start_connect(&mut self) -> Task<Message> {
+        if !self.conn_form.connect_enabled() {
+            return Task::none();
+        }
         self.conn_form.connecting = true;
         self.conn_form.error = None;
         // Pause the unreachable-pane auto-retry while this attempt is in flight.
@@ -2686,23 +2689,15 @@ impl App {
     fn page_view(&self, t: &Skin) -> Element<'_, Message> {
         let state = self.host_state();
         if !state.shows_sidebar() {
-            // Before the host answers: blank while waiting, or 「连不上宿主」
-            // with the address on a lighter line below, a short reason
-            // 12px to the right when we have one, and the same Language
-            // row as the Model page so the language can still be changed.
-            let notice = state.notice().map(|key| {
-                let mut detail = row![text(self.origin.as_str())
+            // Before the host answers: blank while waiting, or a headline
+            // that follows the error (「令牌被拒绝」 / 「连不上宿主」) with
+            // only the address on a lighter line below. The reason is
+            // shown once, under the connection form. The Language row is
+            // the same control as the Model page.
+            let notice = state.notice(self.error.as_deref()).map(|key| {
+                let detail = text(self.origin.as_str())
                     .size(t.type_.foot)
-                    .color(color(t.palette.text3))]
-                .spacing(12)
-                .align_y(Alignment::Center);
-                if let Some(reason) = self.error.as_deref().and_then(host_state::connect_reason) {
-                    detail = detail.push(
-                        text(reason)
-                            .size(t.type_.foot)
-                            .color(color(t.palette.text3)),
-                    );
-                }
+                    .color(color(t.palette.text3));
                 let head = column![
                     text(key).size(t.type_.body).color(color(t.palette.text)),
                     detail,

@@ -174,11 +174,11 @@ mod tests {
         );
         assert_eq!(
             text_in(Locale::En, Key::ClientTokenRejected),
-            "The host rejected the token. Check `ROBROZ_TOKEN`."
+            "The host rejected the token. Check ROBROZ_TOKEN."
         );
         assert_eq!(
             text_in(Locale::Zh, Key::ClientTokenRejected),
-            "宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。"
+            "宿主拒绝了令牌，请检查 ROBROZ_TOKEN。"
         );
         // The token itself never appears in the message.
         assert!(!unauthorized_message()

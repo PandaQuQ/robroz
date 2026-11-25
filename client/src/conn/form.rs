@@ -140,6 +140,15 @@ impl ConnForm {
         self.token == TokenState::Env
     }
 
+    /// Both fields are set by the environment: Connect would write nothing.
+    pub fn both_env_locked(&self) -> bool {
+        self.host_locked() && self.token_locked()
+    }
+
+    pub fn connect_enabled(&self) -> bool {
+        !self.connecting && !self.both_env_locked()
+    }
+
     pub fn set_host(&mut self, host: String) {
         if !self.host_locked() {
             self.host = host;
@@ -245,7 +254,7 @@ pub fn is_insecure_remote(host: &str) -> bool {
 /// The connection form, as wide as its parent (Language row width).
 pub fn view<'a>(t: &Skin, form: &'a ConnForm) -> Element<'a, Event> {
     let pad = Padding::from([t.metrics.row_pad_h * 0.75, t.metrics.row_pad_h]);
-    let mut body = column![].spacing(10);
+    let mut fields = column![].spacing(10);
 
     let mut host = text_input(DEFAULT_HOST, &form.host)
         .size(t.type_.body)
@@ -264,7 +273,7 @@ pub fn view<'a>(t: &Skin, form: &'a ConnForm) -> Element<'a, Event> {
     if is_insecure_remote(&form.host) {
         host_block = host_block.push(caption(t, Text::ConnUnencryptedHint.as_str()));
     }
-    body = body.push(host_block);
+    fields = fields.push(host_block);
 
     let token_value = form.token_value();
     let mut token = text_input("", token_value)
@@ -301,26 +310,36 @@ pub fn view<'a>(t: &Skin, form: &'a ConnForm) -> Element<'a, Event> {
     if form.token_locked() {
         token_block = token_block.push(caption(t, Text::ConnSetByToken.as_str()));
     }
-    body = body.push(token_block);
+    fields = fields.push(token_block);
 
     let (btn_label, btn_enabled) = if form.connecting {
         (Text::ConnConnecting.as_str(), false)
     } else {
-        (Text::ConnConnect.as_str(), true)
+        (Text::ConnConnect.as_str(), form.connect_enabled())
     };
-    body = body.push(connect_button(
+    let mut action = column![connect_button(
         t,
         btn_label,
         btn_enabled.then_some(Event::Connect),
-    ));
-
+    )]
+    .spacing(10);
     if let Some(err) = &form.error {
-        body = body.push(
+        action = action.push(
             text(err.line())
                 .size(ERROR_SIZE)
                 .color(color(t.palette.accent)),
         );
     }
+    // 12px between the Token block and Connect (UI review).
+    let body = column![
+        fields,
+        container(action).padding(Padding {
+            top: 12.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0
+        }),
+    ];
 
     container(container(body).padding(pad).width(Fill))
         .width(Fill)
@@ -407,9 +426,15 @@ fn connect_button<'a>(
         .size(t.type_.button)
         .font(view::bold())
         .color(fade(t.palette.on_accent, alpha));
-    let mut btn = button(label)
+    // Same height as Settings Save (`button_h` = 32). Centre the label
+    // inside a padded container so the glyphs don't sit high.
+    let visual = container(label)
         .height(Length::Fixed(t.controls.button_h))
         .padding(Padding::from([0.0, t.controls.button_px]))
+        .align_y(Alignment::Center);
+    let mut btn = button(visual)
+        .padding(0)
+        .height(Length::Fixed(t.controls.button_h))
         .style(move |_, status: button::Status| {
             let fill = match status {
                 button::Status::Hovered | button::Status::Pressed => t.palette.accent_hover,
@@ -496,6 +521,25 @@ mod tests {
         assert!(is_insecure_remote("http://example.invalid:8790"));
         assert!(is_insecure_remote("http://192.168.1.8:8790"));
         assert!(!is_insecure_remote("example.invalid"));
+    }
+
+    #[test]
+    fn connect_is_disabled_when_both_fields_are_env_locked() {
+        let both = form(DEFAULT_HOST, Source::Env, TokenState::Env);
+        assert!(both.both_env_locked());
+        assert!(!both.connect_enabled());
+
+        let host_only = form(DEFAULT_HOST, Source::Env, TokenState::None);
+        assert!(!host_only.both_env_locked());
+        assert!(host_only.connect_enabled());
+
+        let token_only = form(DEFAULT_HOST, Source::Default, TokenState::Env);
+        assert!(!token_only.both_env_locked());
+        assert!(token_only.connect_enabled());
+
+        let mut connecting = form(DEFAULT_HOST, Source::Default, TokenState::None);
+        connecting.connecting = true;
+        assert!(!connecting.connect_enabled());
     }
 
     #[test]
