@@ -1144,6 +1144,18 @@ pub enum Event {
         /// means the user has not set up web search. Absent otherwise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         needs_setup: Option<String>,
+        /// Added after the freeze: the task this delivery belongs to.
+        /// Absent when unknown, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+        /// Added after the freeze: the bro that produced this delivery.
+        /// Absent when unknown, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bot_id: Option<String>,
+        /// Added after the freeze: the bro's display name, for attributing the card.
+        /// Absent when unknown, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bot_name: Option<String>,
     },
     /// Added after the node-1 freeze; the three types above are unchanged.
     /// `choice` and `answeredAt` are always present and `null` until answered.
@@ -1886,6 +1898,9 @@ mod tests {
             created_at: "2026-10-03T19:00:02.000Z".into(),
             failure: Some("模型没回：模型服务返回 500".into()),
             needs_setup: None,
+            task_id: None,
+            bot_id: None,
+            bot_name: None,
         };
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["failure"], "模型没回：模型服务返回 500");
@@ -1916,6 +1931,9 @@ mod tests {
             created_at: "2026-10-03T19:00:02.000Z".into(),
             failure: None,
             needs_setup: Some("search".into()),
+            task_id: None,
+            bot_id: None,
+            bot_name: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["needsSetup"], "search");
@@ -1933,6 +1951,9 @@ mod tests {
                 created_at: "2026-10-03T19:00:02.000Z".into(),
                 failure: None,
                 needs_setup: None,
+                task_id: None,
+                bot_id: None,
+                bot_name: None,
             },
             serde_json::json!({
                 "type": "delivery",
@@ -1943,6 +1964,62 @@ mod tests {
                 "createdAt": "2026-10-03T19:00:02.000Z"
             }),
         );
+    }
+
+    #[test]
+    fn delivery_bot_fields_are_optional() {
+        let old = serde_json::json!({
+            "type": "delivery",
+            "id": "d1",
+            "summary": "草图",
+            "path": "out/sketch.png",
+            "briefing": true,
+            "createdAt": "2026-10-03T19:00:02.000Z"
+        });
+        let event: Event = serde_json::from_value(old.clone()).unwrap();
+        let Event::Delivery {
+            task_id,
+            bot_id,
+            bot_name,
+            ..
+        } = event.clone()
+        else {
+            panic!("expected a delivery");
+        };
+        assert_eq!(task_id, None);
+        assert_eq!(bot_id, None);
+        assert_eq!(bot_name, None);
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value, old,
+            "old JSON without the fields still deserializes and re-serializes unchanged"
+        );
+        // Canonical (sorted-key) bytes match; the new keys are not added.
+        assert_eq!(
+            serde_json::to_vec(&value).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(!text.contains("taskId") && !text.contains("botId") && !text.contains("botName"));
+
+        let mut with = old.clone();
+        with["taskId"] = "t1".into();
+        with["botId"] = "bot-ada".into();
+        with["botName"] = "Ada".into();
+        let event: Event = serde_json::from_value(with.clone()).unwrap();
+        let Event::Delivery {
+            task_id,
+            bot_id,
+            bot_name,
+            ..
+        } = &event
+        else {
+            panic!("expected a delivery");
+        };
+        assert_eq!(task_id.as_deref(), Some("t1"));
+        assert_eq!(bot_id.as_deref(), Some("bot-ada"));
+        assert_eq!(bot_name.as_deref(), Some("Ada"));
+        assert_round_trip(&event, with);
     }
 
     #[test]

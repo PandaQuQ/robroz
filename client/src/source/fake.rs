@@ -416,6 +416,9 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
             created_at: at("03"),
             failure: None,
             needs_setup: None,
+            task_id: None,
+            bot_id: None,
+            bot_name: None,
         },
         approval_extras: None,
     }
