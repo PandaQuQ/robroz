@@ -434,21 +434,14 @@ pub fn nav_button_style(
     }
 }
 
-/// Dark selected fill and text for the Language / Appearance segmented
-/// control. These are not in `tokens.json`: the closest dark line colour
-/// is `border` (`#2d3139`), and dark `text` is `#f4f1ea`. The designer
-/// asked for these two values so the selected chip reads as raised,
-/// instead of the near-black `control_checked` which sat darker than
-/// the card and looked like a hole. Light mode is unchanged.
-const DARK_SEGMENT_SELECTED: Rgb = [0x2f, 0x32, 0x36];
-const DARK_SEGMENT_SELECTED_TEXT: Rgb = [0xec, 0xe8, 0xdf];
-
-/// Fill and text of a selected segment: the raised dark pair above, or
-/// the existing `control_checked` / `text` tokens in light mode.
-fn segment_selected(mode: Mode, control_checked: Rgb, text: Rgb) -> (Rgb, Rgb) {
-    match mode {
-        Mode::Dark => (DARK_SEGMENT_SELECTED, DARK_SEGMENT_SELECTED_TEXT),
-        Mode::Light => (control_checked, text),
+/// Fill and text of a selected Language / Appearance segment. Dark uses
+/// the solid-skin line colour ([`robroz_tokens::DARK`] `border`, the same
+/// value as `divider` in the tokens) and `text`. Light keeps the skin's
+/// `control_checked` and `text`.
+fn segment_selected(t: &Skin) -> (Rgb, Rgb) {
+    match t.mode {
+        Mode::Dark => (robroz_tokens::DARK.border, robroz_tokens::DARK.text),
+        Mode::Light => (t.palette.control_checked, t.palette.text),
     }
 }
 
@@ -461,7 +454,7 @@ pub fn segment_button_style(
 ) -> impl Fn(&IcedTheme, button::Status) -> button::Style {
     move |_, status| {
         let (bg, text) = if selected {
-            let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
+            let (fill, text) = segment_selected(&t);
             (Some(Background::Color(color(fill))), color(text))
         } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
             (
@@ -482,15 +475,15 @@ pub fn segment_button_style(
 
 #[cfg(test)]
 mod segment_tests {
-    use super::{segment_selected, DARK_SEGMENT_SELECTED, DARK_SEGMENT_SELECTED_TEXT};
-    use crate::theme::{Mode, Skin};
+    use super::segment_selected;
+    use crate::theme::Skin;
 
     #[test]
-    fn dark_selected_segment_uses_the_raised_fill_and_text() {
+    fn dark_selected_segment_uses_the_dark_line_and_text_tokens() {
         let t = Skin::dark();
-        let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
-        assert_eq!(fill, DARK_SEGMENT_SELECTED);
-        assert_eq!(text, DARK_SEGMENT_SELECTED_TEXT);
+        let (fill, text) = segment_selected(&t);
+        assert_eq!(fill, robroz_tokens::DARK.border);
+        assert_eq!(text, robroz_tokens::DARK.text);
         // Brighter than both the card and the old near-black checked fill,
         // so the chip no longer reads as a hole.
         assert!(luma(fill) > luma(t.palette.surface));
@@ -500,7 +493,7 @@ mod segment_tests {
     #[test]
     fn light_selected_segment_keeps_the_existing_tokens() {
         let t = Skin::light();
-        let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
+        let (fill, text) = segment_selected(&t);
         assert_eq!(fill, t.palette.control_checked);
         assert_eq!(text, t.palette.text);
     }
