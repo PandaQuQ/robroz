@@ -307,10 +307,70 @@ fn faded(c: Rgb, alpha: f32) -> Color {
     c
 }
 
+/// The UI font family. macOS and Windows name a Chinese-capable system
+/// font that fontdb can actually index, so every glyph of a CJK string
+/// comes from one font; left to the generic family (or a family fontdb
+/// cannot open), the text engine falls back glyph by glyph and mixes
+/// weights and even picks look-alike wrong characters (「发送」 → 「发遞」).
+///
+/// On macOS this is Hiragino Sans GB, from
+/// `/System/Library/Fonts/Hiragino Sans GB.ttc` (W3 regular, W6 bold).
+/// PingFang SC is not used: on recent macOS it lives in a hidden asset
+/// path that fontdb does not index, so naming it fell back per glyph.
+/// On Windows this is Microsoft YaHei UI. Elsewhere (Linux) it stays
+/// the generic sans-serif.
+pub const fn ui_family() -> font::Family {
+    #[cfg(target_os = "macos")]
+    {
+        font::Family::Name("Hiragino Sans GB")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        font::Family::Name("Microsoft YaHei UI")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        font::Family::SansSerif
+    }
+}
+
+/// Regular-weight UI font; also the application's default font.
+pub const fn regular() -> Font {
+    Font {
+        family: ui_family(),
+        ..Font::DEFAULT
+    }
+}
+
+/// Bold UI font, same family as [`regular`]. On macOS, `Weight::Bold`
+/// should resolve to the W6 face in `Hiragino Sans GB.ttc`.
 pub fn bold() -> Font {
     Font {
         weight: font::Weight::Bold,
-        ..Font::DEFAULT
+        ..regular()
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::{bold, regular, ui_family};
+    use iced::font::{self, Family};
+
+    #[test]
+    fn ui_family_is_a_fontdb_discoverable_system_font() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(ui_family(), Family::Name("Hiragino Sans GB"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(ui_family(), Family::Name("Microsoft YaHei UI"));
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(ui_family(), Family::SansSerif);
+    }
+
+    #[test]
+    fn bold_uses_the_same_family_as_regular() {
+        assert_eq!(regular().family, ui_family());
+        assert_eq!(bold().family, ui_family());
+        assert_eq!(bold().weight, font::Weight::Bold);
     }
 }
 
@@ -411,6 +471,80 @@ pub fn status_card_style(
     }
 }
 
+/// Chat bubble: own = ink fill (inverted on dark), a bro's = surface with a
+/// 1px border. 16px corners, 4px on the sender's top corner when `first` in
+/// its group.
+pub fn bubble_style(t: Skin, own: bool, first: bool) -> impl Fn(&IcedTheme) -> container::Style {
+    move |_| {
+        let c = &t.chat;
+        let mut radius = iced::border::radius(c.radius);
+        if first {
+            radius = if own {
+                radius.top_right(c.corner)
+            } else {
+                radius.top_left(c.corner)
+            };
+        }
+        let (bg, fg, border) = if own {
+            (c.own_bg, c.own_text, Border::default())
+        } else {
+            (
+                c.bro_bg,
+                t.palette.text,
+                Border::default()
+                    .width(t.stroke.card)
+                    .color(color(c.bro_border)),
+            )
+        };
+        container::Style {
+            background: Some(color(bg).into()),
+            text_color: Some(color(fg)),
+            border: border.rounded(radius),
+            ..container::Style::default()
+        }
+    }
+}
+
+/// Padding inside a bubble (10 / 14).
+pub fn bubble_padding(t: &Skin) -> Padding {
+    Padding::from([t.chat.pad_v, t.chat.pad_h])
+}
+
+/// Attachment chip inside an own bubble: pill with a thin outline.
+pub fn chip_style(t: Skin) -> impl Fn(&IcedTheme) -> container::Style {
+    move |_| container::Style {
+        border: Border::default()
+            .width(1.0)
+            .color(color(t.chat.own_chip))
+            .rounded(999.0),
+        ..container::Style::default()
+    }
+}
+
+/// Small round avatar for a bro in the chat feed: accent ring, initial.
+pub fn chat_avatar<'a, M: 'a>(t: &Skin, name: &str) -> Element<'a, M> {
+    let size = t.chat.avatar;
+    let ring = t.chat.accent;
+    container(
+        text(conversations::initial(name))
+            .size(t.type_.foot)
+            .font(bold())
+            .color(color(ring)),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(move |_| container::Style {
+        border: Border::default()
+            .width(1.5)
+            .color(color(ring))
+            .rounded(size / 2.0),
+        ..container::Style::default()
+    })
+    .into()
+}
+
 pub fn status_card_padding(t: &Skin) -> Padding {
     Padding::from([t.metrics.status_pad_v, t.metrics.status_pad_h])
 }
@@ -420,6 +554,39 @@ pub fn card_padding(t: &Skin) -> Padding {
 }
 
 // ---------- Pieces ----------
+
+pub fn status_dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
+    dot(t, d)
+}
+
+/// A status dot in an arbitrary colour (the running card uses the chat accent).
+pub fn rgb_dot<'a, M: 'a>(t: &Skin, rgb: Rgb) -> Element<'a, M> {
+    let c = color(rgb);
+    let size = t.metrics.dot;
+    container(Space::new().width(size).height(size))
+        .style(move |_| container::Style {
+            background: Some(c.into()),
+            border: Border::default().rounded(size / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Take over in DM: outlined like Deny / Edit, 1px line border, ink text.
+pub fn takeover_button_style(t: Skin) -> impl Fn(&IcedTheme, button::Status) -> button::Style {
+    move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: hovered.then_some(color(t.palette.control_hover).into()),
+            text_color: color(t.palette.text),
+            border: Border::default()
+                .width(t.stroke.card)
+                .color(color(t.chat.bro_border))
+                .rounded(t.radii.button),
+            ..button::Style::default()
+        }
+    }
+}
 
 fn dot<'a, M: 'a>(t: &Skin, d: Dot) -> Element<'a, M> {
     let c = color(t.dot(d));
@@ -440,7 +607,22 @@ fn header<'a>(
     ui: &CardUi,
     label: &'static str,
     d: Dot,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
+    let status = row![
+        dot(t, d),
+        text(label)
+            .size(t.type_.status)
+            .color(color(t.palette.text2)),
+    ]
+    .spacing(t.metrics.dot_gap)
+    .align_y(Alignment::Center);
+    // In the chat feed the avatar already shows the bro; the first line
+    // is only the status (and "Sent to owner's DM" under it on a group
+    // approval card).
+    if hide_bot {
+        return status.into();
+    }
     let name = |s: String| {
         text(s)
             .size(t.type_.bot)
@@ -472,25 +654,14 @@ fn header<'a>(
         }
         None => name(bot.to_string()).into(),
     };
-    row![
-        bot_name,
-        space::horizontal(),
-        row![
-            dot(t, d),
-            text(label)
-                .size(t.type_.status)
-                .color(color(t.palette.text2)),
-        ]
-        .spacing(t.metrics.dot_gap)
-        .align_y(Alignment::Center),
-    ]
-    .height(Length::Fixed(t.metrics.head_height.max(if t.narrow {
-        t.controls.touch_target
-    } else {
-        0.0
-    })))
-    .align_y(Alignment::Center)
-    .into()
+    row![bot_name, space::horizontal(), status,]
+        .height(Length::Fixed(t.metrics.head_height.max(if t.narrow {
+            t.controls.touch_target
+        } else {
+            0.0
+        })))
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn body<'a, M: 'a>(t: &Skin, s: &'a str) -> Element<'a, M> {
@@ -714,11 +885,33 @@ fn btn<'a>(
     leading: Leading,
     on_press: Option<Action>,
 ) -> Element<'a, Action> {
+    btn_padded(t, label, look, leading, on_press, t.controls.button_px)
+}
+
+/// Padding of a 「去私聊接管」 / Take over in DM button: 6 vertical, 12
+/// horizontal, on every platform.
+pub const TAKE_OVER_PAD: [f32; 2] = [6.0, 12.0];
+
+/// Gap between the status dot and the status word (or "Step n of m")
+/// on a status card.
+pub const STATUS_DOT_TEXT_GAP: f32 = 8.0;
+
+fn btn_padded<'a>(
+    t: &Skin,
+    label: String,
+    look: Look,
+    leading: Leading,
+    on_press: Option<Action>,
+    pad_h: f32,
+) -> Element<'a, Action> {
     let t = *t;
     let enabled = on_press.is_some();
-    let strong = matches!(look, Look::Primary | Look::Selected | Look::Danger);
-    let faded_out =
-        look == Look::Disabled || (!enabled && matches!(look, Look::Primary | Look::Danger));
+    let strong = matches!(
+        look,
+        Look::Primary | Look::Ink | Look::Selected | Look::Danger
+    );
+    let faded_out = look == Look::Disabled
+        || (!enabled && matches!(look, Look::Primary | Look::Ink | Look::Danger));
     let alpha = if faded_out {
         t.palette.disabled_alpha
     } else {
@@ -726,6 +919,7 @@ fn btn<'a>(
     };
     let fg = match look {
         Look::Primary | Look::Danger => t.palette.on_accent,
+        Look::Ink => t.chat.primary_text,
         _ => t.palette.text,
     };
     let fg_color = faded(fg, alpha);
@@ -764,7 +958,7 @@ fn btn<'a>(
         content = content.push(
             text(label.clone())
                 .size(t.type_.button)
-                .font(if strong { bold() } else { Font::DEFAULT })
+                .font(if strong { bold() } else { regular() })
                 .color(fg_color),
         );
         let c = t.palette;
@@ -773,6 +967,8 @@ fn btn<'a>(
                 let fill = if hovered { c.accent_hover } else { c.accent };
                 (Some(faded(fill, alpha)), Border::default())
             }
+            // Chat cards: ink on light, inverted on dark.
+            Look::Ink => (Some(faded(t.chat.primary_bg, alpha)), Border::default()),
             // Proposed red for 「删除规则」; UI姐 to confirm the exact colour.
             Look::Danger => {
                 let fill = if hovered {
@@ -797,7 +993,7 @@ fn btn<'a>(
         };
         container(content)
             .height(Length::Fixed(t.controls.button_h))
-            .padding(Padding::from([0.0, t.controls.button_px]))
+            .padding(Padding::from([0.0, pad_h]))
             .align_y(Alignment::Center)
             .style(move |_| container::Style {
                 background: bg.map(Background::Color),
@@ -836,6 +1032,32 @@ fn frame<'a>(t: &Skin, content: Element<'a, Action>) -> Element<'a, Action> {
         .into()
 }
 
+/// 11px note line in a chat card (under the approval header).
+const CHAT_NOTE_SIZE: f32 = 11.0;
+
+/// An open approval card: the chat accent as its outline.
+fn approval_frame<'a>(
+    t: &Skin,
+    card: &ApprovalCard,
+    content: Element<'a, Action>,
+) -> Element<'a, Action> {
+    if card.state != crate::cards::ApprovalState::Pending {
+        return frame(t, content);
+    }
+    let t = *t;
+    container(content)
+        .padding(card_padding(&t))
+        .width(Fill)
+        .style(move |th| container::Style {
+            border: Border::default()
+                .width(t.stroke.card)
+                .color(color(t.chat.accent))
+                .rounded(t.radii.card),
+            ..card_style(t)(th)
+        })
+        .into()
+}
+
 // ---------- Cards ----------
 
 /// What the connected backend can do, so the view never draws a button
@@ -866,12 +1088,13 @@ pub fn card<'a>(
     caps: Caps,
     width: f32,
     in_group: bool,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     match card {
-        Card::Choice(c) => choice(t, c, ui),
-        Card::Approval(c) => approval(t, c, ui, width, in_group),
-        Card::Draft(c) => draft(t, c, ui, caps, width),
-        Card::Confirm(c) => confirm_card(t, c, ui, width),
+        Card::Choice(c) => choice(t, c, ui, hide_bot),
+        Card::Approval(c) => approval(t, c, ui, width, in_group, hide_bot),
+        Card::Draft(c) => draft(t, c, ui, caps, width, hide_bot),
+        Card::Confirm(c) => confirm_card(t, c, ui, width, hide_bot),
     }
 }
 
@@ -882,10 +1105,11 @@ pub fn confirm_card<'a>(
     card: &'a ConfirmCard,
     ui: &CardUi,
     width: f32,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let (label, d) = card.status();
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap)
     ];
     let tag_el = tag(t, card.tag(), t.palette.text2);
@@ -1015,7 +1239,12 @@ pub fn confirm_more<'a>(t: &Skin, task: &str, n: usize) -> Element<'a, Action> {
     )
 }
 
-pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Action> {
+pub fn choice<'a>(
+    t: &Skin,
+    card: &'a ChoiceCard,
+    ui: &CardUi,
+    hide_bot: bool,
+) -> Element<'a, Action> {
     let (label, d) = status::choice_status(&card.state);
     let buttons = interact::choice_buttons(card, ui);
     let confirm = interact::confirm_button(card, ui);
@@ -1047,7 +1276,7 @@ pub fn choice<'a>(t: &Skin, card: &'a ChoiceCard, ui: &CardUi) -> Element<'a, Ac
         .collect();
 
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap),
         body(t, &card.prompt),
         gap(t.metrics.body_gap),
@@ -1090,16 +1319,22 @@ pub fn approval<'a>(
     ui: &CardUi,
     width: f32,
     in_group: bool,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
     let (label, d) = status::approval_status(&card.state);
-    let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
-        gap(t.metrics.head_gap)
-    ];
-    // Group thread: same header and action line as a DM card, then
-    // 「已发到主人私聊」, no buttons.
+    let mut col = column![header(t, &card.id, &card.bot, ui, label, d, hide_bot)];
+    // Group thread: same header and action line as a DM card, with
+    // 「已发到主人私聊」 on its own 11px line under the header, no buttons.
     let group_pending = in_group && card.state == crate::cards::ApprovalState::Pending;
+    if group_pending && !card.is_rule() {
+        col = col.push(
+            text(review_rules::SENT_TO_OWNER)
+                .size(CHAT_NOTE_SIZE)
+                .color(color(t.palette.text2)),
+        );
+    }
+    col = col.push(gap(t.metrics.head_gap));
     if card.is_rule() && !group_pending {
         return rule_approval(t, card, ui, col);
     }
@@ -1110,7 +1345,7 @@ pub fn approval<'a>(
         col = col
             .push(body(t, status::NEEDS_OWNER_LINE.as_str()))
             .push(gap(t.metrics.body_gap))
-            .push(btn(
+            .push(btn_padded(
                 t,
                 status::TAKE_OVER.into(),
                 Look::Secondary,
@@ -1118,6 +1353,7 @@ pub fn approval<'a>(
                 Some(Action::TakeOver {
                     card: card.id.clone(),
                 }),
+                TAKE_OVER_PAD[1],
             ));
     } else {
         // A call card's host summary already starts with 「调用」, so the
@@ -1150,12 +1386,7 @@ pub fn approval<'a>(
             }
         }
         if group_pending {
-            col = col.push(gap(t.metrics.head_gap)).push(
-                text(review_rules::SENT_TO_OWNER)
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text2)),
-            );
-            return frame(t, col.into());
+            return approval_frame(t, card, col.into());
         }
         if let ApprovalActions::Decide { enabled } = actions {
             let id = &card.id;
@@ -1165,7 +1396,7 @@ pub fn approval<'a>(
                     btn(
                         t,
                         Key::ViewApprove.into(),
-                        Look::Primary,
+                        Look::Ink,
                         Leading::None,
                         enabled.then(|| Action::Decide {
                             card: id.clone(),
@@ -1199,7 +1430,7 @@ pub fn approval<'a>(
             .push(gap(t.metrics.foot_gap))
             .push(approval_footnote_view(t, foot));
     }
-    frame(t, col.into())
+    approval_frame(t, card, col.into())
 }
 
 pub fn draft<'a>(
@@ -1208,6 +1439,7 @@ pub fn draft<'a>(
     ui: &CardUi,
     caps: Caps,
     width: f32,
+    hide_bot: bool,
 ) -> Element<'a, Action> {
     let (label, d) = status::draft_status(&card.state);
     let lines = status::draft_preview_lines(&card.state);
@@ -1244,7 +1476,7 @@ pub fn draft<'a>(
         });
 
     let mut col = column![
-        header(t, &card.id, &card.bot, ui, label, d),
+        header(t, &card.id, &card.bot, ui, label, d, hide_bot),
         gap(t.metrics.head_gap),
         row![
             tag(t, status::channel_label(card.channel), t.palette.text2),
