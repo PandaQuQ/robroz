@@ -239,6 +239,14 @@ pub(super) fn text(key: Key) -> &'static str {
         // ---- Card footnotes after a click (cards/interact.rs) ----
         Key::InteractAlreadyPicked => "已经有人选过了，正在刷新",
         Key::InteractAlreadyDecided => "这张卡已经处理过了，正在刷新",
+        Key::ApprovalWaitingFor => "等待 {0} 审批",
+        Key::ApprovalApprovedBy => "{0} 于 {1} 批准",
+        Key::ApprovalDeniedBy => "{0} 于 {1} 拒绝",
+        Key::ApprovalApprovedByYou => "你于 {0} 批准",
+        Key::ApprovalDeniedByYou => "你于 {0} 拒绝",
+        Key::ApprovalDmReminder => "{0} 在 {1} 等你审批",
+        Key::ApprovalOnlyOwner => "只有 {0} 能审批。",
+        Key::OwnerFallback => "它的主人",
         Key::InteractRejected => "没选上：{0}",
         Key::InteractFailed => "没成功：{0}",
 

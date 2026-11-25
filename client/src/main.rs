@@ -20,6 +20,7 @@ mod conn;
 mod event_decode;
 mod gallery;
 mod host_state;
+mod jump;
 mod model;
 mod prefs;
 mod source;
@@ -31,8 +32,8 @@ use std::time::Duration;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{window, Alignment, Element, Fill, Font, Length, Padding, Size, Subscription, Task};
 use robroz_contract::{
-    ApprovalDecision, Bro, ConfirmSubject, Event, McpServer, McpTestResult, McpTool, Memory, Said,
-    ScheduleEntry, Skill, Unread,
+    ApprovalDecision, Bro, ConfirmSubject, Event, McpServer, McpTestResult, McpTool, Me, Memory,
+    Said, ScheduleEntry, Skill, Unread,
 };
 use robroz_ui::cards::confirm::{self, ConfirmState, Fold};
 use robroz_ui::cards::interact::{CardUi, Note};
@@ -61,8 +62,8 @@ use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
 use prefs::ThemePref;
 use source::stream::{self, StreamItem};
 use source::{
-    fake_chats, fake_schedules, EventSource, FakeSource, GroupCard, GroupEvent, GroupTab,
-    HttpSource, SourceError,
+    approvals_chats, approvals_source, fake_chats, fake_schedules, EventSource, FakeSource,
+    GroupCard, GroupEvent, GroupTab, HttpSource, SourceError,
 };
 
 /// How often the conversation list refreshes unread counts.
@@ -190,6 +191,18 @@ fn has_flag(flag: &str) -> bool {
 
 fn wants_fake() -> bool {
     has_flag("--fake") || std::env::var("ROBROZ_FAKE").is_ok_and(|v| v == "1")
+}
+
+/// Id of the open chat's scrollable feed (the reminder row jumps in it).
+const FEED_ID: &str = "chat-feed";
+
+/// How long a card's stroke stays accent after a jump: 300 ms. Fake runs
+/// can hold it longer with `ROBROZ_FLASH_MS` for a screenshot.
+fn flash_ms(fake: bool) -> u64 {
+    fake.then(|| std::env::var("ROBROZ_FLASH_MS").ok())
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
 }
 
 /// `ROBROZ_WINDOW=WxH` (logical px), mainly for gallery screenshots.
@@ -394,6 +407,12 @@ enum Message {
     UnreadLoaded(Result<Vec<Unread>, ApiError>),
     MarkedRead(String, Result<Unread, ApiError>),
     BrosLoaded(Result<Vec<Bro>, ApiError>),
+    /// `GET /api/me`: who this client is (an older host has no such route).
+    MeLoaded(Result<Me, ApiError>),
+    /// The reminder row's jump: the group is open, scroll to the card.
+    JumpTo(String),
+    /// The card's 300 ms accent stroke is over.
+    FlashOff(String),
     BroCreated(Result<Bro, ApiError>),
     GroupsReloaded(Result<Vec<GroupTab>, SourceError>),
     Live(stream::Live),
@@ -438,6 +457,9 @@ struct App {
     narrow_open: bool,
     /// Known bros (DM owners, the rename box).
     bros: Vec<Bro>,
+    /// The signed-in person (`GET /api/me`); decides who sees the approval
+    /// buttons. `None` until the host answers, and on an older host.
+    me: Option<Me>,
     /// Composer text per chat.
     drafts: HashMap<String, String>,
     sending: bool,
@@ -552,9 +574,21 @@ impl App {
         i18n::set_locale(prefs::initial_locale(!fake));
         type Parts = (Box<dyn EventSource>, Arc<dyn CardApi>, String, Option<Conn>);
         let (source, api, origin, conn): Parts = if fake {
-            let (unread, bros) = fake_chats();
+            // `ROBROZ_FAKE_SCENE=approvals`: every state of the group
+            // approval card and the DM reminder row (screenshots).
+            let scene = std::env::var("ROBROZ_FAKE_SCENE").is_ok_and(|v| v == "approvals");
+            let (unread, bros) = if scene {
+                approvals_chats()
+            } else {
+                fake_chats()
+            };
+            let source: Box<dyn EventSource> = if scene {
+                Box::new(approvals_source())
+            } else {
+                Box::new(FakeSource::new())
+            };
             (
-                Box::new(FakeSource::new()),
+                source,
                 Arc::new(FakeApi::new(fake_schedules()).with_chats(unread, bros)),
                 Text::ClientFakeOrigin.into(),
                 None,
@@ -581,6 +615,7 @@ impl App {
             stream_up: false,
             narrow_open: false,
             bros: Vec::new(),
+            me: None,
             drafts: HashMap::new(),
             sending: false,
             send_note: HashMap::new(),
@@ -670,6 +705,10 @@ impl App {
 
     fn load_unread(&self) -> Task<Message> {
         Task::perform(call(&self.api, |api| api.unread()), Message::UnreadLoaded)
+    }
+
+    fn load_me(&self) -> Task<Message> {
+        Task::perform(call(&self.api, |api| api.me()), Message::MeLoaded)
     }
 
     fn load_bros(&self) -> Task<Message> {
@@ -840,7 +879,15 @@ impl App {
             _ => None,
         };
         if let Some(ui) = answered.and_then(|id| self.ui.get_mut(id)) {
-            if matches!(ui.note, Some(Note::AlreadyAnswered | Note::AlreadyDecided)) {
+            if matches!(
+                ui.note,
+                Some(
+                    Note::AlreadyAnswered
+                        | Note::AlreadyDecided
+                        | Note::Settled
+                        | Note::OnlyOwner(_)
+                )
+            ) {
                 ui.note = None;
             }
         }
@@ -1591,6 +1638,15 @@ impl App {
                 };
                 self.send_choice(card, ids)
             }
+            Action::OpenApproval { group, card } => {
+                // Open the group, then (once it is on screen) scroll to the
+                // card and flash its stroke.
+                let open = self.open_chat(group);
+                let jump = Task::perform(tokio_sleep(Duration::from_millis(80)), move |_| {
+                    Message::JumpTo(card.clone())
+                });
+                Task::batch([open, jump])
+            }
             Action::Decide { card, approve } => {
                 if !self.ui.entry(card.clone()).or_default().begin_action() {
                     return Task::none();
@@ -2019,6 +2075,27 @@ impl App {
                         .apply_unread(&group, u.unread, u.last_activity_at.as_deref());
                 }
             }
+            Message::MeLoaded(result) => {
+                // An error leaves it unknown: the group card then shows no
+                // buttons (a click would only be refused).
+                self.me = result.ok();
+            }
+            Message::JumpTo(card) => {
+                self.ui.entry(card.clone()).or_default().flash = true;
+                let off = card.clone();
+                return Task::batch([
+                    jump::to_card(iced::widget::Id::new(FEED_ID), view::card_anchor(&card)),
+                    Task::perform(
+                        tokio_sleep(Duration::from_millis(flash_ms(self.fake))),
+                        move |_| Message::FlashOff(off.clone()),
+                    ),
+                ]);
+            }
+            Message::FlashOff(card) => {
+                if let Some(ui) = self.ui.get_mut(&card) {
+                    ui.flash = false;
+                }
+            }
             Message::BrosLoaded(result) => {
                 if let Ok(bros) = result {
                     self.bros = bros.clone();
@@ -2304,7 +2381,7 @@ impl App {
                             _ => {}
                         }
                     }
-                    Err(ApiError::Conflict(_)) => {
+                    Err(err @ (ApiError::Conflict(_) | ApiError::ApprovalSettled)) => {
                         if self
                             .review_rules
                             .pending
@@ -2314,9 +2391,29 @@ impl App {
                             self.review_rules.answered_elsewhere();
                             return self.refresh_review_rules();
                         }
-                        // Answered already (elsewhere): fetch the real state;
-                        // the answered card clears this note when it lands.
-                        ui.action_done(Some(Note::AlreadyDecided));
+                        // Answered already (elsewhere), or expired: fetch the
+                        // real state; the card that lands clears this note.
+                        // A v0.2 403 `decided` / `expired` is no error to
+                        // show, so its note has no text.
+                        ui.action_done(Some(match err {
+                            ApiError::ApprovalSettled => Note::Settled,
+                            _ => Note::AlreadyDecided,
+                        }));
+                        self.has_more = true;
+                        return self.poll();
+                    }
+                    Err(err @ ApiError::NotApprovalOwner { .. }) => {
+                        // Not the owner: no buttons, "Only {owner} can
+                        // approve this."; fetch the card again as well.
+                        let owner = found.as_ref().and_then(|(_, c)| match c {
+                            Card::Approval(a) => a.owner_name.clone(),
+                            _ => None,
+                        });
+                        let note = match err.note() {
+                            Note::OnlyOwner(None) => Note::OnlyOwner(owner),
+                            other => other,
+                        };
+                        ui.action_done(Some(note));
                         self.has_more = true;
                         return self.poll();
                     }
@@ -2696,10 +2793,35 @@ impl App {
         self.loaded = true;
         self.load_failed = false;
         self.error = None;
-        let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
+        let mut tasks = vec![
+            self.poll(),
+            self.load_unread(),
+            self.load_bros(),
+            self.load_me(),
+        ];
         let wanted = std::env::var("ROBROZ_OPEN")
             .ok()
             .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
+        // `--fake` + `ROBROZ_JUMP=<group>:<approval id>`: press the DM
+        // reminder row's jump after a moment (screenshots).
+        if let Some((group, card)) = std::env::var("ROBROZ_JUMP")
+            .ok()
+            .filter(|_| self.fake)
+            .and_then(|v| {
+                v.split_once(':')
+                    .map(|(g, c)| (g.to_string(), c.to_string()))
+            })
+        {
+            tasks.push(Task::perform(
+                tokio_sleep(Duration::from_millis(600)),
+                move |_| {
+                    Message::Ui(Action::OpenApproval {
+                        group: group.clone(),
+                        card: card.clone(),
+                    })
+                },
+            ));
+        }
         if let Some(g) = wanted {
             tasks.push(self.open_chat(g));
         } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
@@ -2957,6 +3079,7 @@ impl App {
         };
         let width = self.content_width(t);
         let in_group = self.convs.get(id).is_some_and(|c| !c.dm);
+        let me = self.me.as_ref().map(|m| m.id.as_str());
         let empty = CardUi::default();
         let rows = self
             .feeds
@@ -2993,12 +3116,14 @@ impl App {
                     self.caps,
                     (bubble_max, card_w),
                     in_group,
+                    me,
                 )
             }))
             .spacing(t.chat.gap_between)
             .padding(t.metrics.stream_padding)
             .width(Fill),
         )
+        .id(FEED_ID)
         .anchor_bottom()
         .height(Fill)
         .width(Fill);
@@ -3061,8 +3186,17 @@ impl App {
                 let mut c = column![title(name)].spacing(6);
                 for s in samples {
                     c = c.push(caption(s.caption)).push(
-                        view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false, false)
-                            .map(Message::Ui),
+                        view::card(
+                            t,
+                            &s.card,
+                            &s.ui,
+                            Caps::FAKE,
+                            col_width,
+                            s.group,
+                            false,
+                            Some(api::FAKE_ME_ID),
+                        )
+                        .map(Message::Ui),
                     );
                 }
                 c.into()
@@ -3133,7 +3267,18 @@ fn group_view<'a>(
     caps: Caps,
     (bubble_max, card_w): (f32, f32),
     in_group: bool,
+    me: Option<&str>,
 ) -> Element<'a, Message> {
+    // A reminder is one full-width row: no avatar, no name, no clock.
+    if group.sender.is_reminder() {
+        return column(group.items.into_iter().map(|item| match item {
+            FeedItem::Row(r) => item_view(
+                t, r, ui, empty, caps, bubble_max, card_w, true, in_group, me,
+            ),
+            FeedItem::More { .. } => space::horizontal().into(),
+        }))
+        .into();
+    }
     let own = group.sender.is_own();
     let mut col = column![].spacing(t.chat.gap_in);
     if let model::Sender::Bro { name, .. } = &group.sender {
@@ -3146,9 +3291,9 @@ fn group_view<'a>(
     for (i, item) in group.items.into_iter().enumerate() {
         let first = i == 0;
         col = col.push(match item {
-            FeedItem::Row(r) => {
-                item_view(t, r, ui, empty, caps, bubble_max, card_w, first, in_group)
-            }
+            FeedItem::Row(r) => item_view(
+                t, r, ui, empty, caps, bubble_max, card_w, first, in_group, me,
+            ),
             FeedItem::More { task, n } => {
                 container(view::confirm_more(t, &task, n).map(Message::Ui))
                     .width(Length::Fixed(card_w))
@@ -3198,6 +3343,7 @@ fn item_view<'a>(
     card_w: f32,
     first: bool,
     in_group: bool,
+    me: Option<&str>,
 ) -> Element<'a, Message> {
     let own_text = color(t.chat.own_text);
     let bubble = |content: Element<'a, Message>| -> Element<'a, Message> {
@@ -3229,9 +3375,10 @@ fn item_view<'a>(
         ),
         Row::Status(c) => card(status_view(t, c, card_w)),
         Row::Delivery(c) => card(delivery_view(t, c, card_w)),
+        Row::Reminder(r) => view::reminder_row(t, r).map(Message::Ui),
         Row::Card(c) => {
             let state = ui.get(c.id()).unwrap_or(empty);
-            card(view::card(t, c, state, caps, card_w, in_group, true).map(Message::Ui))
+            card(view::card(t, c, state, caps, card_w, in_group, true, me).map(Message::Ui))
         }
     }
 }

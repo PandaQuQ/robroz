@@ -573,7 +573,10 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(api.decide(id, false), Err(ApiError::Conflict(_))));
+        assert!(matches!(
+            api.decide(id, false),
+            Err(ApiError::ApprovalSettled)
+        ));
         // The stream brings the answered card; it replaces the pending one.
         let live = next_approval();
         assert_eq!(live, answered);

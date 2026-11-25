@@ -8,20 +8,9 @@ use robroz_contract::Event;
 use robroz_ui::cards::ApprovalExtras;
 use serde_json::Value;
 
-/// Event types this client does not draw yet; decoded as unknown so the
-/// caller skips them (and still moves its cursor).
-const NOT_DRAWN_YET: &[&str] = &["approval_reminder"];
-
 /// Decode one event. Unknown event *types* still fail (the caller skips
-/// them), and so do [`NOT_DRAWN_YET`] types.
+/// them).
 pub fn parse_event(value: Value) -> Result<(Event, Option<ApprovalExtras>), serde_json::Error> {
-    if let Some(kind) = value.get("type").and_then(Value::as_str) {
-        if NOT_DRAWN_YET.contains(&kind) {
-            return Err(serde::de::Error::custom(format!(
-                "event type {kind} is not drawn yet"
-            )));
-        }
-    }
     let event = serde_json::from_value(value)?;
     Ok((event, None))
 }

@@ -1,0 +1,175 @@
+//! The one-line reminder in the owner's DM with a bro (v0.2): "{bro} is
+//! waiting for your approval in {group}". Not a card and has no buttons;
+//! the whole row opens the group and the approval card in it.
+
+use chrono::TimeZone;
+use robroz_contract::{Event, ReminderState};
+
+use super::group_approval::{decided_line, reminder_dot};
+use super::status::{clock_in, Dot};
+use crate::i18n::Key;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reminder {
+    /// `reminder:{approvalId}`; the feed updates the row in place by it.
+    pub id: String,
+    pub approval_id: String,
+    pub group_id: String,
+    pub group_name: String,
+    pub bot_name: String,
+    pub owner_name: String,
+    pub state: ReminderState,
+    /// `createdAt`, unix seconds.
+    pub created_at: i64,
+    /// `answeredAt` once decided or expired, unix seconds.
+    pub answered_at: Option<i64>,
+}
+
+fn unix(iso: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.timestamp())
+}
+
+impl Reminder {
+    /// Build from the `approval_reminder` event; `None` for any other.
+    pub fn from_event(event: &Event) -> Option<Self> {
+        let Event::ApprovalReminder {
+            id,
+            approval_id,
+            group_id,
+            group_name,
+            bot_name,
+            owner_name,
+            state,
+            created_at,
+            answered_at,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        Some(Self {
+            id: id.clone(),
+            approval_id: approval_id.clone(),
+            group_id: group_id.clone(),
+            group_name: group_name.clone(),
+            bot_name: bot_name.clone(),
+            owner_name: owner_name.clone(),
+            state: *state,
+            created_at: unix(created_at).unwrap_or(0),
+            answered_at: answered_at.as_deref().and_then(unix),
+        })
+    }
+
+    pub fn dot(&self) -> Dot {
+        reminder_dot(self.state)
+    }
+
+    /// The row's text: the ask while waiting, then the result.
+    pub fn text<Tz: TimeZone>(&self, tz: &Tz) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let result_time = || clock_in(self.answered_at.unwrap_or(self.created_at), tz);
+        match self.state {
+            ReminderState::Waiting => {
+                Key::ApprovalDmReminder.fill(&[&self.bot_name, &self.group_name])
+            }
+            // The reminder only goes to the owner: "by you".
+            ReminderState::Approved => decided_line(true, true, &self.owner_name, &result_time()),
+            ReminderState::Denied => decided_line(false, true, &self.owner_name, &result_time()),
+            ReminderState::Expired => Key::ReviewRulesExpired.into(),
+        }
+    }
+
+    /// The 11px time on the right. A result already says its time in the
+    /// sentence, so only a waiting or expired row shows one.
+    pub fn time<Tz: TimeZone>(&self, tz: &Tz) -> Option<String>
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let at = match self.state {
+            ReminderState::Waiting => self.created_at,
+            ReminderState::Expired => self.answered_at.unwrap_or(self.created_at),
+            ReminderState::Approved | ReminderState::Denied => return None,
+        };
+        Some(clock_in(at, tz)).filter(|t| !t.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{scoped, Locale};
+    use chrono::Utc;
+
+    fn event(state: ReminderState, answered: Option<&str>) -> Event {
+        Event::ApprovalReminder {
+            id: "reminder:a1".into(),
+            approval_id: "a1".into(),
+            group_id: "g1".into(),
+            group_name: "Site".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            owner_user_id: "u-me".into(),
+            owner_name: "Panda".into(),
+            state,
+            created_at: "2026-10-07T19:00:00Z".into(),
+            answered_at: answered.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn waiting_row_reads_as_the_ask_with_the_time_on_the_right() {
+        let r = Reminder::from_event(&event(ReminderState::Waiting, None)).unwrap();
+        {
+            let _g = scoped(Locale::En);
+            assert_eq!(r.text(&Utc), "Ada is waiting for your approval in Site");
+            assert_eq!(r.time(&Utc).as_deref(), Some("19:00"));
+        }
+        let _g = scoped(Locale::Zh);
+        assert_eq!(r.text(&Utc), "Ada 在 Site 等你审批");
+        assert_eq!(r.dot(), Dot::Waiting);
+    }
+
+    #[test]
+    fn decided_row_turns_into_the_result_with_the_card_dot() {
+        let r = Reminder::from_event(&event(
+            ReminderState::Approved,
+            Some("2026-10-07T19:02:00Z"),
+        ))
+        .unwrap();
+        let _g = scoped(Locale::En);
+        assert_eq!(r.text(&Utc), "Approved by you at 19:02");
+        assert_eq!(r.time(&Utc), None);
+        assert_eq!(r.dot(), Dot::Done);
+        let d = Reminder::from_event(&event(ReminderState::Denied, Some("2026-10-07T19:03:00Z")))
+            .unwrap();
+        assert_eq!(d.text(&Utc), "Denied by you at 19:03");
+        assert_eq!(d.dot(), Dot::Void);
+    }
+
+    #[test]
+    fn expired_row_is_grey_and_says_expired() {
+        let r = Reminder::from_event(&event(ReminderState::Expired, Some("2026-10-07T19:30:00Z")))
+            .unwrap();
+        let _g = scoped(Locale::Zh);
+        assert_eq!(r.text(&Utc), "已过期");
+        assert_eq!(r.dot(), Dot::Void);
+        assert_eq!(r.time(&Utc).as_deref(), Some("19:30"));
+    }
+
+    #[test]
+    fn other_events_are_not_reminders() {
+        let msg = Event::Message {
+            id: "m".into(),
+            kind: robroz_contract::MessageKind::Text,
+            body: "x".into(),
+            created_at: "2026-10-07T19:00:00Z".into(),
+            author_user_id: None,
+            author_name: None,
+        };
+        assert_eq!(Reminder::from_event(&msg), None);
+    }
+}

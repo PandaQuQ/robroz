@@ -212,6 +212,8 @@ impl FakeSource {
                         mcp_server: None,
                         mcp_tool: None,
                         reason: None,
+                        owner_id: Some(crate::api::FAKE_ME_ID.into()),
+                        owner_name: Some(crate::api::FAKE_ME_NAME.into()),
                     }),
                 },
             ),
@@ -229,6 +231,8 @@ impl FakeSource {
                         mcp_server: None,
                         mcp_tool: None,
                         reason: None,
+                        owner_id: Some(crate::api::FAKE_ME_ID.into()),
+                        owner_name: Some(crate::api::FAKE_ME_NAME.into()),
                     }),
                 },
             ),
@@ -248,6 +252,22 @@ impl FakeSource {
                 },
             ),
         ];
+        Self {
+            groups,
+            steps,
+            cards,
+            next: 0,
+        }
+    }
+}
+
+impl FakeSource {
+    /// A scripted run from parts; used by the approval scene.
+    pub(super) fn from_parts(
+        groups: Vec<GroupTab>,
+        steps: Vec<Vec<GroupEvent>>,
+        cards: Vec<(usize, GroupCard)>,
+    ) -> Self {
         Self {
             groups,
             steps,

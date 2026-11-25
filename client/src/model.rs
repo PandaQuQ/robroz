@@ -6,6 +6,7 @@
 use robroz_card::{Palette, Tone};
 use robroz_contract::{Event, MessageKind, TaskState, WaitingFor};
 use robroz_ui::cards::confirm::ConfirmCard;
+use robroz_ui::cards::reminder::Reminder;
 use robroz_ui::cards::{ApprovalCard, ApprovalExtras, Card, ChoiceCard};
 use robroz_ui::i18n::{host_text, Key as Text};
 
@@ -164,6 +165,9 @@ pub enum Row {
     Delivery(DeliveryCard),
     /// New card kinds (`choice`, `approval`, `draft`), drawn by `robroz-ui`.
     Card(Card),
+    /// The owner's DM line "{bro} is waiting for your approval in {group}":
+    /// one clickable row, not a card.
+    Reminder(Reminder),
 }
 
 /// Who a feed item belongs to, for the chat bubbles. The host only writes
@@ -180,6 +184,9 @@ pub enum Sender {
     },
     /// A delivery with no `bot_name`; shown alone, with no avatar.
     Delivery,
+    /// An approval reminder row in the owner's DM: full width, no avatar,
+    /// no name, no clock of its own (the row shows its time).
+    Reminder,
 }
 
 impl Sender {
@@ -207,11 +214,15 @@ impl Sender {
         matches!(self, Sender::Delivery)
     }
 
+    pub fn is_reminder(&self) -> bool {
+        matches!(self, Sender::Reminder)
+    }
+
     /// The bro's name; empty for own or an unattributed delivery.
     pub fn name(&self) -> &str {
         match self {
             Sender::Bro { name, .. } => name,
-            Sender::Own | Sender::Delivery => "",
+            Sender::Own | Sender::Delivery | Sender::Reminder => "",
         }
     }
 }
@@ -324,13 +335,8 @@ fn meta_of(event: &Event) -> Meta {
             bot_name,
             created_at,
             ..
-        }
-        | Event::ApprovalReminder {
-            bot_id,
-            bot_name,
-            created_at,
-            ..
         } => (bro(bot_id, bot_name), unix(created_at)),
+        Event::ApprovalReminder { created_at, .. } => (Sender::Reminder, unix(created_at)),
     };
     Meta { sender, at }
 }
@@ -535,11 +541,10 @@ pub fn preview(event: &Event) -> String {
             bot_name,
             text.as_deref().or(title.as_deref()).unwrap_or_default(),
         ),
-        Event::ApprovalReminder {
-            bot_name,
-            group_name,
-            ..
-        } => line(bot_name, group_name),
+        // The same sentence the row shows: the ask, then the result.
+        Event::ApprovalReminder { .. } => Reminder::from_event(event)
+            .map(|r| r.text(&chrono::Local))
+            .unwrap_or_default(),
     }
 }
 
@@ -645,13 +650,10 @@ fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Confirm(card)))
         }
-        // v0.2 reminder line; `event_decode` skips it until the client
-        // draws it (UI spec "DM reminder"), so this is only a fallback.
-        Event::ApprovalReminder { id, group_name, .. } => (
+        // v0.2: one line in the owner's DM; the same id updates it in place.
+        Event::ApprovalReminder { id, .. } => (
             Key::Event(id.clone()),
-            Row::Text {
-                body: group_name.clone(),
-            },
+            Row::Reminder(Reminder::from_event(event).expect("reminder event")),
         ),
     }
 }
@@ -1613,6 +1615,8 @@ mod tests {
                 mcp_server: None,
                 mcp_tool: None,
                 reason: None,
+                owner_id: None,
+                owner_name: None,
             })
         };
         let mut feed = Feed::default();

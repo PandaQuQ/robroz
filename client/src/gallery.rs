@@ -15,6 +15,8 @@ pub struct Sample {
     pub caption: &'static str,
     pub card: Card,
     pub ui: CardUi,
+    /// Drawn as in a group chat (the v0.2 owner-only approval card).
+    pub group: bool,
 }
 
 pub struct Gallery {
@@ -61,6 +63,8 @@ fn approval(state: ApprovalState, bot: &str) -> Card {
         mcp_server: None,
         mcp_tool: None,
         reason: None,
+        owner_id: None,
+        owner_name: None,
     })
 }
 
@@ -81,6 +85,22 @@ fn sample(caption: &'static str, card: Card) -> Sample {
         caption,
         card,
         ui: CardUi::default(),
+        group: false,
+    }
+}
+
+/// A group approval card owned by `owner` (the viewer is [`FAKE_ME_ID`]).
+fn group_approval(caption: &'static str, state: ApprovalState, owner: (&str, &str)) -> Sample {
+    let Card::Approval(mut card) = approval(state, "Ada") else {
+        unreachable!()
+    };
+    card.owner_id = Some(owner.0.into());
+    card.owner_name = Some(owner.1.into());
+    Sample {
+        caption,
+        card: Card::Approval(card),
+        ui: CardUi::default(),
+        group: true,
     }
 }
 
@@ -114,6 +134,8 @@ impl Gallery {
                 .to_rfc3339()
         };
 
+        let me = (crate::api::FAKE_ME_ID, crate::api::FAKE_ME_NAME);
+        let lin = ("u-lin", "Lin");
         let multi = |picks: Vec<&str>| {
             let card = Card::Choice(ChoiceCard {
                 id: "c-pages".into(),
@@ -135,6 +157,7 @@ impl Gallery {
                     picks: picks.into_iter().map(String::from).collect(),
                     ..CardUi::default()
                 },
+                group: false,
             }
         };
         let answered = sample(
@@ -199,6 +222,45 @@ impl Gallery {
                 sample(
                     "approval · needs owner sign-in（群里只给这一个按钮）",
                     approval(ApprovalState::NeedsOwner, "顶级GitHub哥"),
+                ),
+                group_approval(
+                    "approval · group · owner · waiting",
+                    ApprovalState::Pending,
+                    me,
+                ),
+                group_approval(
+                    "approval · group · owner · approved",
+                    ApprovalState::Approved {
+                        by: None,
+                        at: at(2),
+                    },
+                    me,
+                ),
+                group_approval(
+                    "approval · group · not owner · waiting",
+                    ApprovalState::Pending,
+                    lin,
+                ),
+                group_approval(
+                    "approval · group · not owner · approved",
+                    ApprovalState::Approved {
+                        by: None,
+                        at: at(2),
+                    },
+                    lin,
+                ),
+                group_approval(
+                    "approval · group · not owner · denied",
+                    ApprovalState::Denied {
+                        by: None,
+                        at: at(3),
+                    },
+                    lin,
+                ),
+                group_approval(
+                    "approval · group · expired",
+                    ApprovalState::Expired { at: at(30) },
+                    me,
                 ),
             ],
             draft: vec![

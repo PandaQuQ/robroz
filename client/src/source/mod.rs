@@ -6,10 +6,12 @@
 //! The app and [`crate::model::Feed`] only see [`EventSource`].
 
 mod fake;
+mod fake_approvals;
 mod http;
 pub mod stream;
 
 pub use fake::{fake_chats, fake_schedules, FakeSource, DRAFT_BODY};
+pub use fake_approvals::{approvals_chats, approvals_source};
 pub use http::HttpSource;
 
 use std::fmt;
