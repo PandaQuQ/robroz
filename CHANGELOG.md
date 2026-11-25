@@ -12,6 +12,8 @@ First release of robroz: a single-user, self-hosted multi-agent workspace with a
 ### Added
 
 - Window icon for the desktop client, and a Windows exe icon ([#150](https://github.com/PandaQuQ/robroz/pull/150)).
+<!-- TODO(release-icons): confirm ci/release-icons merged, then keep: -->
+- App icon in release packages: `robroz.app` ships `icon.icns` (`CFBundleIconFile`), and the Linux tarball ships `robroz.desktop` and `icon-512.png`.
 - Release packaging when a `v*` tag is pushed ([#149](https://github.com/PandaQuQ/robroz/pull/149)): draft GitHub Release assets, unsigned, with `SHA256SUMS.txt`. Client archives are Linux x86_64 (`.tar.gz`), Windows x86_64 (`.zip` with the `.exe`), and macOS aarch64 only (`.zip` containing `robroz.app`). The host ships for Linux x86_64 only. Intel Macs are not covered.
 - Runner image `ghcr.io/pandaquq/robroz-runner:<tag>` on `v*` tags ([#151](https://github.com/PandaQuQ/robroz/pull/151)): `linux/amd64` only, tagged with the git tag, no `latest` tag. Example: `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0`.
 - Manual platform screenshot workflow for Windows and macOS ([#153](https://github.com/PandaQuQ/robroz/pull/153), [#154](https://github.com/PandaQuQ/robroz/pull/154)).
