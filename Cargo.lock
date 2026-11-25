@@ -5312,7 +5312,6 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "libc",
- "robroz-card",
  "robroz-contract",
  "robroz-mcp",
  "robroz-model",

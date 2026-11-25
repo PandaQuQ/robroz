@@ -475,7 +475,7 @@ async fn a_failed_step_ends_the_task_with_no_result_and_no_requeue() {
     let (state, progress, failure) = h.row(&task_id);
     assert_eq!(state, "done");
     assert_eq!(progress, None);
-    assert_eq!(failure.as_deref(), Some(robroz_card::NO_RESULT));
+    assert_eq!(failure.as_deref(), Some(robroz_contract::legacy::NO_RESULT));
     assert!(h.deliveries().await.is_empty(), "no partial delivery");
     assert!(!h.has_plan(&task_id));
 
@@ -595,7 +595,7 @@ async fn a_denied_step_ends_the_task_with_no_result_and_no_delivery() {
     h.host.pump_once(&mut sandbox).unwrap();
     let (state, _, failure) = h.row(&task_id);
     assert_eq!(state, "done");
-    assert_eq!(failure.as_deref(), Some(robroz_card::NO_RESULT));
+    assert_eq!(failure.as_deref(), Some(robroz_contract::legacy::NO_RESULT));
     assert!(h.deliveries().await.is_empty(), "no 「未执行」 delivery");
     assert!(h.fake_mcp.calls().is_empty());
     assert!(!h.has_plan(&task_id));
