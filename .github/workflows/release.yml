@@ -27,7 +27,7 @@ jobs:
       matrix:
         include:
           # Pinned so the Linux binaries link against glibc 2.35 and run on
-          # Ubuntu 22.04+, Debian 12+ and RHEL 9+. ubuntu-latest moves forward.
+          # Ubuntu 22.04+ and Debian 12+. ubuntu-latest moves forward.
           - os: ubuntu-22.04
             target: linux-x86_64
             packages: "-p robroz-client -p robroz-host"
