@@ -25,7 +25,7 @@ v0.1.0 是单用户、自托管的。见 [CHANGELOG.md](CHANGELOG.md) 和 [docs/
 
 桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
-<!-- TODO(appearance): not shipped yet (feat/client-theme is unmerged). Planned Settings row Appearance / 「外观」 under Language; segmented control System / 「跟随系统」, Light / 「浅色」, Dark / 「深色」; default System; follows the OS live; stored in `robroz/theme`; footer Dark toggle removed. -->
+语言那一行下面是 Appearance / 「外观」：System / 「跟随系统」、Light / 「浅色」、Dark / 「深色」。默认是 System，会跟着操作系统实时切换。选择保存在 `lang` 旁边的 `theme` 文件里，一行，值为 `system`、`light` 或 `dark`。底栏没有 Dark 开关。
 
 ## 现在能用的
 

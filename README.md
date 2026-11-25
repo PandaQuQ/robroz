@@ -25,7 +25,7 @@ It is for people who want several AI agents in one workspace they control, and w
 
 The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [docs/configuration.md](docs/configuration.md) for the saved `lang` file.
 
-<!-- TODO(appearance): not shipped yet (feat/client-theme is unmerged). Planned Settings row Appearance / 「外观」 under Language; segmented control System / 「跟随系统」, Light / 「浅色」, Dark / 「深色」; default System; follows the OS live; stored in `robroz/theme`; footer Dark toggle removed. -->
+Under Language is an Appearance / 「外观」 row: System / 「跟随系统」, Light / 「浅色」, and Dark / 「深色」. The default is System, which follows the operating system as it changes. The choice is saved as one line (`system`, `light`, or `dark`) in a `theme` file next to `lang`. There is no footer Dark toggle.
 
 ## Works today
 
