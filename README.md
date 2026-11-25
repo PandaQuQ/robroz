@@ -111,6 +111,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | --- | --- |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 | [docs/install.md](docs/install.md) | Download a release, prerequisites, build, run, connect a model, first task, tests |
+| [docs/docker-host.md](docs/docker-host.md) | Run the host in Docker: compose, `docker.sock` risk, same-path mount, token |
 | [docs/configuration.md](docs/configuration.md) | All environment variables and defaults |
 | [docs/api.md](docs/api.md) | HTTP endpoints and events |
 | [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
