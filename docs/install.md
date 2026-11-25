@@ -68,7 +68,7 @@ Add `--release` for a release build; the binaries then land in `target/release/`
 
 ### Runner image
 
-Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0` instead of a local build (linux/amd64 only; there is no `latest` tag). To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
+Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0` instead of a local build (linux/amd64 only; there is no `latest` tag). The package stays private until the maintainer makes it public after the first release; if `docker pull` is denied, build the image locally as shown below. To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
