@@ -1,5 +1,0 @@
-fn main() {
-    // One explicit style on every platform; no native (Qt) look.
-    let config = slint_build::CompilerConfiguration::new().with_style("fluent".into());
-    slint_build::compile_with_config("ui/app.slint", config).expect("compile ui/app.slint");
-}
