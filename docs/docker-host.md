@@ -11,7 +11,7 @@ The host can run as a container. The image holds the `robroz-host` binary and th
 
 ## Quick start with Compose
 
-1. Create the data directory and a token file on the machine that runs Docker:
+1. Create the data directory and a token file on the machine that runs Docker. Run this in the directory where you will keep `compose.host.yml`: the compose file reads `./secrets/robroz_token` relative to its own directory.
 
    ```sh
    sudo install -d -o 1000 -g 1000 /srv/robroz
@@ -121,7 +121,7 @@ Build it, and point the `image:` line of the compose file at your tag. You can a
 
 ### 用 Compose 快速开始
 
-1. 在运行 Docker 的机器上创建数据目录和令牌文件：
+1. 在运行 Docker 的机器上创建数据目录和令牌文件。请在准备放 `compose.host.yml` 的目录里执行：compose 文件里的 `./secrets/robroz_token` 是相对它自己所在目录的路径。
 
    ```sh
    sudo install -d -o 1000 -g 1000 /srv/robroz

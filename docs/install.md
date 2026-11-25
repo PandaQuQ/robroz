@@ -6,14 +6,14 @@ The desktop client UI is English by default. Switch to 中文 with the Language 
 
 ## Download a release
 
-When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. v0.1.0, published on 2026-11-25, is the first release and is marked as a pre-release. Archives are named `<bin>-<tag>-<target>`.
+When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. The current release is v0.1.1, published on 2026-11-25 as a pre-release. The examples below use v0.1.1; replace it with the tag you download. Archives are named `<bin>-<tag>-<target>`.
 
 | Platform | Archive | Contents |
 | --- | --- | --- |
-| Linux x86_64 | `robroz-client-v0.1.0-linux-x86_64.tar.gz` | `robroz-client`, `robroz.desktop`, `robroz.png` |
-| Windows x86_64 | `robroz-client-v0.1.0-windows-x86_64.zip` | `robroz-client.exe` |
-| macOS aarch64 | `robroz-client-v0.1.0-macos-aarch64.zip` | `robroz.app` |
-| Linux x86_64 | `robroz-host-v0.1.0-linux-x86_64.tar.gz` | `robroz-host` |
+| Linux x86_64 | `robroz-client-v0.1.1-linux-x86_64.tar.gz` | `robroz-client`, `robroz.desktop`, `robroz.png` |
+| Windows x86_64 | `robroz-client-v0.1.1-windows-x86_64.zip` | `robroz-client.exe` |
+| macOS aarch64 | `robroz-client-v0.1.1-macos-aarch64.zip` | `robroz.app` |
+| Linux x86_64 | `robroz-host-v0.1.1-linux-x86_64.tar.gz` | `robroz-host` |
 
 The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. `robroz.app` includes `icon.icns`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed. The Linux binaries are built on Ubuntu 22.04. The client needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). The host needs glibc 2.34 or newer, so it also runs on RHEL 9. The client does not run on RHEL 9 (glibc 2.34); build it from source there, see [Build](#build). Check your version with `ldd --version`.
 
@@ -24,15 +24,15 @@ Verify the files you download against `SHA256SUMS.txt` from the same release:
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
 # macOS: print the hash and compare it with the matching line in SHA256SUMS.txt
-shasum -a 256 robroz-client-v0.1.0-macos-aarch64.zip
+shasum -a 256 robroz-client-v0.1.1-macos-aarch64.zip
 ```
 
-On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-client-v0.1.0-windows-x86_64.zip` with the matching line in `SHA256SUMS.txt`.
+On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-client-v0.1.1-windows-x86_64.zip` with the matching line in `SHA256SUMS.txt`.
 
 The host's default runner image is still `robroz-runner:local`. For a tagged release, point it at the image published for that tag (linux/amd64 only; there is no `latest` tag):
 
 ```sh
-ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0 ./robroz-host
+ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.1 ./robroz-host
 ```
 
 ### Linux desktop entry
@@ -40,7 +40,7 @@ ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0 ./robroz-host
 The Linux client runs straight from the unpacked folder. To get a launcher entry with an icon for your user, copy the binary, the desktop file and the icon into the standard per-user locations:
 
 ```sh
-cd robroz-client-v0.1.0-linux-x86_64
+cd robroz-client-v0.1.1-linux-x86_64
 install -Dm755 robroz-client ~/.local/bin/robroz-client
 install -Dm644 robroz.desktop ~/.local/share/applications/robroz.desktop
 install -Dm644 robroz.png ~/.local/share/icons/hicolor/512x512/apps/robroz.png
@@ -53,12 +53,12 @@ install -Dm644 robroz.png ~/.local/share/icons/hicolor/512x512/apps/robroz.png
 **macOS.** Gatekeeper warns the first time you open an unsigned `robroz.app`. To allow it: right-click the app, choose Open, and confirm; or go to System Settings > Privacy & Security and click Open Anyway. You can also clear the quarantine flag after unzipping:
 
 ```sh
-xattr -dr com.apple.quarantine robroz-client-v0.1.0-macos-aarch64/robroz.app
+xattr -dr com.apple.quarantine robroz-client-v0.1.1-macos-aarch64/robroz.app
 ```
 
 **Windows.** SmartScreen may show "Windows protected your PC". Click More info, then Run anyway.
 
-In v0.1.0 an extra command-line window opens next to the client. Leave it open; closing it also quits the client. v0.1.1 removes it.
+v0.1.0 also opens an extra command-line window next to the client; closing it quits the client. v0.1.1 and later do not.
 
 ## Prerequisites
 
@@ -83,7 +83,7 @@ Add `--release` for a release build; the binaries then land in `target/release/`
 
 ### Runner image
 
-Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0` instead of a local build (linux/amd64 only; there is no `latest` tag). The package stays private until the maintainer makes it public after the first release; if `docker pull` is denied, build the image locally as shown below. To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
+Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.1` instead of a local build (linux/amd64 only; there is no `latest` tag). The package is public, so `docker pull` needs no login. To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
