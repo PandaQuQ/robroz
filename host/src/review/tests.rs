@@ -144,6 +144,21 @@ impl Harness {
         body
     }
 
+    /// `approval_reminder` lines in a DM (v0.2).
+    async fn reminders(&self, group_id: &str) -> Vec<Value> {
+        let (status, body) = self
+            .call("GET", &format!("/api/groups/{group_id}/events"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "approval_reminder")
+            .cloned()
+            .collect()
+    }
+
     async fn answer(&self, id: &str, verb: &str) -> (StatusCode, Value) {
         self.call("POST", &format!("/api/approvals/{id}/{verb}"), None)
             .await
@@ -323,7 +338,10 @@ async fn get_approval_returns_the_event_shape_or_404() {
     let (status, body) = h.call("GET", "/api/approvals/nope", None).await;
     assert_eq!(
         (status, body),
-        (StatusCode::NOT_FOUND, json!({ "error": "审批卡不存在" }))
+        (
+            StatusCode::NOT_FOUND,
+            json!({ "error": "审批卡不存在", "code": "approval_not_found" })
+        )
     );
     let (bot, dm) = h.bro("ada").await;
     let (_, posted) = h
@@ -358,7 +376,10 @@ async fn denying_a_rule_card_discards_it() {
     let (status, body) = h.answer(&id, "approve").await;
     assert_eq!(
         (status, body),
-        (StatusCode::CONFLICT, json!({ "error": "已经答过了" }))
+        (
+            StatusCode::FORBIDDEN,
+            json!({ "error": "已经答过了", "code": "approval_forbidden", "reason": "decided" })
+        )
     );
     assert!(h.rules().await.is_empty());
 }
@@ -375,7 +396,10 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
         .await;
     assert_eq!(
         (status, body),
-        (StatusCode::NOT_FOUND, json!({ "error": "规则不存在" }))
+        (
+            StatusCode::NOT_FOUND,
+            json!({ "error": "规则不存在", "code": "rule_not_found" })
+        )
     );
 
     let (status, body) = h
@@ -411,10 +435,14 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
 #[tokio::test]
 async fn rule_text_is_validated() {
     let h = harness();
-    for (text, error) in [
-        ("   ", "请填写规则"),
-        ("两行\n不行", "规则只能一行，最多 200 字"),
-        (&"长".repeat(201) as &str, "规则只能一行，最多 200 字"),
+    for (text, error, code) in [
+        ("   ", "请填写规则", "need_rule"),
+        ("两行\n不行", "规则只能一行，最多 200 字", "rule_one_line"),
+        (
+            &"长".repeat(201) as &str,
+            "规则只能一行，最多 200 字",
+            "rule_one_line",
+        ),
     ] {
         let (status, body) = h
             .call(
@@ -425,7 +453,10 @@ async fn rule_text_is_validated() {
             .await;
         assert_eq!(
             (status, body),
-            (StatusCode::BAD_REQUEST, json!({ "error": error })),
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error, "code": code })
+            ),
             "{text:?}"
         );
     }
@@ -448,7 +479,7 @@ async fn bros_cannot_post_rule_cards_themselves() {
             (status, body),
             (
                 StatusCode::BAD_REQUEST,
-                json!({ "error": "这个动作只能由宿主机发出" })
+                json!({ "error": "这个动作只能由宿主机发出", "code": "action_host_only" })
             )
         );
     }
@@ -457,7 +488,7 @@ async fn bros_cannot_post_rule_cards_themselves() {
 // ---- expiry ----
 
 #[tokio::test]
-async fn an_expired_rule_card_is_denied_and_a_later_answer_is_409() {
+async fn an_expired_rule_card_is_denied_and_a_later_answer_is_403_expired() {
     let h = harness();
     let id = h.propose("允许发周报").await;
     assert!(h.expire(Duration::hours(23)).is_empty(), "not yet");
@@ -472,7 +503,10 @@ async fn an_expired_rule_card_is_denied_and_a_later_answer_is_409() {
         let (status, body) = h.answer(&id, verb).await;
         assert_eq!(
             (status, body),
-            (StatusCode::CONFLICT, json!({ "error": "已经答过了" }))
+            (
+                StatusCode::FORBIDDEN,
+                json!({ "error": APPROVAL_EXPIRED_REASON, "code": "approval_forbidden", "reason": "expired" })
+            )
         );
     }
     assert!(h.rules().await.is_empty());
@@ -505,8 +539,9 @@ async fn an_expired_task_card_ends_the_task_with_failure() {
         (decision.as_deref(), reason.as_deref()),
         (Some("denied"), Some(APPROVAL_EXPIRED_REASON))
     );
-    let (status, _) = h.answer(&approval, "approve").await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = h.answer(&approval, "approve").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["reason"], "expired", "{body}");
     assert_eq!(
         h.task(&task_id).0,
         "done",
@@ -773,7 +808,7 @@ impl Harness {
 }
 
 #[tokio::test]
-async fn without_rules_a_bro_card_goes_to_the_owner_dm_and_the_group_lists_it() {
+async fn without_rules_a_bro_card_stays_in_the_group_and_the_dm_gets_a_reminder() {
     let h = harness();
     let (bot, dm) = h.bro("ada").await;
     let group = h.group_with(&bot).await;
@@ -784,27 +819,35 @@ async fn without_rules_a_bro_card_goes_to_the_owner_dm_and_the_group_lists_it() 
         "no review without rules: {card}"
     );
     assert!(card["expiresAt"].as_str().unwrap() > card["createdAt"].as_str().unwrap());
+    assert_eq!(card["ownerUserId"], robroz_contract::BOOTSTRAP_ADMIN_ID);
 
-    let in_dm = h.approvals(&dm).await;
-    assert_eq!(in_dm.len(), 1);
-    assert_eq!(in_dm[0], card);
-    let in_group = h.approvals(&group).await;
     assert_eq!(
-        in_group,
+        h.approvals(&group).await,
         vec![card.clone()],
-        "same card, listed in the group too"
+        "the card is in the group"
     );
+    assert!(
+        h.approvals(&dm).await.is_empty(),
+        "no second card in the DM"
+    );
+    let reminders = h.reminders(&dm).await;
+    assert_eq!(reminders.len(), 1);
+    assert_eq!(reminders[0]["approvalId"], card["id"]);
+    assert_eq!(reminders[0]["groupId"], group.as_str());
+    assert_eq!(reminders[0]["state"], "waiting");
 
     let id = card["id"].as_str().unwrap();
     let (status, answered) = h.answer(id, "approve").await;
     assert_eq!(status, StatusCode::OK, "{answered}");
     assert_eq!(answered["decision"], "approved");
-    let (status, _) = h.answer(id, "deny").await;
-    assert_eq!(status, StatusCode::CONFLICT, "answered once");
+    let (status, body) = h.answer(id, "deny").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "answered once");
+    assert_eq!(body["reason"], "decided");
+    assert_eq!(h.approvals(&group).await[0]["decision"], "approved");
     assert_eq!(
-        h.approvals(&group).await[0]["decision"],
+        h.reminders(&dm).await[0]["state"],
         "approved",
-        "group copy follows"
+        "reminder follows"
     );
 }
 
@@ -851,8 +894,10 @@ async fn a_matching_rule_allows_a_bro_card_inside_the_post() {
     assert!(h.approvals(&group).await.is_empty(), "allowed: no card");
     let id = card["id"].as_str().unwrap();
     assert_eq!(h.card(id).await, card, "readable by id");
-    let (status, _) = h.answer(id, "deny").await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = h.answer(id, "deny").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["reason"], "decided", "{body}");
+    assert!(h.reminders(&dm).await.is_empty(), "allowed: no reminder");
     h.host.review_once(Utc::now() + Duration::hours(1)).unwrap();
     assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "reviewed once");
     let (status, unread) = h
@@ -866,7 +911,7 @@ async fn a_matching_rule_allows_a_bro_card_inside_the_post() {
 }
 
 #[tokio::test]
-async fn a_blocked_bro_card_goes_to_the_owner_dm_with_the_reason() {
+async fn a_blocked_bro_card_stays_in_the_group_with_the_reason() {
     let fake = Fake::new(vec![Ok(Verdict::Block("没有规则允许删这个目录".into()))]);
     let h = harness().with_reviewer(fake);
     let (bot, dm) = h.bro("ada").await;
@@ -875,7 +920,8 @@ async fn a_blocked_bro_card_goes_to_the_owner_dm_with_the_reason() {
     let card = h.bro_post(&group, &bot).await;
     assert_eq!(card["decision"], Value::Null);
     assert_eq!(card["reason"], "没有规则允许删这个目录");
-    assert_eq!(h.approvals(&dm).await, vec![card.clone()]);
+    assert!(h.approvals(&dm).await.is_empty());
+    assert_eq!(h.reminders(&dm).await.len(), 1);
     assert_eq!(h.approvals(&group).await, vec![card.clone()]);
     let (status, _) = h.answer(card["id"].as_str().unwrap(), "deny").await;
     assert_eq!(status, StatusCode::OK);
@@ -892,7 +938,8 @@ async fn bro_card_review_errors_retry_once_then_block() {
     assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
     assert_eq!(card["reason"], REVIEW_FAILED_REASON);
     assert_eq!(card["decision"], Value::Null, "never default-allow");
-    assert_eq!(h.approvals(&dm).await.len(), 1);
+    assert_eq!(h.approvals(&group).await.len(), 1);
+    assert_eq!(h.reminders(&dm).await.len(), 1);
 }
 
 #[tokio::test]
@@ -904,13 +951,14 @@ async fn without_a_model_a_bro_card_is_blocked() {
     let card = h.bro_post(&group, &bot).await;
     assert_eq!(card["reason"], NO_MODEL_REASON);
     assert_eq!(card["decision"], Value::Null);
-    assert_eq!(h.approvals(&dm).await.len(), 1);
+    assert_eq!(h.approvals(&group).await.len(), 1);
+    assert_eq!(h.reminders(&dm).await.len(), 1);
 }
 
 #[tokio::test]
-async fn a_bro_card_expires_and_a_later_answer_is_409() {
+async fn a_bro_card_expires_and_a_later_answer_is_403_expired() {
     let h = harness();
-    let (bot, _) = h.bro("ada").await;
+    let (bot, dm) = h.bro("ada").await;
     let group = h.group_with(&bot).await;
     let card = h.bro_post(&group, &bot).await;
     let id = card["id"].as_str().unwrap().to_string();
@@ -918,8 +966,36 @@ async fn a_bro_card_expires_and_a_later_answer_is_409() {
     let expired = h.card(&id).await;
     assert_eq!(expired["decision"], "denied");
     assert_eq!(expired["reason"], APPROVAL_EXPIRED_REASON);
-    let (status, _) = h.answer(&id, "approve").await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = h.answer(&id, "approve").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "approval_forbidden");
+    assert_eq!(body["reason"], "expired");
+    assert_eq!(h.reminders(&dm).await[0]["state"], "expired");
+}
+
+#[tokio::test]
+async fn a_card_past_its_expiry_is_403_expired_before_the_sweep() {
+    let h = harness();
+    let (bot, dm) = h.bro("ada").await;
+    let group = h.group_with(&bot).await;
+    let card = h.bro_post(&group, &bot).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    h.db()
+        .execute(
+            "UPDATE approvals SET expires_at = ?2 WHERE id = ?1",
+            params![id, rfc3339(Utc::now() - Duration::minutes(1))],
+        )
+        .unwrap();
+    let (status, body) = h.answer(&id, "approve").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["reason"], "expired");
+    let now = h.card(&id).await;
+    assert_eq!(
+        now["decision"], "denied",
+        "settled as expired, not approved"
+    );
+    assert_eq!(now["reason"], APPROVAL_EXPIRED_REASON);
+    assert_eq!(h.reminders(&dm).await[0]["state"], "expired");
 }
 
 #[tokio::test]
@@ -952,7 +1028,7 @@ async fn an_abandoned_bro_card_is_picked_up_by_the_review_pass() {
 }
 
 #[tokio::test]
-async fn a_moved_bro_card_is_unread_only_in_the_dm() {
+async fn a_group_bro_card_is_unread_in_the_group_and_its_reminder_in_the_dm() {
     let h = harness();
     let (bot, dm) = h.bro("ada").await;
     let group = h.group_with(&bot).await;
@@ -967,28 +1043,28 @@ async fn a_moved_bro_card_is_unread_only_in_the_dm() {
         }
     };
     let card = h.bro_post(&group, &bot).await;
-    assert_eq!(
-        h.approvals(&group).await.len(),
-        1,
-        "the group lists the notice copy"
-    );
+    assert_eq!(h.approvals(&group).await.len(), 1);
     assert_eq!(
         unread(group.clone()).await,
-        0,
-        "the group copy is only a notice"
+        1,
+        "the card is unread in the group"
     );
-    assert_eq!(unread(dm.clone()).await, 1, "unread in the owner's DM");
+    assert_eq!(
+        unread(dm.clone()).await,
+        1,
+        "the reminder is unread in the DM"
+    );
 
     let (status, _) = h.answer(card["id"].as_str().unwrap(), "approve").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        unread(group.clone()).await,
-        0,
-        "still not unread in the group after the answer"
-    );
     assert_eq!(
         unread(dm.clone()).await,
         1,
         "answering does not change the DM count"
     );
+    let (status, _) = h
+        .call("POST", &format!("/api/groups/{dm}/read"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unread(dm.clone()).await, 0);
 }

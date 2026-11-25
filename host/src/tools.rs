@@ -249,7 +249,7 @@ impl CompleteError {
             }
             CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
             CompleteError::OverQuota(over) => over.failure(),
-            CompleteError::Cancelled => robroz_card::NO_RESULT.to_string(),
+            CompleteError::Cancelled => robroz_contract::legacy::NO_RESULT.to_string(),
             CompleteError::NeedsApproval(pending) => {
                 format!(
                     "{}{}",
@@ -631,6 +631,40 @@ mod tests {
         assert_eq!(model.seen.lock().unwrap().len(), MAX_TOOL_ROUNDS);
         // The last (8th) tool call is not executed.
         assert_eq!(used.lock().unwrap().len(), MAX_TOOL_ROUNDS - 1);
+    }
+
+    #[test]
+    fn every_failure_text_the_host_writes_has_a_code_and_a_prefix_free_detail() {
+        use robroz_contract::{split_failure, FailureCode};
+        let over = |o: robroz_policy::OverQuota| CompleteError::OverQuota(o).failure_text();
+        for (text, code, detail) in [
+            (
+                CompleteError::RoundLimit.failure_text(),
+                FailureCode::ToolRoundLimit,
+                None,
+            ),
+            (
+                CompleteError::Cancelled.failure_text(),
+                FailureCode::NoResult,
+                None,
+            ),
+            (
+                over(robroz_policy::OverQuota::TooMany { used: 9, limit: 8 }),
+                FailureCode::OutboundOverQuota,
+                Some("9/8"),
+            ),
+            (
+                over(robroz_policy::OverQuota::NotGet("DELETE".into())),
+                FailureCode::OutboundNotGet,
+                Some("DELETE"),
+            ),
+        ] {
+            assert_eq!(
+                split_failure(&text),
+                (code, detail.map(String::from)),
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -11,6 +11,8 @@
   <a href="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml"><img src="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
+> **Repository split.** This repository holds the robroz host (server), the runner, the shared contract and the Docker images. The desktop and mobile client live in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client). Some documents below still describe both; they will be rewritten per repository.
+
 Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. Rust host + native desktop client.
 
 v0.1.0 is single-user and self-hosted. See [CHANGELOG.md](CHANGELOG.md) and [docs/install.md](docs/install.md).

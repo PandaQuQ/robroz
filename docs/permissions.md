@@ -41,18 +41,27 @@ The takeover marker `takeover`:
 
 ## Approval cards
 
-Approvals are checked against your Allow rules (「放行规则」) first, including cards a bro issues itself. If a rule allows the action, no card is shown; the action goes ahead (a task card is settled as approved, so the task returns to `queued`), and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it is shown to the owner with `expiresAt` set. A card that expires is denied with `reason` Approval expired (「审批已过期」); a task it was gating ends as `done` with that same `failure`. Confirm cards and a takeover do not expire.
+Approvals are checked against your Allow rules (「放行规则」) first, including cards a bro issues itself. If a rule allows the action, no card is shown; the action goes ahead (a task card is settled as approved, so the task returns to `queued`), and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 403 with `reason` `decided`). If the card is blocked or there are no rules, it is shown with `expiresAt` set. A card that expires is denied with `reason` Approval expired (「审批已过期」); a task it was gating ends as `done` with that same `failure`. Confirm cards and a takeover do not expire.
+
+### Who may answer, and where the card goes (v0.2)
+
+Every bro has an owner (the user who created it; bros from a v0.1 database belong to the bootstrap admin). **Only the bro's owner may approve or deny its cards.** An admin is not an exception, except for Allow-rule confirm cards on the settings page, which any admin answers. Each approval card carries `ownerUserId` and `ownerName` so the client can show who decides.
+
+- A card raised in a **group** stays in that group, with its buttons. The owner's DM with that bro gets an `approval_reminder` line: no buttons, it names the group and the bro, counts as unread in the DM, and changes to approved / denied / expired when the card is settled. The v0.1 behaviour of moving the card to the DM and showing Sent to owner's DM (「已发到主人私聊」) in the group is gone.
+- A card raised in the bro's **DM** stays in the DM, with its buttons, and there is no reminder.
+- Anyone else who tries to answer gets 403 `{"code":"approval_forbidden","reason":"not_owner",…}`. A card that was already answered gets 403 with `reason` `decided`, and one that expired gets 403 with `reason` `expired`. These were 409 before v0.2. A 403 is never a token problem; a bad token is still 401. Details are in [api.md, approve / deny](api.md#post-apiapprovalsidapprove-and-deny).
+- The same owner rule covers renaming a bro, opening its DM and adding it to another group (403 `not_bro_owner`, with `ownerUserId` / `ownerName`; the client shows "Only {owner} can change this bro.").
 
 ### Cards a bro issues
 
-`POST /api/groups/{id}/approvals`, with `action` `delete`, `send` or `spend`. The card is only a question; answering it does not make the host do the action. Bro-issued cards go through auto-review like a task card. If the card is blocked or there are no rules, it is sent to the owner's DM with that bro (`host/src/approvals.rs:bro_card_group`; a DM is created if needed). The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows Sent to owner's DM (「已发到主人私聊」). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card posted in a DM stays in that DM and is not listed elsewhere. Fields and errors are in [api.md](api.md#post-apigroupsidapprovals).
+`POST /api/groups/{id}/approvals`, with `action` `delete`, `send` or `spend`. The card is only a question; answering it does not make the host do the action. Bro-issued cards go through auto-review like a task card. If the card is blocked or there are no rules, it stays where the bro posted it (`host/src/approvals.rs:bro_card_group`), and a group card gets a reminder in the owner's DM (see above). Fields and errors are in [api.md](api.md#post-apigroupsidapprovals).
 
 ### Cards the host issues for a task
 
 When a task reaches `robroz-action:external`, the host issues an approval card for it; the person no longer has to take over in the DM first:
 
 - `action` is `send`, `summary` is Writes to an outside service: {what it will do} (「要对外写入：要做的事」), `botId` is the task's assignee, and the optional field `taskId` is set (a card a bro issues itself does not have `taskId`).
-- The task is `blocked` with `waitingFor` set to `approval`. If the task is in a group, the approval card itself is placed in the owner's DM with that bro (a DM is created if needed). The group does not list a second copy of the card; its status card shows Sent to owner's DM (「已发到主人私聊」). Unread for the card is only in the DM; the group still counts the blocked task. A card raised in a DM stays in that DM.
+- The task is `blocked` with `waitingFor` set to `approval`. The card stays in the task's group (or DM), and a group card gets a reminder in the owner's DM (a DM is created if needed), see above.
 - Approve: the host records the takeover (appends the hash) and the task is queued again so it can finish the run.
 - Deny: the task ends as `done` without doing that step, there is no delivery card, and the status card has `failure` You denied: … (「你拒绝了：…」).
 - If the task was already taken over with `/resume`, answering the card only records the decision and does not change the task again.
@@ -63,10 +72,10 @@ When a task reaches `robroz-action:external`, the host issues an approval card f
 When the model wants to call an MCP tool that is not marked `readOnlyHint: true`, the host raises an approval card first (`host/src/mcp_tools.rs`, `host/src/approvals.rs:gate_mcp_task`) and does not make the call:
 
 - `action` is `call`, `summary` is still 「调用 {server}.{tool}」 plus a short parameter summary (the client shows Call {server}.{tool}), and the optional fields `mcpServer`, `mcpTool` and `taskId` are set.
-- The task is `blocked` with `waitingFor` set to `approval`, and the progress line is Using {server}.{tool} (「在用 {server}.{tool}」). The card is placed the same way as a task approval card (owner DM when the task is in a group; the group status card shows 「已发到主人私聊」).
+- The task is `blocked` with `waitingFor` set to `approval`, and the progress line is Using {server}.{tool} (「在用 {server}.{tool}」). The card is placed the same way as a task approval card (in the task's group, with a reminder in the owner's DM).
 - Approve: the task returns to `queued` and the pump continues: it makes this call and hands the result back to the model. The call also counts as one outbound GET and shares `ROBROZ_GET_LIMIT` with read-only tools.
 - Deny: the call is not made, the task is `done`, the delivery card's `summary` is Didn't run (「未执行」), and `failure` is You denied: {server}.{tool} (「你拒绝了：{server}.{tool}」) on both the status card and the delivery card.
-- Answering a second time is 409. Do not use `POST /api/tasks/{id}/resume` in place of answering the card: that returns 409 Answer the approval card first (「请先回答审批卡」).
+- Answering a second time is 403 with `reason` `decided`. Do not use `POST /api/tasks/{id}/resume` in place of answering the card: that returns 409 Answer the approval card first (「请先回答审批卡」).
 - A read-only MCP tool does not raise a card. It is called immediately and counts as one outbound GET.
 - A call error (can't connect, timeout, or the server returned an error) does not fail the task: the model is given Call failed: {reason} (「调用失败：{原因}」) and continues. Secrets in the reason are redacted.
 
@@ -74,7 +83,7 @@ Details are in [search-and-mcp.md](search-and-mcp.md#模型怎么调用).
 
 ### answeredBy
 
-The host has a single shared token and cannot tell who is acting. `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](client.md#who-answered).
+Who may answer is decided by the bro's owner (above). `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](client.md#who-answered).
 
 ## waitingFor
 
@@ -100,7 +109,7 @@ When a task is `done` but the work was not finished, the status card has `failur
 | A dead run (container exited non-zero, wrote no result, or disappeared) | Finished with no result (「没写出结果」) | No |
 | An approval card expired | Approval expired (「审批已过期」) | No |
 
-When the client sees `failure`, it shows a grey Couldn't finish: reason (「没做成：原因」), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, the client shows Finished with no result as it is (`robroz_card::failure_line`).
+When the client sees `failure`, it shows a grey Couldn't finish: reason (「没做成：原因」), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, the client shows Finished with no result as it is (`robroz_card::failure_line`). From v0.2 a client renders this from `failureCode` and `failureDetail` (the reason without its prefix) instead of the Chinese `failure`; see [api.md, failure](api.md#failure).
 
 ## The model's tool calls
 

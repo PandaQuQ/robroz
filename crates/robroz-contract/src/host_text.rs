@@ -137,6 +137,8 @@ pub const MCP_SERVER_NOT_FOUND: &str = "MCP 服务器不存在";
 pub const MCP_NOT_ENABLED_IN_GROUP: &str = "这个群还没启用这台服务器";
 /// Approving a command on a non-stdio MCP server.
 pub const MCP_STDIO_ONLY_APPROVE: &str = "只有 stdio 服务器需要批准启动命令";
+/// 403: the caller is not this bro's owner (rename, add to a group, open
+/// its DM, or answer its card). Only the owner may do this.
 /// A DM already has its one bro.
 pub const DM_ONE_BRO: &str = "私聊里只能有一个 bro";
 /// Approval action is not supported.

@@ -308,8 +308,8 @@ impl Harness {
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["type"] == "approval")
-            .expect("approval card")["id"]
+            .find(|e| e["type"] == "approval_reminder")
+            .expect("approval reminder (v0.2: the card is in the group)")["approvalId"]
             .as_str()
             .unwrap()
             .to_string();
@@ -339,7 +339,10 @@ fn call(tool: &str) -> AssistantTurn {
 fn assert_cancelled(h: &Harness, task_id: &str, sandbox: &FakeSandbox) {
     assert_eq!(
         h.row(task_id),
-        ("done".to_string(), Some(robroz_card::NO_RESULT.to_string()))
+        (
+            "done".to_string(),
+            Some(robroz_contract::legacy::NO_RESULT.to_string())
+        )
     );
     assert!(sandbox.containers.is_empty(), "container stopped");
     assert_eq!(h.deliveries(), 0, "no partial delivery");

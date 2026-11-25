@@ -4,7 +4,8 @@
 # they inherit `license = "AGPL-3.0-only"` via `license.workspace = true`.
 
 [graph]
-# Check dependencies for the platforms the client and host actually build on.
+# Check dependencies for the platforms the host and the client (which
+# depends on the contract and, for tests, the host) actually build on.
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",

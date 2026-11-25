@@ -49,10 +49,10 @@ A task has exactly one status card. Its `id` equals `taskId`. The client updates
 | Field | Meaning |
 | --- | --- |
 | `containerUp` | `true` only while the task is `running` and the container is still up. `false` when queued, done, blocked, or when a run has already died. |
-| `label` | The API field is still the Chinese line from `robroz_card::status_line(state, containerUp)`: 「排队」, 「进行」 when the container is up, 「没写出结果」 when a `running` card has no container (old dead-run data), 「卡住」, 「完成」. The client shows Queued, Running, Finished with no result, Stuck or Done. The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
+| `label` | The API field is still the Chinese line from `robroz_contract::legacy::status_line(state, containerUp)` (deprecated; clients render from `statusCode` instead): 「排队」, 「进行」 when the container is up, 「没写出结果」 when a `running` card has no container (old dead-run data), 「卡住」, 「完成」. The client shows Queued, Running, Finished with no result, Stuck or Done. The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
 | `failure` | Optional. Why a `done` task did not finish. |
 | `waitingFor` | Optional. Why a `blocked` task is waiting: `approval` (answer an approval card) or `takeover` (take over in the DM). |
-| `progress` | Optional. The API field is still Chinese. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (the client shows Using {server}.{tool}). When the approval card was moved to the owner's DM, this line is 「已发到主人私聊」 (the client shows Sent to owner's DM). |
+| `progress` | Optional. The API field is still Chinese. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (the client shows Using {server}.{tool}). Since v0.2 the host no longer writes 「已发到主人私聊」 (Sent to owner's DM); approval cards stay in the group. |
 
 Colours and actions come from `robroz-card` (`appearance`, `palette`); the client does not pick its own palette. `appearance` by itself is: queued, grey; running with a live container, ink (dark); a dead run (`running` with no container), grey, same as queued; done, green; blocked, amber, with the action Take over in DM (「去私聊接管」).
 
@@ -67,7 +67,7 @@ The client then applies two overrides (`client/src/model.rs`):
 - The bro can report too: a line `robroz-progress:text` in the prompt or in the model reply. The runner writes the last progress line to the group folder `tasks/{taskId}/progress`, and the host reads it while the task is running. A progress line in the model reply is applied when the sandbox comes up; it wins over Running in the sandbox (「在沙箱里跑」). Progress lines do not go into `result.txt`.
 - The text is normalized to one line: newlines and consecutive whitespace become a single space, ends are trimmed, at most 60 characters (longer text is cut to 59 characters plus 「…」). This is not an error.
 - If the text is unchanged, `updatedAt` is not moved and no extra event is pushed.
-- The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps Using {server}.{tool} (「在用 {server}.{tool}」); the line is cleared after the card is answered. If that card was moved to the owner's DM, the line is Sent to owner's DM (「已发到主人私聊」) instead.
+- The line is cleared when the task finishes, is blocked for a takeover, or the container is gone, and a new run starts from scratch. Exception: a `blocked` task waiting for an MCP tool approval keeps Using {server}.{tool} (「在用 {server}.{tool}」); the line is cleared after the card is answered.
 - The host may also write No reply from the model or tools for N min (「模型和工具还没回，已等 N 分钟」) or No new progress for N min (「N 分钟没有新进度」). The stall hint is only a hint. The No reply hint shows at half of `ROBROZ_STEP_TIMEOUT_SECS`. A step that runs past `ROBROZ_STEP_TIMEOUT_SECS` is cancelled: the container is stopped and the task ends as Finished with no result (「没写出结果」), with no delivery and no rerun. Time waiting on an approval card does not count. The variables are in [configuration.md](configuration.md).
 - Code: `host/src/progress.rs`, `host/src/watchdog.rs`, `host/src/timeouts.rs`.
 
@@ -84,7 +84,7 @@ Each item in the event stream is an `Event`, distinguished by `type`. Full field
 | `approval` | An approval card: ask a person before deleting, sending, spending, or calling a tool. The host also issues one when a task wants to write outside (with `taskId`). | A bro or the host |
 | `confirm` | A confirm card: a bro proposed a memory or a skill, and a person decides. | The host, after a successful task |
 
-Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 409). If the card is blocked or there are no rules, it goes to the owner's DM, with `expiresAt` set. The group the bro posted in lists the same card id as a notice, with no buttons, and the client shows Sent to owner's DM (「已发到主人私聊」). Unread counts only in the DM; the group copy still updates `lastActivityAt`. A card that expires has `reason` Approval expired (「审批已过期」). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
+Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 403 with `reason` `decided`). If the card is blocked or there are no rules, it is shown with `expiresAt` set, in the conversation where it was raised. Only the bro's owner may answer it. A card in a group also puts an `approval_reminder` line (no buttons) in the owner's DM with that bro; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02). A card that expires has `reason` Approval expired (「审批已过期」). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
 
 Rules:
 
@@ -97,9 +97,9 @@ Rules:
 Each group has one read position (a single owner for now). Unread counts only what a bro sent that you need to see, after that position:
 
 - Delivery cards, choice cards, and confirm cards in that chat.
-- Approval cards that were actually issued (a card still in auto-review, or one that a rule already allowed, is not counted). A bro-issued card that was moved to the owner's DM is unread only in the DM; the group listing is a notice and does not count, before or after it is answered.
+- Approval cards that were actually issued (a card still in auto-review, or one that a rule already allowed, is not counted). A card counts in the conversation where it sits; a group card's `approval_reminder` also counts once in the owner's DM.
 - Tasks that became `blocked`, with `updatedAt` after the read position, and that are not hidden.
 
 These do not count: your own messages; status changes through queued, running and done; un-mentioned group turns that are still hidden (including a silent reply); Allow-rule cards on the settings page (`rule_add` / `rule_delete`), which are not in any chat.
 
-`lastActivityAt` is the newest change among messages, visible tasks, deliveries, choices and approvals. A bro-issued card moved to the owner's DM also counts as activity in the original group (the notice is listed there), but it is not unread there. A silent turn does not change `lastActivityAt`. Details are in [api.md, unread](api.md#unread).
+`lastActivityAt` is the newest change among messages, visible tasks, deliveries, choices and approvals. A silent turn does not change `lastActivityAt`. Details are in [api.md, unread](api.md#unread).

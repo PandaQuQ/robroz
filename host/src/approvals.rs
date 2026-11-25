@@ -7,13 +7,15 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use robroz_contract::{
-    clean_answered_by, Answer, ApprovalAction, ApprovalDecision, CreateApproval, Event,
-    APPROVAL_SUMMARY_MAX,
+    clean_answered_by, Answer, ApprovalAction, ApprovalDecision, ApprovalForbidden,
+    ApprovalForbiddenReason, CreateApproval, Event, ReminderState, APPROVAL_EXPIRED_REASON,
+    APPROVAL_FORBIDDEN, APPROVAL_SUMMARY_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::users::CurrentUser;
 use crate::{
     db_error, error_response, group_exists, lock_db, new_id, now_rfc3339, AppState, TimedEvent,
 };
@@ -35,9 +37,11 @@ pub(crate) const SCHEMA: &str = "
 /// Approval cards only: confirm cards (`subject_kind` set) live in [`crate::proposals`].
 /// Settings-page rule cards have no bro: `botId` / `botName` are the
 /// contract's `SETTINGS_APPROVAL_BOT_ID` / `SETTINGS_APPROVAL_BOT_NAME`.
+/// Columns 15 and 16 are the bro's owner (v0.2): `NULL` on settings cards.
 const SELECT: &str = "SELECT a.id, a.bot_id, COALESCE(b.name, CASE WHEN a.bot_id = 'settings' THEN '设置' END), a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
-            a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at
+            a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at, u.id, u.name
      FROM approvals a LEFT JOIN bots b ON b.id = a.bot_id
+     LEFT JOIN users u ON b.id IS NOT NULL AND u.id = COALESCE(b.owner_user_id, 'local-admin')
      WHERE (b.id IS NOT NULL OR a.bot_id = 'settings')";
 /// Approval cards the owner can see: not a confirm card, and not hidden by
 /// auto-review (still being reviewed, or allowed without a card).
@@ -115,6 +119,8 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         mcp_tool: row.get(12)?,
         reason: row.get(13)?,
         expires_at: row.get(14)?,
+        owner_user_id: row.get(15)?,
+        owner_name: row.get(16)?,
     })
 }
 
@@ -190,6 +196,72 @@ pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Resul
     rows.collect()
 }
 
+/// Reminder lines in DM `?1` (v0.2): every shown approval card of that
+/// DM's bro that sits in a group (not a DM), when the DM is the owner's.
+/// Shared by [`reminder_events`] and unread ([`crate::unread`]).
+pub(crate) const REMINDERS_FROM: &str = "FROM approvals a
+     JOIN groups d ON d.id = ?1 AND d.dm_bot_id = a.bot_id
+     JOIN bots b ON b.id = a.bot_id
+     JOIN groups g ON g.id = a.group_id AND g.dm_bot_id IS NULL
+     JOIN users u ON u.id = COALESCE(b.owner_user_id, 'local-admin')
+     WHERE d.dm_user_id = u.id AND a.subject_kind IS NULL
+       AND (a.review_state IS NULL OR a.review_state = 'blocked')";
+
+/// `id` of the reminder line for approval card `approval_id`.
+pub(crate) fn reminder_id(approval_id: &str) -> String {
+    format!("reminder:{approval_id}")
+}
+
+fn reminder_state(decision: Option<&str>, reason: Option<&str>) -> ReminderState {
+    match decision {
+        None => ReminderState::Waiting,
+        Some("approved") => ReminderState::Approved,
+        Some(_) if reason == Some(APPROVAL_EXPIRED_REASON) => ReminderState::Expired,
+        Some(_) => ReminderState::Denied,
+    }
+}
+
+/// `approval_reminder` events for a DM; empty for any other group. A
+/// reminder changes when its card does (`answeredAt`), so the DM stream
+/// pushes it again with the outcome.
+pub(crate) fn reminder_events(
+    conn: &Connection,
+    group_id: &str,
+) -> rusqlite::Result<Vec<TimedEvent>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT a.id, g.id, g.name, a.bot_id, b.name, u.id, u.name, a.decision, a.reason,
+                a.created_at, a.answered_at
+         {REMINDERS_FROM}"
+    ))?;
+    let rows = stmt.query_map([group_id], |row| {
+        let approval_id: String = row.get(0)?;
+        let created_at: String = row.get(9)?;
+        let answered_at: Option<String> = row.get(10)?;
+        let decision: Option<String> = row.get(7)?;
+        let reason: Option<String> = row.get(8)?;
+        let id = reminder_id(&approval_id);
+        Ok(TimedEvent {
+            changed_at: answered_at.clone().unwrap_or_else(|| created_at.clone()),
+            created_at: created_at.clone(),
+            id: id.clone(),
+            event: Event::ApprovalReminder {
+                id,
+                approval_id,
+                group_id: row.get(1)?,
+                group_name: row.get(2)?,
+                bot_id: row.get(3)?,
+                bot_name: row.get(4)?,
+                owner_user_id: row.get(5)?,
+                owner_name: row.get(6)?,
+                state: reminder_state(decision.as_deref(), reason.as_deref()),
+                created_at,
+                answered_at,
+            },
+        })
+    })?;
+    rows.collect()
+}
+
 /// Trims summary and path; summary is one non-empty line, path is optional.
 pub fn validate(
     summary: &str,
@@ -209,20 +281,14 @@ pub fn validate(
     Ok((summary.to_string(), path))
 }
 
-/// Where a bro-posted card goes: the owner's DM with that bro. A card posted
-/// in a DM stays there. Returns `(card group, origin group if moved)`.
-fn bro_card_group(
-    conn: &Connection,
-    group_id: &str,
-    bot_id: &str,
-) -> rusqlite::Result<(String, Option<String>)> {
-    if crate::bros::dm_owner(conn, group_id)?.is_some() {
-        return Ok((group_id.to_string(), None));
+/// Where a bro-posted card goes (v0.2): it stays where it was posted. A
+/// card in a group also needs the owner's DM with that bro to exist, since
+/// that DM shows the card's [`Event::ApprovalReminder`].
+fn bro_card_group(conn: &Connection, group_id: &str, bot_id: &str) -> rusqlite::Result<String> {
+    if crate::bros::dm_bot(conn, group_id)?.is_none() {
+        crate::bros::owner_dm_for(conn, bot_id)?;
     }
-    Ok(match crate::bros::owner_dm_for(conn, bot_id)? {
-        Some(dm) => (dm, Some(group_id.to_string())),
-        None => (group_id.to_string(), None),
-    })
+    Ok(group_id.to_string())
 }
 
 /// What a bro-posted card needs reviewed after the insert, if anything.
@@ -237,8 +303,9 @@ struct ToReview {
 /// auto-review like a task card: with confirmed rules it is reviewed right
 /// here (outside the DB lock), allow settles it as `approved` with the
 /// reviewer's `reason` and shows no card, block shows it with `reason`.
-/// Without rules it is shown at once. Shown cards live in the owner's DM with
-/// the bro; the group where it was posted also lists it (without buttons).
+/// Without rules it is shown at once. Shown cards stay in the group where
+/// they were posted; only the bro's owner may answer, and the owner's DM
+/// with the bro gets a reminder line.
 /// The 201 body is the card as stored after review.
 pub(crate) async fn create_approval(
     State(state): State<AppState>,
@@ -340,12 +407,12 @@ fn insert_bro_card(
         let id = new_id();
         let now = now_rfc3339();
         let tx = conn.unchecked_transaction()?;
-        let (card_group, origin) = bro_card_group(&tx, group_id, &bot_id)?;
+        let card_group = bro_card_group(&tx, group_id, &bot_id)?;
         let gate = crate::review::open_gate(&tx, &now)?;
         tx.execute(
             "INSERT INTO approvals (id, group_id, bot_id, action, summary, path, decision, created_at, answered_at,
-                                    review_state, expires_at, origin_group_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, ?9, ?10)",
+                                    review_state, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, ?9)",
             params![
                 id,
                 card_group,
@@ -355,8 +422,7 @@ fn insert_bro_card(
                 path,
                 now,
                 gate.review_state,
-                gate.expires_at,
-                origin
+                gate.expires_at
             ],
         )?;
         tx.commit()?;
@@ -405,9 +471,9 @@ fn gate_line(prompt: &str) -> String {
     crate::text::clip(line, 60)
 }
 
-/// Where a task's approval card goes: the owner's DM with the task's bro.
-/// A task that already runs in a DM keeps its card there. If the bro is
-/// unknown (no `bots` row), the card stays in the task's group.
+/// Where a task's approval card goes (v0.2): the task's own group. A task
+/// in a group also makes sure the owner's DM with the bro exists, for the
+/// reminder line. `None` if the task is unknown.
 fn card_group(conn: &Connection, task_id: &str) -> rusqlite::Result<Option<String>> {
     let Some((group_id, bot_id)) = conn
         .query_row(
@@ -419,12 +485,10 @@ fn card_group(conn: &Connection, task_id: &str) -> rusqlite::Result<Option<Strin
     else {
         return Ok(None);
     };
-    if crate::bros::dm_owner(conn, &group_id)?.is_some() {
-        return Ok(Some(group_id));
+    if crate::bros::dm_bot(conn, &group_id)?.is_none() {
+        crate::bros::owner_dm_for(conn, &bot_id)?;
     }
-    Ok(Some(
-        crate::bros::owner_dm_for(conn, &bot_id)?.unwrap_or(group_id),
-    ))
+    Ok(Some(group_id))
 }
 
 /// A blocked task asks before writing outside. The card names the task and
@@ -513,7 +577,9 @@ fn settle_task(
     let routed = decision == ApprovalDecision::Denied && crate::router::clear(conn, task_id)?;
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
-        ApprovalDecision::Denied if routed => ("done", Some(robroz_card::NO_RESULT.to_string())),
+        ApprovalDecision::Denied if routed => {
+            ("done", Some(robroz_contract::legacy::NO_RESULT.to_string()))
+        }
         ApprovalDecision::Denied if failure.is_some() => ("done", failure.map(String::from)),
         ApprovalDecision::Denied => {
             let prompt: String =
@@ -665,18 +731,117 @@ pub(crate) fn settle(
     Ok(Ok(()))
 }
 
-/// One answer per card: the update only matches an unanswered row, so a
-/// second click (or a race) gets 409 and the first answer stands.
+/// Who may answer card `id` (v0.2): the bro's owner; on a settings card
+/// (no bro) an admin. `Err((ownerUserId, ownerName))` when `user` may not.
+/// An unknown card is `Ok` here and 404 later.
+/// `(ownerUserId, ownerName)` of a card the caller may not answer.
+type NotYours = (Option<String>, Option<String>);
+
+fn may_answer(
+    conn: &Connection,
+    id: &str,
+    user: &CurrentUser,
+) -> rusqlite::Result<Result<(), NotYours>> {
+    let row = conn
+        .query_row(
+            "SELECT a.bot_id, b.id, COALESCE(b.owner_user_id, 'local-admin'), u.name
+             FROM approvals a LEFT JOIN bots b ON b.id = a.bot_id
+             LEFT JOIN users u ON u.id = COALESCE(b.owner_user_id, 'local-admin')
+             WHERE a.id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(match row {
+        None => Ok(()),
+        Some((_, Some(_), owner, name)) if owner != user.0 => Err((Some(owner), name)),
+        Some((_, Some(_), _, _)) => Ok(()),
+        Some((bot, None, _, _)) if bot == robroz_contract::SETTINGS_APPROVAL_BOT_ID => {
+            if crate::users::is_admin(conn, &user.0)? {
+                Ok(())
+            } else {
+                Err((None, None))
+            }
+        }
+        Some(_) => Ok(()),
+    })
+}
+
+/// 403 [`ApprovalForbidden`] body.
+fn forbidden(reason: ApprovalForbiddenReason, owner: (Option<String>, Option<String>)) -> Response {
+    let error = match reason {
+        ApprovalForbiddenReason::NotOwner => robroz_contract::NOT_BRO_OWNER,
+        ApprovalForbiddenReason::Decided => robroz_contract::host_text::ALREADY_ANSWERED,
+        ApprovalForbiddenReason::Expired => APPROVAL_EXPIRED_REASON,
+    };
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApprovalForbidden {
+            error: error.to_string(),
+            code: APPROVAL_FORBIDDEN.to_string(),
+            reason,
+            owner_user_id: owner.0,
+            owner_name: owner.1,
+        }),
+    )
+        .into_response()
+}
+
+fn owner_of(card: &Event) -> (Option<String>, Option<String>) {
+    match card {
+        Event::Approval {
+            owner_user_id,
+            owner_name,
+            ..
+        } => (owner_user_id.clone(), owner_name.clone()),
+        _ => (None, None),
+    }
+}
+
+/// `decided` or `expired` for a card that already has a decision.
+fn settled_reason(card: &Event) -> ApprovalForbiddenReason {
+    match card {
+        Event::Approval { reason, .. } if reason.as_deref() == Some(APPROVAL_EXPIRED_REASON) => {
+            ApprovalForbiddenReason::Expired
+        }
+        _ => ApprovalForbiddenReason::Decided,
+    }
+}
+
+fn past(expires_at: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .is_ok_and(|at| at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+}
+
+/// One answer per card, and only from the bro's owner. Non-owner, already
+/// decided, and expired are 403 [`ApprovalForbidden`] with `reason`
+/// `not_owner` / `decided` / `expired`; the first answer stands.
 ///
 /// A card raised by a blocked task also moves that task: approve writes the
 /// takeover marker and queues it again, deny ends it as done (no result).
-fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -> Response {
+fn decide(
+    state: &AppState,
+    user: &CurrentUser,
+    id: &str,
+    decision: ApprovalDecision,
+    body: &[u8],
+) -> Response {
     let by = match answered_by(body) {
         Ok(by) => by,
         Err((status, message)) => return error_response(status, message),
     };
     let mut conn = lock_db(state);
     let result = (|| {
+        if let Err(owner) = may_answer(&conn, id, user)? {
+            return Ok(Err(forbidden(ApprovalForbiddenReason::NotOwner, owner)));
+        }
         // A confirm card answers the same way but settles what a bro proposed.
         if crate::proposals::is_confirm(&conn, id)? {
             return Ok(
@@ -697,10 +862,33 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
                 ..
             }
         ) {
-            return Ok(Err(error_response(
-                StatusCode::CONFLICT,
-                robroz_contract::host_text::ALREADY_ANSWERED,
-            )));
+            return Ok(Err(forbidden(settled_reason(&card), owner_of(&card))));
+        }
+        // Past `expiresAt` but not swept yet: expire it now, the same way
+        // the review pass does, and refuse the answer.
+        if let Event::Approval {
+            expires_at: Some(at),
+            ..
+        } = &card
+        {
+            if past(at) {
+                let _ = settle(
+                    &mut conn,
+                    &state.control_root,
+                    id,
+                    &card,
+                    &Settlement {
+                        decision: ApprovalDecision::Denied,
+                        reason: Some(APPROVAL_EXPIRED_REASON),
+                        failure: Some(APPROVAL_EXPIRED_REASON),
+                        ..Settlement::default()
+                    },
+                )?;
+                return Ok(Err(forbidden(
+                    ApprovalForbiddenReason::Expired,
+                    owner_of(&card),
+                )));
+            }
         }
         let settled = settle(
             &mut conn,
@@ -714,6 +902,11 @@ fn decide(state: &AppState, id: &str, decision: ApprovalDecision, body: &[u8]) -
             },
         )?;
         if let Err((status, message)) = settled {
+            if status == StatusCode::CONFLICT {
+                // Lost a race: someone (or expiry) answered first.
+                let now = load_any(&conn, id)?.unwrap_or(card);
+                return Ok(Err(forbidden(settled_reason(&now), owner_of(&now))));
+            }
             return Ok(Err(error_response(status, message)));
         }
         Ok(Ok(load(&conn, id)?.expect("approval exists")))
@@ -743,18 +936,20 @@ fn answered_by(body: &[u8]) -> Result<Option<String>, (StatusCode, &'static str)
 
 pub(crate) async fn approve(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> Response {
-    decide(&state, &id, ApprovalDecision::Approved, &body)
+    decide(&state, &user, &id, ApprovalDecision::Approved, &body)
 }
 
 pub(crate) async fn deny(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> Response {
-    decide(&state, &id, ApprovalDecision::Denied, &body)
+    decide(&state, &user, &id, ApprovalDecision::Denied, &body)
 }
 
 #[cfg(test)]
