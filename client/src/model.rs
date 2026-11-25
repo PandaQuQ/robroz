@@ -169,8 +169,8 @@ pub enum Row {
 /// Who a feed item belongs to, for the chat bubbles. The host only writes
 /// `messages` from a person (`post_message`, `say`), so a `Message` is
 /// always [`Sender::Own`] and goes on the right; status and card events
-/// belong to a bro and go on the left. A delivery names no bro, so it is
-/// drawn alone and starts a new group ([`Sender::Delivery`]).
+/// belong to a bro and go on the left. A delivery with `bot_name` belongs
+/// to that bro; without it, the card is drawn alone ([`Sender::Delivery`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sender {
     Own,
@@ -178,7 +178,7 @@ pub enum Sender {
         id: String,
         name: String,
     },
-    /// A delivery event has no `bot_name` yet; shown alone, with no avatar.
+    /// A delivery with no `bot_name`; shown alone, with no avatar.
     Delivery,
 }
 
@@ -278,12 +278,29 @@ fn bro(id: &str, name: &str) -> Sender {
     }
 }
 
-/// Who owns a card and when it was made. A delivery event names no bro,
-/// so it is [`Sender::Delivery`] until the contract carries `bot_name`.
+/// A delivery belongs to the named bro; a missing or blank `bot_name`
+/// stays unattributed. A missing `bot_id` still groups by name.
+fn delivery_sender(bot_id: Option<&str>, bot_name: Option<&str>) -> Sender {
+    match bot_name.map(str::trim) {
+        Some(name) if !name.is_empty() => bro(bot_id.unwrap_or(""), name),
+        _ => Sender::Delivery,
+    }
+}
+
+/// Who owns a card and when it was made. A delivery with `bot_name` is
+/// that bro's; without it, [`Sender::Delivery`].
 fn meta_of(event: &Event) -> Meta {
     let (sender, at) = match event {
         Event::Message { created_at, .. } => (Sender::Own, unix(created_at)),
-        Event::Delivery { created_at, .. } => (Sender::Delivery, unix(created_at)),
+        Event::Delivery {
+            created_at,
+            bot_id,
+            bot_name,
+            ..
+        } => (
+            delivery_sender(bot_id.as_deref(), bot_name.as_deref()),
+            unix(created_at),
+        ),
         Event::Status {
             bot_id,
             bot_name,
@@ -776,17 +793,28 @@ mod tests {
     }
 
     fn delivery(id: &str, path: &str, briefing: bool) -> Event {
+        delivery_from(id, path, briefing, "2026-10-07T19:00:00.000Z", None, None)
+    }
+
+    fn delivery_from(
+        id: &str,
+        path: &str,
+        briefing: bool,
+        created_at: &str,
+        bot_id: Option<&str>,
+        bot_name: Option<&str>,
+    ) -> Event {
         Event::Delivery {
             id: id.into(),
             summary: "已写入结果".into(),
             path: path.into(),
             briefing,
-            created_at: "2026-10-07T19:00:00.000Z".into(),
+            created_at: created_at.into(),
             failure: None,
             needs_setup: None,
             task_id: None,
-            bot_id: None,
-            bot_name: None,
+            bot_id: bot_id.map(str::to_string),
+            bot_name: bot_name.map(str::to_string),
         }
     }
 
@@ -1733,15 +1761,128 @@ mod tests {
         assert_eq!(items[1].1.sender.name(), "Ada");
         assert!(
             items[2].1.sender.is_delivery(),
-            "a delivery is not attributed to a bro"
+            "a delivery without bot_name stands alone"
         );
         assert_eq!(items[3].1.sender.name(), "Bea");
         assert_eq!(items[0].1.at, Some(1_791_399_600));
         let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
-        assert_eq!(groups.len(), 4, "a delivery starts its own group");
+        assert_eq!(
+            groups.len(),
+            4,
+            "a delivery without bot_name starts its own group"
+        );
         assert!(groups[2].sender.is_delivery());
         assert!(!Sender::Delivery.same(&bro("bot-ada", "Ada")));
         assert!(!Sender::Delivery.same(&Sender::Delivery));
+    }
+
+    #[test]
+    fn a_delivery_with_bot_name_joins_that_bro() {
+        let mut feed = Feed::default();
+        feed.apply(&status("t1", "Ada", TaskState::Done, false));
+        feed.apply(&delivery_from(
+            "d1",
+            "tasks/t1/result.txt",
+            false,
+            "2026-10-07T19:00:01.000Z",
+            Some("bot-Ada"),
+            Some("Ada"),
+        ));
+        let items: Vec<_> = feed.items().collect();
+        assert_eq!(items[1].1.sender, bro("bot-Ada", "Ada"));
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        assert_eq!(
+            groups[0].items.len(),
+            2,
+            "status and delivery are one group"
+        );
+        assert_eq!(groups[0].sender.name(), "Ada");
+    }
+
+    #[test]
+    fn a_blank_bot_name_is_treated_as_missing() {
+        let mut feed = Feed::default();
+        feed.apply(&delivery_from(
+            "d0",
+            "tasks/t0/result.txt",
+            false,
+            "2026-10-07T19:00:00.000Z",
+            Some("bot-ada"),
+            Some("  "),
+        ));
+        let items: Vec<_> = feed.items().collect();
+        assert!(items[0].1.sender.is_delivery());
+    }
+
+    #[test]
+    fn two_bros_delivering_interleaved_stay_with_their_own_name() {
+        // Ada, Bea, Ada, then an unattributed card, all within two minutes.
+        let mut feed = Feed::default();
+        feed.apply(&delivery_from(
+            "d-ada-1",
+            "tasks/t-ada/a.txt",
+            false,
+            "2026-10-07T19:00:00.000Z",
+            Some("bot-ada"),
+            Some("Ada"),
+        ));
+        feed.apply(&delivery_from(
+            "d-bea",
+            "tasks/t-bea/b.txt",
+            false,
+            "2026-10-07T19:00:00.000Z",
+            Some("bot-bea"),
+            Some("Bea"),
+        ));
+        feed.apply(&delivery_from(
+            "d-ada-2",
+            "tasks/t-ada/c.txt",
+            false,
+            "2026-10-07T19:00:01.000Z",
+            Some("bot-ada"),
+            Some("Ada"),
+        ));
+        feed.apply(&delivery_from(
+            "d-orphan",
+            "tasks/orphan/o.txt",
+            false,
+            "2026-10-07T19:00:01.000Z",
+            None,
+            None,
+        ));
+        let items: Vec<_> = feed.items().collect();
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        let names: Vec<&str> = groups
+            .iter()
+            .map(|g| {
+                if g.sender.is_delivery() {
+                    ""
+                } else {
+                    g.sender.name()
+                }
+            })
+            .collect();
+        assert_eq!(names, vec!["Ada", "Bea", "Ada", ""]);
+        assert_eq!(
+            groups.iter().map(|g| g.items.len()).collect::<Vec<_>>(),
+            vec![1, 1, 1, 1]
+        );
+        assert!(groups[3].sender.is_delivery());
+        // The unattributed card does not join the Ada group after it, either.
+        feed.apply(&delivery_from(
+            "d-ada-3",
+            "tasks/t-ada/d.txt",
+            false,
+            "2026-10-07T19:00:02.000Z",
+            Some("bot-ada"),
+            Some("Ada"),
+        ));
+        let items: Vec<_> = feed.items().collect();
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        assert_eq!(
+            groups.iter().map(|g| g.sender.name()).collect::<Vec<_>>(),
+            vec!["Ada", "Bea", "Ada", "", "Ada"]
+        );
     }
 
     #[test]
