@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The Linux client sets its window icon on X11 (`_NET_WM_ICON`), so window managers and taskbars that read only that property show the robroz icon ([#167](https://github.com/PandaQuQ/robroz/pull/167)).
+- The Linux client's X11 window icon (`_NET_WM_ICON`) is now 128×128 instead of 512×512, so window managers and taskbars that use it show the robroz icon instead of a generic one. The 512×512 property was about 1 MiB, larger than many X11 clients read ([#167](https://github.com/PandaQuQ/robroz/pull/167)).
 - The Windows client no longer opens an extra command-line window on start ([#165](https://github.com/PandaQuQ/robroz/pull/165)). Release builds use the Windows GUI subsystem. Debug builds keep the console. When the client is started from Explorer, stderr output such as a failed preference save or a panic message is not shown; start it from a shell to see it.
 
 ## [0.1.0] - 2026-11-25
