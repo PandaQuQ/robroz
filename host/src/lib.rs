@@ -685,12 +685,12 @@ async fn add_member(
         }
         // A private chat keeps exactly its one bro.
         if bros::dm_bot(&tx, &group_id)?.is_some_and(|owner| owner != bot_id) {
-            return Ok(Some(Err(false)));
+            return Ok(Some(Err(None)));
         }
         // Only the owner adds an existing bro to a group; a new id becomes
         // a bro owned by the caller.
         if bros::owned_by(&tx, bot_id, &user)? == Some(false) {
-            return Ok(Some(Err(true)));
+            return Ok(Some(Err(Some(users::owner_of(&tx, bot_id)?))));
         }
         tx.execute(
             "INSERT OR IGNORE INTO bots (id, tenant_id, name, owner_user_id) VALUES (?1, ?2, ?3, ?4)",
@@ -714,13 +714,10 @@ async fn add_member(
             StatusCode::NOT_FOUND,
             robroz_contract::host_text::GROUP_NOT_FOUND,
         ),
-        Ok(Some(Err(false))) => {
+        Ok(Some(Err(None))) => {
             error_response(StatusCode::CONFLICT, robroz_contract::host_text::DM_ONE_BRO)
         }
-        Ok(Some(Err(true))) => forbidden(
-            robroz_contract::host_text::NOT_BRO_OWNER,
-            robroz_contract::FORBIDDEN_NOT_BRO_OWNER,
-        ),
+        Ok(Some(Err(Some(owner)))) => bros::not_owner(owner),
         Ok(Some(Ok((created, stored_name)))) => {
             let status = if created {
                 StatusCode::CREATED

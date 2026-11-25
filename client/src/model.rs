@@ -1810,6 +1810,63 @@ mod tests {
         assert!(!Sender::Delivery.same(&Sender::Delivery));
     }
 
+    fn reminder(state: robroz_contract::ReminderState, answered: Option<&str>) -> Event {
+        Event::ApprovalReminder {
+            id: "reminder:a1".into(),
+            approval_id: "a1".into(),
+            group_id: "g1".into(),
+            group_name: "Site".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            owner_user_id: "u-me".into(),
+            owner_name: "Panda".into(),
+            state,
+            created_at: "2026-10-07T19:00:00.000Z".into(),
+            answered_at: answered.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn a_reminder_is_one_row_that_updates_in_place_and_stands_alone() {
+        use robroz_contract::ReminderState;
+        let mut feed = Feed::default();
+        feed.apply(&text("m1", "hi"));
+        feed.apply(&reminder(ReminderState::Waiting, None));
+        feed.apply(&text("m2", "again"));
+        feed.apply(&reminder(
+            ReminderState::Approved,
+            Some("2026-10-07T19:02:00.000Z"),
+        ));
+        assert_eq!(feed.len(), 3, "the same reminder id, not a second row");
+        let items: Vec<_> = feed.items().collect();
+        match items[1].0 {
+            Row::Reminder(r) => {
+                assert_eq!(r.state, robroz_contract::ReminderState::Approved);
+                assert_eq!(r.group_id, "g1");
+                assert_eq!(r.approval_id, "a1");
+            }
+            other => panic!("expected a reminder row, got {other:?}"),
+        }
+        assert_eq!(items[1].1.sender, Sender::Reminder);
+        // It never joins a neighbour's block.
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        assert_eq!(groups.len(), 3);
+        assert!(groups[1].sender.is_reminder());
+        assert!(!Sender::Reminder.same(&Sender::Reminder));
+    }
+
+    #[test]
+    fn a_reminder_previews_as_its_sentence() {
+        use robroz_contract::ReminderState;
+        use robroz_ui::i18n::{scoped, Locale};
+        let ev = reminder(ReminderState::Waiting, None);
+        let _en = scoped(Locale::En);
+        assert_eq!(preview(&ev), "Ada is waiting for your approval in Site");
+        assert_eq!(change_time(&ev), "2026-10-07T19:00:00.000Z");
+        let done = reminder(ReminderState::Denied, Some("2026-10-07T19:05:00.000Z"));
+        assert_eq!(change_time(&done), "2026-10-07T19:05:00.000Z");
+    }
+
     #[test]
     fn a_delivery_with_bot_name_joins_that_bro() {
         let mut feed = Feed::default();

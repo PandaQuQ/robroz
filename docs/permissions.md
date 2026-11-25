@@ -50,7 +50,7 @@ Every bro has an owner (the user who created it; bros from a v0.1 database belon
 - A card raised in a **group** stays in that group, with its buttons. The owner's DM with that bro gets an `approval_reminder` line: no buttons, it names the group and the bro, counts as unread in the DM, and changes to approved / denied / expired when the card is settled. The v0.1 behaviour of moving the card to the DM and showing Sent to owner's DM (「已发到主人私聊」) in the group is gone.
 - A card raised in the bro's **DM** stays in the DM, with its buttons, and there is no reminder.
 - Anyone else who tries to answer gets 403 `{"code":"approval_forbidden","reason":"not_owner",…}`. A card that was already answered gets 403 with `reason` `decided`, and one that expired gets 403 with `reason` `expired`. These were 409 before v0.2. A 403 is never a token problem; a bad token is still 401. Details are in [api.md, approve / deny](api.md#post-apiapprovalsidapprove-and-deny).
-- The same owner rule covers renaming a bro, opening its DM and adding it to another group (403 `not_bro_owner`).
+- The same owner rule covers renaming a bro, opening its DM and adding it to another group (403 `not_bro_owner`, with `ownerUserId` / `ownerName`; the client shows "Only {owner} can change this bro.").
 
 ### Cards a bro issues
 

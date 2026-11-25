@@ -14,7 +14,7 @@ Every HTTP endpoint on the host `robroz-host`, as implemented on `main`. The rou
 - **Times:** RFC 3339, UTC, millisecond precision, ending in `Z`, for example `2026-11-21T02:35:48.932Z`.
 - **Tenant:** single-tenant; `tenantId` is always `local`.
 - **Users (v0.2):** the host has a `users` table. A request with the env token (`ROBROZ_TOKEN` / `ROBROZ_TOKEN_FILE`), or any request when no token is set, acts as the bootstrap admin (`id` `local-admin`, `name` `admin`, `role` `admin`; `robroz_contract::BOOTSTRAP_ADMIN_ID`). There is no user or per-user token API yet, so a single-user client sees no change. `GET /api/me` says who the caller is (`host/src/users.rs`).
-- **Coded 403s (v0.2):** a 403 that is about *who* may act has a stable `code` next to `error`, so a client can tell it from a 401 (bad token). `not_bro_owner` (`robroz_contract::FORBIDDEN_NOT_BRO_OWNER`): the caller is not this bro's owner. `approval_forbidden` (`robroz_contract::APPROVAL_FORBIDDEN`): see [approve / deny](#post-apiapprovalsidapprove-and-deny).
+- **Coded 403s (v0.2):** a 403 that is about *who* may act has a stable `code` next to `error`, so a client can tell it from a 401 (bad token). The client shows copy from `code` / `reason` and `ownerName` via its own i18n; the `error` field is for logs only. `not_bro_owner` (`robroz_contract::NotBroOwner`): the caller is not this bro's owner; the body also has `ownerUserId` / `ownerName` when known. `approval_forbidden` (`robroz_contract::ApprovalForbidden`): see [approve / deny](#post-apiapprovalsidapprove-and-deny).
 - **Frozen fields:** existing fields are not changed; only optional fields are added. Clients must ignore unknown fields and skip unknown event `type`s; see [AGENTS.md](../AGENTS.md).
 
 ## Endpoint list
@@ -93,7 +93,7 @@ The user the request acts as. `host/src/users.rs:me`
 
 ### Bro owners
 
-Every bro has an owner (`bots.owner_user_id`, `Bro.ownerUserId`). A bro made with `POST /api/bros`, or first added by `botId` with `POST /api/groups/{id}/members`, is owned by the caller. Bros from a v0.1 database are owned by the bootstrap admin. Only the owner may rename a bro, open its DM, add it to another group, or answer its approval cards; an admin is not an exception. Anyone else gets 403 `{"error":"只有这个 bro 的主人能这样做","code":"not_bro_owner"}` (`host_text::NOT_BRO_OWNER`, Only this bro's owner can do this). There is no `DELETE /api/bros/{id}` yet.
+Every bro has an owner (`bots.owner_user_id`, `Bro.ownerUserId`). A bro made with `POST /api/bros`, or first added by `botId` with `POST /api/groups/{id}/members`, is owned by the caller. Bros from a v0.1 database are owned by the bootstrap admin. Only the owner may rename a bro, open its DM, add it to another group, or answer its approval cards; an admin is not an exception. Anyone else gets 403 `NotBroOwner` `{"error","code":"not_bro_owner","ownerUserId","ownerName"}`. `error` is `NOT_BRO_OWNER` (for logs only); the client shows "Only {owner} can change this bro." from `ownerName`. There is no `DELETE /api/bros/{id}` yet.
 
 ### POST /api/groups
 
@@ -136,7 +136,7 @@ Add a bro to a group. `host/src/lib.rs:add_member`
 - 400 「请填写名称」: `botId` or `name` is blank.
 - 404 「群不存在」.
 - 409 「私聊里只能有一个 bro」: adding another bro to a DM.
-- 403 `not_bro_owner`: `botId` is an existing bro owned by someone else. A new `botId` creates a bro owned by the caller.
+- 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): `botId` is an existing bro owned by someone else. A new `botId` creates a bro owned by the caller.
 
 Note: a bot's name is global. `@name` in a group matches that global name (see `/say`). Rename with `PATCH /api/bros/{id}`. A bot created here has no DM, and `dmGroupId` is `null`, until `POST /api/bros/{id}/dm`.
 
@@ -180,7 +180,7 @@ Rename; the DM's group name is renamed with it. `host/src/bros.rs:rename_bro`
 - 200 `Bro`.
 - 400 「请填写名称」 / 「名字太长」.
 - 404 「bro 不存在」.
-- 403 `not_bro_owner`: the caller is not the owner (admins included).
+- 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): the caller is not the owner (admins included).
 
 ```sh
 curl -s -X PATCH $B/api/bros/<botId> -H 'content-type: application/json' -d '{"name":"Bob"}'
@@ -193,7 +193,7 @@ Get the owner's DM with this bro, or create it. No body. `host/src/bros.rs:open_
 - 201 `Bro`: a DM was created.
 - 200 `Bro`: it already existed.
 - 404 「bro 不存在」.
-- 403 `not_bro_owner`: the caller is not the owner.
+- 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): the caller is not the owner.
 
 ```sh
 curl -s -X POST $B/api/bros/<botId>/dm
@@ -632,10 +632,10 @@ Answer an approval card, and also a confirm card (see [Confirm cards](#confirm-c
 
 - 200 the same card, with `decision` `approved` / `denied`, and `answeredAt` and `answeredBy` filled.
 - 404 「审批卡不存在」: the id does not exist (the same for a confirm card), or the card is still in auto-review.
-- 403 `ApprovalForbidden` (v0.2; was 409 before): the caller may not answer this card. The body is `{"error","code":"approval_forbidden","reason","ownerUserId"?,"ownerName"?}` (`robroz_contract::ApprovalForbidden`). `reason` is exactly one of:
-  - `not_owner`: the caller is not the bro's owner (`error` 「只有这个 bro 的主人能这样做」). For an Allow-rule card: the caller is not an admin. Checked first, so a non-owner gets `not_owner` even on a decided card.
-  - `decided`: the card was already answered, by a person or by auto-review (`error` 「已经答过了」).
-  - `expired`: the card expired (`error` 「审批已过期」, `APPROVAL_EXPIRED_REASON`).
+- 403 `ApprovalForbidden` (v0.2; was 409 before): the caller may not answer this card. The body is `{"error","code":"approval_forbidden","reason","ownerUserId"?,"ownerName"?}` (`robroz_contract::ApprovalForbidden`). The client shows copy from `code` / `reason` and `ownerName`; `error` is for logs only. `reason` is exactly one of:
+  - `not_owner`: the caller is not the bro's owner (client: "Only {owner} can approve this."). For an Allow-rule card: the caller is not an admin. Checked first, so a non-owner gets `not_owner` even on a decided card.
+  - `decided`: the card was already answered, by a person or by auto-review. The client does not show an error; it reloads the card and shows the result.
+  - `expired`: the card expired. The client does not show an error; it shows that the card has expired.
   `ownerUserId` / `ownerName` name the bro's owner, so the client can say who to ask; they are omitted for Allow-rule cards. `code` is stable and a 403 is never a token problem (that is 401).
 - 409 「已经答过了」: a memory or skill confirm card that was already answered (unchanged).
 - Approving a `rule_add` card adds that rule; approving a `rule_delete` card deletes it. Deny or expiry leaves the rule list unchanged.

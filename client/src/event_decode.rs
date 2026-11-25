@@ -144,4 +144,23 @@ mod tests {
         let card = ApprovalCard::from_event(&event).unwrap();
         assert!(matches!(card.state, ApprovalState::Expired { .. }));
     }
+
+    #[test]
+    fn approval_reminder_decodes_and_the_owner_fields_reach_the_card() {
+        let (event, _) = ev(
+            r#"{"type":"approval_reminder","id":"reminder:a1","approvalId":"a1",
+            "groupId":"g1","groupName":"Site","botId":"b1","botName":"Ada","ownerUserId":"u1",
+            "ownerName":"Panda","state":"waiting","createdAt":"2026-10-07T19:00:00.000Z"}"#,
+        );
+        assert!(matches!(event, Event::ApprovalReminder { .. }));
+        let (event, _) = ev(
+            r#"{"type":"approval","id":"a1","botId":"b1","botName":"Ada",
+            "action":"delete","summary":"x","path":null,"decision":null,
+            "createdAt":"2026-10-07T19:00:00.000Z","answeredAt":null,"answeredBy":null,
+            "ownerUserId":"u1","ownerName":"Panda"}"#,
+        );
+        let card = ApprovalCard::from_event(&event).unwrap();
+        assert_eq!(card.owner_id.as_deref(), Some("u1"));
+        assert_eq!(card.owner_name.as_deref(), Some("Panda"));
+    }
 }

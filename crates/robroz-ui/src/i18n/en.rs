@@ -131,8 +131,6 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostDatabaseError => "Database error",
         // 已经答过了  [approved, batch 3]
         Key::HostAlreadyAnswered => "Already answered",
-        // 只有这个 bro 的主人能这样做  [approved, backend wording; needs UI review in the PR]
-        Key::HostNotBroOwner => "Only this bro's owner can do this",
         // since 不是合法时间  [approved, batch 3]
         Key::HostSinceInvalid => "since isn't a valid time",
         // readAt 不是合法时间  [approved, batch 3]
@@ -941,6 +939,10 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpApproveFailed => "Approval failed: {0}",
         // 连不上：{0}  [approved, batch 2]
         Key::CannotConnect => "Can't connect: {0}",
+        // 关于  [approved]
+        Key::MobileAbout => "About",
+        // 版本 {0}  [approved]
+        Key::MobileVersion => "Version {0}",
         // 没保存：{0}  [approved, batch 2]
         Key::NotSaved => "Not saved: {0}",
         // {0} 个工具  [approved, batch 2]

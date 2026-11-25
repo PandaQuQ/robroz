@@ -1,0 +1,67 @@
+[package]
+name = "robroz-mobile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license.workspace = true
+description = "robroz mobile client spike: native Rust + Slint, Android and iOS"
+build = "build.rs"
+
+[lib]
+name = "robroz_mobile"
+# `cdylib` is the Android entry (`android_main`); `rlib` serves the binary
+# (desktop, iOS) and the tests.
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "robroz-mobile"
+path = "src/main.rs"
+
+[dependencies]
+robroz-contract = { path = "../crates/robroz-contract" }
+robroz-card = { path = "../crates/robroz-card" }
+# Only the i18n module and pure view models: no iced on mobile.
+robroz-ui = { path = "../crates/robroz-ui", default-features = false }
+robroz-tokens = { path = "../crates/robroz-tokens" }
+serde = "1"
+serde_json = "1"
+# rustls so an https:// tunnel works on Android and iOS; no system TLS.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# Slint's default features minus `system-tray`: the tray pulls in `ksni`
+# (Unlicense), which is not on the `deny.toml` allow-list, and a phone app has
+# no tray anyway.
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.19", default-features = false, features = [
+    "std", "backend-default", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2",
+    "backend-android-activity-06",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+slint = { version = "1.19", default-features = false, features = [
+    "std", "backend-default", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2",
+    "renderer-skia",
+] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+slint = { version = "1.19", default-features = false, features = [
+    "std", "backend-default", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2",
+] }
+
+[build-dependencies]
+slint-build = "1.19"
+
+[package.metadata.android]
+package = "dev.robroz.mobile"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+apk_name = "robroz"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "robroz"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"

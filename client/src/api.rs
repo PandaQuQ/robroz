@@ -1786,6 +1786,44 @@ fn uuid_ish() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_403_is_told_apart_by_code_and_reason() {
+        let body = |reason: &str| {
+            format!(
+                r#"{{"error":"x","code":"approval_forbidden","reason":"{reason}","ownerName":"Lin"}}"#
+            )
+        };
+        assert_eq!(
+            coded_403(&body("not_owner")).map(|e| e.note()),
+            Some(Note::OnlyOwner(Some("Lin".into())))
+        );
+        for settled in ["decided", "expired"] {
+            assert_eq!(
+                coded_403(&body(settled)).map(|e| e.note()),
+                Some(Note::Settled)
+            );
+        }
+        // Not an approval 403, or not JSON: left to the generic mapping.
+        assert!(coded_403(r#"{"error":"x","code":"other"}"#).is_none());
+        assert!(coded_403("nope").is_none());
+        // No owner name: the note's copy falls back to "its owner".
+        let none = r#"{"error":"x","code":"approval_forbidden","reason":"not_owner"}"#;
+        assert_eq!(
+            coded_403(none).map(|e| e.note()),
+            Some(Note::OnlyOwner(None))
+        );
+        assert_eq!(
+            Note::OnlyOwner(None).text(),
+            "Only its owner can approve this."
+        );
+    }
+
+    #[test]
+    fn the_fake_api_signs_in_as_the_fake_owner() {
+        let me = FakeApi::new(Vec::new()).me().unwrap();
+        assert_eq!(me.id, FAKE_ME_ID);
+    }
+
     use super::*;
 
     #[test]
@@ -2750,7 +2788,10 @@ mod tests {
                 }
                 other => panic!("expected answered approval, got {other:?}"),
             }
-            assert!(matches!(api.decide(&id, true), Err(ApiError::ApprovalSettled)));
+            assert!(matches!(
+                api.decide(&id, true),
+                Err(ApiError::ApprovalSettled)
+            ));
             assert!(matches!(
                 api.decide("missing", true),
                 Err(ApiError::NotFound(_))

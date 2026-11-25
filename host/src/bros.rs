@@ -22,11 +22,9 @@ use robroz_contract::{next_bro_name, Bro, Bros, CreateBro, RenameBro, BRO_NAME_M
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::users::{CurrentUser, OWNER_SQL};
-use crate::{
-    db_error, error_response, forbidden, lock_db, new_id, now_rfc3339, AppState, TENANT_ID,
-};
+use crate::{db_error, error_response, lock_db, new_id, now_rfc3339, AppState, TENANT_ID};
 use axum::Extension;
-use robroz_contract::{host_text::NOT_BRO_OWNER, BOOTSTRAP_ADMIN_ID, FORBIDDEN_NOT_BRO_OWNER};
+use robroz_contract::{NotBroOwner, BOOTSTRAP_ADMIN_ID, FORBIDDEN_NOT_BRO_OWNER, NOT_BRO_OWNER};
 
 /// Fresh databases get the columns from here too; duplicate-column errors
 /// are ignored. Runs after [`crate::users::migrate`]. Additive: existing
@@ -104,9 +102,20 @@ fn owner_dm(conn: &Connection, bot_id: &str) -> rusqlite::Result<Option<String>>
     .optional()
 }
 
-/// 403 for a caller who is not the bro's owner.
-fn not_owner() -> Response {
-    forbidden(NOT_BRO_OWNER, FORBIDDEN_NOT_BRO_OWNER)
+/// 403 for a caller who is not the bro's owner. `owner` is
+/// `(ownerUserId, ownerName)` so the client can say who to ask.
+pub(crate) fn not_owner(owner: (Option<String>, Option<String>)) -> Response {
+    let (owner_user_id, owner_name) = owner;
+    (
+        StatusCode::FORBIDDEN,
+        Json(NotBroOwner {
+            error: NOT_BRO_OWNER.to_string(),
+            code: FORBIDDEN_NOT_BRO_OWNER.to_string(),
+            owner_user_id,
+            owner_name,
+        }),
+    )
+        .into_response()
 }
 
 /// `Ok(None)` if the bro is unknown, `Ok(Some(true))` if `user` owns it.
@@ -252,7 +261,7 @@ pub(crate) async fn rename_bro(
         let tx = conn.unchecked_transaction()?;
         match owned_by(&tx, &id, &user)? {
             None => return Ok(None),
-            Some(false) => return Ok(Some(Err(()))),
+            Some(false) => return Ok(Some(Err(crate::users::owner_of(&tx, &id)?))),
             Some(true) => {}
         }
         tx.execute("UPDATE bots SET name = ?2 WHERE id = ?1", params![id, name])?;
@@ -270,7 +279,7 @@ pub(crate) async fn rename_bro(
             StatusCode::NOT_FOUND,
             robroz_contract::host_text::BRO_NOT_FOUND,
         ),
-        Ok(Some(Err(()))) => not_owner(),
+        Ok(Some(Err(owner))) => not_owner(owner),
         Ok(Some(Ok(bro))) => (StatusCode::OK, Json(bro)).into_response(),
         Err(err) => db_error(err),
     }
@@ -288,7 +297,7 @@ pub(crate) async fn open_dm(
             return Ok(None);
         };
         if bro.owner_user_id.as_deref() != Some(user.0.as_str()) {
-            return Ok(Some(Err(())));
+            return Ok(Some(Err(crate::users::owner_of(&tx, &id)?)));
         }
         let created = ensure_dm(&tx, &bro.id, &bro.name)?;
         let bro = load(&tx, &id)?.expect("exists");
@@ -301,7 +310,7 @@ pub(crate) async fn open_dm(
             StatusCode::NOT_FOUND,
             robroz_contract::host_text::BRO_NOT_FOUND,
         ),
-        Ok(Some(Err(()))) => not_owner(),
+        Ok(Some(Err(owner))) => not_owner(owner),
         Ok(Some(Ok((created, bro)))) => (
             if created {
                 StatusCode::CREATED
