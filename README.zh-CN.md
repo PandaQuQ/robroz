@@ -13,18 +13,28 @@
 
 自托管的多智能体工作台，用聊天来驱动。智能体（bro）在 Docker 沙箱里干活；审批和结果以卡片回到对话里。Rust 宿主机 + 原生桌面客户端。
 
+v0.1.0 是单用户、自托管的。见 [CHANGELOG.md](CHANGELOG.md) 和 [docs/install.md](docs/install.md)。
+
 ## robroz 是什么
 
 你在自己的机器上和一组 AI bro 群聊。用大白话派活，它们在沙盒里干，遇到有风险的操作会先问你。
 
 适合想在自己控制的电脑上用一组 AI 智能体、并且风险步骤要自己点头的人。
 
-<!-- TODO(screenshot): main window -->
+<p>
+  <img src="docs/assets/main-zh-light.png" alt="robroz 桌面客户端，浅色：群聊里的状态卡和交付卡" width="49%">
+  <img src="docs/assets/main-zh-dark.png" alt="robroz 桌面客户端，深色：群聊里的状态卡和交付卡" width="49%">
+</p>
+
+<sub>演示数据</sub>
 
 桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
+语言那一行下面是 Appearance / 「外观」：System / 「跟随系统」、Light / 「浅色」、Dark / 「深色」。默认是 System，会跟着操作系统实时切换。选择保存在 `lang` 旁边的 `theme` 文件里，一行，值为 `system`、`light` 或 `dark`。
+
 ## 现在能用的
 
+- **聊天气泡。** 你自己的消息在右边；bro 的卡片在左边，按发送者分组。带 `bot_name` 的交付卡挂到对应的 bro 下面；没有 `bot_name` 的单独一条。
 - **群轮次。** 在群里发一条消息，每个 bro 都可以回复，也可以选择不说话。消息开头用 `@name` 点名的那个 bro 先说。
 - **bro 之间接话。** bro 在群里回了话，别的 bro 也能接着说，最多两轮就停。
 - **追问。** 如果一个 bro 还在干活，你可以往这份活上补充，而不新开任务。在群里以 `@name` 开头；在私聊里直接发送即可。
@@ -32,7 +42,6 @@
 - **私聊。** 可以和一个 bro 单独对话。
 - **Docker 沙箱。** 每份工作在你机器上的一个容器里跑，容器没有网络。
 - **审批和放行规则（Allow rules）。** 有风险的步骤会先问你。自动审核会按你的放行规则检查每张卡；没有规则放行时，卡会发到你的私聊。记忆和技能的变更也要先经你确认。
-  <!-- TODO(screenshot): approval card -->
 - **模型设置。** 可以接任意 OpenAI 兼容的模型。填了地址和模型名就算配好，密钥可选。可以在客户端填，也可以用环境变量。
 
 还可以用联网搜索（Brave 或 SearXNG）、MCP 工具和例行任务。某一步跑得太久或卡住时，卡片上会出现一行提示；工作本身不会被取消。
@@ -45,7 +54,7 @@
 
 ## 快速开始
 
-需要 Rust stable 工具链（`rustup`、`cargo`）和 Docker。[docs/install.md](docs/install.md) 里的逐步示例还用到 `curl` 和 `jq`。在仓库根目录：
+需要 Rust stable 工具链（`rustup`、`cargo`）和 Docker。如果要安装已经发布的二进制，见 [docs/install.md](docs/install.md)。那里的逐步示例还用到 `curl` 和 `jq`。在仓库根目录：
 
 ```sh
 cargo build -p robroz-host -p robroz-client
@@ -59,8 +68,6 @@ cargo run -p robroz-client   # 另开一个终端；默认连接 http://127.0.0.
 在客户端 Chats（「聊天」）标题旁点 Add a bro（「引入一个 bro」），打开私聊发一条消息，这就是第一个任务。没设置模型时，交付是 No model set up yet（「还没设置模型」），卡片上有 Set up（「去设置」）。
 
 ### 配置模型
-
-<!-- TODO(screenshot): settings page -->
 
 在客户端打开 Model（「模型」），或点交付卡上的 Set up（「去设置」）。填地址和模型名即可，密钥可选。保存时会试连。也可以用环境变量，并把密钥放在仓库外的文件里：
 
@@ -102,7 +109,9 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 | 文件 | 内容 |
 | --- | --- |
-| [docs/install.md](docs/install.md) | 准备、构建、运行、接模型、第一个任务、测试 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本说明 |
+| [docs/install.md](docs/install.md) | 下载发行包、准备、构建、运行、接模型、第一个任务、测试 |
+| [docs/docker-host.md](docs/docker-host.md) | 用 Docker 运行宿主机：compose、`docker.sock` 风险、同路径挂载、令牌 |
 | [docs/configuration.md](docs/configuration.md) | 全部环境变量和默认值 |
 | [docs/api.md](docs/api.md) | HTTP 接口和事件 |
 | [docs/concepts.md](docs/concepts.md) | 术语、任务状态、卡片 |
@@ -120,7 +129,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 ## 状态
 
-目前还没有打过 release 标签。请把 `main` 当作开发分支，不要当作正式发版。
+v0.1.0 是计划中的第一个打标签版本。说明见 [CHANGELOG.md](CHANGELOG.md)。在标签发布之前，请把 `main` 当作开发分支，不要当作正式发版。
 
 ## 开发
 

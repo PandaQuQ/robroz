@@ -1176,7 +1176,12 @@ fn group_events(
 
     {
         let mut delivery_stmt = conn.prepare(
-            "SELECT id, summary, path, briefing, created_at, failure, needs_setup FROM deliveries WHERE group_id = ?1",
+            "SELECT d.id, d.summary, d.path, d.briefing, d.created_at, d.failure, d.needs_setup,
+                    d.task_id, t.assignee_bot_id, b.name
+             FROM deliveries d
+             LEFT JOIN tasks t ON t.id = d.task_id
+             LEFT JOIN bots b ON b.id = t.assignee_bot_id
+             WHERE d.group_id = ?1",
         )?;
         let deliveries = delivery_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
@@ -1194,6 +1199,9 @@ fn group_events(
                     created_at,
                     failure: row.get(5)?,
                     needs_setup: row.get(6)?,
+                    task_id: row.get(7)?,
+                    bot_id: row.get(8)?,
+                    bot_name: row.get(9)?,
                 },
             })
         })?;
@@ -1820,6 +1828,24 @@ mod tests {
         assert_eq!(delivered[0]["summary"], "已写入结果");
         assert_eq!(delivered[0]["briefing"], false);
         assert_eq!(delivered[0]["type"], "delivery");
+    }
+
+    #[tokio::test]
+    async fn delivery_from_a_task_carries_bot_name() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = test_app(&path);
+        let (group_id, task_id) = seed_task(&app, "归属", "写结果").await;
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let events = events_of(&app, &group_id).await;
+        let delivered = deliveries(&events);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0]["taskId"], task_id);
+        assert_eq!(delivered[0]["botId"], "bot-ada");
+        assert_eq!(delivered[0]["botName"], "Ada");
     }
 
     #[tokio::test]
@@ -5556,6 +5582,9 @@ mod tests {
             "模型没回：模型服务返回 401",
             "card can say it was not done"
         );
+        assert_eq!(deliveries(&events)[0]["taskId"], task_id);
+        assert_eq!(deliveries(&events)[0]["botId"], "bot-ada");
+        assert_eq!(deliveries(&events)[0]["botName"], "Ada");
         assert_eq!(
             statuses(&events)[0]["failure"],
             "模型没回：模型服务返回 401",

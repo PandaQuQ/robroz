@@ -32,11 +32,20 @@ impl HostState {
         self == Self::Answered
     }
 
-    /// The main pane's message before the host answered: the headline, with
-    /// the host address on a lighter line below it. `None` once answered,
-    /// and while still waiting (the pane stays blank).
-    pub fn notice(self) -> Option<Text> {
-        (self == Self::Unreachable).then_some(Text::ClientHostUnreachable)
+    /// The main pane's headline before the host answered. A rejected token
+    /// uses [`Text::ClientTokenRejectedTitle`]; any other failure uses
+    /// [`Text::ClientHostUnreachable`]. The address sits on a lighter line
+    /// below; the reason is shown once, under the connection form. `None`
+    /// once answered, and while still waiting (the pane stays blank).
+    pub fn notice(self, err: Option<&str>) -> Option<Text> {
+        if self != Self::Unreachable {
+            return None;
+        }
+        Some(if err.is_some_and(is_token_rejected) {
+            Text::ClientTokenRejectedTitle
+        } else {
+            Text::ClientHostUnreachable
+        })
     }
 
     /// Retry the first listing on the poll interval while unreachable.
@@ -57,6 +66,9 @@ impl HostState {
 /// Maps common transport errors from ureq / `std::io`; anything else is
 /// omitted so the pane never shows `io:` or `os error`.
 pub fn connect_reason(err: &str) -> Option<Text> {
+    if is_token_rejected(err) {
+        return Some(Text::ClientTokenRejected);
+    }
     let s = err.to_ascii_lowercase();
     if s.contains("connection refused") {
         Some(Text::ClientConnectionRefused)
@@ -67,6 +79,15 @@ pub fn connect_reason(err: &str) -> Option<Text> {
     } else {
         None
     }
+}
+
+pub(crate) fn is_token_rejected(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    err.contains(robroz_contract::host_text::TOKEN_REJECTED)
+        || err.contains("The host rejected the token")
+        || err.contains("宿主拒绝了令牌")
+        || low.contains("returned 401")
+        || low.contains(" 返回 401")
 }
 
 fn is_host_not_found(s: &str) -> bool {
@@ -91,13 +112,13 @@ mod tests {
         let waiting = HostState::of(false, false);
         assert_eq!(waiting, HostState::Waiting);
         assert!(!waiting.shows_sidebar());
-        assert_eq!(waiting.notice(), None);
+        assert_eq!(waiting.notice(None), None);
         assert!(!waiting.shows_language_row());
 
         let down = HostState::of(false, true);
         assert_eq!(down, HostState::Unreachable);
         assert!(!down.shows_sidebar(), "no 「还没有 bro」 while unreachable");
-        assert_eq!(down.notice(), Some(Text::ClientHostUnreachable));
+        assert_eq!(down.notice(None), Some(Text::ClientHostUnreachable));
         assert!(down.retries());
         assert!(down.shows_language_row());
 
@@ -107,7 +128,7 @@ mod tests {
             let up = HostState::of(true, failed);
             assert_eq!(up, HostState::Answered);
             assert!(up.shows_sidebar());
-            assert_eq!(up.notice(), None);
+            assert_eq!(up.notice(None), None);
             assert!(!up.shows_language_row());
             assert!(!up.retries());
         }
@@ -125,7 +146,7 @@ mod tests {
         );
         let _en = scoped(Locale::En);
         assert_eq!(
-            HostState::Unreachable.notice().map(|k| k.as_str()),
+            HostState::Unreachable.notice(None).map(|k| k.as_str()),
             Some("Can't reach the host")
         );
     }
@@ -179,6 +200,31 @@ mod tests {
         );
         assert_eq!(text_in(Locale::Zh, Text::ClientHostNotFound), "找不到主机");
 
+        assert_eq!(
+            connect_reason("The host rejected the token. Check ROBROZ_TOKEN."),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason("宿主拒绝了令牌，请检查 ROBROZ_TOKEN。"),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason(robroz_contract::host_text::TOKEN_REJECTED),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            connect_reason("GET http://127.0.0.1:8790/api/groups returned 401"),
+            Some(Text::ClientTokenRejected)
+        );
+        assert_eq!(
+            text_in(Locale::En, Text::ClientTokenRejected),
+            "The host rejected the token. Check ROBROZ_TOKEN."
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ClientTokenRejected),
+            "宿主拒绝了令牌，请检查 ROBROZ_TOKEN。"
+        );
+
         // Unknown transport errors are omitted, never echoed raw.
         for s in [
             "io: UnexpectedEof (os error 0)",
@@ -191,6 +237,7 @@ mod tests {
             Text::ClientConnectionRefused,
             Text::ClientTimedOut,
             Text::ClientHostNotFound,
+            Text::ClientTokenRejected,
         ] {
             let en = text_in(Locale::En, key);
             let zh = text_in(Locale::Zh, key);
@@ -199,6 +246,65 @@ mod tests {
             assert!(!zh.contains("io:"), "{zh}");
             assert!(!zh.contains("os error"), "{zh}");
         }
+    }
+
+    #[test]
+    fn offline_title_follows_the_error_type() {
+        let down = HostState::Unreachable;
+        assert_eq!(down.notice(None), Some(Text::ClientHostUnreachable));
+        assert_eq!(
+            down.notice(Some("io: Connection refused (os error 111)")),
+            Some(Text::ClientHostUnreachable)
+        );
+        assert_eq!(
+            down.notice(Some("GET http://127.0.0.1:8790/api/groups returned 401")),
+            Some(Text::ClientTokenRejectedTitle)
+        );
+        assert_eq!(
+            down.notice(Some("The host rejected the token. Check ROBROZ_TOKEN.")),
+            Some(Text::ClientTokenRejectedTitle)
+        );
+        assert_eq!(
+            text_in(Locale::En, Text::ClientTokenRejectedTitle),
+            "Token rejected"
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ClientTokenRejectedTitle),
+            "令牌被拒绝"
+        );
+        let _en = scoped(Locale::En);
+        assert_eq!(
+            down.notice(Some("returned 401")).map(|k| k.as_str()),
+            Some("Token rejected")
+        );
+    }
+
+    #[test]
+    fn connection_copy_has_no_markdown_backticks() {
+        for key in [
+            Text::ClientTokenRejected,
+            Text::ClientTokenRejectedTitle,
+            Text::ConnSetByHost,
+            Text::ConnSetByToken,
+            Text::ConnUnencryptedHint,
+        ] {
+            let en = text_in(Locale::En, key);
+            let zh = text_in(Locale::Zh, key);
+            assert!(!en.contains('`'), "{en}");
+            assert!(!zh.contains('`'), "{zh}");
+        }
+        assert_eq!(
+            text_in(Locale::En, Text::ClientTokenRejected),
+            "The host rejected the token. Check ROBROZ_TOKEN."
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ConnSetByHost),
+            "由 ROBROZ_HOST 设置"
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Text::ConnSetByToken),
+            "由 ROBROZ_TOKEN 设置"
+        );
     }
 
     #[test]

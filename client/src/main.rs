@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! robroz desktop client: an IM for bros.
 //!
 //! Left: the conversation list (groups and bro DMs, newest first, unread
@@ -11,8 +12,8 @@
 //! from `GET /api/unread`; opening a chat marks it read. `--fake` /
 //! `ROBROZ_FAKE=1` runs offline on a script. Card clicks go through
 //! [`api::CardApi`]. `--gallery` shows every card state for design review.
-//! Visuals come from the `robroz-ui` skin (`ROBROZ_THEME=dark` starts dark;
-//! the footer button toggles).
+//! Visuals come from the `robroz-ui` skin; the Settings page picks System,
+//! Light or Dark (see [`prefs`]; `ROBROZ_THEME=light|dark` in fake runs).
 
 mod api;
 mod conn;
@@ -52,10 +53,12 @@ use robroz_ui::view::{self, color, Action, Caps};
 use robroz_ui::{Mode, Skin};
 
 use api::{ApiError, CardApi, FakeApi, HttpApi};
+use conn::form::{self as conn_form, ConnForm};
 use conn::Conn;
 use gallery::Gallery;
 use host_state::HostState;
 use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
+use prefs::ThemePref;
 use source::stream::{self, StreamItem};
 use source::{
     fake_chats, fake_schedules, EventSource, FakeSource, GroupCard, GroupEvent, GroupTab,
@@ -71,6 +74,7 @@ pub fn main() -> iced::Result {
         .title("robroz")
         .subscription(App::subscription)
         .theme(App::theme)
+        .default_font(view::regular())
         .scale_factor(App::scale_factor)
         .window(window_settings(size))
         .run()
@@ -92,9 +96,25 @@ fn window_settings(size: (f32, f32)) -> window::Settings {
     }
 }
 
-/// The 512px brand icon, decoded from the embedded PNG. `None` (default icon)
-/// if it cannot be decoded, which must never stop the client from starting.
+/// Edge length of the window icon passed to iced/winit.
+///
+/// The brand asset is 512×512, but a 512px `_NET_WM_ICON` is about 1 MiB.
+/// xprop's default 500_000-byte cap then reads width and height without
+/// enough pixels and prints an empty property; some window managers do the
+/// same and show a generic icon. 128×128 is 64 KiB, fits the default X11
+/// 256 KiB request, and is the size Linux WMs expect.
+const WINDOW_ICON_SIZE: u32 = 128;
+
+/// The brand icon, decoded from the embedded 512px PNG and scaled to
+/// [`WINDOW_ICON_SIZE`]. `None` (default icon) if it cannot be decoded,
+/// which must never stop the client from starting.
 fn window_icon() -> Option<window::Icon> {
+    let (rgba, width, height) = decode_window_icon()?;
+    window::icon::from_rgba(rgba, width, height).ok()
+}
+
+/// RGBA bytes and size of the window icon.
+fn decode_window_icon() -> Option<(Vec<u8>, u32, u32)> {
     static ICON_PNG: &[u8] = include_bytes!("../../assets/brand/icon-512.png");
     let mut reader = png::Decoder::new(std::io::Cursor::new(ICON_PNG))
         .read_info()
@@ -105,7 +125,63 @@ fn window_icon() -> Option<window::Icon> {
         return None;
     }
     buf.truncate(info.buffer_size());
-    window::icon::from_rgba(buf, info.width, info.height).ok()
+    if info.width == WINDOW_ICON_SIZE && info.height == WINDOW_ICON_SIZE {
+        return Some((buf, info.width, info.height));
+    }
+    let rgba = downscale_rgba(
+        &buf,
+        info.width,
+        info.height,
+        WINDOW_ICON_SIZE,
+        WINDOW_ICON_SIZE,
+    )?;
+    Some((rgba, WINDOW_ICON_SIZE, WINDOW_ICON_SIZE))
+}
+
+/// Integer-ratio box filter with premultiplied averaging, so transparent
+/// edges stay clean. `src_w` and `src_h` must be exact multiples of `dst_w`
+/// and `dst_h`.
+fn downscale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<Vec<u8>> {
+    if src_w == 0
+        || src_h == 0
+        || dst_w == 0
+        || dst_h == 0
+        || src_w % dst_w != 0
+        || src_h % dst_h != 0
+        || src.len() != (src_w * src_h * 4) as usize
+    {
+        return None;
+    }
+    let nx = (src_w / dst_w) as usize;
+    let ny = (src_h / dst_h) as usize;
+    let src_w = src_w as usize;
+    let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+    for y in 0..dst_h as usize {
+        for x in 0..dst_w as usize {
+            let mut r = 0u32;
+            let mut g = 0u32;
+            let mut b = 0u32;
+            let mut a = 0u32;
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let i = ((y * ny + iy) * src_w + (x * nx + ix)) * 4;
+                    let pa = src[i + 3] as u32;
+                    r += src[i] as u32 * pa;
+                    g += src[i + 1] as u32 * pa;
+                    b += src[i + 2] as u32 * pa;
+                    a += pa;
+                }
+            }
+            let o = (y * dst_w as usize + x) * 4;
+            if a != 0 {
+                out[o] = (r / a) as u8;
+                out[o + 1] = (g / a) as u8;
+                out[o + 2] = (b / a) as u8;
+                out[o + 3] = (a / (nx * ny) as u32) as u8;
+            }
+        }
+    }
+    Some(out)
 }
 
 fn has_flag(flag: &str) -> bool {
@@ -333,9 +409,15 @@ enum Message {
     },
     /// Narrow screens: back from a chat to the list.
     Back,
-    ToggleTheme,
+    /// Appearance row on the Settings page: System / Light / Dark.
+    SetTheme(ThemePref),
+    /// The operating system's colour scheme, at start and when it changes.
+    SystemTheme(iced::theme::Mode),
     /// Language row on the Settings (模型) page: English / 中文.
     SetLocale(Locale),
+    /// Connection form (offline pane and Settings).
+    Conn(conn_form::Event),
+    ConnFinished(Result<Vec<GroupTab>, conn_form::FormError>),
     Resized(Size),
     TouchSeen,
     Shoot(Option<window::Id>),
@@ -393,8 +475,13 @@ struct App {
     review_rules: ReviewRulesPage,
     /// 模型 page (robroz#102).
     model_settings: ModelPage,
+    /// Host and token form (offline pane and Settings).
+    conn_form: ConnForm,
 
-    mode: Mode,
+    /// The appearance chosen in Settings (or `ROBROZ_THEME` in fake runs).
+    theme_pref: ThemePref,
+    /// The operating system's scheme; used while `theme_pref` is System.
+    system_mode: Mode,
     width: f32,
     loaded: bool,
     /// The latest attempt at the first group listing failed.
@@ -437,6 +524,25 @@ fn call<T: Send + 'static>(
     }
 }
 
+/// Persist the form (unless an env var blocks the write) and list groups
+/// with a fresh [`Conn::from_env`]. Runs off the UI thread.
+fn connect_blocking(
+    host: String,
+    token: conn::TokenEdit,
+) -> Result<Vec<GroupTab>, conn_form::FormError> {
+    if let Err(err) = conn::save(&host, token) {
+        match err {
+            conn::SaveError::EnvOverride { .. } => {}
+            conn::SaveError::Io(_) => {
+                return Err(conn_form::FormError::Save(err.to_string()));
+            }
+        }
+    }
+    HttpSource::from_env()
+        .groups()
+        .map_err(|err| conn_form::FormError::Conn(err.as_conn_error()))
+}
+
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let gallery = has_flag("--gallery").then(Gallery::new);
@@ -461,7 +567,7 @@ impl App {
             (Box::new(http), api, origin, Some(conn))
         };
         let interval = source.interval();
-        let mode = Mode::from_env_value(std::env::var("ROBROZ_THEME").ok().as_deref());
+        let theme_pref = prefs::initial_theme(fake);
         let scale = std::env::var("ROBROZ_SCALE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -499,8 +605,10 @@ impl App {
 
             review_rules: ReviewRulesPage::default(),
             model_settings: ModelPage::default(),
+            conn_form: ConnForm::from_config(conn::load()),
 
-            mode,
+            theme_pref,
+            system_mode: Mode::Light,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
             load_failed: false,
@@ -531,7 +639,11 @@ impl App {
         let load = blocking(&app.source, |s| s.groups());
         (
             app,
-            Task::batch([Task::perform(load, Message::Loaded), shot]),
+            Task::batch([
+                Task::perform(load, Message::Loaded),
+                shot,
+                iced::system::theme().map(Message::SystemTheme),
+            ]),
         )
     }
 
@@ -540,12 +652,20 @@ impl App {
         HostState::of(self.loaded, self.load_failed)
     }
 
-    fn skin(&self) -> Skin {
-        Skin::for_mode(self.mode).for_input(self.touch, self.width)
+    /// The scheme to draw with: the chosen one, or the system's.
+    fn mode(&self) -> Mode {
+        self.theme_pref.resolve(self.system_mode)
     }
 
+    fn skin(&self) -> Skin {
+        Skin::for_mode(self.mode()).for_input(self.touch, self.width)
+    }
+
+    /// One pane at a time: the sidebar is hidden below
+    /// [`robroz_ui::CHAT_COMPACT_WIDTH`] and the chat list and a chat take
+    /// turns. (The skin's own `narrow` stays the phone-sized 480px rule.)
     fn narrow(&self) -> bool {
-        self.skin().narrow
+        self.width < robroz_ui::CHAT_COMPACT_WIDTH
     }
 
     fn load_unread(&self) -> Task<Message> {
@@ -2015,40 +2135,34 @@ impl App {
             Message::Tick => return self.poll(),
             Message::Loaded(result) => {
                 self.in_flight = false;
+                // `--fake` + `ROBROZ_PAGE=nohost`: treat the demo load as failed and
+                // show the "can't reach the host" page (platform
+                // screenshots, see `.github/workflows/shots.yml`).
+                let result =
+                    if self.fake && std::env::var("ROBROZ_PAGE").is_ok_and(|v| v == "nohost") {
+                        Err(SourceError(Text::ClientConnectFailed.fill(&[
+                            &"http://127.0.0.1:8790",
+                            &"io: Connection refused (os error 111)",
+                        ])))
+                    } else {
+                        result
+                    };
                 match result {
                     Ok(groups) => {
-                        for g in &groups {
-                            self.convs.upsert(&g.id, &g.name, false);
-                        }
-                        self.groups = groups;
-                        self.loaded = true;
-                        self.load_failed = false;
-                        self.error = None;
-                        let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
-                        // `--fake` + `ROBROZ_OPEN=<group>`: open that chat
-                        // (screenshots of the chat screen on a phone).
-                        let wanted = std::env::var("ROBROZ_OPEN")
-                            .ok()
-                            .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
-                        if let Some(g) = wanted {
-                            tasks.push(self.open_chat(g));
-                        } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
-                            // Desktop opens the first chat; narrow starts on the list.
-                            if !self.narrow() {
-                                tasks.push(self.open_chat(first));
-                            }
-                        }
+                        let load = self.apply_loaded_groups(groups);
                         // `--fake` + `ROBROZ_PAGE=model`: then switch to the
                         // Model settings page (platform screenshots, see
                         // `.github/workflows/shots.yml`).
                         if self.fake && std::env::var("ROBROZ_PAGE").is_ok_and(|v| v == "model") {
-                            tasks.push(Task::done(Message::OpenModel));
+                            return Task::batch([load, Task::done(Message::OpenModel)]);
                         }
-                        return Task::batch(tasks);
+                        return load;
                     }
                     Err(err) => {
                         self.load_failed = !self.loaded;
-                        self.error = Some(err.0);
+                        self.error = Some(err.0.clone());
+                        self.conn_form.error =
+                            Some(conn_form::FormError::Conn(err.as_conn_error()));
                     }
                 }
             }
@@ -2257,7 +2371,19 @@ impl App {
                 }
             },
             Message::ClearPauseNote(id) => self.routines.clear_failed(&id),
-            Message::ToggleTheme => self.mode = self.mode.toggled(),
+            Message::SetTheme(pref) => {
+                self.theme_pref = pref;
+                if !self.fake {
+                    prefs::save_theme(pref);
+                }
+            }
+            Message::SystemTheme(mode) => {
+                // `None` means the system gave no preference: light.
+                self.system_mode = match mode {
+                    iced::theme::Mode::Dark => Mode::Dark,
+                    _ => Mode::Light,
+                };
+            }
             Message::SetLocale(locale) => {
                 if locale != i18n::locale() {
                     i18n::set_locale(locale);
@@ -2271,6 +2397,19 @@ impl App {
                     }
                 }
             }
+            Message::Conn(event) => match event {
+                conn_form::Event::Host(host) => self.conn_form.set_host(host),
+                conn_form::Event::Token(token) => self.conn_form.set_token(token),
+                conn_form::Event::ToggleShow => self.conn_form.toggle_show(),
+                conn_form::Event::Clear => self.conn_form.request_clear(),
+                conn_form::Event::Connect => {
+                    if self.conn_form.connecting {
+                        return Task::none();
+                    }
+                    return self.start_connect();
+                }
+            },
+            Message::ConnFinished(result) => return self.finish_connect(result),
             Message::Resized(size) => self.width = size.width,
             Message::TouchSeen => self.touch = true,
             Message::Shoot(Some(id)) => return window::screenshot(id).map(Message::Shot),
@@ -2293,7 +2432,8 @@ impl App {
             iced::Event::Touch(_) => Some(Message::TouchSeen),
             _ => None,
         });
-        let mut subs = vec![resize];
+        let system = iced::system::theme_changes().map(Message::SystemTheme);
+        let mut subs = vec![resize, system];
         if !self.touch {
             subs.push(touch);
         }
@@ -2327,10 +2467,13 @@ impl App {
         Subscription::batch(subs)
     }
 
-    fn theme(&self) -> iced::Theme {
-        match self.mode {
-            Mode::Light => iced::Theme::Light,
-            Mode::Dark => iced::Theme::Dark,
+    /// `None` while following the system, so the window frame follows the
+    /// OS as well; an explicit choice pins both.
+    fn theme(&self) -> Option<iced::Theme> {
+        match self.theme_pref {
+            ThemePref::System => None,
+            ThemePref::Light => Some(iced::Theme::Light),
+            ThemePref::Dark => Some(iced::Theme::Dark),
         }
     }
 
@@ -2343,7 +2486,7 @@ impl App {
         if let Some(g) = &self.gallery {
             return self.gallery_view(&t, g);
         }
-        let main: Element<'_, Message> = if t.narrow {
+        let main: Element<'_, Message> = if self.narrow() {
             // Phone: one screen at a time.
             if !self.host_state().shows_sidebar() || (self.narrow_open && self.page == Page::Group)
             {
@@ -2378,35 +2521,18 @@ impl App {
             (Some(_), false) => Text::ClientPolling.as_str(),
         };
         // While the host has never answered, the main pane already shows
-        // why; the footer keeps only the theme toggle and drops the raw
-        // "Can't reach the host … io: … (os error …)" line.
-        let status = if self.host_state() == HostState::Unreachable {
-            None
-        } else {
-            Some(match &self.error {
-                Some(err) => err.clone(),
-                None => format!("{}{live}", self.origin),
-            })
-        };
-        let theme = button(
-            text(match self.mode {
-                Mode::Light => Text::ClientThemeDark.as_str(),
-                Mode::Dark => Text::ClientThemeLight.as_str(),
-            })
-            .size(t.type_.foot),
-        )
-        .style(view::nav_button_style(t, false))
-        .on_press(Message::ToggleTheme);
-        let footer = match status {
-            Some(status) => row![
-                text(status)
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text3)),
-                space::horizontal(),
-                theme,
-            ],
-            None => row![space::horizontal(), theme],
+        // why, so the footer drops the raw "Can't reach the host … io: …
+        // (os error …)" line and disappears.
+        if self.host_state() == HostState::Unreachable {
+            return container(main).style(view::page_style(t)).into();
         }
+        let status = match &self.error {
+            Some(err) => err.clone(),
+            None => format!("{}{live}", self.origin),
+        };
+        let footer = row![text(status)
+            .size(t.type_.foot)
+            .color(color(t.palette.text3))]
         .align_y(Alignment::Center);
         container(column![
             main,
@@ -2416,10 +2542,53 @@ impl App {
         .into()
     }
 
+    /// The Language row and, directly under it, the Appearance row.
+    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
+        column![self.language_card(t), self.appearance_card(t)]
+            .spacing(t.metrics.row_pad_h)
+            .into()
+    }
+
+    /// The Appearance row: label on the left, System / Light / Dark on the
+    /// right, the active one highlighted, same shape as the Language row.
+    fn appearance_card(&self, t: &Skin) -> Element<'_, Message> {
+        let mut choices = row![]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+        for pref in ThemePref::ALL {
+            let label = match pref {
+                ThemePref::System => Text::SettingsThemeSystem,
+                ThemePref::Light => Text::ClientThemeLight,
+                ThemePref::Dark => Text::ClientThemeDark,
+            };
+            choices = choices.push(
+                button(text(label).size(t.type_.body))
+                    .height(Length::Fixed(t.controls.button_h))
+                    .style(view::segment_button_style(*t, pref == self.theme_pref))
+                    .on_press(Message::SetTheme(pref)),
+            );
+        }
+        let r = row![
+            text(Text::SettingsAppearance)
+                .size(t.type_.body)
+                .color(color(t.palette.text)),
+            space::horizontal(),
+            choices,
+        ]
+        .align_y(Alignment::Center);
+        container(container(r).padding(Padding::from([
+            t.metrics.row_pad_h * 0.75,
+            t.metrics.row_pad_h,
+        ])))
+        .width(Fill)
+        .style(view::card_style(*t))
+        .into()
+    }
+
     /// The one Settings row for the UI language: label on the left,
     /// English / 中文 (each in its own language) on the right, the active
     /// one highlighted. Sizes follow the text, so longer copy never clips.
-    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
+    fn language_card(&self, t: &Skin) -> Element<'_, Message> {
         let active = i18n::locale();
         let mut choices = row![]
             .spacing(t.controls.button_gap)
@@ -2428,7 +2597,7 @@ impl App {
             choices = choices.push(
                 button(text(locale.native_name()).size(t.type_.body))
                     .height(Length::Fixed(t.controls.button_h))
-                    .style(view::nav_button_style(*t, locale == active))
+                    .style(view::segment_button_style(*t, locale == active))
                     .on_press(Message::SetLocale(locale)),
             );
         }
@@ -2447,6 +2616,107 @@ impl App {
         .width(Fill)
         .style(view::card_style(*t))
         .into()
+    }
+
+    /// Same connection form as the offline pane, as wide as the Language row.
+    /// `titled` is Settings only: a heading matching the Model card.
+    fn connection_form(&self, t: &Skin, titled: bool) -> Element<'_, Message> {
+        conn_form::view(t, &self.conn_form, titled).map(Message::Conn)
+    }
+
+    /// Save (when the fields are not env-locked) and probe the host off the
+    /// UI thread, then rebuild [`Conn`] with [`Conn::from_env`].
+    fn start_connect(&mut self) -> Task<Message> {
+        if !self.conn_form.connect_enabled() {
+            return Task::none();
+        }
+        self.conn_form.connecting = true;
+        self.conn_form.error = None;
+        // Pause the unreachable-pane auto-retry while this attempt is in flight.
+        self.in_flight = true;
+        let host = self.conn_form.host_for_save();
+        let token = self.conn_form.token_edit();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || connect_blocking(host, token))
+                    .await
+                    .expect("connect task panicked")
+            },
+            Message::ConnFinished,
+        )
+    }
+
+    fn finish_connect(
+        &mut self,
+        result: Result<Vec<GroupTab>, conn_form::FormError>,
+    ) -> Task<Message> {
+        self.conn_form.connecting = false;
+        self.in_flight = false;
+        match result {
+            Ok(groups) => {
+                self.conn_form.error = None;
+                self.conn_form.reload();
+                if self.fake {
+                    return Task::none();
+                }
+                self.adopt_conn_from_env();
+                // Reuse the first-listing success path, then stay on Settings
+                // if that's where Connect was pressed.
+                let stay = self.page;
+                let task = self.apply_loaded_groups(groups);
+                if stay != Page::Group {
+                    self.page = stay;
+                }
+                task
+            }
+            Err(err) => {
+                if !self.fake {
+                    self.adopt_conn_from_env();
+                    self.loaded = false;
+                    self.load_failed = true;
+                    self.stream_up = false;
+                }
+                self.conn_form.reload();
+                self.conn_form.error = Some(err);
+                Task::none()
+            }
+        }
+    }
+
+    /// The host listed groups: record them and start the usual follow-up
+    /// loads. `--fake` + `ROBROZ_OPEN` opens that chat; otherwise the
+    /// desktop client opens the first one.
+    fn apply_loaded_groups(&mut self, groups: Vec<GroupTab>) -> Task<Message> {
+        for g in &groups {
+            self.convs.upsert(&g.id, &g.name, false);
+        }
+        self.groups = groups;
+        self.loaded = true;
+        self.load_failed = false;
+        self.error = None;
+        let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
+        let wanted = std::env::var("ROBROZ_OPEN")
+            .ok()
+            .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
+        if let Some(g) = wanted {
+            tasks.push(self.open_chat(g));
+        } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
+            // Desktop opens the first chat; narrow starts on the list.
+            if !self.narrow() {
+                tasks.push(self.open_chat(first));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// Point the live source, API and SSE connection at [`Conn::from_env`].
+    fn adopt_conn_from_env(&mut self) {
+        let http = HttpSource::from_env();
+        self.origin = http.base().to_string();
+        self.conn = Some(http.conn().clone());
+        self.api = Arc::new(HttpApi::new(http.conn().clone()).answering_as(user_name()));
+        *self.source.lock().expect("event source lock poisoned") = Box::new(http);
+        self.stream_up = false;
     }
 
     fn group_list(&self, t: &Skin, width: Length) -> Element<'_, Message> {
@@ -2545,7 +2815,7 @@ impl App {
     }
 
     fn content_width(&self, t: &Skin) -> f32 {
-        let chrome = if self.gallery.is_some() || t.narrow {
+        let chrome = if self.gallery.is_some() || self.narrow() {
             0.0
         } else {
             t.controls.sidebar_w
@@ -2556,23 +2826,15 @@ impl App {
     fn page_view(&self, t: &Skin) -> Element<'_, Message> {
         let state = self.host_state();
         if !state.shows_sidebar() {
-            // Before the host answers: blank while waiting, or 「连不上宿主」
-            // with the address on a lighter line below, a short reason
-            // 12px to the right when we have one, and the same Language
-            // row as the Model page so the language can still be changed.
-            let notice = state.notice().map(|key| {
-                let mut detail = row![text(self.origin.as_str())
+            // Before the host answers: blank while waiting, or a headline
+            // that follows the error (「令牌被拒绝」 / 「连不上宿主」) with
+            // only the address on a lighter line below. The reason is
+            // shown once, under the connection form. The Language row is
+            // the same control as the Model page.
+            let notice = state.notice(self.error.as_deref()).map(|key| {
+                let detail = text(self.origin.as_str())
                     .size(t.type_.foot)
-                    .color(color(t.palette.text3))]
-                .spacing(12)
-                .align_y(Alignment::Center);
-                if let Some(reason) = self.error.as_deref().and_then(host_state::connect_reason) {
-                    detail = detail.push(
-                        text(reason)
-                            .size(t.type_.foot)
-                            .color(color(t.palette.text3)),
-                    );
-                }
+                    .color(color(t.palette.text3));
                 let head = column![
                     text(key).size(t.type_.body).color(color(t.palette.text)),
                     detail,
@@ -2580,13 +2842,14 @@ impl App {
                 .spacing(4)
                 .align_x(Alignment::Center);
                 if state.shows_language_row() {
-                    // Offline pane only: 360px centred row, 24px below the
-                    // address line. The Model page still uses the full-width
-                    // language_row as before.
+                    // Offline pane only: 360px centred Language row and the
+                    // same-width connection form, 24px below the address
+                    // line. The Model page still uses the full-width row.
                     Element::from(
                         column![
                             head,
                             container(self.language_row(t)).width(Length::Fixed(360.0)),
+                            container(self.connection_form(t, false)).width(Length::Fixed(360.0)),
                         ]
                         .spacing(24)
                         .align_x(Alignment::Center),
@@ -2644,6 +2907,7 @@ impl App {
                     column![
                         view::model_panel(t, &self.model_settings).map(Message::Ui),
                         self.language_row(t),
+                        self.connection_form(t, true),
                     ]
                     .spacing(t.metrics.row_pad_h),
                 )
@@ -2696,30 +2960,42 @@ impl App {
             .feeds
             .get(id)
             .into_iter()
-            .flat_map(Feed::rows)
+            .flat_map(Feed::items)
             .collect::<Vec<_>>();
         // More than three pending confirm cards from one task fold away
         // behind 「还有 N 条待确认」.
         let plan = confirm::fold_plan(
-            rows.iter().map(|r| match r {
+            rows.iter().map(|(r, _)| match r {
                 Row::Card(Card::Confirm(c)) => c.task_id.as_deref().map(|t| (t, c.is_pending())),
                 _ => None,
             }),
             &self.unfolded,
         );
-        let rows = rows
+        let items = rows
             .into_iter()
             .zip(plan)
-            .filter_map(|(r, fold)| match fold {
-                Fold::Show => Some(row_view(t, r, &self.ui, &empty, self.caps, width, in_group)),
+            .filter_map(|((r, meta), fold)| match fold {
+                Fold::Show => Some((FeedItem::Row(r), meta.clone())),
                 Fold::Hide => None,
-                Fold::More { task, n } => Some(view::confirm_more(t, &task, n).map(Message::Ui)),
+                Fold::More { task, n } => Some((FeedItem::More { task, n }, meta.clone())),
             });
+        let groups = model::group_items(items, t.chat.group_secs);
+        let (bubble_max, card_w) = t.chat_widths(self.width, width);
         let feed = scrollable(
-            column(rows)
-                .spacing(t.metrics.stream_spacing)
-                .padding(t.metrics.stream_padding)
-                .width(Fill),
+            column(groups.into_iter().map(|g| {
+                group_view(
+                    t,
+                    g,
+                    &self.ui,
+                    &empty,
+                    self.caps,
+                    (bubble_max, card_w),
+                    in_group,
+                )
+            }))
+            .spacing(t.chat.gap_between)
+            .padding(t.metrics.stream_padding)
+            .width(Fill),
         )
         .anchor_bottom()
         .height(Fill)
@@ -2745,7 +3021,7 @@ impl App {
         let draft = self.drafts.get(id).map_or("", String::as_str);
         let note = self.send_note.get(id).map(String::as_str);
         column![
-            view::chat_header(t, name, dm, t.narrow, rename).map(Message::Ui),
+            view::chat_header(t, name, dm, self.narrow(), rename).map(Message::Ui),
             view::rule(t),
             feed,
             view::rule(t),
@@ -2778,17 +3054,17 @@ impl App {
                 .color(color(t.palette.text))
                 .into()
         };
-        let section = |name: &'static str,
-                       samples: &'a [gallery::Sample]|
-         -> Element<'a, Message> {
-            let mut c = column![title(name)].spacing(6);
-            for s in samples {
-                c = c.push(caption(s.caption)).push(
-                    view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false).map(Message::Ui),
-                );
-            }
-            c.into()
-        };
+        let section =
+            |name: &'static str, samples: &'a [gallery::Sample]| -> Element<'a, Message> {
+                let mut c = column![title(name)].spacing(6);
+                for s in samples {
+                    c = c.push(caption(s.caption)).push(
+                        view::card(t, &s.card, &s.ui, Caps::FAKE, col_width, false, false)
+                            .map(Message::Ui),
+                    );
+                }
+                c.into()
+            };
         // The frozen status card, to review its dark-mode outline.
         let running = robroz_card::palette(robroz_card::Tone::Ink);
         let status_sample: Element<'a, Message> = container(
@@ -2837,72 +3113,193 @@ async fn tokio_sleep(d: Duration) {
     tokio::time::sleep(d).await;
 }
 
-fn row_view<'a>(
+/// One item of the chat feed: a row, or the fold line for hidden confirm cards.
+enum FeedItem<'a> {
+    Row(&'a Row),
+    More { task: String, n: usize },
+}
+
+/// A group of items from one sender. Own items go right in ink bubbles;
+/// a bro's go left, behind a round avatar with its name over the first
+/// item. Cards sit at the bubbles' left edge at their own fixed width. The
+/// time (11px) closes the group.
+fn group_view<'a>(
+    t: &Skin,
+    group: model::Group<FeedItem<'a>>,
+    ui: &HashMap<String, CardUi>,
+    empty: &CardUi,
+    caps: Caps,
+    (bubble_max, card_w): (f32, f32),
+    in_group: bool,
+) -> Element<'a, Message> {
+    let own = group.sender.is_own();
+    let mut col = column![].spacing(t.chat.gap_in);
+    if let model::Sender::Bro { name, .. } = &group.sender {
+        col = col.push(
+            text(name.clone())
+                .size(t.type_.foot)
+                .color(color(t.palette.text2)),
+        );
+    }
+    for (i, item) in group.items.into_iter().enumerate() {
+        let first = i == 0;
+        col = col.push(match item {
+            FeedItem::Row(r) => {
+                item_view(t, r, ui, empty, caps, bubble_max, card_w, first, in_group)
+            }
+            FeedItem::More { task, n } => {
+                container(view::confirm_more(t, &task, n).map(Message::Ui))
+                    .width(Length::Fixed(card_w))
+                    .into()
+            }
+        });
+    }
+    if let Some(at) = group.last_at {
+        let clock = robroz_ui::cards::status::clock_in(at, &chrono::Local);
+        if !clock.is_empty() {
+            col = col.push(
+                text(clock)
+                    .size(t.chat.time_size)
+                    .color(color(t.palette.text3)),
+            );
+        }
+    }
+    if own {
+        row![space::horizontal(), col.align_x(Alignment::End)].into()
+    } else if group.sender.is_delivery() {
+        // Same column as bro cards: indent by the avatar plus its gap,
+        // with no avatar and no name.
+        row![
+            iced::widget::Space::new().width(t.chat.avatar + t.chat.avatar_gap),
+            col
+        ]
+        .into()
+    } else {
+        row![
+            container(view::chat_avatar(t, group.sender.name()))
+                .width(Length::Fixed(t.chat.avatar)),
+            col
+        ]
+        .spacing(t.chat.avatar_gap)
+        .into()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn item_view<'a>(
     t: &Skin,
     r: &'a Row,
     ui: &HashMap<String, CardUi>,
     empty: &CardUi,
     caps: Caps,
-    width: f32,
+    bubble_max: f32,
+    card_w: f32,
+    first: bool,
     in_group: bool,
 ) -> Element<'a, Message> {
+    let own_text = color(t.chat.own_text);
+    let bubble = |content: Element<'a, Message>| -> Element<'a, Message> {
+        container(content)
+            .padding(view::bubble_padding(t))
+            .max_width(bubble_max)
+            .style(view::bubble_style(*t, true, first))
+            .into()
+    };
+    let card = |e: Element<'a, Message>| -> Element<'a, Message> {
+        container(e).width(Length::Fixed(card_w)).into()
+    };
     match r {
-        Row::Text { body } => text(body).color(color(t.palette.text)).into(),
-        Row::Attachment { kind, name } => row![
-            container(
-                text(attachment_label(*kind))
-                    .size(t.type_.tag)
-                    .color(color(t.palette.text2))
-            )
-            .padding(Padding::from([2.0, t.metrics.tag_pad_h]))
-            .style(view::card_style(*t)),
-            text(name).color(color(t.palette.text)),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into(),
-        Row::Status(card) => status_view(t, card, width),
-        Row::Delivery(card) => delivery_view(t, card, width),
-        Row::Card(card) => {
-            let state = ui.get(card.id()).unwrap_or(empty);
-            view::card(t, card, state, caps, width, in_group).map(Message::Ui)
+        Row::Text { body } => bubble(text(body).color(own_text).into()),
+        Row::Attachment { kind, name } => bubble(
+            row![
+                container(
+                    text(attachment_label(*kind))
+                        .size(t.type_.tag)
+                        .color(own_text)
+                )
+                .padding(Padding::from([2.0, t.metrics.tag_pad_h + 2.0]))
+                .style(view::chip_style(*t)),
+                text(name).color(own_text),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        ),
+        Row::Status(c) => card(status_view(t, c, card_w)),
+        Row::Delivery(c) => card(delivery_view(t, c, card_w)),
+        Row::Card(c) => {
+            let state = ui.get(c.id()).unwrap_or(empty);
+            card(view::card(t, c, state, caps, card_w, in_group, true).map(Message::Ui))
         }
     }
 }
 
-/// Frozen status card: palette from `robroz-card`, outline from the skin.
+/// The status dot: accent for a running card, green done, amber stuck,
+/// grey otherwise (queued, a dead run, waiting on approval).
+fn status_dot_kind(card: &StatusCard) -> Option<robroz_ui::cards::status::Dot> {
+    use robroz_ui::cards::status::Dot;
+    match card.tone {
+        robroz_card::Tone::Ink => None,
+        robroz_card::Tone::Green => Some(Dot::Done),
+        robroz_card::Tone::Amber => Some(Dot::Stuck),
+        robroz_card::Tone::Gray => Some(Dot::Void),
+    }
+}
+
+fn status_dot_view<'a>(t: &Skin, card: &StatusCard) -> Element<'a, Message> {
+    match status_dot_kind(card) {
+        None => view::rgb_dot(t, t.chat.accent),
+        Some(d) => view::status_dot(t, d).map(Message::Ui),
+    }
+}
+
+/// Status card: a plain bro card with a status dot and the status word.
+/// The bro name lives in the group header, not inside the card. No fill.
+/// Layout: [dot 8px status (and "Step n of m" if shown)] [flex] [Take over].
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::Wrapping;
-    let mut line = row![progress_cell(t, card, width)]
-        .spacing(12)
-        .align_y(Alignment::Center);
-    if let Some(step) = visible_step_progress(t, card, width) {
-        let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
-        line = line.push(
+    let status_word = text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None);
+    let texts: Element<'a, Message> = if let Some(step) = visible_step_progress(t, card, width) {
+        let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
+        row![
             text(model::display(step).into_owned())
                 .color(color(rgb))
                 .wrapping(Wrapping::None),
-        );
-    }
-    line = line.push(text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None));
+            status_word,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        status_word.into()
+    };
+    let mut line = row![
+        row![status_dot_view(t, card), texts]
+            .spacing(view::STATUS_DOT_TEXT_GAP)
+            .align_y(Alignment::Center),
+        space::horizontal(),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
     if let Some(action) = card.action {
+        let [pad_v, pad_h] = view::TAKE_OVER_PAD;
         line = line.push(
             button(text(model::display(action).into_owned()).size(t.type_.button))
-                .height(Length::Fixed(
-                    t.controls.touch_target.max(t.controls.button_h),
-                ))
-                .style(button::secondary)
+                .padding(Padding::from([pad_v, pad_h]))
+                .style(view::takeover_button_style(*t))
                 .on_press(Message::TakeOver(card.task_id.clone())),
         );
     }
-    container(line)
+    let body: Element<'a, Message> = match card.progress.as_deref() {
+        Some(_) => column![line, progress_cell(t, card, width)]
+            .spacing(t.metrics.dot_gap)
+            .into(),
+        None => line.into(),
+    };
+    container(body)
         .padding(view::status_card_padding(t))
         .width(Fill)
-        .style(view::status_card_style(
-            *t,
-            card.palette.fill,
-            card.palette.text,
-        ))
+        .style(view::card_style(*t))
         .into()
 }
 
@@ -2921,52 +3318,37 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
     };
     const WORD: f32 = 16.0;
     let inner = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
-    let mut needed = text_w(&card.bot_name, WORD)
+    let mut needed = t.metrics.dot
+        + view::STATUS_DOT_TEXT_GAP
         + text_w(&model::display(raw), WORD)
-        + text_w(&model::display(&card.status_line), WORD)
         + 12.0
-        + 12.0;
+        + text_w(&model::display(&card.status_line), WORD);
     if let Some(action) = card.action {
         needed +=
-            text_w(&model::display(action), t.type_.button) + 2.0 * t.controls.card_pad_h + 12.0;
+            text_w(&model::display(action), t.type_.button) + 2.0 * view::TAKE_OVER_PAD[1] + 12.0;
     }
     (needed <= inner).then_some(raw)
 }
 
-/// Left side of a status card: the bro name, and under it, left-aligned,
-/// what the bro is doing (`progress`). One line, cut with "…", at a fixed
-/// line height, so the card is one row taller with progress and exactly
-/// its old height without it, whatever the text says.
+/// Optional progress line under the status row. One line, cut with "…",
+/// at a fixed line height. Not reserved when there is no progress. The
+/// bro name is not drawn here.
 fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::{LineHeight, Wrapping};
-    let name = text(&card.bot_name);
     let Some(progress) = &card.progress else {
-        return container(name).width(Fill).into();
+        return space::horizontal().into();
     };
     let size = t.type_.status;
-    // Room left of the status word (and button), in ASCII width units.
-    let unit = |s: &str| {
-        s.chars()
-            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
-            .sum::<f32>()
-    };
-    let right = unit(&model::display(&card.status_line)) * t.type_.body * t.type_.unit_width
-        + card.action.map_or(0.0, |a| {
-            unit(&model::display(a)) * t.type_.button * t.type_.unit_width
-                + 2.0 * t.controls.card_pad_h
-                + 12.0
-        })
-        + 12.0;
-    let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
+    let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
     let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
-    let rgb = robroz_ui::cards::status::progress_rgb(card.palette.fill, card.palette.text);
+    let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
     let line = text(fitted)
         .size(size)
         .line_height(LineHeight::Absolute(progress_line_height(size).into()))
         .wrapping(Wrapping::None)
         .color(color(rgb));
-    container(column![name, container(line).clip(true).width(Fill)].spacing(2))
+    container(container(line).clip(true).width(Fill))
         .width(Fill)
         .into()
 }
@@ -2998,8 +3380,13 @@ fn delivery_setup(card: &DeliveryCard) -> Vec<(Message, Text, Text)> {
 fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a, Message> {
     // Did not get done: the same grey as 「没写出结果」, no path, no buttons.
     if let Some(failure) = &card.failure {
-        let gray = robroz_card::palette(robroz_card::Tone::Gray);
-        let line = text(model::display(&model::failure_line(failure)).into_owned());
+        // Not done: a plain bro card with a grey dot, no grey fill.
+        let line = row![
+            view::status_dot(t, robroz_ui::cards::status::Dot::Void).map(Message::Ui),
+            text(model::display(&model::failure_line(failure)).into_owned()),
+        ]
+        .spacing(t.metrics.dot_gap + 4.0)
+        .align_y(Alignment::Center);
         let setup = delivery_setup(card);
         let body: Element<'a, Message> = if setup.is_empty() {
             line.into()
@@ -3017,7 +3404,7 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
         return container(body)
             .padding(view::status_card_padding(t))
             .width(Fill)
-            .style(view::status_card_style(*t, gray.fill, gray.text))
+            .style(view::card_style(*t))
             .into();
     }
     let path = view::display_path(
@@ -3026,7 +3413,7 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
         width - 2.0 * (t.controls.card_pad_h + t.stroke.card),
     );
     let mut head = row![
-        text(&card.summary).color(color(t.palette.text)),
+        text(model::display(&card.summary).into_owned()).color(color(t.palette.text)),
         space::horizontal()
     ]
     .align_y(Alignment::Center);
@@ -3063,10 +3450,20 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_name, window_icon};
+    use super::{decode_window_icon, pick_name, window_icon, WINDOW_ICON_SIZE};
 
     #[test]
     fn embedded_window_icon_decodes() {
+        let (rgba, width, height) = decode_window_icon().expect("embedded icon should decode");
+        assert_eq!((width, height), (WINDOW_ICON_SIZE, WINDOW_ICON_SIZE));
+        assert_eq!(
+            rgba.len(),
+            (WINDOW_ICON_SIZE * WINDOW_ICON_SIZE * 4) as usize
+        );
+        assert!(
+            rgba.iter().any(|&b| b != 0),
+            "window icon RGBA should not be all zeros"
+        );
         assert!(window_icon().is_some());
     }
 
@@ -3095,6 +3492,48 @@ mod tests {
             progress: None,
             step_progress: Some(robroz_contract::host_text::router_step_progress(2, 3)),
         }
+    }
+
+    #[test]
+    fn every_status_card_is_a_plain_card_with_a_dot() {
+        use robroz_card::Tone;
+        use robroz_ui::cards::status::Dot;
+        use robroz_ui::{Mode, Skin};
+        for mode in [Mode::Light, Mode::Dark] {
+            let t = Skin::for_mode(mode);
+            let mut card = live_step_card();
+            assert_eq!(
+                super::status_dot_kind(&card),
+                None,
+                "running uses the accent"
+            );
+            assert_eq!(
+                t.chat.accent,
+                if mode == Mode::Light {
+                    [0xc8, 0x57, 0x2a]
+                } else {
+                    [0xe0, 0x74, 0x3f]
+                }
+            );
+            for (tone, dot) in [
+                (Tone::Green, Dot::Done),
+                (Tone::Amber, Dot::Stuck),
+                (Tone::Gray, Dot::Void),
+            ] {
+                card.tone = tone;
+                assert_eq!(super::status_dot_kind(&card), Some(dot));
+            }
+        }
+    }
+
+    #[test]
+    fn take_over_button_padding_is_6_by_12() {
+        assert_eq!(robroz_ui::view::TAKE_OVER_PAD, [6.0, 12.0]);
+    }
+
+    #[test]
+    fn status_dot_sits_8px_before_the_status_word() {
+        assert_eq!(robroz_ui::view::STATUS_DOT_TEXT_GAP, 8.0);
     }
 
     #[test]
@@ -3127,6 +3566,6 @@ mod tests {
                 .as_deref(),
             Some("2/3 步")
         );
-        assert_eq!(super::visible_step_progress(&t, &card, 150.0), None);
+        assert_eq!(super::visible_step_progress(&t, &card, 120.0), None);
     }
 }
