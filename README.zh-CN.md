@@ -1,32 +1,10 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-dark.svg">
-    <img src="assets/brand/wordmark-light.svg" alt="robroz" width="240">
-  </picture>
+  <p>
+  <img src="docs/assets/main-zh-light.png" alt="robroz 桌面客户端，浅色：群聊里的状态卡和交付卡" width="49%">
+  <img src="docs/assets/main-zh-dark.png" alt="robroz 桌面客户端，深色：群聊里的状态卡和交付卡" width="49%">
 </p>
 
-<p align="center"><a href="README.md">English</a> | <b>简体中文</b></p>
-
-<p align="center">
-  <a href="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml"><img src="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-</p>
-
-自托管的多智能体工作台，用聊天来驱动。智能体（bro）在 Docker 沙箱里干活；审批和结果以卡片回到对话里。Rust 宿主机 + 原生桌面客户端。
-
-v0.1.0 是单用户、自托管的。见 [CHANGELOG.md](CHANGELOG.md) 和 [docs/install.md](docs/install.md)。
-
-## robroz 是什么
-
-你在自己的机器上和一组 AI bro 群聊。用大白话派活，它们在沙盒里干，遇到有风险的操作会先问你。
-
-适合想在自己控制的电脑上用一组 AI 智能体、并且风险步骤要自己点头的人。
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/app-main-zh-dark.png">
-  <img src="docs/assets/app-main-zh-light.png" alt="robroz 桌面客户端：群聊里的状态卡和交付卡" width="800">
-</picture>
-
-<sub>示例数据（Demo data）。</sub>
+<sub>演示数据</sub>
 
 桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
