@@ -96,9 +96,25 @@ fn window_settings(size: (f32, f32)) -> window::Settings {
     }
 }
 
-/// The 512px brand icon, decoded from the embedded PNG. `None` (default icon)
-/// if it cannot be decoded, which must never stop the client from starting.
+/// Edge length of the window icon passed to iced/winit.
+///
+/// The brand asset is 512×512, but a 512px `_NET_WM_ICON` is about 1 MiB.
+/// xprop's default 500_000-byte cap then reads width and height without
+/// enough pixels and prints an empty property; some window managers do the
+/// same and show a generic icon. 128×128 is 64 KiB, fits the default X11
+/// 256 KiB request, and is the size Linux WMs expect.
+const WINDOW_ICON_SIZE: u32 = 128;
+
+/// The brand icon, decoded from the embedded 512px PNG and scaled to
+/// [`WINDOW_ICON_SIZE`]. `None` (default icon) if it cannot be decoded,
+/// which must never stop the client from starting.
 fn window_icon() -> Option<window::Icon> {
+    let (rgba, width, height) = decode_window_icon()?;
+    window::icon::from_rgba(rgba, width, height).ok()
+}
+
+/// RGBA bytes and size of the window icon.
+fn decode_window_icon() -> Option<(Vec<u8>, u32, u32)> {
     static ICON_PNG: &[u8] = include_bytes!("../../assets/brand/icon-512.png");
     let mut reader = png::Decoder::new(std::io::Cursor::new(ICON_PNG))
         .read_info()
@@ -109,7 +125,63 @@ fn window_icon() -> Option<window::Icon> {
         return None;
     }
     buf.truncate(info.buffer_size());
-    window::icon::from_rgba(buf, info.width, info.height).ok()
+    if info.width == WINDOW_ICON_SIZE && info.height == WINDOW_ICON_SIZE {
+        return Some((buf, info.width, info.height));
+    }
+    let rgba = downscale_rgba(
+        &buf,
+        info.width,
+        info.height,
+        WINDOW_ICON_SIZE,
+        WINDOW_ICON_SIZE,
+    )?;
+    Some((rgba, WINDOW_ICON_SIZE, WINDOW_ICON_SIZE))
+}
+
+/// Integer-ratio box filter with premultiplied averaging, so transparent
+/// edges stay clean. `src_w` and `src_h` must be exact multiples of `dst_w`
+/// and `dst_h`.
+fn downscale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<Vec<u8>> {
+    if src_w == 0
+        || src_h == 0
+        || dst_w == 0
+        || dst_h == 0
+        || src_w % dst_w != 0
+        || src_h % dst_h != 0
+        || src.len() != (src_w * src_h * 4) as usize
+    {
+        return None;
+    }
+    let nx = (src_w / dst_w) as usize;
+    let ny = (src_h / dst_h) as usize;
+    let src_w = src_w as usize;
+    let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+    for y in 0..dst_h as usize {
+        for x in 0..dst_w as usize {
+            let mut r = 0u32;
+            let mut g = 0u32;
+            let mut b = 0u32;
+            let mut a = 0u32;
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let i = ((y * ny + iy) * src_w + (x * nx + ix)) * 4;
+                    let pa = src[i + 3] as u32;
+                    r += src[i] as u32 * pa;
+                    g += src[i + 1] as u32 * pa;
+                    b += src[i + 2] as u32 * pa;
+                    a += pa;
+                }
+            }
+            let o = (y * dst_w as usize + x) * 4;
+            if a != 0 {
+                out[o] = (r / a) as u8;
+                out[o + 1] = (g / a) as u8;
+                out[o + 2] = (b / a) as u8;
+                out[o + 3] = (a / (nx * ny) as u32) as u8;
+            }
+        }
+    }
+    Some(out)
 }
 
 fn has_flag(flag: &str) -> bool {
@@ -3378,10 +3450,20 @@ fn delivery_view<'a>(t: &Skin, card: &'a DeliveryCard, width: f32) -> Element<'a
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_name, window_icon};
+    use super::{decode_window_icon, pick_name, window_icon, WINDOW_ICON_SIZE};
 
     #[test]
     fn embedded_window_icon_decodes() {
+        let (rgba, width, height) = decode_window_icon().expect("embedded icon should decode");
+        assert_eq!((width, height), (WINDOW_ICON_SIZE, WINDOW_ICON_SIZE));
+        assert_eq!(
+            rgba.len(),
+            (WINDOW_ICON_SIZE * WINDOW_ICON_SIZE * 4) as usize
+        );
+        assert!(
+            rgba.iter().any(|&b| b != 0),
+            "window icon RGBA should not be all zeros"
+        );
         assert!(window_icon().is_some());
     }
 
