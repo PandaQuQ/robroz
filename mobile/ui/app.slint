@@ -1,4 +1,4 @@
-import { LineEdit, ListView, AboutSlint, ScrollView } from "std-widgets.slint";
+import { ListView, AboutSlint, ScrollView, Palette } from "std-widgets.slint";
 
 // Colours are pushed from Rust (`robroz_tokens` / `Skin`). Nothing here
 // restates a hex value. Status card fill/text still come from robroz-card.
@@ -10,6 +10,7 @@ export global Brand {
     in property <color> accent;
     in property <color> on-accent;
     in property <color> surface;
+    in property <color> border;
     in property <color> own-bg;
     in property <color> own-text;
     in property <color> bro-bg;
@@ -34,6 +35,7 @@ export global Tr {
     in property <string> locale-en;
     in property <string> locale-zh;
     in property <string> appearance;
+    in property <string> theme-system;
     in property <string> theme-light;
     in property <string> theme-dark;
     in property <string> about;
@@ -57,6 +59,7 @@ export struct ChatRow {
     progress: string,
     fill: color,
     text-color: color,
+    dot: color,
 }
 
 component Pill inherits Rectangle {
@@ -101,13 +104,19 @@ component Segment inherits Rectangle {
 
 component SegmentBar inherits HorizontalLayout {
     in property <string> left-text;
+    in property <string> mid-text;
     in property <string> right-text;
     in property <int> selected;
     callback picked(int);
     spacing: 4px;
     height: 40px;
     Segment { text: root.left-text; selected: root.selected == 0; clicked => { root.picked(0); } }
-    Segment { text: root.right-text; selected: root.selected == 1; clicked => { root.picked(1); } }
+    if root.mid-text != "": Segment { text: root.mid-text; selected: root.selected == 1; clicked => { root.picked(1); } }
+    Segment {
+        text: root.right-text;
+        selected: root.mid-text == "" ? root.selected == 1 : root.selected == 2;
+        clicked => { root.picked(root.mid-text == "" ? 1 : 2); }
+    }
 }
 
 component Field inherits VerticalLayout {
@@ -122,14 +131,35 @@ component Field inherits VerticalLayout {
     Text { text: root.label; color: Brand.muted; font-size: 13px; }
     HorizontalLayout {
         spacing: 8px;
-        LineEdit {
-            text <=> root.value;
-            placeholder-text: root.placeholder;
-            input-type: root.secret ? InputType.password : InputType.text;
-            font-size: 16px;
+        Rectangle {
             height: 48px;
-            edited => { root.edited(); }
-            accepted => { root.edited(); }
+            horizontal-stretch: 1;
+            border-radius: 10px;
+            background: Brand.surface;
+            border-width: 1px;
+            border-color: Brand.border;
+            if root.value == "": Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: 100%;
+                text: root.placeholder;
+                color: Brand.muted;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            TextInput {
+                x: 12px;
+                width: parent.width - 24px;
+                height: 100%;
+                text <=> root.value;
+                color: Brand.ink;
+                font-size: 16px;
+                single-line: true;
+                input-type: root.secret ? InputType.password : InputType.text;
+                vertical-alignment: center;
+                edited => { root.edited(); }
+                accepted => { root.edited(); }
+            }
         }
         if root.reveal-text != "": Rectangle {
             width: 64px;
@@ -193,6 +223,7 @@ export component MainWindow inherits Window {
     in-out property <string> token;
     in-out property <bool> show-token: false;
     in-out property <bool> token-masked: false;
+    in property <string> error-title;
     in property <string> error;
     in property <string> unencrypted-hint;
     in property <bool> busy: false;
@@ -207,6 +238,8 @@ export component MainWindow inherits Window {
     // typical phone insets (the desktop backend reports 0).
     in property <length> extra-safe-top: 0px;
     in property <length> extra-safe-bottom: 0px;
+    // Palette follows the OS; Rust uses this when Appearance is System.
+    out property <bool> os-dark: Palette.color-scheme == ColorScheme.dark;
     callback connect();
     callback host-changed();
     callback token-changed();
@@ -216,6 +249,9 @@ export component MainWindow inherits Window {
     callback open-settings();
     callback set-locale(int);
     callback set-theme(int);
+    callback theme-follow-system();
+
+    changed os-dark => { root.theme-follow-system(); }
 
     background: Brand.paper;
     preferred-width: 390px;
@@ -258,11 +294,21 @@ export component MainWindow inherits Window {
                 text: root.busy ? Tr.connecting : Tr.connect;
                 clicked => { if !root.busy { root.connect(); } }
             }
-            if root.error != "": Text {
-                text: root.error;
-                color: Brand.muted;
-                wrap: word-wrap;
-                font-size: 14px;
+            if root.error-title != "" || root.error != "": VerticalLayout {
+                spacing: 4px;
+                if root.error-title != "": Text {
+                    text: root.error-title;
+                    color: Brand.accent;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                if root.error != "": Text {
+                    text: root.error;
+                    color: Brand.accent;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                }
             }
         }
 
@@ -348,41 +394,45 @@ export component MainWindow inherits Window {
                                 }
                             }
                             if row.kind == 2: Rectangle {
-                                background: row.fill;
+                                // #155: no fill, card border only; bro name is not in the card.
+                                background: transparent;
                                 border-radius: 14px;
+                                border-width: 1px;
+                                border-color: Brand.border;
                                 VerticalLayout {
                                     padding: 14px;
                                     spacing: 4px;
                                     alignment: start;
-                                    Text {
-                                        text: row.name;
-                                        color: row.text-color;
-                                        font-size: 16px;
-                                        font-weight: 700;
-                                        horizontal-alignment: left;
-                                    }
-                                    // Step and status sit together, left-aligned (no right pack).
                                     HorizontalLayout {
                                         alignment: start;
                                         spacing: 8px;
+                                        Rectangle {
+                                            width: 8px;
+                                            height: 8px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            background: row.dot;
+                                        }
                                         if row.step != "": Text {
                                             text: row.step;
-                                            color: row.text-color;
+                                            color: Brand.ink;
                                             font-size: 14px;
                                             horizontal-alignment: left;
+                                            vertical-alignment: center;
                                         }
                                         Text {
                                             text: row.status;
-                                            color: row.text-color;
+                                            color: Brand.ink;
                                             font-size: 14px;
                                             font-weight: 600;
                                             wrap: word-wrap;
                                             horizontal-alignment: left;
+                                            vertical-alignment: center;
                                         }
                                     }
                                     if row.progress != "": Text {
                                         text: row.progress;
-                                        color: row.text-color;
+                                        color: Brand.ink;
                                         font-size: 13px;
                                         wrap: word-wrap;
                                         horizontal-alignment: left;
@@ -408,7 +458,8 @@ export component MainWindow inherits Window {
             }
             Text { text: Tr.appearance; color: Brand.muted; font-size: 13px; }
             SegmentBar {
-                left-text: Tr.theme-light;
+                left-text: Tr.theme-system;
+                mid-text: Tr.theme-light;
                 right-text: Tr.theme-dark;
                 selected: root.theme-index;
                 picked(i) => { root.set-theme(i); }

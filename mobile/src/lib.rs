@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use robroz_card::Palette as CardPalette;
+use robroz_card::Tone;
 use robroz_tokens::{ColorSet, DARK, LIGHT};
 use robroz_ui::i18n::{self, Key, Locale};
 use robroz_ui::theme::Mode;
@@ -24,8 +24,103 @@ fn color(rgb: [u8; 3]) -> slint::Color {
     slint::Color::from_rgb_u8(rgb[0], rgb[1], rgb[2])
 }
 
-fn palette_colors(p: CardPalette) -> (slint::Color, slint::Color) {
-    (color(p.fill), color(p.text))
+/// Appearance choice, same order as the desktop Settings row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ThemePref {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePref {
+    const ALL: [ThemePref; 3] = [ThemePref::System, ThemePref::Light, ThemePref::Dark];
+
+    fn from_index(index: i32) -> Self {
+        Self::ALL
+            .get(index as usize)
+            .copied()
+            .unwrap_or(ThemePref::System)
+    }
+
+    fn index(self) -> i32 {
+        Self::ALL.iter().position(|p| *p == self).unwrap_or(0) as i32
+    }
+
+    fn resolve(self, system: Mode) -> Mode {
+        match self {
+            ThemePref::System => system,
+            ThemePref::Light => Mode::Light,
+            ThemePref::Dark => Mode::Dark,
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        Self::ALL.into_iter().find(|p| {
+            let code = match p {
+                ThemePref::System => "system",
+                ThemePref::Light => "light",
+                ThemePref::Dark => "dark",
+            };
+            code.eq_ignore_ascii_case(text)
+        })
+    }
+}
+
+fn initial_pref() -> ThemePref {
+    std::env::var("ROBROZ_THEME")
+        .ok()
+        .as_deref()
+        .and_then(ThemePref::parse)
+        .unwrap_or(ThemePref::System)
+}
+
+fn system_mode(ui: &MainWindow) -> Mode {
+    if ui.get_os_dark() {
+        Mode::Dark
+    } else {
+        Mode::Light
+    }
+}
+
+/// 401 copy on the connect form: the desktop title, and the env hint only
+/// when the token really came from the environment. The body never includes
+/// `ROBROZ_TOKEN` unless that env hint is shown.
+fn unauthorized_copy(from_env: bool) -> (String, String) {
+    let title = Key::ClientTokenRejectedTitle.as_str().to_string();
+    let body = if from_env {
+        Key::ConnSetByToken.as_str().to_string()
+    } else {
+        String::new()
+    };
+    (title, body)
+}
+
+fn apply_connect_error(ui: &MainWindow, err: &str, from_env: bool) {
+    if err == api::unauthorized_message() {
+        let (title, body) = unauthorized_copy(from_env);
+        ui.set_error_title(title.into());
+        ui.set_error(body.into());
+    } else {
+        ui.set_error_title("".into());
+        ui.set_error(err.into());
+    }
+}
+
+fn clear_connect_error(ui: &MainWindow) {
+    ui.set_error_title("".into());
+    ui.set_error("".into());
+}
+
+fn status_dot_color(mode: Mode, tone: Tone) -> slint::Color {
+    let p = tokens_for(mode);
+    color(match tone {
+        Tone::Ink => p.accent,
+        Tone::Green => p.dot_done,
+        Tone::Amber => p.dot_stuck,
+        Tone::Gray => p.dot_void,
+    })
 }
 
 /// The token set for a mode. Used directly so bubble and chrome colours
@@ -59,6 +154,7 @@ fn apply_theme(ui: &MainWindow, mode: Mode) {
     brand.set_accent(color(p.accent));
     brand.set_on_accent(color(p.on_accent));
     brand.set_surface(color(p.surface));
+    brand.set_border(color(p.border));
     // Bubbles use the token palette (ink on light, inverted on dark for
     // own; surface + border for a bro). No hex literals in the UI.
     brand.set_own_bg(color(p.text));
@@ -68,10 +164,13 @@ fn apply_theme(ui: &MainWindow, mode: Mode) {
     let (fill, text) = segment_selected(mode);
     brand.set_segment_fill(color(fill));
     brand.set_segment_text(color(text));
-    ui.set_theme_index(match mode {
-        Mode::Light => 0,
-        Mode::Dark => 1,
-    });
+}
+
+fn apply_pref(ui: &MainWindow, state: &mut State, pref: ThemePref) {
+    state.theme_pref = pref;
+    state.theme = pref.resolve(system_mode(ui));
+    apply_theme(ui, state.theme);
+    ui.set_theme_index(pref.index());
 }
 
 fn apply_strings(ui: &MainWindow) {
@@ -90,6 +189,7 @@ fn apply_strings(ui: &MainWindow) {
     tr.set_locale_en(Key::LocaleNameEn.as_str().into());
     tr.set_locale_zh(Key::LocaleNameZh.as_str().into());
     tr.set_appearance(Key::SettingsAppearance.as_str().into());
+    tr.set_theme_system(Key::SettingsThemeSystem.as_str().into());
     tr.set_theme_light(Key::ClientThemeLight.as_str().into());
     tr.set_theme_dark(Key::ClientThemeDark.as_str().into());
     tr.set_about(Key::MobileAbout.as_str().into());
@@ -124,7 +224,7 @@ fn apply_token_field(ui: &MainWindow, st: &State) {
     }
 }
 
-fn chat_rows(items: &[chat::ChatItem], fallback_name: &str) -> Vec<ChatRow> {
+fn chat_rows(items: &[chat::ChatItem], fallback_name: &str, mode: Mode) -> Vec<ChatRow> {
     let bro = chat::bro_name(items, fallback_name);
     items
         .iter()
@@ -136,7 +236,6 @@ fn chat_rows(items: &[chat::ChatItem], fallback_name: &str) -> Vec<ChatRow> {
                 ..ChatRow::default()
             },
             chat::ChatItem::Status(c) => {
-                let (fill, text_color) = palette_colors(c.palette);
                 let shown = |s: &Option<String>| -> SharedString {
                     s.as_deref()
                         .map(|s| card::display(s).into_owned())
@@ -145,12 +244,12 @@ fn chat_rows(items: &[chat::ChatItem], fallback_name: &str) -> Vec<ChatRow> {
                 };
                 ChatRow {
                     kind: 2,
-                    name: c.bot_name.as_str().into(),
+                    // #155: the bro name is not drawn inside the card.
+                    name: "".into(),
                     status: card::display(&c.status_line).into_owned().into(),
                     step: shown(&c.step_progress),
                     progress: shown(&c.progress),
-                    fill,
-                    text_color,
+                    dot: status_dot_color(mode, c.tone),
                     ..ChatRow::default()
                 }
             }
@@ -167,9 +266,12 @@ struct State {
     /// Where Back from Settings returns to.
     before_settings: i32,
     theme: Mode,
+    theme_pref: ThemePref,
     /// The last saved (or env) token. Never shown in the field.
     token_saved: Option<String>,
     token_dirty: bool,
+    /// True while the current token is the one from `ROBROZ_TOKEN`.
+    token_from_env: bool,
 }
 
 /// Desktop-only shot hook: pre-fill screens from a fixture host when
@@ -192,7 +294,7 @@ fn prepare_shot(ui: &MainWindow, state: &Arc<Mutex<State>>, shot: &str) {
     let conn = match api::Conn::new(&host, &token) {
         Ok(c) => c,
         Err(e) => {
-            ui.set_error(e.0.into());
+            apply_connect_error(ui, &e.0, false);
             return;
         }
     };
@@ -223,7 +325,8 @@ fn prepare_shot(ui: &MainWindow, state: &Arc<Mutex<State>>, shot: &str) {
             }
         }
         Err(e) => {
-            ui.set_error(e.0.into());
+            // connect-401 types a wrong token, so this is not the env token.
+            apply_connect_error(ui, &e.0, false);
             if shot == "connect-401" {
                 return;
             }
@@ -254,7 +357,10 @@ fn prepare_shot(ui: &MainWindow, state: &Arc<Mutex<State>>, shot: &str) {
                 let items = chat::build(&events);
                 ui.set_chat_title(name.clone().into());
                 ui.set_chat_note("".into());
-                ui.set_chat(ModelRc::new(VecModel::from(chat_rows(&items, &name))));
+                let theme = state.lock().unwrap().theme;
+                ui.set_chat(ModelRc::new(VecModel::from(chat_rows(
+                    &items, &name, theme,
+                ))));
                 let mut st = state.lock().unwrap();
                 st.chat = items;
                 st.chat_name = name;
@@ -277,15 +383,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     {
         i18n::set_locale(l);
     }
-    let theme = Mode::from_env_value(std::env::var("ROBROZ_THEME").ok().as_deref());
-    state.lock().unwrap().theme = theme;
     if let Ok(h) = std::env::var("ROBROZ_HOST") {
         ui.set_host_url(h.into());
     }
     if let Ok(t) = std::env::var("ROBROZ_TOKEN") {
         let trimmed = t.trim().to_string();
         if !trimmed.is_empty() {
-            state.lock().unwrap().token_saved = Some(trimmed);
+            let mut st = state.lock().unwrap();
+            st.token_saved = Some(trimmed);
+            st.token_from_env = true;
         }
     }
     if let Ok(v) = std::env::var("ROBROZ_SHOT_SAFE") {
@@ -296,7 +402,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ui.set_extra_safe_bottom(34.0);
         }
     }
-    apply_theme(&ui, theme);
+    {
+        let mut st = state.lock().unwrap();
+        apply_pref(&ui, &mut st, initial_pref());
+    }
     apply_strings(&ui);
     apply_unencrypted_hint(&ui);
     apply_token_field(&ui, &state.lock().unwrap());
@@ -321,6 +430,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             let (draft, dirty) = api::edit_token(st.token_dirty, &ui.get_token());
             st.token_dirty = dirty;
             if dirty {
+                st.token_from_env = false;
                 ui.set_token_masked(false);
                 if ui.get_token() != draft.as_str() && !draft.is_empty() {
                     ui.set_token(draft.into());
@@ -350,9 +460,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
-            ui.set_error("".into());
+            clear_connect_error(&ui);
             apply_unencrypted_hint(&ui);
-            let (host, token) = {
+            let (host, token, from_env) = {
                 let st = state.lock().unwrap();
                 (
                     ui.get_host_url().to_string(),
@@ -361,12 +471,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         &ui.get_token(),
                         st.token_dirty,
                     ),
+                    st.token_from_env && !st.token_dirty,
                 )
             };
             let conn = match api::Conn::new(&host, &token) {
                 Ok(c) => c,
                 Err(e) => {
-                    ui.set_error(e.0.into());
+                    apply_connect_error(&ui, &e.0, from_env);
                     return;
                 }
             };
@@ -397,6 +508,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                                 let mut st = state.lock().unwrap();
                                 st.conn = Some(conn);
                                 if !token.is_empty() {
+                                    st.token_from_env = from_env;
                                     st.token_saved = Some(token);
                                     st.token_dirty = false;
                                     apply_token_field(&ui, &st);
@@ -404,7 +516,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                             }
                             ui.set_screen(1);
                         }
-                        Err(e) => ui.set_error(e.0.into()),
+                        Err(e) => apply_connect_error(&ui, &e.0, from_env),
                     }
                 });
             });
@@ -439,7 +551,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
                             } else {
                                 "".into()
                             });
-                            ui.set_chat(ModelRc::new(VecModel::from(chat_rows(&items, &name))));
+                            let theme = state.lock().unwrap().theme;
+                            ui.set_chat(ModelRc::new(VecModel::from(chat_rows(
+                                &items, &name, theme,
+                            ))));
                             let mut st = state.lock().unwrap();
                             st.chat = items;
                             st.chat_name = name;
@@ -484,11 +599,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
             i18n::set_locale(locale);
             apply_strings(&ui);
             apply_unencrypted_hint(&ui);
-            ui.set_error("".into());
+            clear_connect_error(&ui);
             let st = state.lock().unwrap();
             ui.set_chat(ModelRc::new(VecModel::from(chat_rows(
                 &st.chat,
                 &st.chat_name,
+                st.theme,
             ))));
         }
     });
@@ -498,9 +614,31 @@ pub fn run() -> Result<(), slint::PlatformError> {
         let state = state.clone();
         move |index| {
             let ui = weak.unwrap();
-            let mode = if index == 1 { Mode::Dark } else { Mode::Light };
-            state.lock().unwrap().theme = mode;
-            apply_theme(&ui, mode);
+            let mut st = state.lock().unwrap();
+            apply_pref(&ui, &mut st, ThemePref::from_index(index));
+            ui.set_chat(ModelRc::new(VecModel::from(chat_rows(
+                &st.chat,
+                &st.chat_name,
+                st.theme,
+            ))));
+        }
+    });
+
+    ui.on_theme_follow_system({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move || {
+            let ui = weak.unwrap();
+            let mut st = state.lock().unwrap();
+            if st.theme_pref != ThemePref::System {
+                return;
+            }
+            apply_pref(&ui, &mut st, ThemePref::System);
+            ui.set_chat(ModelRc::new(VecModel::from(chat_rows(
+                &st.chat,
+                &st.chat_name,
+                st.theme,
+            ))));
         }
     });
 
@@ -526,5 +664,55 @@ mod theme_tests {
         );
         // Same values the desktop client uses (DARK.border / DARK.text).
         assert_eq!(segment_selected(Mode::Dark), (DARK.border, DARK.text));
+    }
+
+    #[test]
+    fn appearance_defaults_to_system_then_light_and_dark() {
+        assert_eq!(ThemePref::default(), ThemePref::System);
+        assert_eq!(ThemePref::from_index(0).index(), 0);
+        assert_eq!(ThemePref::from_index(1), ThemePref::Light);
+        assert_eq!(ThemePref::from_index(2), ThemePref::Dark);
+        assert_eq!(ThemePref::System.resolve(Mode::Dark), Mode::Dark);
+        assert_eq!(ThemePref::Light.resolve(Mode::Dark), Mode::Light);
+        assert_eq!(ThemePref::parse("system"), Some(ThemePref::System));
+        assert_eq!(ThemePref::parse("DARK"), Some(ThemePref::Dark));
+    }
+
+    #[test]
+    fn running_dot_is_accent_and_failed_dot_is_grey() {
+        assert_eq!(
+            status_dot_color(Mode::Light, Tone::Ink),
+            color(LIGHT.accent)
+        );
+        assert_eq!(status_dot_color(Mode::Dark, Tone::Ink), color(DARK.accent));
+        assert_eq!(
+            status_dot_color(Mode::Light, Tone::Gray),
+            color(LIGHT.dot_void)
+        );
+        assert_eq!(
+            status_dot_color(Mode::Dark, Tone::Gray),
+            color(DARK.dot_void)
+        );
+    }
+
+    #[test]
+    fn rejected_token_title_omits_env_name_unless_the_token_is_from_env() {
+        use robroz_ui::i18n::{scoped, text_in, Locale};
+        let _en = scoped(Locale::En);
+        let (title, body) = unauthorized_copy(false);
+        assert_eq!(title, text_in(Locale::En, Key::ClientTokenRejectedTitle));
+        assert_eq!(title, "Token rejected");
+        assert!(body.is_empty());
+        assert!(!title.contains("ROBROZ_TOKEN"));
+        let (title, body) = unauthorized_copy(true);
+        assert_eq!(title, "Token rejected");
+        assert_eq!(body, text_in(Locale::En, Key::ConnSetByToken));
+        assert!(body.contains("ROBROZ_TOKEN"));
+        drop(_en);
+        let _zh = scoped(Locale::Zh);
+        let (title, body) = unauthorized_copy(false);
+        assert_eq!(title, "令牌被拒绝");
+        assert!(body.is_empty());
+        assert!(!title.contains("ROBROZ_TOKEN"));
     }
 }
