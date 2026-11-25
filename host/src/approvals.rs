@@ -775,7 +775,7 @@ fn may_answer(
 /// 403 [`ApprovalForbidden`] body.
 fn forbidden(reason: ApprovalForbiddenReason, owner: (Option<String>, Option<String>)) -> Response {
     let error = match reason {
-        ApprovalForbiddenReason::NotOwner => robroz_contract::host_text::NOT_BRO_OWNER,
+        ApprovalForbiddenReason::NotOwner => robroz_contract::NOT_BRO_OWNER,
         ApprovalForbiddenReason::Decided => robroz_contract::host_text::ALREADY_ANSWERED,
         ApprovalForbiddenReason::Expired => APPROVAL_EXPIRED_REASON,
     };

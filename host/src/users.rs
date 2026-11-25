@@ -93,6 +93,26 @@ pub(crate) fn bot_owner(conn: &Connection, bot_id: &str) -> rusqlite::Result<Opt
     .optional()
 }
 
+/// `(ownerUserId, ownerName)` of bro `bot_id`, both `None` if unknown.
+/// `ownerName` is `None` when the user row is missing.
+pub(crate) fn owner_of(
+    conn: &Connection,
+    bot_id: &str,
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {OWNER_SQL}, u.name FROM bots b
+                 LEFT JOIN users u ON u.id = {OWNER_SQL}
+                 WHERE b.id = ?1"
+            ),
+            [bot_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((None, None)))
+}
+
 /// Test hook: add a user straight into the database.
 #[cfg(test)]
 pub(crate) fn insert_for_test(conn: &Connection, id: &str, name: &str, role: &str) {
@@ -118,7 +138,7 @@ pub(crate) async fn me(
             }),
         )
             .into_response(),
-        Ok(None) => crate::forbidden(robroz_contract::host_text::NOT_BRO_OWNER, "unknown_user"),
+        Ok(None) => crate::forbidden(robroz_contract::NOT_BRO_OWNER, "unknown_user"),
         Err(err) => db_error(err),
     }
 }

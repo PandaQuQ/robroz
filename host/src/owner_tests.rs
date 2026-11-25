@@ -251,8 +251,15 @@ async fn only_the_owner_renames_a_bro_and_admin_is_no_exception() {
             )
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{who:?}: {body}");
-        assert_eq!(body["code"], "not_bro_owner");
-        assert_eq!(body["error"], robroz_contract::host_text::NOT_BRO_OWNER);
+        assert_eq!(
+            body,
+            json!({
+                "error": robroz_contract::NOT_BRO_OWNER,
+                "code": "not_bro_owner",
+                "ownerUserId": MEMBER,
+                "ownerName": "Mei"
+            })
+        );
     }
     let (status, body) = h
         .call(
@@ -294,7 +301,15 @@ async fn only_the_owner_adds_an_existing_bro_to_a_group() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["code"], "not_bro_owner");
+    assert_eq!(
+        body,
+        json!({
+            "error": robroz_contract::NOT_BRO_OWNER,
+            "code": "not_bro_owner",
+            "ownerUserId": MEMBER,
+            "ownerName": "Mei"
+        })
+    );
     let (status, _) = h
         .call(
             Some(MEMBER),
@@ -348,7 +363,15 @@ async fn a_dm_is_unique_per_user_and_bro_and_only_the_owner_opens_it() {
     for who in [None, Some(OTHER)] {
         let (status, body) = h.call(who, "POST", &uri, Some(json!({}))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["code"], "not_bro_owner");
+        assert_eq!(
+            body,
+            json!({
+                "error": robroz_contract::NOT_BRO_OWNER,
+                "code": "not_bro_owner",
+                "ownerUserId": MEMBER,
+                "ownerName": "Mei"
+            })
+        );
     }
 
     let insert = |id: &str, user: &str| {
@@ -390,7 +413,7 @@ async fn only_the_bros_owner_answers_its_group_card() {
             assert_eq!(
                 body,
                 json!({
-                    "error": robroz_contract::host_text::NOT_BRO_OWNER,
+                    "error": robroz_contract::NOT_BRO_OWNER,
                     "code": "approval_forbidden",
                     "reason": "not_owner",
                     "ownerUserId": MEMBER,

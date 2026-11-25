@@ -358,6 +358,11 @@ pub const APPROVAL_SUMMARY_MAX: usize = 200;
 /// hard-code the text.
 pub const APPROVAL_EXPIRED_REASON: &str = "审批已过期";
 
+/// Log-only `error` on a 403 `not_bro_owner`, or `approval_forbidden` with
+/// `reason` `not_owner`. The client does not show this string; it picks
+/// copy from `code` / `reason` and `ownerName` via its own i18n.
+pub const NOT_BRO_OWNER: &str = "只有这个 bro 的主人能这样做";
+
 /// An allow rule for auto-review, as listed by `GET /api/settings/review-rules`.
 /// Only rules the owner confirmed on a `rule_add` card have this shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,7 +460,8 @@ pub const BOOTSTRAP_ADMIN_NAME: &str = "admin";
 
 /// `code` on every 403 from the bro routes (`PATCH /api/bros/{id}`,
 /// `POST /api/bros/{id}/dm`, `POST /api/groups/{id}/members` with someone
-/// else's bro): the caller is not the bro's owner. 401 stays "bad token".
+/// else's bro): the caller is not the bro's owner. The body is
+/// [`NotBroOwner`]. 401 stays "bad token".
 pub const FORBIDDEN_NOT_BRO_OWNER: &str = "not_bro_owner";
 
 /// `code` on a 403 from `POST /api/approvals/{id}/approve` or `/deny`.
@@ -474,9 +480,11 @@ pub enum ApprovalForbiddenReason {
     Expired,
 }
 
-/// 403 body of approve / deny. `error` is a host text
-/// ([`host_text::NOT_BRO_OWNER`], [`host_text::ALREADY_ANSWERED`] or
-/// [`APPROVAL_EXPIRED_REASON`]), `code` is always [`APPROVAL_FORBIDDEN`].
+/// 403 body of approve / deny. `code` is always [`APPROVAL_FORBIDDEN`].
+/// `error` is a host text ([`NOT_BRO_OWNER`],
+/// [`host_text::ALREADY_ANSWERED`] or [`APPROVAL_EXPIRED_REASON`]) for
+/// logs only; the client picks copy from `code` and `reason` (and
+/// [`Self::owner_name`]) via its own i18n.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalForbidden {
@@ -485,6 +493,22 @@ pub struct ApprovalForbidden {
     pub reason: ApprovalForbiddenReason,
     /// The bro's owner, for "Only {owner} can approve this.". Absent on
     /// settings cards (no bro).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+}
+
+/// 403 body of the bro routes when the caller is not the owner
+/// (`PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`,
+/// `POST /api/groups/{id}/members`). `code` is always
+/// [`FORBIDDEN_NOT_BRO_OWNER`]. `error` is for logs only; the client
+/// shows "Only {owner} can change this bro." from [`Self::owner_name`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotBroOwner {
+    pub error: String,
+    pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -912,9 +936,9 @@ pub struct ErrorBody {
     pub error: String,
 }
 
-/// An error with a stable machine code next to the host text, e.g. 403
-/// `{"error": "…", "code": "not_bro_owner"}`. Clients that only read
-/// `error` keep working.
+/// An error with a stable machine code next to the host text. Bro-owner
+/// 403s use the richer [`NotBroOwner`] body. Clients that only read
+/// `error` keep working; `error` on owner 403s is for logs only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodedError {
     pub error: String,

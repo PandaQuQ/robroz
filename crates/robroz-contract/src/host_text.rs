@@ -139,7 +139,6 @@ pub const MCP_NOT_ENABLED_IN_GROUP: &str = "这个群还没启用这台服务器
 pub const MCP_STDIO_ONLY_APPROVE: &str = "只有 stdio 服务器需要批准启动命令";
 /// 403: the caller is not this bro's owner (rename, add to a group, open
 /// its DM, or answer its card). Only the owner may do this.
-pub const NOT_BRO_OWNER: &str = "只有这个 bro 的主人能这样做";
 /// A DM already has its one bro.
 pub const DM_ONE_BRO: &str = "私聊里只能有一个 bro";
 /// Approval action is not supported.
@@ -383,7 +382,6 @@ pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("MCP_SERVER_NOT_FOUND", MCP_SERVER_NOT_FOUND),
     ("MCP_NOT_ENABLED_IN_GROUP", MCP_NOT_ENABLED_IN_GROUP),
     ("MCP_STDIO_ONLY_APPROVE", MCP_STDIO_ONLY_APPROVE),
-    ("NOT_BRO_OWNER", NOT_BRO_OWNER),
     ("DM_ONE_BRO", DM_ONE_BRO),
     ("ACTION_NOT_SUPPORTED", ACTION_NOT_SUPPORTED),
     ("ACTION_HOST_ONLY", ACTION_HOST_ONLY),
