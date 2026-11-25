@@ -324,6 +324,12 @@ fn meta_of(event: &Event) -> Meta {
             bot_name,
             created_at,
             ..
+        }
+        | Event::ApprovalReminder {
+            bot_id,
+            bot_name,
+            created_at,
+            ..
         } => (bro(bot_id, bot_name), unix(created_at)),
     };
     Meta { sender, at }
@@ -439,7 +445,12 @@ pub fn change_time(event: &Event) -> &str {
         | Event::Confirm {
             answered_at: Some(at),
             ..
+        }
+        | Event::ApprovalReminder {
+            answered_at: Some(at),
+            ..
         } => at,
+        Event::ApprovalReminder { created_at, .. } => created_at,
         Event::Choice { created_at, .. }
         | Event::Approval { created_at, .. }
         | Event::Confirm { created_at, .. }
@@ -524,6 +535,11 @@ pub fn preview(event: &Event) -> String {
             bot_name,
             text.as_deref().or(title.as_deref()).unwrap_or_default(),
         ),
+        Event::ApprovalReminder {
+            bot_name,
+            group_name,
+            ..
+        } => line(bot_name, group_name),
     }
 }
 
@@ -629,6 +645,14 @@ fn to_row(event: &Event, extras: Option<&ApprovalExtras>) -> (Key, Row) {
                 .seen_by(crate::user_name());
             (Key::Event(id.clone()), Row::Card(Card::Confirm(card)))
         }
+        // v0.2 reminder line; `event_decode` skips it until the client
+        // draws it (UI spec "DM reminder"), so this is only a fallback.
+        Event::ApprovalReminder { id, group_name, .. } => (
+            Key::Event(id.clone()),
+            Row::Text {
+                body: group_name.clone(),
+            },
+        ),
     }
 }
 
@@ -789,6 +813,8 @@ mod tests {
             kind: MessageKind::Text,
             body: body.into(),
             created_at: "2026-10-07T19:00:00.000Z".into(),
+            author_name: None,
+            author_user_id: None,
         }
     }
 
@@ -1519,6 +1545,8 @@ mod tests {
             kind: MessageKind::Image,
             body: "hero.png".into(),
             created_at: "2026-10-07T19:00:00.000Z".into(),
+            author_name: None,
+            author_user_id: None,
         });
         assert_eq!(
             feed.rows().next(),
@@ -1624,6 +1652,8 @@ mod tests {
             mcp_tool: None,
             reason: None,
             expires_at: None,
+            owner_name: None,
+            owner_user_id: None,
         };
         let mut feed = Feed::default();
         feed.apply(&text("m1", "打招呼"));

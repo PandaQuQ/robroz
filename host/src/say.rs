@@ -22,7 +22,7 @@ fn assignee(
     group_id: &str,
     body: &str,
 ) -> rusqlite::Result<(Option<(String, String)>, bool)> {
-    if let Some(bot) = bros::dm_owner(conn, group_id)? {
+    if let Some(bot) = bros::dm_bot(conn, group_id)? {
         return Ok((Some((bot, body.to_string())), false));
     }
     let mut stmt = conn.prepare(
@@ -42,6 +42,7 @@ fn assignee(
 
 pub(crate) async fn say(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::users::CurrentUser>,
     AxumPath(group_id): AxumPath<String>,
     Json(input): Json<Say>,
 ) -> Response {
@@ -64,10 +65,20 @@ pub(crate) async fn say(
             kind: MessageKind::Text,
             body: text.clone(),
             created_at: now.clone(),
+            author_user_id: Some(user.0.clone()),
+            author_name: crate::users::load(&tx, &user.0)?.map(|(name, _)| name),
         };
         tx.execute(
-            "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![message.id, group_id, message.kind.as_str(), message.body, now],
+            "INSERT INTO messages (id, group_id, kind, body, created_at, author_user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                message.id,
+                group_id,
+                message.kind.as_str(),
+                message.body,
+                now,
+                user.0
+            ],
         )?;
         let (routed, in_group) = assignee(&tx, &group_id, &text)?;
         // A follow-up: the bro's still-open task here (the DM's bro, or the

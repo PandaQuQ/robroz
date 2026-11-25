@@ -183,6 +183,14 @@ pub struct Message {
     pub kind: MessageKind,
     pub body: String,
     pub created_at: String,
+    /// v0.2: the person who sent it. Every stored message is a person's
+    /// today; v0.1 rows are backfilled to the bootstrap admin. Omitted when
+    /// unknown (a bro never writes a `message`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_user_id: Option<String>,
+    /// v0.2: that person's display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +358,11 @@ pub const APPROVAL_SUMMARY_MAX: usize = 200;
 /// hard-code the text.
 pub const APPROVAL_EXPIRED_REASON: &str = "审批已过期";
 
+/// Log-only `error` on a 403 `not_bro_owner`, or `approval_forbidden` with
+/// `reason` `not_owner`. The client does not show this string; it picks
+/// copy from `code` / `reason` and `ownerName` via its own i18n.
+pub const NOT_BRO_OWNER: &str = "只有这个 bro 的主人能这样做";
+
 /// An allow rule for auto-review, as listed by `GET /api/settings/review-rules`.
 /// Only rules the owner confirmed on a `rule_add` card have this shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +408,8 @@ pub const REVIEW_RULE_MAX: usize = APPROVAL_SUMMARY_MAX;
 /// `progress` on a group's status card while its task waits for an approval
 /// card that the host sent to the owner's DM with that bro instead of the
 /// group. Old clients already show `progress` under 「等你批准」.
+/// v0.2 hosts no longer send it: group cards stay in the group and the DM
+/// gets an [`Event::ApprovalReminder`]. Kept so older clients still map it.
 pub const APPROVAL_SENT_TO_OWNER_DM_NOTICE: &str = "已发到主人私聊";
 
 /// Choice cards hold 2 to 4 options with distinct, non-empty values.
@@ -410,6 +425,104 @@ pub struct Bro {
     pub id: String,
     pub name: String,
     pub dm_group_id: Option<String>,
+    /// Added with accounts (v0.2): the user who owns this bro (its creator).
+    /// Only the owner may rename it, open its DM, add it to a group, or
+    /// answer its cards. Absent from older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+}
+
+/// Host role of a user (v0.2). `admin` manages the host itself; it does not
+/// own or edit other people's bros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    Admin,
+    Member,
+}
+
+/// `GET /api/me`: the user the request is authenticated as. With the v0.1
+/// setup (one `ROBROZ_TOKEN`, or loopback without a token) this is always
+/// the bootstrap admin [`BOOTSTRAP_ADMIN_ID`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Me {
+    pub id: String,
+    pub name: String,
+    pub role: UserRole,
+}
+
+/// Id of the admin the v0.2 migration creates. Existing bros, DMs and the
+/// env token (`ROBROZ_TOKEN` / `ROBROZ_TOKEN_FILE`) belong to this user.
+pub const BOOTSTRAP_ADMIN_ID: &str = "local-admin";
+/// Display name of the bootstrap admin.
+pub const BOOTSTRAP_ADMIN_NAME: &str = "admin";
+
+/// `code` on every 403 from the bro routes (`PATCH /api/bros/{id}`,
+/// `POST /api/bros/{id}/dm`, `POST /api/groups/{id}/members` with someone
+/// else's bro): the caller is not the bro's owner. The body is
+/// [`NotBroOwner`]. 401 stays "bad token".
+pub const FORBIDDEN_NOT_BRO_OWNER: &str = "not_bro_owner";
+
+/// `code` on a 403 from `POST /api/approvals/{id}/approve` or `/deny`.
+/// The body is [`ApprovalForbidden`]; `reason` says why.
+pub const APPROVAL_FORBIDDEN: &str = "approval_forbidden";
+
+/// Why an approval answer was refused with 403.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalForbiddenReason {
+    /// The caller is not the bro's owner (or, on a settings card, not an admin).
+    NotOwner,
+    /// The card was already approved or denied.
+    Decided,
+    /// The card expired (`reason` = [`APPROVAL_EXPIRED_REASON`]).
+    Expired,
+}
+
+/// 403 body of approve / deny. `code` is always [`APPROVAL_FORBIDDEN`].
+/// `error` is a host text ([`NOT_BRO_OWNER`],
+/// [`host_text::ALREADY_ANSWERED`] or [`APPROVAL_EXPIRED_REASON`]) for
+/// logs only; the client picks copy from `code` and `reason` (and
+/// [`Self::owner_name`]) via its own i18n.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalForbidden {
+    pub error: String,
+    pub code: String,
+    pub reason: ApprovalForbiddenReason,
+    /// The bro's owner, for "Only {owner} can approve this.". Absent on
+    /// settings cards (no bro).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+}
+
+/// 403 body of the bro routes when the caller is not the owner
+/// (`PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`,
+/// `POST /api/groups/{id}/members`). `code` is always
+/// [`FORBIDDEN_NOT_BRO_OWNER`]. `error` is for logs only; the client
+/// shows "Only {owner} can change this bro." from [`Self::owner_name`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotBroOwner {
+    pub error: String,
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+}
+
+/// State of an [`Event::ApprovalReminder`]: the linked card's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReminderState {
+    Waiting,
+    Approved,
+    Denied,
+    Expired,
 }
 
 /// `GET /api/bros`, oldest first.
@@ -823,6 +936,15 @@ pub struct ErrorBody {
     pub error: String,
 }
 
+/// An error with a stable machine code next to the host text. Bro-owner
+/// 403s use the richer [`NotBroOwner`] body. Clients that only read
+/// `error` keep working; `error` on owner 403s is for logs only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodedError {
+    pub error: String,
+    pub code: String,
+}
+
 /// Where the effective search config comes from. Settings win over
 /// environment variables. Absent when search is not set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1102,6 +1224,12 @@ pub enum Event {
         kind: MessageKind,
         body: String,
         created_at: String,
+        /// v0.2: see [`Message::author_user_id`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author_user_id: Option<String>,
+        /// v0.2: see [`Message::author_name`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author_name: Option<String>,
     },
     #[serde(rename = "status")]
     Status {
@@ -1210,6 +1338,13 @@ pub enum Event {
         /// is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at: Option<String>,
+        /// Added with accounts (v0.2): the bro's owner, the only user who may
+        /// approve or deny. Absent on settings cards and from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_user_id: Option<String>,
+        /// The owner's display name ("Waiting for {owner}").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_name: Option<String>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1244,6 +1379,26 @@ pub enum Event {
         answered_at: Option<String>,
         #[serde(default)]
         answered_by: Option<String>,
+    },
+    /// Added with accounts (v0.2): one line in the owner's DM with a bro,
+    /// pointing at that bro's approval card in a group. No buttons; the
+    /// card is answered in the group (`groupId`, `approvalId`). `state`
+    /// follows the card; `answeredAt` is set once it is decided or expired.
+    /// `id` is `reminder:{approvalId}`. Counts as unread in the DM.
+    #[serde(rename = "approval_reminder")]
+    ApprovalReminder {
+        id: String,
+        approval_id: String,
+        group_id: String,
+        group_name: String,
+        bot_id: String,
+        bot_name: String,
+        owner_user_id: String,
+        owner_name: String,
+        state: ReminderState,
+        created_at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answered_at: Option<String>,
     },
 }
 
@@ -1342,6 +1497,7 @@ mod tests {
             id: "b".into(),
             name: "bro".into(),
             dm_group_id: Some("g".into()),
+            owner_user_id: None,
         })
         .unwrap();
         assert_eq!(
@@ -1561,6 +1717,8 @@ mod tests {
                 mcp_tool: None,
                 reason: None,
                 expires_at: None,
+                owner_name: None,
+                owner_user_id: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1604,6 +1762,8 @@ mod tests {
                 mcp_tool: Some("write_note".into()),
                 reason: None,
                 expires_at: None,
+                owner_name: None,
+                owner_user_id: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1736,6 +1896,29 @@ mod tests {
     }
 
     #[test]
+    fn message_event_carries_its_author_and_old_json_still_reads() {
+        assert_round_trip(
+            &Event::Message {
+                id: "m1".into(),
+                kind: MessageKind::Text,
+                body: "hello".into(),
+                created_at: "2026-10-03T19:00:00.000Z".into(),
+                author_user_id: Some("local-admin".into()),
+                author_name: Some("admin".into()),
+            },
+            serde_json::json!({
+                "type": "message",
+                "id": "m1",
+                "kind": "text",
+                "body": "hello",
+                "createdAt": "2026-10-03T19:00:00.000Z",
+                "authorUserId": "local-admin",
+                "authorName": "admin"
+            }),
+        );
+    }
+
+    #[test]
     fn message_event_json() {
         assert_round_trip(
             &Event::Message {
@@ -1743,6 +1926,8 @@ mod tests {
                 kind: MessageKind::Text,
                 body: "hello".into(),
                 created_at: "2026-10-03T19:00:00.000Z".into(),
+                author_name: None,
+                author_user_id: None,
             },
             serde_json::json!({
                 "type": "message",

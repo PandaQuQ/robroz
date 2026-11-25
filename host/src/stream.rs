@@ -160,6 +160,8 @@ mod tests {
                 kind: MessageKind::Text,
                 body: String::new(),
                 created_at: at.into(),
+                author_name: None,
+                author_user_id: None,
             },
         }
     }

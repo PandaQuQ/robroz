@@ -26,6 +26,7 @@ use robroz_contract::{
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
     MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
 };
+use robroz_contract::{ApprovalForbidden, ApprovalForbiddenReason, APPROVAL_FORBIDDEN};
 use robroz_contract::{
     ModelSettings, ModelSettingsSource, ModelTestResult, SearchSettings, SearchTestResult,
 };
@@ -485,6 +486,18 @@ impl HttpApi {
             }
         }
         let msg = crate::conn::error_text(method, url, status, &body);
+        // v0.2 hosts answer an approval that was already decided or has
+        // expired with 403 `approval_forbidden`; to this client that is the
+        // old 409 (refetch and show the answer). `not_owner` stays a 403.
+        if status == 403 {
+            if let Ok(refused) = serde_json::from_str::<ApprovalForbidden>(&body) {
+                if refused.code == APPROVAL_FORBIDDEN
+                    && refused.reason != ApprovalForbiddenReason::NotOwner
+                {
+                    return Err(ApiError::Conflict(msg));
+                }
+            }
+        }
         Err(match status {
             400 => ApiError::BadRequest(msg),
             401 => ApiError::Status(401, msg),
@@ -928,6 +941,7 @@ impl CardApi for FakeApi {
             id: format!("fake-bro-{n}"),
             name: next_bro_name(bros.iter().map(|b| b.name.as_str())),
             dm_group_id: Some(format!("fake-dm-{n}")),
+            owner_user_id: None,
         };
         bros.push(bro.clone());
         self.unread.lock().expect("fake unread lock").push(Unread {
@@ -977,6 +991,8 @@ impl CardApi for FakeApi {
                 kind: MessageKind::Text,
                 body: body.to_string(),
                 created_at: chrono::Utc::now().to_rfc3339(),
+                author_name: None,
+                author_user_id: None,
             },
             task: route.map(|(bot, prompt)| Task {
                 id: format!("fake-task-{}", uuid_ish()),
@@ -1694,6 +1710,8 @@ fn fake_review_event(
         mcp_tool: None,
         reason: None,
         expires_at: Some(expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        owner_name: None,
+        owner_user_id: None,
     }
 }
 
@@ -2055,6 +2073,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             dm_group_id: Some(format!("dm-{id}")),
+            owner_user_id: None,
         };
         let api = FakeApi::new(Vec::new())
             .with_chats(Vec::new(), vec![bro("b1", "bro"), bro("b2", "bro 2")]);

@@ -292,6 +292,8 @@ mod tests {
             kind: robroz_contract::MessageKind::Text,
             body: "hi".into(),
             created_at: "2026-11-20T01:50:00.000Z".into(),
+            author_name: None,
+            author_user_id: None,
         };
         assert!(ConfirmCard::from_event(&msg).is_none());
     }

@@ -2108,6 +2108,8 @@ impl App {
                             kind: m.kind,
                             body: m.body,
                             created_at: m.created_at,
+                            author_name: None,
+                            author_user_id: None,
                         };
                         self.apply_event(group.clone(), &event);
                         // Pick up the new status card without waiting a tick.

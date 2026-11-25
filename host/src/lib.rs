@@ -42,6 +42,7 @@ mod timeouts;
 mod tools;
 pub mod turns;
 mod unread;
+mod users;
 pub mod watchdog;
 
 pub use pump::{pump, pump_with, Db, PumpConfig};
@@ -226,7 +227,8 @@ impl Host {
             control_root: self.control_root.clone(),
             reviewer: self.reviewer.clone(),
             model: self.model.clone(),
-        });
+        })
+        .layer(axum::middleware::from_fn(users::identify));
         auth::require_token(router, self.token.clone())
     }
 
@@ -325,6 +327,7 @@ pub fn router(db_path: &Path) -> rusqlite::Result<Router> {
 
 fn router_from(state: AppState) -> Router {
     Router::new()
+        .route("/api/me", get(users::me))
         .route("/api/groups", post(create_group).get(list_groups))
         .route("/api/groups/{id}/members", post(add_member))
         .route("/api/bros", post(bros::create_bro).get(bros::list_bros))
@@ -524,6 +527,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
     // What a running task is doing now, shown on its status card.
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
+    // v0.2 accounts: users, then bro owners and per-(user, bro) DMs.
+    users::migrate(conn)?;
     bros::migrate(conn)?;
     conn.execute_batch(unread::SCHEMA)?;
     conn.execute_batch(memories::SCHEMA)?;
@@ -561,6 +566,18 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         status,
         Json(ErrorBody {
             error: message.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// 403 with a stable `code` next to the host text. 401 stays "bad token".
+fn forbidden(message: &str, code: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(robroz_contract::CodedError {
+            error: message.to_string(),
+            code: code.to_string(),
         }),
     )
         .into_response()
@@ -647,6 +664,7 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
 
 async fn add_member(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<users::CurrentUser>,
     AxumPath(group_id): AxumPath<String>,
     Json(body): Json<AddMember>,
 ) -> Response {
@@ -666,12 +684,17 @@ async fn add_member(
             return Ok(None);
         }
         // A private chat keeps exactly its one bro.
-        if bros::dm_owner(&tx, &group_id)?.is_some_and(|owner| owner != bot_id) {
-            return Ok(Some(Err(())));
+        if bros::dm_bot(&tx, &group_id)?.is_some_and(|owner| owner != bot_id) {
+            return Ok(Some(Err(None)));
+        }
+        // Only the owner adds an existing bro to a group; a new id becomes
+        // a bro owned by the caller.
+        if bros::owned_by(&tx, bot_id, &user)? == Some(false) {
+            return Ok(Some(Err(Some(users::owner_of(&tx, bot_id)?))));
         }
         tx.execute(
-            "INSERT OR IGNORE INTO bots (id, tenant_id, name) VALUES (?1, ?2, ?3)",
-            params![bot_id, TENANT_ID, name],
+            "INSERT OR IGNORE INTO bots (id, tenant_id, name, owner_user_id) VALUES (?1, ?2, ?3, ?4)",
+            params![bot_id, TENANT_ID, name, user.0],
         )?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO memberships (group_id, bot_id) VALUES (?1, ?2)",
@@ -691,9 +714,10 @@ async fn add_member(
             StatusCode::NOT_FOUND,
             robroz_contract::host_text::GROUP_NOT_FOUND,
         ),
-        Ok(Some(Err(()))) => {
+        Ok(Some(Err(None))) => {
             error_response(StatusCode::CONFLICT, robroz_contract::host_text::DM_ONE_BRO)
         }
+        Ok(Some(Err(Some(owner)))) => bros::not_owner(owner),
         Ok(Some(Ok((created, stored_name)))) => {
             let status = if created {
                 StatusCode::CREATED
@@ -716,6 +740,7 @@ async fn add_member(
 
 async fn post_message(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<users::CurrentUser>,
     AxumPath(group_id): AxumPath<String>,
     Json(raw): Json<serde_json::Value>,
 ) -> Response {
@@ -760,14 +785,18 @@ async fn post_message(
         let id = new_id();
         let created_at = now_rfc3339();
         conn.execute(
-            "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, group_id, body.kind.as_str(), text, created_at],
+            "INSERT INTO messages (id, group_id, kind, body, created_at, author_user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, group_id, body.kind.as_str(), text, created_at, user.0],
         )?;
+        let author = users::load(&conn, &user.0)?;
         Ok(Some(Message {
             id,
             kind: body.kind,
             body: text.to_string(),
             created_at,
+            author_user_id: Some(user.0.clone()),
+            author_name: author.map(|(name, _)| name),
         }))
     })();
     drop(conn);
@@ -1078,8 +1107,11 @@ fn group_events(
     let mut timed = Vec::new();
 
     {
-        let mut message_stmt =
-            conn.prepare("SELECT id, kind, body, created_at FROM messages WHERE group_id = ?1")?;
+        let mut message_stmt = conn.prepare(
+            "SELECT m.id, m.kind, m.body, m.created_at, m.author_user_id, u.name
+                 FROM messages m LEFT JOIN users u ON u.id = m.author_user_id
+                 WHERE m.group_id = ?1",
+        )?;
         let messages = message_stmt.query_map([group_id], |row| {
             let id: String = row.get(0)?;
             let created_at: String = row.get(3)?;
@@ -1092,6 +1124,8 @@ fn group_events(
                     kind: parse_kind(row.get(1)?)?,
                     body: row.get(2)?,
                     created_at,
+                    author_user_id: row.get(4)?,
+                    author_name: row.get(5)?,
                 },
             })
         })?;
@@ -1107,13 +1141,7 @@ fn group_events(
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress,
-                    EXISTS(
-                        SELECT 1 FROM approvals a
-                        WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
-                          AND a.group_id <> t.group_id
-                          AND (a.review_state IS NULL OR a.review_state = 'blocked')
-                    )
+                    t.progress
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1 AND t.turn_hidden = 0",
@@ -1142,13 +1170,9 @@ fn group_events(
             } else {
                 None
             };
-            // The card went to the owner's DM: say so here, where the task is.
-            let sent_to_dm: bool = state == TaskState::Blocked && row.get::<_, i64>(10)? != 0;
-            let progress = if sent_to_dm {
-                Some(robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE.to_string())
-            } else {
-                progress::shown(state, container_up, row.get(9)?)
-            };
+            // v0.2: a group task's card stays in the group, so no
+            // 「已发到主人私聊」 notice any more.
+            let progress = progress::shown(state, container_up, row.get(9)?);
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -1212,6 +1236,7 @@ fn group_events(
 
     timed.extend(choices::timed_events(conn, group_id)?);
     timed.extend(approvals::timed_events(conn, group_id)?);
+    timed.extend(approvals::reminder_events(conn, group_id)?);
     timed.extend(proposals::timed_events(conn, group_id)?);
     if let Some(since) = since {
         timed.retain(|item| item.changed_at.as_str() > since);
@@ -1224,6 +1249,9 @@ fn group_events(
     });
     Ok(Some(timed))
 }
+
+#[cfg(test)]
+mod owner_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2473,7 +2501,7 @@ mod tests {
     // ---- live stream ----
 
     /// Reads SSE frames until `n` `data:` events arrived or `wait` passed.
-    async fn sse_take(
+    pub(super) async fn sse_take(
         body: &mut Body,
         n: usize,
         wait: std::time::Duration,
@@ -3187,8 +3215,17 @@ mod tests {
 
         for verb in ["approve", "deny"] {
             let (status, body) = decide(&app, &id, verb).await;
-            assert_eq!(status, StatusCode::CONFLICT, "{verb}");
-            assert_eq!(body, json!({ "error": "已经答过了" }));
+            assert_eq!(status, StatusCode::FORBIDDEN, "{verb}");
+            assert_eq!(
+                body,
+                json!({
+                    "error": "已经答过了",
+                    "code": "approval_forbidden",
+                    "reason": "decided",
+                    "ownerUserId": "local-admin",
+                    "ownerName": "admin"
+                })
+            );
         }
         let events = events_of(&app, &group_id).await;
         let cards: Vec<_> = events["events"]
@@ -3279,8 +3316,8 @@ mod tests {
         let (_, unread) =
             read_json(call(&app, get(&format!("/api/groups/{group_id}/unread"))).await).await;
         assert_eq!(
-            unread["unread"], 0,
-            "the card moved to the owner's DM; the group copy is a notice: {unread}"
+            unread["unread"], 1,
+            "v0.2: the card stays in the group: {unread}"
         );
         let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
         let dm = bros["bros"]
@@ -3294,7 +3331,7 @@ mod tests {
             .to_string();
         let (_, unread) =
             read_json(call(&app, get(&format!("/api/groups/{dm}/unread"))).await).await;
-        assert_eq!(unread["unread"], 1, "{unread}");
+        assert_eq!(unread["unread"], 1, "the reminder line: {unread}");
     }
 
     // ---- choice cards ----
@@ -4371,7 +4408,7 @@ mod tests {
     /// derived from the original CREATE TABLE / SCHEMA constants in this crate.
     /// Used to check that `init_schema` still upgrades a database from previous
     /// main and keeps existing rows.
-    const PREVIOUS_MAIN_SCHEMA: &str = "
+    pub(super) const PREVIOUS_MAIN_SCHEMA: &str = "
         CREATE TABLE groups (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -4504,7 +4541,7 @@ mod tests {
         );
     ";
 
-    const PREVIOUS_MAIN_ROWS: &str = "
+    pub(super) const PREVIOUS_MAIN_ROWS: &str = "
         INSERT INTO groups VALUES ('g1', 'local', '旧群', '2026-10-01T00:00:00.000Z');
         INSERT INTO bots VALUES ('bot-ada', 'local', 'Ada');
         INSERT INTO memberships VALUES ('g1', 'bot-ada');
@@ -5634,7 +5671,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{done}");
         assert_eq!(done["answeredBy"], Value::Null);
 
-        // With a body: trimmed and stored; the 409 for a second device keeps the first answer.
+        // With a body: trimmed and stored; the 403 `decided` for a second device keeps the first answer.
         let (_, a2) = post_approval(&app, &group_id, card("发邮件")).await;
         let id = a2["id"].as_str().unwrap();
         let url = format!("/api/approvals/{id}/deny");
@@ -5646,7 +5683,7 @@ mod tests {
         let approve = format!("/api/approvals/{id}/approve");
         let (status, _) =
             read_json(call(&app, post(&approve, json!({ "answeredBy": "Mac" }))).await).await;
-        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(status, StatusCode::FORBIDDEN);
 
         // Bad answeredBy: 400, card stays open.
         let (_, a3) = post_approval(&app, &group_id, card("付款")).await;
@@ -5717,12 +5754,33 @@ mod tests {
         }
     }
 
-    /// Approval cards in the owner's DM with `bot-ada`, where task cards go.
+    /// `bot-ada`'s approval cards in any chat (v0.2: a task's card stays
+    /// in the task's own group).
     async fn ada_dm_cards(app: &Router) -> Vec<Value> {
+        let (_, groups) = read_json(call(app, get("/api/groups")).await).await;
+        let mut cards: Vec<Value> = Vec::new();
+        for g in groups["groups"].as_array().unwrap() {
+            for card in approvals_in(&events_of(app, g["id"].as_str().unwrap()).await) {
+                if card["botId"] == "bot-ada" && !cards.iter().any(|c| c["id"] == card["id"]) {
+                    cards.push(card);
+                }
+            }
+        }
+        cards
+    }
+
+    /// `approval_reminder` lines in `bot-ada`'s DM with its owner.
+    async fn ada_dm_reminders(app: &Router) -> Vec<Value> {
         let (status, bro) =
             read_json(call(app, post("/api/bros/bot-ada/dm", json!({}))).await).await;
         assert!(status.is_success(), "{bro}");
-        approvals_in(&events_of(app, bro["dmGroupId"].as_str().unwrap()).await)
+        events_of(app, bro["dmGroupId"].as_str().unwrap()).await["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "approval_reminder")
+            .cloned()
+            .collect()
     }
 
     fn approvals_in(events: &Value) -> Vec<Value> {
@@ -5755,10 +5813,14 @@ mod tests {
         run_once(&path, &volumes, &mut fake);
         assert_eq!(task_state(&path, &task_id), "blocked");
 
-        assert!(
-            approvals_in(&events_of(&app, &group_id).await).is_empty(),
-            "card goes to the DM"
+        assert_eq!(
+            approvals_in(&events_of(&app, &group_id).await).len(),
+            1,
+            "v0.2: the card stays in the task's group"
         );
+        let reminders = ada_dm_reminders(&app).await;
+        assert_eq!(reminders.len(), 1, "the owner's DM gets a reminder line");
+        assert_eq!(reminders[0]["groupId"], group_id.as_str());
         let cards = ada_dm_cards(&app).await;
         assert_eq!(cards.len(), 1, "one card per blocking line");
         assert_eq!(cards[0]["action"], "send");
@@ -5792,8 +5854,10 @@ mod tests {
             1,
             "no second card after approval"
         );
-        let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
-        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(ada_dm_reminders(&app).await[0]["state"], "approved");
+        let (status, body) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "decided");
     }
 
     #[tokio::test]
@@ -5892,8 +5956,9 @@ mod tests {
             cards[0]["decision"], "approved",
             "taking over answers the card"
         );
-        let (status, _) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
-        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, body) = decide(&app, cards[0]["id"].as_str().unwrap(), "deny").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "decided");
         assert_eq!(task_state(&path, &external), "queued");
     }
 
@@ -6259,7 +6324,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_group_task_card_goes_to_the_owner_dm_and_the_group_gets_a_notice() {
+    async fn a_group_task_card_stays_in_the_group_and_both_streams_follow_it() {
         let path = temp_db();
         let volumes = temp_volumes();
         let app = app_on(&path, &volumes);
@@ -6268,7 +6333,7 @@ mod tests {
         let mut fake = super::sandbox::FakeSandbox::new();
         run_once(&path, &volumes, &mut fake);
 
-        // bot-ada was added by botId and had no DM: one is created for the card.
+        // bot-ada was added by botId and had no DM: one is created for the reminder.
         let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
         let dm = bros["bros"]
             .as_array()
@@ -6284,35 +6349,74 @@ mod tests {
         let wait = std::time::Duration::from_millis(800);
         let mut group_stream = open_stream(&app, &group_id, None).await.into_body();
         let group_backlog = sse_take(&mut group_stream, 5, wait).await;
-        assert!(
-            group_backlog.iter().all(|(name, _, _)| name != "approval"),
-            "{group_backlog:?}"
-        );
+        let (_, _, card) = group_backlog
+            .iter()
+            .find(|(name, _, _)| name == "approval")
+            .expect("card in the group stream");
+        assert_eq!(card["taskId"], task_id.as_str());
+        assert_eq!(card["ownerUserId"], robroz_contract::BOOTSTRAP_ADMIN_ID);
+        assert_eq!(card["ownerName"], robroz_contract::BOOTSTRAP_ADMIN_NAME);
         let (_, _, status) = group_backlog
             .iter()
             .find(|(name, _, _)| name == "status")
             .unwrap();
         assert_eq!(status["waitingFor"], "approval");
-        assert_eq!(
-            status["progress"],
-            robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE
+        assert!(
+            status.get("progress").is_none(),
+            "no 「已发到主人私聊」 notice any more: {status}"
         );
+        assert!(group_backlog
+            .iter()
+            .all(|(name, _, _)| name != "approval_reminder"));
 
         let mut dm_stream = open_stream(&app, &dm, None).await.into_body();
         let dm_backlog = sse_take(&mut dm_stream, 5, wait).await;
-        let (_, _, card) = dm_backlog
-            .iter()
-            .find(|(name, _, _)| name == "approval")
-            .expect("card in the DM stream");
-        assert_eq!(card["taskId"], task_id.as_str());
         assert!(
-            dm_backlog.iter().all(|(name, _, _)| name != "status"),
-            "the task's status stays in the group"
+            dm_backlog.iter().all(|(name, _, _)| name != "approval"),
+            "no actionable card in the DM: {dm_backlog:?}"
+        );
+        let (_, _, reminder) = dm_backlog
+            .iter()
+            .find(|(name, _, _)| name == "approval_reminder")
+            .expect("reminder in the DM stream");
+        assert_eq!(
+            reminder["id"],
+            format!("reminder:{}", card["id"].as_str().unwrap())
+        );
+        assert_eq!(reminder["approvalId"], card["id"]);
+        assert_eq!(reminder["groupId"], group_id.as_str());
+        assert_eq!(reminder["groupName"], "审批闸");
+        assert_eq!(reminder["botId"], "bot-ada");
+        assert_eq!(reminder["botName"], "Ada");
+        assert_eq!(reminder["ownerUserId"], robroz_contract::BOOTSTRAP_ADMIN_ID);
+        assert_eq!(reminder["state"], "waiting");
+        assert!(reminder.get("answeredAt").is_none());
+        let (_, unread) =
+            read_json(call(&app, get(&format!("/api/groups/{dm}/unread"))).await).await;
+        assert_eq!(
+            unread["unread"], 1,
+            "the reminder counts in the DM: {unread}"
         );
 
-        // Approve from the DM: the task resumes in its group.
+        // Approve in the group: both streams push the change.
         let (status, _) = decide(&app, card["id"].as_str().unwrap(), "approve").await;
         assert_eq!(status, StatusCode::OK);
+        let group_after = sse_take(&mut group_stream, 3, wait).await;
+        assert!(
+            group_after
+                .iter()
+                .any(|(name, _, e)| name == "approval" && e["decision"] == "approved"),
+            "{group_after:?}"
+        );
+        let dm_after = sse_take(&mut dm_stream, 3, wait).await;
+        let (_, _, updated) = dm_after
+            .iter()
+            .find(|(name, _, _)| name == "approval_reminder")
+            .expect("reminder pushed again");
+        assert_eq!(updated["id"], reminder["id"], "replaced in place");
+        assert_eq!(updated["state"], "approved");
+        assert!(updated["answeredAt"].is_string());
+
         assert_eq!(task_state(&path, &task_id), "queued");
         let group_dir = run_once(&path, &volumes, &mut fake);
         assert_eq!(
@@ -6326,10 +6430,6 @@ mod tests {
             deliveries(&events).len(),
             1,
             "result is delivered in the group"
-        );
-        assert!(
-            statuses(&events)[0].get("progress").is_none(),
-            "notice goes away once answered"
         );
     }
 
@@ -6368,6 +6468,14 @@ mod tests {
             status.get("progress").is_none(),
             "no notice when the card is right here: {status}"
         );
+        assert!(
+            events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["type"] != "approval_reminder"),
+            "a DM task's card has no reminder: {events}"
+        );
         let (_, bros) = read_json(call(&app, get("/api/bros")).await).await;
         assert_eq!(
             bros["bros"].as_array().unwrap().len(),
@@ -6396,18 +6504,11 @@ mod tests {
             "a bot's own card has no task"
         );
         let cards = approvals_in(&events_of(&app, &group_id).await);
-        assert_eq!(
-            cards.len(),
-            1,
-            "the group lists the bro's own card (moved to the owner's DM)"
-        );
-        assert_eq!(cards[0]["id"], posted["id"]);
+        assert_eq!(cards.len(), 2, "both cards stay in the group");
+        assert!(cards.iter().any(|c| c["id"] == posted["id"]));
+        assert_eq!(ada_dm_reminders(&app).await.len(), 2);
         let dm_cards = ada_dm_cards(&app).await;
-        assert_eq!(
-            dm_cards.len(),
-            2,
-            "both cards are answered in the owner's DM"
-        );
+        assert_eq!(dm_cards.len(), 2);
         let gated = dm_cards.iter().find(|c| c.get("taskId").is_some()).unwrap();
         assert_eq!(gated["taskId"], task_id.as_str());
         let (_, answered) = decide(&app, gated["id"].as_str().unwrap(), "approve").await;

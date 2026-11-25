@@ -379,6 +379,8 @@ mod tests {
             mcp_tool: None,
             reason: None,
             expires_at: None,
+            owner_name: None,
+            owner_user_id: None,
         };
         let utc = chrono::Utc;
         let me = "Panda 的 Mac";
@@ -468,6 +470,8 @@ mod tests {
             kind: robroz_contract::MessageKind::Text,
             body: "hi".into(),
             created_at: "2026-11-20T01:50:00.000Z".into(),
+            author_name: None,
+            author_user_id: None,
         };
         assert!(ChoiceCard::from_event(&msg).is_none());
     }
@@ -489,6 +493,8 @@ mod tests {
             mcp_tool: tool.map(Into::into),
             reason: None,
             expires_at: None,
+            owner_name: None,
+            owner_user_id: None,
         }
     }
 
@@ -552,6 +558,8 @@ mod tests {
             mcp_tool: None,
             reason: None,
             expires_at: None,
+            owner_name: None,
+            owner_user_id: None,
         }
     }
 
@@ -632,6 +640,8 @@ mod tests {
             mcp_tool: None,
             reason: None,
             expires_at: None,
+            owner_name: None,
+            owner_user_id: None,
         };
         let card = ApprovalCard::from_event(&event).unwrap();
         assert_eq!(card.kind, ActionKind::Unknown);

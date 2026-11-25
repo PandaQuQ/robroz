@@ -806,11 +806,14 @@ mod tests {
         body
     }
 
-    /// Events of the owner's DM with the task's bro, where its approval cards go.
+    /// Events where the task's approval cards are: its own group (v0.2;
+    /// the owner's DM only gets a reminder line).
     async fn dm_events(h: &Harness) -> Value {
-        let (_, bro) = http(&h.app, json_req("POST", "/api/bros/bot-ada/dm", json!({}))).await;
-        let dm = bro["dmGroupId"].as_str().unwrap().to_string();
-        let (status, body) = http(&h.app, get_req(&format!("/api/groups/{dm}/events"))).await;
+        let (status, body) = http(
+            &h.app,
+            get_req(&format!("/api/groups/{}/events", h.group_id)),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body
     }
@@ -938,18 +941,18 @@ mod tests {
             .get("progress")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        assert_eq!(
+        assert_ne!(
             progress,
             robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE,
-            "{ev}"
+            "v0.2: the card is in this group, no notice: {ev}"
         );
         assert!(
             ev["events"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|e| e["type"] != "approval"),
-            "card is not in the group"
+                .any(|e| e["type"] == "approval"),
+            "v0.2: the card stays in the group"
         );
 
         let id = card["id"].as_str().unwrap();
@@ -982,7 +985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deny_does_not_execute_and_second_answer_is_409() {
+    async fn deny_does_not_execute_and_second_answer_is_403_decided() {
         let h = setup(
             vec![AssistantTurn::ToolCalls(vec![call(
                 "notes__write_note",
@@ -1013,13 +1016,14 @@ mod tests {
             json_req("POST", &format!("/api/approvals/{id}/deny"), json!({})),
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["reason"], "decided", "{body}");
         let (status, body) = http(
             &h.app,
             json_req("POST", &format!("/api/approvals/{id}/approve"), json!({})),
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
         h.host.pump_once(&mut sandbox).unwrap();
         assert!(h.fake_mcp.calls().is_empty());
