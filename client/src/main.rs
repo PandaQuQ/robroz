@@ -11,8 +11,8 @@
 //! from `GET /api/unread`; opening a chat marks it read. `--fake` /
 //! `ROBROZ_FAKE=1` runs offline on a script. Card clicks go through
 //! [`api::CardApi`]. `--gallery` shows every card state for design review.
-//! Visuals come from the `robroz-ui` skin (`ROBROZ_THEME=dark` starts dark;
-//! the footer button toggles).
+//! Visuals come from the `robroz-ui` skin; the Settings page picks System,
+//! Light or Dark (see [`prefs`]; `ROBROZ_THEME=light|dark` in fake runs).
 
 mod api;
 mod conn;
@@ -56,6 +56,7 @@ use conn::Conn;
 use gallery::Gallery;
 use host_state::HostState;
 use model::{attachment_label, change_time, DeliveryCard, Feed, Row, StatusCard};
+use prefs::ThemePref;
 use source::stream::{self, StreamItem};
 use source::{
     fake_chats, fake_schedules, EventSource, FakeSource, GroupCard, GroupEvent, GroupTab,
@@ -334,7 +335,10 @@ enum Message {
     },
     /// Narrow screens: back from a chat to the list.
     Back,
-    ToggleTheme,
+    /// Appearance row on the Settings page: System / Light / Dark.
+    SetTheme(ThemePref),
+    /// The operating system's colour scheme, at start and when it changes.
+    SystemTheme(iced::theme::Mode),
     /// Language row on the Settings (模型) page: English / 中文.
     SetLocale(Locale),
     Resized(Size),
@@ -395,7 +399,10 @@ struct App {
     /// 模型 page (robroz#102).
     model_settings: ModelPage,
 
-    mode: Mode,
+    /// The appearance chosen in Settings (or `ROBROZ_THEME` in fake runs).
+    theme_pref: ThemePref,
+    /// The operating system's scheme; used while `theme_pref` is System.
+    system_mode: Mode,
     width: f32,
     loaded: bool,
     /// The latest attempt at the first group listing failed.
@@ -462,7 +469,7 @@ impl App {
             (Box::new(http), api, origin, Some(conn))
         };
         let interval = source.interval();
-        let mode = Mode::from_env_value(std::env::var("ROBROZ_THEME").ok().as_deref());
+        let theme_pref = prefs::initial_theme(fake);
         let scale = std::env::var("ROBROZ_SCALE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -501,7 +508,8 @@ impl App {
             review_rules: ReviewRulesPage::default(),
             model_settings: ModelPage::default(),
 
-            mode,
+            theme_pref,
+            system_mode: Mode::Light,
             width: env_size().map_or(1040.0, |s| s.0),
             loaded: false,
             load_failed: false,
@@ -532,7 +540,11 @@ impl App {
         let load = blocking(&app.source, |s| s.groups());
         (
             app,
-            Task::batch([Task::perform(load, Message::Loaded), shot]),
+            Task::batch([
+                Task::perform(load, Message::Loaded),
+                shot,
+                iced::system::theme().map(Message::SystemTheme),
+            ]),
         )
     }
 
@@ -541,8 +553,13 @@ impl App {
         HostState::of(self.loaded, self.load_failed)
     }
 
+    /// The scheme to draw with: the chosen one, or the system's.
+    fn mode(&self) -> Mode {
+        self.theme_pref.resolve(self.system_mode)
+    }
+
     fn skin(&self) -> Skin {
-        Skin::for_mode(self.mode).for_input(self.touch, self.width)
+        Skin::for_mode(self.mode()).for_input(self.touch, self.width)
     }
 
     /// One pane at a time: the sidebar is hidden below
@@ -2273,7 +2290,19 @@ impl App {
                 }
             },
             Message::ClearPauseNote(id) => self.routines.clear_failed(&id),
-            Message::ToggleTheme => self.mode = self.mode.toggled(),
+            Message::SetTheme(pref) => {
+                self.theme_pref = pref;
+                if !self.fake {
+                    prefs::save_theme(pref);
+                }
+            }
+            Message::SystemTheme(mode) => {
+                // `None` means the system gave no preference: light.
+                self.system_mode = match mode {
+                    iced::theme::Mode::Dark => Mode::Dark,
+                    _ => Mode::Light,
+                };
+            }
             Message::SetLocale(locale) => {
                 if locale != i18n::locale() {
                     i18n::set_locale(locale);
@@ -2309,7 +2338,8 @@ impl App {
             iced::Event::Touch(_) => Some(Message::TouchSeen),
             _ => None,
         });
-        let mut subs = vec![resize];
+        let system = iced::system::theme_changes().map(Message::SystemTheme);
+        let mut subs = vec![resize, system];
         if !self.touch {
             subs.push(touch);
         }
@@ -2343,10 +2373,13 @@ impl App {
         Subscription::batch(subs)
     }
 
-    fn theme(&self) -> iced::Theme {
-        match self.mode {
-            Mode::Light => iced::Theme::Light,
-            Mode::Dark => iced::Theme::Dark,
+    /// `None` while following the system, so the window frame follows the
+    /// OS as well; an explicit choice pins both.
+    fn theme(&self) -> Option<iced::Theme> {
+        match self.theme_pref {
+            ThemePref::System => None,
+            ThemePref::Light => Some(iced::Theme::Light),
+            ThemePref::Dark => Some(iced::Theme::Dark),
         }
     }
 
@@ -2394,35 +2427,18 @@ impl App {
             (Some(_), false) => Text::ClientPolling.as_str(),
         };
         // While the host has never answered, the main pane already shows
-        // why; the footer keeps only the theme toggle and drops the raw
-        // "Can't reach the host … io: … (os error …)" line.
-        let status = if self.host_state() == HostState::Unreachable {
-            None
-        } else {
-            Some(match &self.error {
-                Some(err) => err.clone(),
-                None => format!("{}{live}", self.origin),
-            })
-        };
-        let theme = button(
-            text(match self.mode {
-                Mode::Light => Text::ClientThemeDark.as_str(),
-                Mode::Dark => Text::ClientThemeLight.as_str(),
-            })
-            .size(t.type_.foot),
-        )
-        .style(view::nav_button_style(t, false))
-        .on_press(Message::ToggleTheme);
-        let footer = match status {
-            Some(status) => row![
-                text(status)
-                    .size(t.type_.foot)
-                    .color(color(t.palette.text3)),
-                space::horizontal(),
-                theme,
-            ],
-            None => row![space::horizontal(), theme],
+        // why, so the footer drops the raw "Can't reach the host … io: …
+        // (os error …)" line and disappears.
+        if self.host_state() == HostState::Unreachable {
+            return container(main).style(view::page_style(t)).into();
         }
+        let status = match &self.error {
+            Some(err) => err.clone(),
+            None => format!("{}{live}", self.origin),
+        };
+        let footer = row![text(status)
+            .size(t.type_.foot)
+            .color(color(t.palette.text3))]
         .align_y(Alignment::Center);
         container(column![
             main,
@@ -2432,10 +2448,53 @@ impl App {
         .into()
     }
 
+    /// The Language row and, directly under it, the Appearance row.
+    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
+        column![self.language_card(t), self.appearance_card(t)]
+            .spacing(t.metrics.row_pad_h)
+            .into()
+    }
+
+    /// The Appearance row: label on the left, System / Light / Dark on the
+    /// right, the active one highlighted, same shape as the Language row.
+    fn appearance_card(&self, t: &Skin) -> Element<'_, Message> {
+        let mut choices = row![]
+            .spacing(t.controls.button_gap)
+            .align_y(Alignment::Center);
+        for pref in ThemePref::ALL {
+            let label = match pref {
+                ThemePref::System => Text::SettingsThemeSystem,
+                ThemePref::Light => Text::ClientThemeLight,
+                ThemePref::Dark => Text::ClientThemeDark,
+            };
+            choices = choices.push(
+                button(text(label).size(t.type_.body))
+                    .height(Length::Fixed(t.controls.button_h))
+                    .style(view::nav_button_style(*t, pref == self.theme_pref))
+                    .on_press(Message::SetTheme(pref)),
+            );
+        }
+        let r = row![
+            text(Text::SettingsAppearance)
+                .size(t.type_.body)
+                .color(color(t.palette.text)),
+            space::horizontal(),
+            choices,
+        ]
+        .align_y(Alignment::Center);
+        container(container(r).padding(Padding::from([
+            t.metrics.row_pad_h * 0.75,
+            t.metrics.row_pad_h,
+        ])))
+        .width(Fill)
+        .style(view::card_style(*t))
+        .into()
+    }
+
     /// The one Settings row for the UI language: label on the left,
     /// English / 中文 (each in its own language) on the right, the active
     /// one highlighted. Sizes follow the text, so longer copy never clips.
-    fn language_row(&self, t: &Skin) -> Element<'_, Message> {
+    fn language_card(&self, t: &Skin) -> Element<'_, Message> {
         let active = i18n::locale();
         let mut choices = row![]
             .spacing(t.controls.button_gap)
