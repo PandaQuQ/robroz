@@ -76,7 +76,7 @@
 ### 外观层（Skin）
 
 - 组件的颜色、圆角、描边、阴影、材质、控件尺寸、字号和动效全部从 `Skin` 取（`palette`、`radii`、`stroke`、`shadows`、`material`、`controls`、`metrics`、`type_`、`motion`），不写死样式，也不知道自己跑在哪个系统上。
-- 现在有浅色和深色两套（`Skin::light` / `Skin::dark`），`ROBROZ_THEME=dark` 启动时用深色，底栏按钮可切换。
+- 现在有浅色和深色两套（`Skin::light` / `Skin::dark`）。设置页（以及连不上宿主的那一页）在 Language / 语言下面有一行 Appearance / 「外观」：System / 「跟随系统」、Light / 「浅色」、Dark / 「深色」，默认 System。选 System 时通过 iced 的 `theme_changes()` 跟着操作系统实时切换，不用重启。选择保存在 `lang` 旁边的 `theme` 文件里，一行，值为 `system`、`light` 或 `dark`；没有这个文件就是 System。底栏没有 Dark 开关。`ROBROZ_THEME=light|dark` 只在 fake 和 gallery 下生效；这些模式下没有这个变量时默认 Light。
 - 窄屏：窗口宽度不超过 `NARROW_BREAKPOINT`（480）或触摸输入时，`Skin::for_input` 打开窄屏规则：侧栏收成抽屉，选项按钮换行，路径中间省略，bro 名字最多 8 个字。
 - 最小点击区：外观参数 `controls.touch_target` 由外观决定，`robroz-ui` 只读这个值；触摸或窄屏时取 `max(touch_target, TOUCH_FLOOR)`，`TOUCH_FLOOR` 是 44（`Controls::hit`）。界面层自己不写这个数字。
 - 第二期的外观库拆分计划见 [roadmap-phase2.md](roadmap-phase2.md)。
