@@ -473,6 +473,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpApproveRun => "批准运行",
         Key::McpApproveFailed => "批准失败：{0}",
         Key::CannotConnect => "连不上：{0}",
+        Key::MobileAbout => "关于",
+        Key::MobileVersion => "版本 {0}",
         Key::NotSaved => "没保存：{0}",
         Key::McpToolCount => "{0} 个工具",
         Key::McpToolsNotCounted => "还没数过",

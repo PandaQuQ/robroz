@@ -11,5 +11,12 @@ robroz-contract = { path = "../robroz-contract" }
 robroz-card = { path = "../robroz-card" }
 robroz-tokens = { path = "../robroz-tokens" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-iced = { version = "0.14.0", features = ["canvas"] }
+iced = { version = "0.14.0", features = ["canvas"], optional = true }
+
+[features]
+# `gui` is the iced widget layer (`view`, the `Key` text fragment). The desktop
+# client keeps it (default). The mobile spike turns it off and uses only the
+# pure data, theme and i18n modules, so no iced is compiled.
+default = ["gui"]
+gui = ["dep:iced"]
 
