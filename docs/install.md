@@ -217,6 +217,12 @@ The host does not terminate TLS. It will not bind a non-loopback address (`ROBRO
 
 To reach the host from another machine, keep it on loopback (`127.0.0.1:8790`) and put HTTPS in front of it. Still set a token: the proxy makes the API reachable from outside, and a missing token would leave it open. Never expose plain HTTP with the token on the public internet; the token would travel in the clear.
 
+The commands below use the release binary `./robroz-host`; with a source build use `./target/debug/robroz-host`.
+
+### Host in Docker
+
+If the host runs from [`deploy/compose.host.yml`](../deploy/compose.host.yml), it already listens on `0.0.0.0:8790` inside the container with a token from a Compose secret, and the port is published only on `127.0.0.1:8790`. Point the tunnel or the reverse proxy below at `127.0.0.1:8790` the same way. Setup, the `docker.sock` risk and the same-path rule are in [docker-host.md](docker-host.md).
+
 ### Cloudflare Tunnel
 
 Install `cloudflared` and point a tunnel at the local host. This is an example config only (replace the hostname and start `cloudflared` with your own tunnel); it is not a real tunnel, and no Cloudflare account is used here.
@@ -231,8 +237,9 @@ ingress:
 Start the host on loopback with a token, then run the tunnel:
 
 ```sh
+mkdir -p "$HOME/.config/robroz"
 (umask 077 && openssl rand -hex 24 > "$HOME/.config/robroz/token")
-ROBROZ_ADDR=127.0.0.1:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./target/debug/robroz-host
+ROBROZ_ADDR=127.0.0.1:8790 ROBROZ_TOKEN_FILE="$HOME/.config/robroz/token" ./robroz-host
 # in another terminal: cloudflared tunnel --config /path/to/config.yml run
 ```
 
@@ -249,6 +256,8 @@ robroz.example.com {
 ### Giving the client the address and the token
 
 The client speaks HTTPS (rustls). Point it at the proxy address, not at the host's loopback port.
+
+The simplest way is the connection form: enter the address and the token under Host and Token, on the offline pane or in Settings, and click Connect.
 
 You can save the address and the token in the client. The address is written to a `host` file next to `lang` in the client config folder (`~/.config/robroz/host` on Linux, `~/Library/Application Support/robroz/host` on macOS, `%APPDATA%\robroz\host` on Windows). The token is stored in the OS keychain (`robroz` / `host-token`: macOS Keychain, Windows Credential Manager, or the Secret Service on Linux); if the keychain is unavailable or the write cannot be read back, it is written to a `token` file next to `lang`, mode `0600` on Unix. The client never logs or displays the token.
 
@@ -267,8 +276,7 @@ printf '%s\n' 'https://robroz.example.com' > "$HOME/.config/robroz/host"
 cargo run -p robroz-client
 ```
 
-If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's fallback file. A missing or wrong token shows "The host rejected the token. Check `ROBROZ_TOKEN`." (「宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。」). A host that cannot be reached shows "Can't reach host." (「连不上宿主。」), followed by the reason.
-
+If the host and the client share a machine, the same `$HOME/.config/robroz/token` file can be the host's `ROBROZ_TOKEN_FILE` and the client's fallback file. A missing or wrong token shows "The host rejected the token. Check ROBROZ_TOKEN." (「宿主拒绝了令牌，请检查 ROBROZ_TOKEN。」). A host that cannot be reached shows "Can't reach host." (「连不上宿主。」), followed by the reason.
 
 ## First task
 
