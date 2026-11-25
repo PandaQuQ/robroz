@@ -70,6 +70,8 @@ mod tests {
             kind: MessageKind::Text,
             body: body.into(),
             created_at: "2026-11-20T10:00:00.000Z".into(),
+            author_user_id: None,
+            author_name: None,
         }
     }
 
@@ -87,6 +89,9 @@ mod tests {
             failure: None,
             waiting_for: None,
             progress: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         }
     }
 

@@ -1,6 +1,6 @@
 //! Step timeouts that cancel: a running task whose current step has run past
 //! the step timeout (`ROBROZ_STEP_TIMEOUT_SECS`) is stopped and ends as
-//! `done` + [`robroz_card::NO_RESULT`].
+//! `done` + [`robroz_contract::legacy::NO_RESULT`].
 //!
 //! A "step" is one stretch of work with its own clock:
 //!

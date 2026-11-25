@@ -1033,6 +1033,8 @@ mod tests {
         let failure = delivery["failure"].as_str().unwrap_or("");
         assert!(failure.contains("你拒绝了"), "{delivery}");
         assert!(failure.contains("notes.write_note"), "{delivery}");
+        assert_eq!(delivery["failureCode"], "denied", "{delivery}");
+        assert_eq!(delivery["failureDetail"], "notes.write_note", "{delivery}");
         assert_eq!(delivery["summary"], "未执行", "{delivery}");
         assert_eq!(delivery["taskId"], task_id, "{delivery}");
         assert_eq!(delivery["botId"], "bot-ada", "{delivery}");

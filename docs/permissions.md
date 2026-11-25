@@ -109,7 +109,7 @@ When a task is `done` but the work was not finished, the status card has `failur
 | A dead run (container exited non-zero, wrote no result, or disappeared) | Finished with no result (「没写出结果」) | No |
 | An approval card expired | Approval expired (「审批已过期」) | No |
 
-When the client sees `failure`, it shows a grey Couldn't finish: reason (「没做成：原因」), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, the client shows Finished with no result as it is (`robroz_card::failure_line`).
+When the client sees `failure`, it shows a grey Couldn't finish: reason (「没做成：原因」), not the green Done, and there is no button. The only exception is a dead run: when `failure` is 「没写出结果」, the client shows Finished with no result as it is (`robroz_card::failure_line`). From v0.2 a client renders this from `failureCode` and `failureDetail` (the reason without its prefix) instead of the Chinese `failure`; see [api.md, failure](api.md#failure).
 
 ## The model's tool calls
 

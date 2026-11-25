@@ -642,33 +642,43 @@ mod tests {
             (
                 json!({ "scope": "group:g1", "kind": "habit", "text": "x" }),
                 "scope 只能是 user 或 bot:<botId>",
+                "bad_scope",
             ),
             (
                 json!({ "scope": "everyone", "kind": "habit", "text": "x" }),
                 "scope 只能是 user 或 bot:<botId>",
+                "bad_scope",
             ),
             (
                 json!({ "scope": "bot:ghost", "kind": "habit", "text": "x" }),
                 "这个 bro 不存在",
+                "unknown_bro",
             ),
             (
                 json!({ "scope": "user", "kind": "mood", "text": "x" }),
                 "kind 只能是 profile、habit 或 project",
+                "bad_memory_kind",
             ),
             (
                 json!({ "scope": "user", "kind": "habit", "text": "   " }),
                 "请填写内容",
+                "need_text",
             ),
             (
                 json!({ "scope": "user", "kind": "habit", "text": "长".repeat(2001) }),
                 "内容太长，最多 2000 个字",
+                "memory_too_long",
             ),
-            (json!({ "scope": "user", "text": "x" }), "请求格式不正确"),
+            (
+                json!({ "scope": "user", "text": "x" }),
+                "请求格式不正确",
+                "bad_request_format",
+            ),
         ];
-        for (body, message) in cases {
+        for (body, message, code) in cases {
             let (status, error) = send(&app, "POST", "/api/memories", Some(body.clone())).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-            assert_eq!(error, json!({ "error": message }), "{body}");
+            assert_eq!(error, json!({ "error": message, "code": code }), "{body}");
         }
         remember(&app, "user", "habit", &"长".repeat(2000)).await;
 

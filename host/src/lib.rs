@@ -18,6 +18,7 @@ mod approvals;
 pub mod auth;
 mod bros;
 mod choices;
+mod error_code;
 pub(crate) mod follow_ups;
 mod mcp;
 mod mcp_tools;
@@ -230,6 +231,7 @@ impl Host {
         })
         .layer(axum::middleware::from_fn(users::identify));
         auth::require_token(router, self.token.clone())
+            .layer(axum::middleware::from_fn(error_code::add_error_code))
     }
 
     /// One pass over queued and running tasks. The binary calls this in a loop on
@@ -1173,6 +1175,7 @@ fn group_events(
             // v0.2: a group task's card stays in the group, so no
             // 「已发到主人私聊」 notice any more.
             let progress = progress::shown(state, container_up, row.get(9)?);
+            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -1182,7 +1185,7 @@ fn group_events(
                     task_id: id,
                     bot_id: row.get(1)?,
                     bot_name: row.get(2)?,
-                    label: robroz_card::status_line(state, container_up).to_string(),
+                    label: robroz_contract::legacy::status_line(state, container_up).to_string(),
                     state,
                     created_at,
                     updated_at,
@@ -1190,6 +1193,9 @@ fn group_events(
                     failure,
                     waiting_for,
                     progress,
+                    status_code: Some(robroz_contract::CardStatusCode::of(state, container_up)),
+                    failure_code,
+                    failure_detail,
                 },
             })
         })?;
@@ -1211,6 +1217,8 @@ fn group_events(
             let id: String = row.get(0)?;
             let created_at: String = row.get(4)?;
             let briefing: i64 = row.get(3)?;
+            let failure: Option<String> = row.get(5)?;
+            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
             Ok(TimedEvent {
                 changed_at: created_at.clone(),
                 created_at: created_at.clone(),
@@ -1221,11 +1229,14 @@ fn group_events(
                     path: row.get(2)?,
                     briefing: briefing != 0,
                     created_at,
-                    failure: row.get(5)?,
+                    failure,
                     needs_setup: row.get(6)?,
                     task_id: row.get(7)?,
                     bot_id: row.get(8)?,
                     bot_name: row.get(9)?,
+                    badge: (briefing != 0).then_some(robroz_contract::DeliveryBadge::Briefing),
+                    failure_code,
+                    failure_detail,
                 },
             })
         })?;
@@ -1248,6 +1259,16 @@ fn group_events(
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(Some(timed))
+}
+
+/// The `failureCode` and `failureDetail` for a stored `failure` text: the
+/// code and the raw reason without its prefix. The legacy `failure` text is
+/// sent unchanged next to them.
+fn failure_codes(failure: Option<&str>) -> (Option<robroz_contract::FailureCode>, Option<String>) {
+    match failure.map(robroz_contract::split_failure) {
+        Some((code, detail)) => (Some(code), detail),
+        None => (None, None),
+    }
 }
 
 #[cfg(test)]
@@ -1464,7 +1485,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
+        assert_eq!(
+            body,
+            json!({ "error": "这个 Bot 不在群里", "code": "bot_not_in_group" })
+        );
 
         let (status, events) =
             read_json(call(&app, get(&format!("/api/groups/{group_id}/events"))).await).await;
@@ -1597,7 +1621,7 @@ mod tests {
         let (status, body) =
             read_json(call(&app, post("/api/groups", json!({ "name": "  " }))).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "请填写名称" }));
+        assert_eq!(body, json!({ "error": "请填写名称", "code": "need_name" }));
 
         let (status, body) = read_json(
             call(
@@ -1611,7 +1635,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, json!({ "error": "群不存在" }));
+        assert_eq!(
+            body,
+            json!({ "error": "群不存在", "code": "group_not_found" })
+        );
 
         let group_id = create_group(&app, "校验").await["id"]
             .as_str()
@@ -1630,7 +1657,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "请填写名称" }));
+        assert_eq!(body, json!({ "error": "请填写名称", "code": "need_name" }));
 
         let (status, body) = read_json(
             call(
@@ -1644,7 +1671,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "kind 只能是 text、image 或 file" }));
+        assert_eq!(
+            body,
+            json!({ "error": "kind 只能是 text、image 或 file", "code": "bad_message_kind" })
+        );
 
         let (status, body) = read_json(
             call(
@@ -1658,11 +1688,14 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "请填写内容" }));
+        assert_eq!(body, json!({ "error": "请填写内容", "code": "need_text" }));
 
         let (status, body) = read_json(call(&app, get("/api/groups/missing/events")).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, json!({ "error": "群不存在" }));
+        assert_eq!(
+            body,
+            json!({ "error": "群不存在", "code": "group_not_found" })
+        );
 
         let (status, body) = read_json(
             call(
@@ -1676,7 +1709,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "请填写内容" }));
+        assert_eq!(body, json!({ "error": "请填写内容", "code": "need_text" }));
     }
 
     fn temp_volumes() -> PathBuf {
@@ -1795,6 +1828,8 @@ mod tests {
         let prompt = "画一张草图";
         let (group_id, task_id) = seed_task(&app, "沙箱", prompt).await;
         let before = events_of(&app, &group_id).await;
+        assert_eq!(statuses(&before)[0]["label"], "排队");
+        assert_eq!(statuses(&before)[0]["statusCode"], "queued");
         let created_at = statuses(&before)[0]["createdAt"]
             .as_str()
             .unwrap()
@@ -1815,6 +1850,8 @@ mod tests {
         assert_eq!(cards[0]["taskId"], task_id);
         assert_eq!(cards[0]["state"], "running");
         assert_eq!(cards[0]["label"], "进行");
+        assert_eq!(cards[0]["statusCode"], "running");
+        assert!(cards[0].get("failureCode").is_none());
         assert_eq!(cards[0]["containerUp"], true);
         assert_eq!(cards[0]["createdAt"], created_at);
         assert_ne!(cards[0]["updatedAt"], updated_queued);
@@ -1844,6 +1881,9 @@ mod tests {
         assert_eq!(cards[0]["id"], task_id);
         assert_eq!(cards[0]["state"], "done");
         assert_eq!(cards[0]["label"], "完成");
+        assert_eq!(cards[0]["statusCode"], "done");
+        assert!(cards[0].get("failureCode").is_none());
+        assert!(cards[0].get("failureDetail").is_none());
         assert_eq!(cards[0]["containerUp"], false);
         assert_eq!(cards[0]["createdAt"], created_at);
         assert_ne!(cards[0]["updatedAt"], created_at);
@@ -1908,6 +1948,10 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["failureCode"], "no_result");
+        assert!(statuses(&events)[0].get("failureDetail").is_none());
+        assert_eq!(statuses(&events)[0]["statusCode"], "done");
+        assert_eq!(statuses(&events)[0]["label"], "完成");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
@@ -1926,6 +1970,10 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(statuses(&events)[0]["failure"], "没写出结果");
+        assert_eq!(statuses(&events)[0]["failureCode"], "no_result");
+        assert!(statuses(&events)[0].get("failureDetail").is_none());
+        assert_eq!(statuses(&events)[0]["statusCode"], "done");
+        assert_eq!(statuses(&events)[0]["label"], "完成");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
@@ -2063,6 +2111,8 @@ mod tests {
         let card = statuses(&events)[0];
         assert_eq!(card["state"], "done");
         assert_eq!(card["failure"], "出网超额：已用 3 次，上限 2");
+        assert_eq!(card["failureCode"], "outbound_over_quota");
+        assert_eq!(card["failureDetail"], "3/2");
         assert_eq!(card["containerUp"], false);
         assert!(deliveries(&events).is_empty(), "no successful delivery");
         assert!(events["events"]
@@ -2078,6 +2128,8 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "done");
         assert_eq!(statuses(&events)[0]["failure"], "出网只允许 GET：用了 POST");
+        assert_eq!(statuses(&events)[0]["failureCode"], "outbound_not_get");
+        assert_eq!(statuses(&events)[0]["failureDetail"], "POST");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
@@ -2122,6 +2174,7 @@ mod tests {
         let events = events_of(&app, &group_id).await;
         assert_eq!(statuses(&events)[0]["state"], "blocked");
         assert_eq!(statuses(&events)[0]["label"], "卡住");
+        assert_eq!(statuses(&events)[0]["statusCode"], "blocked");
         assert_eq!(statuses(&events)[0]["containerUp"], false);
         assert!(deliveries(&events).is_empty());
     }
@@ -2137,11 +2190,17 @@ mod tests {
         let (status, body) =
             read_json(call(&app, post_empty("/api/tasks/missing/resume")).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, json!({ "error": "任务不存在" }));
+        assert_eq!(
+            body,
+            json!({ "error": "任务不存在", "code": "task_not_found" })
+        );
         let (status, body) =
             read_json(call(&app, post_empty(&format!("/api/tasks/{task_id}/resume"))).await).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body, json!({ "error": "这次不能恢复" }));
+        assert_eq!(
+            body,
+            json!({ "error": "这次不能恢复", "code": "cant_resume" })
+        );
 
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_db(&path, &volumes, &mut fake);
@@ -2650,13 +2709,40 @@ mod tests {
         let app = test_app(&path);
         let (status, body) = read_json(open_stream(&app, "missing", None).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, json!({ "error": "群不存在" }));
+        assert_eq!(
+            body,
+            json!({ "error": "群不存在", "code": "group_not_found" })
+        );
         let group_id = create_group(&app, "x").await["id"]
             .as_str()
             .unwrap()
             .to_string();
         let (status, _) = read_json(open_stream(&app, &group_id, Some("not-a-time")).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ---- the host does not depend on robroz-card ----
+
+    #[test]
+    fn host_does_not_depend_on_robroz_card() {
+        // Built from parts so this file does not contain the names it forbids.
+        let crate_name = ["robroz", "card"].join("-");
+        let module_name = ["robroz", "card"].join("_");
+        let manifest = include_str!("../Cargo.toml");
+        assert!(!manifest.contains(&crate_name), "host/Cargo.toml");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains(&format!("{module_name}::")), "{path:?}");
+                }
+            }
+        }
     }
 
     // ---- listener token ----
@@ -2685,6 +2771,7 @@ mod tests {
             let (status, body) = read_json(call(&app, req(bad)).await).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{bad:?}");
             assert!(!body.to_string().contains("0123456789abcdef-good"));
+            assert_eq!(body["code"], "token_rejected", "{body}");
         }
         let (status, body) =
             read_json(call(&app, post("/api/groups", json!({ "name": "x" }))).await).await;
@@ -3276,7 +3363,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
+        assert_eq!(
+            body,
+            json!({ "error": "这个 Bot 不在群里", "code": "bot_not_in_group" })
+        );
         for summary in ["  ", "两行\n不行"] {
             let (status, _) = post_approval(
                 &app,
@@ -3300,7 +3390,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body,
-            json!({ "error": "不支持这个动作" }),
+            json!({ "error": "不支持这个动作", "code": "action_not_supported" }),
             "unknown action is rejected"
         );
         let (status, _) = decide(&app, "nope", "approve").await;
@@ -3544,7 +3634,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, json!({ "error": "群不存在" }));
+        assert_eq!(
+            body,
+            json!({ "error": "群不存在", "code": "group_not_found" })
+        );
 
         let (status, body) = post_schedule(
             &app,
@@ -3552,7 +3645,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "这个 Bot 不在群里" }));
+        assert_eq!(
+            body,
+            json!({ "error": "这个 Bot 不在群里", "code": "bot_not_in_group" })
+        );
 
         let (status, body) = post_schedule(
             &app,
@@ -3560,7 +3656,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body, json!({ "error": "请填写内容" }));
+        assert_eq!(body, json!({ "error": "请填写内容", "code": "need_text" }));
 
         for bad in [
             "",
@@ -3577,7 +3673,11 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "cron {bad:?}");
-            assert_eq!(body, json!({ "error": "cron 格式不对" }), "cron {bad:?}");
+            assert_eq!(
+                body,
+                json!({ "error": "cron 格式不对", "code": "bad_cron" }),
+                "cron {bad:?}"
+            );
         }
         let conn = Connection::open(&path).unwrap();
         let n: i64 = conn
@@ -3805,7 +3905,10 @@ mod tests {
         assert_eq!(by_path(&scheduled)["briefing"], true);
         assert_eq!(by_path(&scheduled)["summary"], "已写入结果");
         assert_eq!(by_path(&normal_id)["briefing"], false);
-        assert_eq!(robroz_card::briefing_badge(), "简报");
+        assert_eq!(robroz_contract::legacy::briefing_badge(), "简报");
+        // The code form: `badge` is set exactly when `briefing` is.
+        assert_eq!(by_path(&scheduled)["badge"], "briefing");
+        assert!(by_path(&normal_id).get("badge").is_none());
     }
 
     #[tokio::test]
@@ -4199,7 +4302,10 @@ mod tests {
 
         let (status, body) = resume(&app, &task_id).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body, json!({ "error": "恢复失败，找不到卡住记录" }));
+        assert_eq!(
+            body,
+            json!({ "error": "恢复失败，找不到卡住记录", "code": "resume_no_intent" })
+        );
         let after = statuses(&events_of(&app, &group_id).await)[0].clone();
         assert_eq!(after, blocked, "state and updatedAt unchanged");
         assert!(
@@ -4397,7 +4503,10 @@ mod tests {
         // Blocked before the host stored intents: no approval to give.
         let (status, body) = resume(&app, "t-old").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body, json!({ "error": "恢复失败，找不到卡住记录" }));
+        assert_eq!(
+            body,
+            json!({ "error": "恢复失败，找不到卡住记录", "code": "resume_no_intent" })
+        );
         assert_eq!(
             statuses(&events_of(&app, "g1").await)[0]["state"],
             "blocked"
@@ -5269,11 +5378,16 @@ mod tests {
             [&task_id],
         )
         .unwrap();
+        // Before the watchdog runs, old data still reads as a dead run, in both forms.
+        let old = status_of(&events_of(&app, &group_id).await, &task_id).clone();
+        assert_eq!(old["label"], "没写出结果");
+        assert_eq!(old["statusCode"], "no_result");
         let host = super::Host::open(&path, &volumes, "robroz-runner:local").unwrap();
         host.watchdog_once(std::time::Instant::now()).unwrap();
         let card = status_of(&events_of(&app, &group_id).await, &task_id).clone();
         assert_eq!(card["state"], "done");
         assert_eq!(card["failure"], "没写出结果");
+        assert_eq!(card["failureCode"], "no_result");
         assert!(deliveries(&events_of(&app, &group_id).await).is_empty());
         assert_eq!(queued_count(&path), 0);
     }
@@ -5619,6 +5733,11 @@ mod tests {
             "模型没回：模型服务返回 401",
             "card can say it was not done"
         );
+        // The code and the raw reason, with no prefix baked into the detail.
+        assert_eq!(deliveries(&events)[0]["failureCode"], "model_no_reply");
+        assert_eq!(deliveries(&events)[0]["failureDetail"], "模型服务返回 401");
+        assert_eq!(statuses(&events)[0]["failureCode"], "model_no_reply");
+        assert_eq!(statuses(&events)[0]["failureDetail"], "模型服务返回 401");
         assert_eq!(deliveries(&events)[0]["taskId"], task_id);
         assert_eq!(deliveries(&events)[0]["botId"], "bot-ada");
         assert_eq!(deliveries(&events)[0]["botName"], "Ada");
@@ -5877,6 +5996,9 @@ mod tests {
             statuses(&events_of(&app, &group_id).await)[0]["failure"],
             "你拒绝了：删远端分支"
         );
+        let card = statuses(&events_of(&app, &group_id).await)[0].clone();
+        assert_eq!(card["failureCode"], "denied");
+        assert_eq!(card["failureDetail"], "删远端分支");
         assert!(
             !takeover_file(&volumes, &task_id).exists(),
             "deny writes no marker"

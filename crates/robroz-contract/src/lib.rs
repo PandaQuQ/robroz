@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 /// Client-visible text the host writes; see the module docs.
 pub mod host_text;
 
+/// Stable machine codes for task card states, results and failures.
+pub mod codes;
+/// Stable machine `code` for host error bodies.
+pub mod error_codes;
+/// Deprecated Chinese card copy that used to live in `robroz-card`.
+pub mod legacy;
+
+pub use codes::{split_failure, CardStatusCode, DeliveryBadge, FailureCode};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
     #[serde(rename = "queued")]
@@ -1256,6 +1265,19 @@ pub enum Event {
         /// absent otherwise, so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         progress: Option<String>,
+        /// v0.2: the code form of `label` (see [`CardStatusCode`]). The client
+        /// renders its own text from it. Absent from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_code: Option<CardStatusCode>,
+        /// v0.2: the code form of `failure` (see [`FailureCode`]). Present
+        /// exactly when `failure` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_code: Option<FailureCode>,
+        /// v0.2: the raw reason of `failure` without its prefix, so the
+        /// client adds exactly one prefix. Absent when the code needs no
+        /// detail (see [`FailureCode`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_detail: Option<String>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -1284,6 +1306,16 @@ pub enum Event {
         /// Absent when unknown, so old JSON is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bot_name: Option<String>,
+        /// v0.2: the code form of the corner badge (see [`DeliveryBadge`]).
+        /// Present exactly when `briefing` is true.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        badge: Option<DeliveryBadge>,
+        /// v0.2: the code form of `failure`; see [`Event::Status`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_code: Option<FailureCode>,
+        /// v0.2: the raw reason of `failure` without its prefix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_detail: Option<String>,
     },
     /// Added after the node-1 freeze; the three types above are unchanged.
     /// `choice` and `answeredAt` are always present and `null` until answered.
@@ -1955,6 +1987,9 @@ mod tests {
                 failure: None,
                 waiting_for: None,
                 progress: None,
+                status_code: None,
+                failure_code: None,
+                failure_detail: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -1986,6 +2021,9 @@ mod tests {
             failure: None,
             waiting_for: Some(WaitingFor::Approval),
             progress: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         };
         let json = serde_json::to_value(&blocked).unwrap();
         assert_eq!(json["waitingFor"], "approval");
@@ -2003,6 +2041,9 @@ mod tests {
             failure: None,
             waiting_for: Some(WaitingFor::Takeover),
             progress: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         };
         assert_eq!(
             serde_json::to_value(&takeover).unwrap()["waitingFor"],
@@ -2041,6 +2082,9 @@ mod tests {
             failure: None,
             waiting_for: None,
             progress: Some("在沙箱里跑".into()),
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         };
         let json = serde_json::to_value(&running).unwrap();
         assert_eq!(json["progress"], "在沙箱里跑");
@@ -2086,6 +2130,9 @@ mod tests {
             task_id: None,
             bot_id: None,
             bot_name: None,
+            badge: None,
+            failure_code: None,
+            failure_detail: None,
         };
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["failure"], "模型没回：模型服务返回 500");
@@ -2119,10 +2166,94 @@ mod tests {
             task_id: None,
             bot_id: None,
             bot_name: None,
+            badge: None,
+            failure_code: None,
+            failure_detail: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["needsSetup"], "search");
         assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn status_event_carries_codes_and_old_json_still_reads() {
+        let failed = Event::Status {
+            id: "t1".into(),
+            task_id: "t1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            state: TaskState::Done,
+            label: TaskState::Done.label().into(),
+            created_at: "2026-10-03T19:00:01.000Z".into(),
+            updated_at: "2026-10-03T19:00:02.000Z".into(),
+            container_up: false,
+            failure: Some("模型没回：模型服务返回 500".into()),
+            waiting_for: None,
+            progress: None,
+            status_code: Some(CardStatusCode::Done),
+            failure_code: Some(FailureCode::ModelNoReply),
+            failure_detail: Some("模型服务返回 500".into()),
+        };
+        assert_round_trip(
+            &failed,
+            serde_json::json!({
+                "type": "status", "id": "t1", "taskId": "t1", "botId": "bot-ada",
+                "botName": "Ada", "state": "done", "label": "完成",
+                "createdAt": "2026-10-03T19:00:01.000Z",
+                "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
+                "failure": "模型没回：模型服务返回 500",
+                "statusCode": "done", "failureCode": "model_no_reply",
+                "failureDetail": "模型服务返回 500"
+            }),
+        );
+        let old = serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "bot-ada",
+            "botName": "Ada", "state": "done", "label": "完成",
+            "createdAt": "2026-10-03T19:00:01.000Z",
+            "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
+            "failure": "模型没回：模型服务返回 500"
+        });
+        let Event::Status {
+            status_code,
+            failure_code,
+            failure_detail,
+            ..
+        } = serde_json::from_value(old).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (status_code, failure_code, failure_detail),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn delivery_event_carries_badge_and_failure_codes() {
+        assert_round_trip(
+            &Event::Delivery {
+                id: "d1".into(),
+                summary: "草图".into(),
+                path: "out/sketch.png".into(),
+                briefing: true,
+                created_at: "2026-10-03T19:00:02.000Z".into(),
+                failure: Some("没写出结果".into()),
+                needs_setup: None,
+                task_id: None,
+                bot_id: None,
+                bot_name: None,
+                badge: Some(DeliveryBadge::Briefing),
+                failure_code: Some(FailureCode::NoResult),
+                failure_detail: None,
+            },
+            serde_json::json!({
+                "type": "delivery", "id": "d1", "summary": "草图",
+                "path": "out/sketch.png", "briefing": true,
+                "createdAt": "2026-10-03T19:00:02.000Z",
+                "failure": "没写出结果", "badge": "briefing",
+                "failureCode": "no_result"
+            }),
+        );
     }
 
     #[test]
@@ -2139,6 +2270,9 @@ mod tests {
                 task_id: None,
                 bot_id: None,
                 bot_name: None,
+                badge: None,
+                failure_code: None,
+                failure_detail: None,
             },
             serde_json::json!({
                 "type": "delivery",

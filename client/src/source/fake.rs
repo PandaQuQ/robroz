@@ -477,6 +477,9 @@ fn status(
             failure: None,
             progress: None,
             waiting_for: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
         },
         approval_extras: None,
     }
@@ -509,6 +512,9 @@ fn attributed_delivery(
             task_id: task_id.map(str::to_string),
             bot_id: bot_id.map(str::to_string),
             bot_name: bot_name.map(str::to_string),
+            badge: None,
+            failure_code: None,
+            failure_detail: None,
         },
         approval_extras: None,
     }

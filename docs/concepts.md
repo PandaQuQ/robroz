@@ -49,7 +49,7 @@ A task has exactly one status card. Its `id` equals `taskId`. The client updates
 | Field | Meaning |
 | --- | --- |
 | `containerUp` | `true` only while the task is `running` and the container is still up. `false` when queued, done, blocked, or when a run has already died. |
-| `label` | The API field is still the Chinese line from `robroz_card::status_line(state, containerUp)`: 「排队」, 「进行」 when the container is up, 「没写出结果」 when a `running` card has no container (old dead-run data), 「卡住」, 「完成」. The client shows Queued, Running, Finished with no result, Stuck or Done. The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
+| `label` | The API field is still the Chinese line from `robroz_contract::legacy::status_line(state, containerUp)` (deprecated; clients render from `statusCode` instead): 「排队」, 「进行」 when the container is up, 「没写出结果」 when a `running` card has no container (old dead-run data), 「卡住」, 「完成」. The client shows Queued, Running, Finished with no result, Stuck or Done. The client may show a different line for a failed task or for a task waiting on an approval card; see below. |
 | `failure` | Optional. Why a `done` task did not finish. |
 | `waitingFor` | Optional. Why a `blocked` task is waiting: `approval` (answer an approval card) or `takeover` (take over in the DM). |
 | `progress` | Optional. The API field is still Chinese. What the bro is doing while `running` with a live container. When the task is `blocked` waiting for an MCP tool approval, this is 「在用 {server}.{tool}」 (the client shows Using {server}.{tool}). Since v0.2 the host no longer writes 「已发到主人私聊」 (Sent to owner's DM); approval cards stay in the group. |

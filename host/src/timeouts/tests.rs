@@ -339,7 +339,10 @@ fn call(tool: &str) -> AssistantTurn {
 fn assert_cancelled(h: &Harness, task_id: &str, sandbox: &FakeSandbox) {
     assert_eq!(
         h.row(task_id),
-        ("done".to_string(), Some(robroz_card::NO_RESULT.to_string()))
+        (
+            "done".to_string(),
+            Some(robroz_contract::legacy::NO_RESULT.to_string())
+        )
     );
     assert!(sandbox.containers.is_empty(), "container stopped");
     assert_eq!(h.deliveries(), 0, "no partial delivery");

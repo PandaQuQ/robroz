@@ -577,7 +577,9 @@ fn settle_task(
     let routed = decision == ApprovalDecision::Denied && crate::router::clear(conn, task_id)?;
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
-        ApprovalDecision::Denied if routed => ("done", Some(robroz_card::NO_RESULT.to_string())),
+        ApprovalDecision::Denied if routed => {
+            ("done", Some(robroz_contract::legacy::NO_RESULT.to_string()))
+        }
         ApprovalDecision::Denied if failure.is_some() => ("done", failure.map(String::from)),
         ApprovalDecision::Denied => {
             let prompt: String =

@@ -338,7 +338,10 @@ async fn get_approval_returns_the_event_shape_or_404() {
     let (status, body) = h.call("GET", "/api/approvals/nope", None).await;
     assert_eq!(
         (status, body),
-        (StatusCode::NOT_FOUND, json!({ "error": "审批卡不存在" }))
+        (
+            StatusCode::NOT_FOUND,
+            json!({ "error": "审批卡不存在", "code": "approval_not_found" })
+        )
     );
     let (bot, dm) = h.bro("ada").await;
     let (_, posted) = h
@@ -393,7 +396,10 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
         .await;
     assert_eq!(
         (status, body),
-        (StatusCode::NOT_FOUND, json!({ "error": "规则不存在" }))
+        (
+            StatusCode::NOT_FOUND,
+            json!({ "error": "规则不存在", "code": "rule_not_found" })
+        )
     );
 
     let (status, body) = h
@@ -429,10 +435,14 @@ async fn deleting_a_rule_needs_a_confirmed_card_too() {
 #[tokio::test]
 async fn rule_text_is_validated() {
     let h = harness();
-    for (text, error) in [
-        ("   ", "请填写规则"),
-        ("两行\n不行", "规则只能一行，最多 200 字"),
-        (&"长".repeat(201) as &str, "规则只能一行，最多 200 字"),
+    for (text, error, code) in [
+        ("   ", "请填写规则", "need_rule"),
+        ("两行\n不行", "规则只能一行，最多 200 字", "rule_one_line"),
+        (
+            &"长".repeat(201) as &str,
+            "规则只能一行，最多 200 字",
+            "rule_one_line",
+        ),
     ] {
         let (status, body) = h
             .call(
@@ -443,7 +453,10 @@ async fn rule_text_is_validated() {
             .await;
         assert_eq!(
             (status, body),
-            (StatusCode::BAD_REQUEST, json!({ "error": error })),
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error, "code": code })
+            ),
             "{text:?}"
         );
     }
@@ -466,7 +479,7 @@ async fn bros_cannot_post_rule_cards_themselves() {
             (status, body),
             (
                 StatusCode::BAD_REQUEST,
-                json!({ "error": "这个动作只能由宿主机发出" })
+                json!({ "error": "这个动作只能由宿主机发出", "code": "action_host_only" })
             )
         );
     }

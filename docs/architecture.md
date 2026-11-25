@@ -11,7 +11,7 @@
                                 │  联网搜索、MCP 客户端              │ --network none
 ```
 
-- 宿主机是一个 Rust 进程。依赖 `robroz-contract`（契约）、`robroz-policy`（权限）、`robroz-card`（卡片文案）、`robroz-runner`（和容器共享的文件格式）、`robroz-model`（调模型）、`robroz-mcp`（MCP 客户端）。
+- 宿主机是一个 Rust 进程。依赖 `robroz-contract`（契约）、`robroz-policy`（权限）、`robroz-runner`（和容器共享的文件格式）、`robroz-model`（调模型）、`robroz-mcp`（MCP 客户端）。
 - 容器里只有 runner，不联网，拿不到模型密钥。模型、搜索、MCP 都在宿主机上调用。
 - 客户端只通过 HTTP 接口和 SSE 跟宿主机说话，卡片怎么显示由 `robroz-card` 和 `robroz-ui` 决定。
 
