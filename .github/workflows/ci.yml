@@ -2,6 +2,8 @@ name: CI
 
 # Save Actions minutes: PRs run Linux only; macOS and Windows run after
 # merging to main and once a day. Pushes to PR branches don't double-run.
+#
+# The desktop and mobile client live in https://github.com/PandaQuQ/robroz-client.
 on:
   push:
     branches: [main]
@@ -19,21 +21,7 @@ jobs:
       - name: Test host and shared crates
         run: |
           cargo test -p robroz-mcp --features fixture
-          cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-card -p robroz-runner -p robroz-tokens
-
-  client:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build client
-        run: cargo build -p robroz-client
-      - name: Test client, UI kit and tokens
-        run: cargo test -p robroz-client -p robroz-ui -p robroz-tokens
+          cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-runner
 
   e2e:
     # Node 7: real host binary + real docker, runner image as the fake model.

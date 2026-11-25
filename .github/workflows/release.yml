@@ -1,7 +1,7 @@
 name: Release
 
-# Builds release binaries when a `v*` tag is pushed and attaches them, with
-# SHA256 checksums, to a draft GitHub Release. The draft stays private until
+# Builds the host release binary when a `v*` tag is pushed and attaches it,
+# with SHA256 checksums, to a draft GitHub Release. The draft stays private until
 # a maintainer publishes it by hand. Binaries are not code-signed.
 #
 # workflow_dispatch is a dry run: it builds and packages the same artifacts,
@@ -11,8 +11,10 @@ name: Release
 # root) and pushes them with the version tag only:
 #   runner/Dockerfile -> ghcr.io/pandaquq/robroz-runner:<tag>
 #   host/Dockerfile   -> ghcr.io/pandaquq/robroz-host:<tag>
-# The draft release does not wait for that job, so host and client assets
-# still upload if an image push fails. There is no `latest` tag.
+# The draft release does not wait for that job, so the host assets still
+# upload if an image push fails. There is no `latest` tag.
+#
+# Client binaries are released from https://github.com/PandaQuQ/robroz-client.
 on:
   push:
     tags: ["v*"]
@@ -37,16 +39,8 @@ jobs:
           # Ubuntu 22.04+ and Debian 12+. ubuntu-latest moves forward.
           - os: ubuntu-22.04
             target: linux-x86_64
-            packages: "-p robroz-client -p robroz-host"
-            bins: "robroz-client robroz-host"
-          - os: windows-latest
-            target: windows-x86_64
-            packages: "-p robroz-client"
-            bins: "robroz-client"
-          - os: macos-latest
-            target: macos-aarch64
-            packages: "-p robroz-client"
-            bins: "robroz-client"
+            packages: "-p robroz-host"
+            bins: "robroz-host"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -84,34 +78,6 @@ jobs:
             mkdir -p "${stage}"
             cp "target/release/${bin}${ext}" "${stage}/"
             cp LICENSE README.md "${stage}/"
-            if [ "${{ runner.os }}" = "macOS" ] && [ "${bin}" = "robroz-client" ]; then
-              # Wrap the client in a minimal .app bundle, including the
-              # Dock and Finder icon.
-              app="${stage}/robroz.app/Contents"
-              mkdir -p "${app}/MacOS" "${app}/Resources"
-              mv "${stage}/${bin}" "${app}/MacOS/${bin}"
-              cp assets/brand/icon.icns "${app}/Resources/icon.icns"
-              cat > "${app}/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleName</key><string>robroz</string>
-            <key>CFBundleDisplayName</key><string>robroz</string>
-            <key>CFBundleIdentifier</key><string>io.github.pandaquq.robroz</string>
-            <key>CFBundleExecutable</key><string>${bin}</string>
-            <key>CFBundleIconFile</key><string>icon</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${version#v}</string>
-            <key>CFBundleVersion</key><string>${version#v}</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-            fi
-            if [ "${{ runner.os }}" = "Linux" ] && [ "${bin}" = "robroz-client" ]; then
-              cp client/packaging/robroz.desktop "${stage}/"
-              cp assets/brand/icon-512.png "${stage}/robroz.png"
-            fi
             if [ "${{ runner.os }}" = "Windows" ]; then
               (cd stage && 7z a -tzip "../dist/${name}.zip" "${name}" > /dev/null)
             elif [ "${{ runner.os }}" = "macOS" ]; then
