@@ -32,7 +32,7 @@ use crate::cards::{split_call_summary, ApprovalCard, Card, ChoiceCard, DraftCard
 use crate::conversations::{self, Conversation, Conversations};
 use robroz_contract::{McpSecretIn, McpServer};
 
-use crate::theme::{Rgb, Skin};
+use crate::theme::{Mode, Rgb, Skin};
 use crate::widgets::{Check, CheckBox, Rings, Toggle};
 
 /// What a click on a new card or the routines panel asks for.
@@ -431,6 +431,83 @@ pub fn nav_button_style(
             border: Border::default().rounded(t.radii.row),
             ..button::Style::default()
         }
+    }
+}
+
+/// Dark selected fill and text for the Language / Appearance segmented
+/// control. These are not in `tokens.json`: the closest dark line colour
+/// is `border` (`#2d3139`), and dark `text` is `#f4f1ea`. The designer
+/// asked for these two values so the selected chip reads as raised,
+/// instead of the near-black `control_checked` which sat darker than
+/// the card and looked like a hole. Light mode is unchanged.
+const DARK_SEGMENT_SELECTED: Rgb = [0x2f, 0x32, 0x36];
+const DARK_SEGMENT_SELECTED_TEXT: Rgb = [0xec, 0xe8, 0xdf];
+
+/// Fill and text of a selected segment: the raised dark pair above, or
+/// the existing `control_checked` / `text` tokens in light mode.
+fn segment_selected(mode: Mode, control_checked: Rgb, text: Rgb) -> (Rgb, Rgb) {
+    match mode {
+        Mode::Dark => (DARK_SEGMENT_SELECTED, DARK_SEGMENT_SELECTED_TEXT),
+        Mode::Light => (control_checked, text),
+    }
+}
+
+/// Segmented control (Language / Appearance rows). Same shape as
+/// [`nav_button_style`]; the dark selected state uses
+/// [`segment_selected`]. Sidebar nav keeps [`nav_button_style`].
+pub fn segment_button_style(
+    t: Skin,
+    selected: bool,
+) -> impl Fn(&IcedTheme, button::Status) -> button::Style {
+    move |_, status| {
+        let (bg, text) = if selected {
+            let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
+            (Some(Background::Color(color(fill))), color(text))
+        } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            (
+                Some(Background::Color(color(t.palette.control_hover))),
+                color(t.palette.text),
+            )
+        } else {
+            (None, color(t.palette.text))
+        };
+        button::Style {
+            background: bg,
+            text_color: text,
+            border: Border::default().rounded(t.radii.row),
+            ..button::Style::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::{segment_selected, DARK_SEGMENT_SELECTED, DARK_SEGMENT_SELECTED_TEXT};
+    use crate::theme::{Mode, Skin};
+
+    #[test]
+    fn dark_selected_segment_uses_the_raised_fill_and_text() {
+        let t = Skin::dark();
+        let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
+        assert_eq!(fill, DARK_SEGMENT_SELECTED);
+        assert_eq!(text, DARK_SEGMENT_SELECTED_TEXT);
+        // Brighter than both the card and the old near-black checked fill,
+        // so the chip no longer reads as a hole.
+        assert!(luma(fill) > luma(t.palette.surface));
+        assert!(luma(fill) > luma(t.palette.control_checked));
+    }
+
+    #[test]
+    fn light_selected_segment_keeps_the_existing_tokens() {
+        let t = Skin::light();
+        let (fill, text) = segment_selected(t.mode, t.palette.control_checked, t.palette.text);
+        assert_eq!(fill, t.palette.control_checked);
+        assert_eq!(text, t.palette.text);
+    }
+
+    fn luma(c: [u8; 3]) -> u32 {
+        // Rec. 709, integer; only used to compare relative brightness.
+        u32::from(c[0]) * 299 + u32::from(c[1]) * 587 + u32::from(c[2]) * 114
     }
 }
 
