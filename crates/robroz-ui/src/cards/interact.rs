@@ -49,6 +49,13 @@ pub enum Note {
     Rejected(String),
     /// Any other failure with the host's message.
     Failed(String),
+    /// 403 `approval_forbidden` + `not_owner`: only the bro's owner may
+    /// decide. Holds the owner's name when the host or the card gave one.
+    /// Stays until the card changes; the buttons are gone.
+    OnlyOwner(Option<String>),
+    /// 403 `decided` / `expired`: not an error. No text; the buttons go
+    /// while the real card is fetched, which then shows the result.
+    Settled,
 }
 
 impl Note {
@@ -59,6 +66,9 @@ impl Note {
             Note::AlreadyDecided => Key::InteractAlreadyDecided.into(),
             Note::Rejected(msg) => Key::InteractRejected.fill(&[&host_text(msg)]),
             Note::Failed(msg) => Key::InteractFailed.fill(&[&host_text(msg)]),
+            Note::OnlyOwner(owner) => Key::ApprovalOnlyOwner
+                .fill(&[&crate::cards::group_approval::owner_label(owner.as_deref())]),
+            Note::Settled => String::new(),
         }
     }
 }
@@ -77,6 +87,9 @@ pub struct CardUi {
     pub name_expanded: bool,
     /// Skill confirm card: the full instruction is open.
     pub more_open: bool,
+    /// The card's stroke is accent for a moment after a jump from the
+    /// owner's DM reminder row (300 ms).
+    pub flash: bool,
 }
 
 impl CardUi {
@@ -223,7 +236,10 @@ pub enum ApprovalActions {
 pub fn approval_actions(card: &ApprovalCard, ui: &CardUi) -> ApprovalActions {
     // 409: answered elsewhere. Nothing left to press while the answered
     // card is fetched; the note says why.
-    if ui.note == Some(Note::AlreadyDecided) {
+    if matches!(
+        ui.note,
+        Some(Note::AlreadyDecided | Note::Settled | Note::OnlyOwner(_))
+    ) {
         return ApprovalActions::None;
     }
     match card.state {
@@ -447,6 +463,8 @@ mod tests {
             mcp_server: None,
             mcp_tool: None,
             reason: None,
+            owner_id: None,
+            owner_name: None,
         };
         let mut ui = CardUi::default();
         assert_eq!(

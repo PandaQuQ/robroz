@@ -15,9 +15,11 @@ use iced::{
 };
 
 use crate::cards::confirm::{self, ConfirmCard};
-use crate::cards::interact::{self, ApprovalActions, CardUi, Look, OptionButton};
+use crate::cards::group_approval;
+use crate::cards::interact::{self, ApprovalActions, CardUi, Look, Note, OptionButton};
 use crate::cards::mcp::{self, Book as McpBook};
 use crate::cards::memories::{self, Book};
+use crate::cards::reminder::Reminder;
 use crate::i18n::{host_text, Key};
 
 use crate::cards::model;
@@ -65,6 +67,11 @@ pub enum Action {
     },
     /// Stuck card: go to the DM to take over.
     TakeOver {
+        card: String,
+    },
+    /// The owner's DM reminder row: open the group and its approval card.
+    OpenApproval {
+        group: String,
         card: String,
     },
     TogglePause {
@@ -675,13 +682,13 @@ fn header<'a>(
     card: &str,
     bot: &'a str,
     ui: &CardUi,
-    label: &'static str,
+    label: impl Into<String>,
     d: Dot,
     hide_bot: bool,
 ) -> Element<'a, Action> {
     let status = row![
         dot(t, d),
-        text(label)
+        text(label.into())
             .size(t.type_.status)
             .color(color(t.palette.text2)),
     ]
@@ -1159,10 +1166,11 @@ pub fn card<'a>(
     width: f32,
     in_group: bool,
     hide_bot: bool,
+    me: Option<&str>,
 ) -> Element<'a, Action> {
     match card {
         Card::Choice(c) => choice(t, c, ui, hide_bot),
-        Card::Approval(c) => approval(t, c, ui, width, in_group, hide_bot),
+        Card::Approval(c) => approval(t, c, ui, width, in_group, hide_bot, me),
         Card::Draft(c) => draft(t, c, ui, caps, width, hide_bot),
         Card::Confirm(c) => confirm_card(t, c, ui, width, hide_bot),
     }
@@ -1390,8 +1398,16 @@ pub fn approval<'a>(
     width: f32,
     in_group: bool,
     hide_bot: bool,
+    me: Option<&str>,
 ) -> Element<'a, Action> {
     let inner = width - 2.0 * (t.controls.card_pad_h + t.stroke.card);
+    // v0.2 host: a group card belongs to the bro's owner, who alone decides.
+    if in_group
+        && !card.is_rule()
+        && group_approval::viewer(card, me) != group_approval::Viewer::Legacy
+    {
+        return group_approval_card(t, card, ui, inner, hide_bot, me);
+    }
     let (label, d) = status::approval_status(&card.state);
     let mut col = column![header(t, &card.id, &card.bot, ui, label, d, hide_bot)];
     // Group thread: same header and action line as a DM card, with
@@ -1426,35 +1442,7 @@ pub fn approval<'a>(
                 TAKE_OVER_PAD[1],
             ));
     } else {
-        // A call card's host summary already starts with 「调用」, so the
-        // action tag would repeat it. Other kinds keep the tag.
-        let summary = container(approval_summary(t, card, inner)).width(Fill);
-        let line: Element<'a, Action> = if card.kind == crate::cards::ActionKind::Call {
-            summary.into()
-        } else {
-            row![
-                tag(t, status::action_kind_label(card.kind), t.palette.text2),
-                summary,
-            ]
-            .spacing(t.controls.button_gap)
-            .align_y(Alignment::Center)
-            .into()
-        };
-        col = col.push(line);
-        if let Some(path) = &card.path {
-            col = col
-                .push(gap(t.metrics.head_gap))
-                .push(path_chip(t, path, inner));
-        }
-        if let Some(reason) = card.reason.as_deref() {
-            if reason != review_rules::APPROVAL_EXPIRED_REASON {
-                col = col.push(gap(t.metrics.head_gap)).push(
-                    text(review_rules::blocked_reason_line(reason))
-                        .size(t.type_.foot)
-                        .color(color(t.palette.text2)),
-                );
-            }
-        }
+        col = approval_what(t, card, inner, col);
         if group_pending {
             return approval_frame(t, card, col.into());
         }
@@ -1501,6 +1489,193 @@ pub fn approval<'a>(
             .push(approval_footnote_view(t, foot));
     }
     approval_frame(t, card, col.into())
+}
+
+/// Id of a card's frame, so the client can find it to scroll to (jump from
+/// the DM reminder row).
+pub fn card_anchor(card: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("card:{card}"))
+}
+
+/// 13px accent line under a card (a refused click).
+const ACCENT_NOTE_SIZE: f32 = 13.0;
+
+/// Card frame: `surface`, card stroke; the stroke turns accent while
+/// `flash` is set (a jump from the DM reminder row).
+fn flash_frame<'a>(
+    t: &Skin,
+    id: &str,
+    content: Element<'a, Action>,
+    flash: bool,
+) -> Element<'a, Action> {
+    let t = *t;
+    container(content)
+        .id(card_anchor(id))
+        .padding(card_padding(&t))
+        .width(Fill)
+        .style(move |th| container::Style {
+            border: Border::default()
+                .width(t.stroke.card)
+                .color(color(if flash {
+                    t.chat.accent
+                } else {
+                    t.palette.border
+                }))
+                .rounded(t.radii.card),
+            ..card_style(t)(th)
+        })
+        .into()
+}
+
+/// What the bro wants to do: the kind tag and summary, the path and why it
+/// was blocked. Shared by the DM card and the group card.
+fn approval_what<'a>(
+    t: &Skin,
+    card: &'a ApprovalCard,
+    inner: f32,
+    mut col: iced::widget::Column<'a, Action>,
+) -> iced::widget::Column<'a, Action> {
+    // A call card's host summary already starts with 「调用」, so the
+    // action tag would repeat it. Other kinds keep the tag.
+    let summary = container(approval_summary(t, card, inner)).width(Fill);
+    let line: Element<'a, Action> = if card.kind == crate::cards::ActionKind::Call {
+        summary.into()
+    } else {
+        row![
+            tag(t, status::action_kind_label(card.kind), t.palette.text2),
+            summary,
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center)
+        .into()
+    };
+    col = col.push(line);
+    if let Some(path) = &card.path {
+        col = col
+            .push(gap(t.metrics.head_gap))
+            .push(path_chip(t, path, inner));
+    }
+    if let Some(reason) = card.reason.as_deref() {
+        if reason != review_rules::APPROVAL_EXPIRED_REASON {
+            col = col.push(gap(t.metrics.head_gap)).push(
+                text(review_rules::blocked_reason_line(reason))
+                    .size(t.type_.foot)
+                    .color(color(t.palette.text2)),
+            );
+        }
+    }
+    col
+}
+
+/// An approval card in a group (v0.2): dot and status, what the bro wants,
+/// one 11px line, and Approve / Deny for the owner only. Everyone else gets
+/// no buttons at all, not even greyed ones.
+fn group_approval_card<'a>(
+    t: &Skin,
+    card: &'a ApprovalCard,
+    ui: &CardUi,
+    inner: f32,
+    hide_bot: bool,
+    me: Option<&str>,
+) -> Element<'a, Action> {
+    let l = group_approval::lines(card, ui, me, &Local);
+    let mut col = column![
+        header(t, &card.id, &card.bot, ui, l.status, l.dot, hide_bot),
+        gap(t.metrics.head_gap),
+    ];
+    col = approval_what(t, card, inner, col);
+    if let Some(line) = l.line {
+        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, line));
+    }
+    if let Some(error) = l.error {
+        col = col.push(gap(t.metrics.foot_gap)).push(
+            text(error)
+                .size(ACCENT_NOTE_SIZE)
+                .color(color(t.chat.accent)),
+        );
+    } else if let Some(note) = ui.note.as_ref().map(Note::text).filter(|n| !n.is_empty()) {
+        col = col.push(gap(t.metrics.foot_gap)).push(footnote(t, note));
+    }
+    if let ApprovalActions::Decide { enabled } = l.actions {
+        let id = &card.id;
+        let pad = TAKE_OVER_PAD[1];
+        let buttons = row![
+            btn_padded(
+                t,
+                Key::ViewApprove.into(),
+                Look::Primary,
+                Leading::None,
+                enabled.then(|| Action::Decide {
+                    card: id.clone(),
+                    approve: true,
+                }),
+                pad,
+            ),
+            btn_padded(
+                t,
+                Key::ViewDeny.into(),
+                if enabled {
+                    Look::Secondary
+                } else {
+                    Look::Disabled
+                },
+                Leading::None,
+                enabled.then(|| Action::Decide {
+                    card: id.clone(),
+                    approve: false,
+                }),
+                pad,
+            ),
+        ]
+        .spacing(t.controls.button_gap)
+        .align_y(Alignment::Center);
+        col = col
+            .push(gap(t.metrics.body_gap))
+            .push(row![space::horizontal(), buttons]);
+    }
+    flash_frame(t, &card.id, col.into(), ui.flash)
+}
+
+/// Font size of the reminder row's text.
+const REMINDER_TEXT: f32 = 13.0;
+
+/// The owner's DM reminder: dot, one line of text, the time on the right.
+/// Not a card and no buttons; the whole row is the click target.
+pub fn reminder_row<'a>(t: &Skin, r: &'a Reminder) -> Element<'a, Action> {
+    let t = *t;
+    let mut line = row![
+        dot(&t, r.dot()),
+        text(r.text(&Local))
+            .size(REMINDER_TEXT)
+            .color(color(t.palette.text))
+            .wrapping(Wrapping::None),
+        space::horizontal(),
+    ]
+    .spacing(t.metrics.dot_gap)
+    .align_y(Alignment::Center);
+    if let Some(time) = r.time(&Local) {
+        line = line.push(text(time).size(t.type_.foot).color(color(t.palette.text3)));
+    }
+    button(container(line).width(Fill).clip(true))
+        .width(Fill)
+        .padding(Padding::from([
+            t.metrics.status_pad_v,
+            t.metrics.status_pad_h,
+        ]))
+        .on_press(Action::OpenApproval {
+            group: r.group_id.clone(),
+            card: r.approval_id.clone(),
+        })
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: hovered.then(|| color(t.palette.control_hover).into()),
+                text_color: color(t.palette.text),
+                border: Border::default().rounded(t.radii.button),
+                ..button::Style::default()
+            }
+        })
+        .into()
 }
 
 pub fn draft<'a>(

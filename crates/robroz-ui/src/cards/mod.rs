@@ -7,6 +7,7 @@
 
 use crate::i18n::Key;
 pub mod confirm;
+pub mod group_approval;
 pub mod interact;
 pub mod mcp;
 pub mod memories;
@@ -14,6 +15,7 @@ pub mod memories;
 pub mod model;
 pub mod review_rules;
 
+pub mod reminder;
 pub mod routines;
 pub mod search;
 pub mod secret;
@@ -166,6 +168,11 @@ pub struct ApprovalCard {
     /// Why a blocked action was stopped, or the expiry reason. Absent on
     /// older cards. Compared to [`review_rules::APPROVAL_EXPIRED_REASON`].
     pub reason: Option<String>,
+    /// v0.2: the bro's owner, the only person who may decide this card
+    /// (`ownerUserId`). `None` from an older host or on a settings card.
+    pub owner_id: Option<String>,
+    /// The owner's display name (`ownerName`), for "Waiting for {owner}".
+    pub owner_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +234,8 @@ impl ApprovalCard {
             mcp_tool,
             reason,
             expires_at,
+            owner_user_id,
+            owner_name,
             ..
         } = event
         else {
@@ -270,6 +279,8 @@ impl ApprovalCard {
             mcp_server: mcp_server.clone(),
             mcp_tool: mcp_tool.clone(),
             reason,
+            owner_id: owner_user_id.clone(),
+            owner_name: owner_name.clone(),
         })
     }
 

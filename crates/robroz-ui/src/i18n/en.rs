@@ -473,6 +473,22 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::InteractAlreadyPicked => "Someone already picked. Refreshing…",
         // 这张卡已经处理过了，正在刷新  [approved, batch 2]
         Key::InteractAlreadyDecided => "This card was already handled. Refreshing…",
+        // 等待 {owner} 审批  [approved, group approval spec]
+        Key::ApprovalWaitingFor => "Waiting for {0}",
+        // {0} 于 {1} 批准  [approved, group approval spec]
+        Key::ApprovalApprovedBy => "Approved by {0} at {1}",
+        // {0} 于 {1} 拒绝  [approved, group approval spec]
+        Key::ApprovalDeniedBy => "Denied by {0} at {1}",
+        // 你于 {0} 批准  [approved, group approval spec]
+        Key::ApprovalApprovedByYou => "Approved by you at {0}",
+        // 你于 {0} 拒绝  [approved, group approval spec]
+        Key::ApprovalDeniedByYou => "Denied by you at {0}",
+        // {0} 在 {1} 等你审批  [approved, group approval spec]
+        Key::ApprovalDmReminder => "{0} is waiting for your approval in {1}",
+        // 只有 {0} 能审批。  [approved, group approval spec]
+        Key::ApprovalOnlyOwner => "Only {0} can approve this.",
+        // 它的主人  [approved, group approval spec]
+        Key::OwnerFallback => "its owner",
         // 没选上：{0}  [approved, batch 2]
         Key::InteractRejected => "Choice not accepted: {0}",
         // 没成功：{0}  [approved, batch 2]

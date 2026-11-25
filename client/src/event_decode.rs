@@ -8,20 +8,9 @@ use robroz_contract::Event;
 use robroz_ui::cards::ApprovalExtras;
 use serde_json::Value;
 
-/// Event types this client does not draw yet; decoded as unknown so the
-/// caller skips them (and still moves its cursor).
-const NOT_DRAWN_YET: &[&str] = &["approval_reminder"];
-
 /// Decode one event. Unknown event *types* still fail (the caller skips
-/// them), and so do [`NOT_DRAWN_YET`] types.
+/// them).
 pub fn parse_event(value: Value) -> Result<(Event, Option<ApprovalExtras>), serde_json::Error> {
-    if let Some(kind) = value.get("type").and_then(Value::as_str) {
-        if NOT_DRAWN_YET.contains(&kind) {
-            return Err(serde::de::Error::custom(format!(
-                "event type {kind} is not drawn yet"
-            )));
-        }
-    }
     let event = serde_json::from_value(value)?;
     Ok((event, None))
 }
@@ -154,5 +143,24 @@ mod tests {
         assert!(expires_at.is_some());
         let card = ApprovalCard::from_event(&event).unwrap();
         assert!(matches!(card.state, ApprovalState::Expired { .. }));
+    }
+
+    #[test]
+    fn approval_reminder_decodes_and_the_owner_fields_reach_the_card() {
+        let (event, _) = ev(
+            r#"{"type":"approval_reminder","id":"reminder:a1","approvalId":"a1",
+            "groupId":"g1","groupName":"Site","botId":"b1","botName":"Ada","ownerUserId":"u1",
+            "ownerName":"Panda","state":"waiting","createdAt":"2026-10-07T19:00:00.000Z"}"#,
+        );
+        assert!(matches!(event, Event::ApprovalReminder { .. }));
+        let (event, _) = ev(
+            r#"{"type":"approval","id":"a1","botId":"b1","botName":"Ada",
+            "action":"delete","summary":"x","path":null,"decision":null,
+            "createdAt":"2026-10-07T19:00:00.000Z","answeredAt":null,"answeredBy":null,
+            "ownerUserId":"u1","ownerName":"Panda"}"#,
+        );
+        let card = ApprovalCard::from_event(&event).unwrap();
+        assert_eq!(card.owner_id.as_deref(), Some("u1"));
+        assert_eq!(card.owner_name.as_deref(), Some("Panda"));
     }
 }

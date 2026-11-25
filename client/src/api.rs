@@ -26,10 +26,11 @@ use robroz_contract::{
     TaskState, Unread, Unreads, UpdateMemory, UpdateSchedule, UpdateSkill,
     MCP_COMMAND_NOT_APPROVED, SETTINGS_APPROVAL_BOT_ID, SETTINGS_APPROVAL_BOT_NAME,
 };
-use robroz_contract::{ApprovalForbidden, ApprovalForbiddenReason, APPROVAL_FORBIDDEN};
+use robroz_contract::{ApprovalForbidden, ApprovalForbiddenReason, Me, APPROVAL_FORBIDDEN};
 use robroz_contract::{
     ModelSettings, ModelSettingsSource, ModelTestResult, SearchSettings, SearchTestResult,
 };
+use robroz_ui::cards::group_approval::owner_label;
 use robroz_ui::cards::interact::Note;
 use robroz_ui::cards::mcp::{Save as McpSave, SecretPut};
 use robroz_ui::i18n::{host_text, Key as Text};
@@ -42,7 +43,14 @@ use crate::event_decode;
 use robroz_ui::cards::search;
 use robroz_ui::cards::ApprovalExtras;
 
+/// The signed-in person in `--fake` runs; fake cards owned by this id show
+/// the owner's buttons, any other id the read-only view.
+pub const FAKE_ME_ID: &str = "u-me";
+pub const FAKE_ME_NAME: &str = "Panda";
+
 pub mod paths {
+    /// v0.2: who this client is signed in as.
+    pub const ME: &str = "/api/me";
     /// robroz#62: list and write memories.
     pub const MEMORIES: &str = "/api/memories";
     /// robroz#62: edit (PATCH) or forget (DELETE) one memory.
@@ -201,6 +209,40 @@ pub enum ApiError {
     Status(u16, String),
     Transport(String),
     Decode(String),
+    /// 403 `approval_forbidden` + `not_owner`: only the bro's owner may
+    /// decide. The host's owner name when it sent one.
+    NotApprovalOwner {
+        owner: Option<String>,
+    },
+    /// 403 `approval_forbidden` + `decided` / `expired`: not an error to
+    /// show; the card is fetched again and shows what happened.
+    ApprovalSettled,
+}
+
+/// A v0.2 403 with a `code`. The client never shows the host's `error`
+/// text for these; it picks its own copy from the code (and `reason`).
+fn coded_403(body: &str) -> Option<ApiError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Coded {
+        code: String,
+        #[serde(default)]
+        owner_name: Option<String>,
+    }
+    let coded = serde_json::from_str::<Coded>(body).ok()?;
+    let owner = coded.owner_name.filter(|n| !n.trim().is_empty());
+    match coded.code.as_str() {
+        APPROVAL_FORBIDDEN => {
+            let refused = serde_json::from_str::<ApprovalForbidden>(body).ok()?;
+            Some(match refused.reason {
+                ApprovalForbiddenReason::NotOwner => ApiError::NotApprovalOwner { owner },
+                ApprovalForbiddenReason::Decided | ApprovalForbiddenReason::Expired => {
+                    ApiError::ApprovalSettled
+                }
+            })
+        }
+        _ => None,
+    }
 }
 
 impl ApiError {
@@ -217,7 +259,9 @@ impl ApiError {
             | ApiError::BadRequest(msg)
             | ApiError::NotFound(msg)
             | ApiError::Decode(msg) => ConnError::classify(msg),
-            ApiError::CommandNotApproved(_) => ConnError::classify(&self.reason()),
+            ApiError::CommandNotApproved(_)
+            | ApiError::NotApprovalOwner { .. }
+            | ApiError::ApprovalSettled => ConnError::classify(&self.reason()),
         }
     }
 
@@ -227,6 +271,11 @@ impl ApiError {
         match self {
             ApiError::Transport(_) => Text::ClientNoHost.into(),
             ApiError::CommandNotApproved(_) => robroz_ui::cards::mcp::COMMAND_UNAPPROVED.into(),
+            ApiError::NotApprovalOwner { owner } => {
+                Text::ApprovalOnlyOwner.fill(&[&owner_label(owner.as_deref())])
+            }
+            // Never shown; the card is fetched again instead.
+            ApiError::ApprovalSettled => Text::InteractAlreadyDecided.into(),
             ApiError::Conflict(msg)
             | ApiError::BadRequest(msg)
             | ApiError::NotFound(msg)
@@ -243,6 +292,8 @@ impl ApiError {
                 Note::Failed(robroz_ui::cards::mcp::COMMAND_UNAPPROVED.into())
             }
             ApiError::BadRequest(msg) => Note::Rejected(msg.clone()),
+            ApiError::NotApprovalOwner { owner } => Note::OnlyOwner(owner.clone()),
+            ApiError::ApprovalSettled => Note::Settled,
             ApiError::Transport(_) => Note::Retry,
             ApiError::NotFound(msg) | ApiError::Status(_, msg) | ApiError::Decode(msg) => {
                 Note::Failed(msg.clone())
@@ -260,6 +311,9 @@ impl ApiError {
 
 /// Blocking calls; the app runs them off the UI thread.
 pub trait CardApi: Send + Sync {
+    /// v0.2: the user this client is signed in as. Older hosts have no
+    /// such route; the caller treats any error as "unknown".
+    fn me(&self) -> Result<Me, ApiError>;
     /// Every group's unread count and last activity, newest first.
     fn unread(&self) -> Result<Vec<Unread>, ApiError>;
     /// Mark a chat read up to now; returns its new unread state.
@@ -486,16 +540,9 @@ impl HttpApi {
             }
         }
         let msg = crate::conn::error_text(method, url, status, &body);
-        // v0.2 hosts answer an approval that was already decided or has
-        // expired with 403 `approval_forbidden`; to this client that is the
-        // old 409 (refetch and show the answer). `not_owner` stays a 403.
         if status == 403 {
-            if let Ok(refused) = serde_json::from_str::<ApprovalForbidden>(&body) {
-                if refused.code == APPROVAL_FORBIDDEN
-                    && refused.reason != ApprovalForbiddenReason::NotOwner
-                {
-                    return Err(ApiError::Conflict(msg));
-                }
+            if let Some(err) = coded_403(&body) {
+                return Err(err);
             }
         }
         Err(match status {
@@ -609,6 +656,10 @@ fn mcp_save_body(save: &McpSave, patch: bool) -> String {
 }
 
 impl CardApi for HttpApi {
+    fn me(&self) -> Result<Me, ApiError> {
+        decode(&self.get(paths::ME)?)
+    }
+
     fn unread(&self) -> Result<Vec<Unread>, ApiError> {
         Ok(decode::<Unreads>(&self.get(paths::UNREAD)?)?.groups)
     }
@@ -913,6 +964,14 @@ impl FakeApi {
 }
 
 impl CardApi for FakeApi {
+    fn me(&self) -> Result<Me, ApiError> {
+        Ok(Me {
+            id: FAKE_ME_ID.into(),
+            name: FAKE_ME_NAME.into(),
+            role: robroz_contract::UserRole::Admin,
+        })
+    }
+
     fn unread(&self) -> Result<Vec<Unread>, ApiError> {
         let mut all = self.unread.lock().expect("fake unread lock").clone();
         all.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
@@ -1727,6 +1786,44 @@ fn uuid_ish() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_403_is_told_apart_by_code_and_reason() {
+        let body = |reason: &str| {
+            format!(
+                r#"{{"error":"x","code":"approval_forbidden","reason":"{reason}","ownerName":"Lin"}}"#
+            )
+        };
+        assert_eq!(
+            coded_403(&body("not_owner")).map(|e| e.note()),
+            Some(Note::OnlyOwner(Some("Lin".into())))
+        );
+        for settled in ["decided", "expired"] {
+            assert_eq!(
+                coded_403(&body(settled)).map(|e| e.note()),
+                Some(Note::Settled)
+            );
+        }
+        // Not an approval 403, or not JSON: left to the generic mapping.
+        assert!(coded_403(r#"{"error":"x","code":"other"}"#).is_none());
+        assert!(coded_403("nope").is_none());
+        // No owner name: the note's copy falls back to "its owner".
+        let none = r#"{"error":"x","code":"approval_forbidden","reason":"not_owner"}"#;
+        assert_eq!(
+            coded_403(none).map(|e| e.note()),
+            Some(Note::OnlyOwner(None))
+        );
+        assert_eq!(
+            Note::OnlyOwner(None).text(),
+            "Only its owner can approve this."
+        );
+    }
+
+    #[test]
+    fn the_fake_api_signs_in_as_the_fake_owner() {
+        let me = FakeApi::new(Vec::new()).me().unwrap();
+        assert_eq!(me.id, FAKE_ME_ID);
+    }
+
     use super::*;
 
     #[test]
@@ -2691,7 +2788,10 @@ mod tests {
                 }
                 other => panic!("expected answered approval, got {other:?}"),
             }
-            assert!(matches!(api.decide(&id, true), Err(ApiError::Conflict(_))));
+            assert!(matches!(
+                api.decide(&id, true),
+                Err(ApiError::ApprovalSettled)
+            ));
             assert!(matches!(
                 api.decide("missing", true),
                 Err(ApiError::NotFound(_))
