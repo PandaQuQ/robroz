@@ -593,10 +593,34 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ClientTimedOut => "Timed out",
         // 找不到主机  [approved, disconnected state]
         Key::ClientHostNotFound => "Host not found",
-        // 宿主拒绝了令牌，请检查 `ROBROZ_TOKEN`。  [approved, disconnected state]
-        Key::ClientTokenRejected => "The host rejected the token. Check `ROBROZ_TOKEN`.",
+        // 宿主拒绝了令牌，请检查 ROBROZ_TOKEN。  [approved, connection form]
+        Key::ClientTokenRejected => "The host rejected the token. Check ROBROZ_TOKEN.",
+        // 令牌被拒绝  [approved, connection form]
+        Key::ClientTokenRejectedTitle => "Token rejected",
         // 连不上宿主。  [approved, disconnected state]
         Key::ClientCantReachHost => "Can't reach host.",
+        // 地址  [approved, connection form]
+        Key::ConnHostLabel => "Host",
+        // 令牌  [approved, connection form]
+        Key::ConnTokenLabel => "Token",
+        // 连接  [approved, connection form]
+        Key::ConnConnect => "Connect",
+        // 连接  [approved, connection form]
+        Key::ConnSectionTitle => "Connection",
+        // 连接中…  [approved, connection form]
+        Key::ConnConnecting => "Connecting…",
+        // 显示  [approved, connection form]
+        Key::ConnShow => "Show",
+        // 隐藏  [approved, connection form]
+        Key::ConnHide => "Hide",
+        // 清除  [approved, connection form]
+        Key::ConnClear => "Clear",
+        // 由 ROBROZ_HOST 设置  [approved, connection form]
+        Key::ConnSetByHost => "Set by ROBROZ_HOST",
+        // 由 ROBROZ_TOKEN 设置  [approved, connection form]
+        Key::ConnSetByToken => "Set by ROBROZ_TOKEN",
+        // 未加密，远程请用 HTTPS。  [approved, connection form]
+        Key::ConnUnencryptedHint => "Unencrypted. Use HTTPS for remote hosts.",
         // Language / 语言  [approved, settings row]
         Key::SettingsLanguage => "Language / 语言",
         // English  [approved, settings row; native name in both files]
