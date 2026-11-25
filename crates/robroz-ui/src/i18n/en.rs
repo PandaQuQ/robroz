@@ -627,6 +627,10 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::LocaleNameEn => "English",
         // 中文  [approved, settings row; native name in both files]
         Key::LocaleNameZh => "中文",
+        // 外观  [approved, appearance row]
+        Key::SettingsAppearance => "Appearance",
+        // 跟随系统  [approved, appearance row]
+        Key::SettingsThemeSystem => "System",
 
         // ---- Client-side errors (client/src/api.rs) ----
         // 连不上主机  [approved, batch 2]

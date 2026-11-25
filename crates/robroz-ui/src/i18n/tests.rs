@@ -251,6 +251,20 @@ fn language_names_are_native_in_both_locales() {
 }
 
 #[test]
+fn appearance_row_copy_is_english_first_then_chinese() {
+    let _en = scoped(Locale::En);
+    assert_eq!(Key::SettingsAppearance.as_str(), "Appearance");
+    assert_eq!(Key::SettingsThemeSystem.as_str(), "System");
+    assert_eq!(Key::ClientThemeLight.as_str(), "Light");
+    assert_eq!(Key::ClientThemeDark.as_str(), "Dark");
+    let _zh = scoped(Locale::Zh);
+    assert_eq!(Key::SettingsAppearance.as_str(), "外观");
+    assert_eq!(Key::SettingsThemeSystem.as_str(), "跟随系统");
+    assert_eq!(Key::ClientThemeLight.as_str(), "浅色");
+    assert_eq!(Key::ClientThemeDark.as_str(), "深色");
+}
+
+#[test]
 fn every_contract_host_string_maps_to_english() {
     use robroz_contract::host_text::{self as ht, HOST_UI_STRINGS};
     for &(name, text) in HOST_UI_STRINGS {

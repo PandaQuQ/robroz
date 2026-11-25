@@ -320,6 +320,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::SettingsLanguage => "Language / 语言",
         Key::LocaleNameEn => "English",
         Key::LocaleNameZh => "中文",
+        Key::SettingsAppearance => "外观",
+        Key::SettingsThemeSystem => "跟随系统",
 
         // ---- Client-side errors (client/src/api.rs) ----
         Key::ClientNoHost => "连不上主机",
