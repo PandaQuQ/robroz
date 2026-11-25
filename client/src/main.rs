@@ -52,6 +52,7 @@ use robroz_ui::view::{self, color, Action, Caps};
 use robroz_ui::{Mode, Skin};
 
 use api::{ApiError, CardApi, FakeApi, HttpApi};
+use conn::form::{self as conn_form, ConnForm};
 use conn::Conn;
 use gallery::Gallery;
 use host_state::HostState;
@@ -341,6 +342,9 @@ enum Message {
     SystemTheme(iced::theme::Mode),
     /// Language row on the Settings (模型) page: English / 中文.
     SetLocale(Locale),
+    /// Connection form (offline pane and Settings).
+    Conn(conn_form::Event),
+    ConnFinished(Result<Vec<GroupTab>, conn_form::FormError>),
     Resized(Size),
     TouchSeen,
     Shoot(Option<window::Id>),
@@ -398,6 +402,8 @@ struct App {
     review_rules: ReviewRulesPage,
     /// 模型 page (robroz#102).
     model_settings: ModelPage,
+    /// Host and token form (offline pane and Settings).
+    conn_form: ConnForm,
 
     /// The appearance chosen in Settings (or `ROBROZ_THEME` in fake runs).
     theme_pref: ThemePref,
@@ -443,6 +449,25 @@ fn call<T: Send + 'static>(
             .await
             .expect("api task panicked")
     }
+}
+
+/// Persist the form (unless an env var blocks the write) and list groups
+/// with a fresh [`Conn::from_env`]. Runs off the UI thread.
+fn connect_blocking(
+    host: String,
+    token: conn::TokenEdit,
+) -> Result<Vec<GroupTab>, conn_form::FormError> {
+    if let Err(err) = conn::save(&host, token) {
+        match err {
+            conn::SaveError::EnvOverride { .. } => {}
+            conn::SaveError::Io(_) => {
+                return Err(conn_form::FormError::Save(err.to_string()));
+            }
+        }
+    }
+    HttpSource::from_env()
+        .groups()
+        .map_err(|err| conn_form::FormError::Conn(err.as_conn_error()))
 }
 
 impl App {
@@ -507,6 +532,7 @@ impl App {
 
             review_rules: ReviewRulesPage::default(),
             model_settings: ModelPage::default(),
+            conn_form: ConnForm::from_config(conn::load()),
 
             theme_pref,
             system_mode: Mode::Light,
@@ -2050,38 +2076,20 @@ impl App {
                     };
                 match result {
                     Ok(groups) => {
-                        for g in &groups {
-                            self.convs.upsert(&g.id, &g.name, false);
-                        }
-                        self.groups = groups;
-                        self.loaded = true;
-                        self.load_failed = false;
-                        self.error = None;
-                        let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
-                        // `--fake` + `ROBROZ_OPEN=<group>`: open that chat
-                        // (screenshots of the chat screen on a phone).
-                        let wanted = std::env::var("ROBROZ_OPEN")
-                            .ok()
-                            .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
-                        if let Some(g) = wanted {
-                            tasks.push(self.open_chat(g));
-                        } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
-                            // Desktop opens the first chat; narrow starts on the list.
-                            if !self.narrow() {
-                                tasks.push(self.open_chat(first));
-                            }
-                        }
+                        let load = self.apply_loaded_groups(groups);
                         // `--fake` + `ROBROZ_PAGE=model`: then switch to the
                         // Model settings page (platform screenshots, see
                         // `.github/workflows/shots.yml`).
                         if self.fake && std::env::var("ROBROZ_PAGE").is_ok_and(|v| v == "model") {
-                            tasks.push(Task::done(Message::OpenModel));
+                            return Task::batch([load, Task::done(Message::OpenModel)]);
                         }
-                        return Task::batch(tasks);
+                        return load;
                     }
                     Err(err) => {
                         self.load_failed = !self.loaded;
-                        self.error = Some(err.0);
+                        self.error = Some(err.0.clone());
+                        self.conn_form.error =
+                            Some(conn_form::FormError::Conn(err.as_conn_error()));
                     }
                 }
             }
@@ -2316,6 +2324,19 @@ impl App {
                     }
                 }
             }
+            Message::Conn(event) => match event {
+                conn_form::Event::Host(host) => self.conn_form.set_host(host),
+                conn_form::Event::Token(token) => self.conn_form.set_token(token),
+                conn_form::Event::ToggleShow => self.conn_form.toggle_show(),
+                conn_form::Event::Clear => self.conn_form.request_clear(),
+                conn_form::Event::Connect => {
+                    if self.conn_form.connecting {
+                        return Task::none();
+                    }
+                    return self.start_connect();
+                }
+            },
+            Message::ConnFinished(result) => return self.finish_connect(result),
             Message::Resized(size) => self.width = size.width,
             Message::TouchSeen => self.touch = true,
             Message::Shoot(Some(id)) => return window::screenshot(id).map(Message::Shot),
@@ -2524,6 +2545,107 @@ impl App {
         .into()
     }
 
+    /// Same connection form as the offline pane, as wide as the Language row.
+    /// `titled` is Settings only: a heading matching the Model card.
+    fn connection_form(&self, t: &Skin, titled: bool) -> Element<'_, Message> {
+        conn_form::view(t, &self.conn_form, titled).map(Message::Conn)
+    }
+
+    /// Save (when the fields are not env-locked) and probe the host off the
+    /// UI thread, then rebuild [`Conn`] with [`Conn::from_env`].
+    fn start_connect(&mut self) -> Task<Message> {
+        if !self.conn_form.connect_enabled() {
+            return Task::none();
+        }
+        self.conn_form.connecting = true;
+        self.conn_form.error = None;
+        // Pause the unreachable-pane auto-retry while this attempt is in flight.
+        self.in_flight = true;
+        let host = self.conn_form.host_for_save();
+        let token = self.conn_form.token_edit();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || connect_blocking(host, token))
+                    .await
+                    .expect("connect task panicked")
+            },
+            Message::ConnFinished,
+        )
+    }
+
+    fn finish_connect(
+        &mut self,
+        result: Result<Vec<GroupTab>, conn_form::FormError>,
+    ) -> Task<Message> {
+        self.conn_form.connecting = false;
+        self.in_flight = false;
+        match result {
+            Ok(groups) => {
+                self.conn_form.error = None;
+                self.conn_form.reload();
+                if self.fake {
+                    return Task::none();
+                }
+                self.adopt_conn_from_env();
+                // Reuse the first-listing success path, then stay on Settings
+                // if that's where Connect was pressed.
+                let stay = self.page;
+                let task = self.apply_loaded_groups(groups);
+                if stay != Page::Group {
+                    self.page = stay;
+                }
+                task
+            }
+            Err(err) => {
+                if !self.fake {
+                    self.adopt_conn_from_env();
+                    self.loaded = false;
+                    self.load_failed = true;
+                    self.stream_up = false;
+                }
+                self.conn_form.reload();
+                self.conn_form.error = Some(err);
+                Task::none()
+            }
+        }
+    }
+
+    /// The host listed groups: record them and start the usual follow-up
+    /// loads. `--fake` + `ROBROZ_OPEN` opens that chat; otherwise the
+    /// desktop client opens the first one.
+    fn apply_loaded_groups(&mut self, groups: Vec<GroupTab>) -> Task<Message> {
+        for g in &groups {
+            self.convs.upsert(&g.id, &g.name, false);
+        }
+        self.groups = groups;
+        self.loaded = true;
+        self.load_failed = false;
+        self.error = None;
+        let mut tasks = vec![self.poll(), self.load_unread(), self.load_bros()];
+        let wanted = std::env::var("ROBROZ_OPEN")
+            .ok()
+            .filter(|g| self.fake && self.groups.iter().any(|x| &x.id == g));
+        if let Some(g) = wanted {
+            tasks.push(self.open_chat(g));
+        } else if let Some(first) = self.groups.first().map(|g| g.id.clone()) {
+            // Desktop opens the first chat; narrow starts on the list.
+            if !self.narrow() {
+                tasks.push(self.open_chat(first));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// Point the live source, API and SSE connection at [`Conn::from_env`].
+    fn adopt_conn_from_env(&mut self) {
+        let http = HttpSource::from_env();
+        self.origin = http.base().to_string();
+        self.conn = Some(http.conn().clone());
+        self.api = Arc::new(HttpApi::new(http.conn().clone()).answering_as(user_name()));
+        *self.source.lock().expect("event source lock poisoned") = Box::new(http);
+        self.stream_up = false;
+    }
+
     fn group_list(&self, t: &Skin, width: Length) -> Element<'_, Message> {
         if !self.host_state().shows_sidebar() {
             // Nothing to list until the host answers: no empty-account hint.
@@ -2631,23 +2753,15 @@ impl App {
     fn page_view(&self, t: &Skin) -> Element<'_, Message> {
         let state = self.host_state();
         if !state.shows_sidebar() {
-            // Before the host answers: blank while waiting, or 「连不上宿主」
-            // with the address on a lighter line below, a short reason
-            // 12px to the right when we have one, and the same Language
-            // row as the Model page so the language can still be changed.
-            let notice = state.notice().map(|key| {
-                let mut detail = row![text(self.origin.as_str())
+            // Before the host answers: blank while waiting, or a headline
+            // that follows the error (「令牌被拒绝」 / 「连不上宿主」) with
+            // only the address on a lighter line below. The reason is
+            // shown once, under the connection form. The Language row is
+            // the same control as the Model page.
+            let notice = state.notice(self.error.as_deref()).map(|key| {
+                let detail = text(self.origin.as_str())
                     .size(t.type_.foot)
-                    .color(color(t.palette.text3))]
-                .spacing(12)
-                .align_y(Alignment::Center);
-                if let Some(reason) = self.error.as_deref().and_then(host_state::connect_reason) {
-                    detail = detail.push(
-                        text(reason)
-                            .size(t.type_.foot)
-                            .color(color(t.palette.text3)),
-                    );
-                }
+                    .color(color(t.palette.text3));
                 let head = column![
                     text(key).size(t.type_.body).color(color(t.palette.text)),
                     detail,
@@ -2655,13 +2769,14 @@ impl App {
                 .spacing(4)
                 .align_x(Alignment::Center);
                 if state.shows_language_row() {
-                    // Offline pane only: 360px centred row, 24px below the
-                    // address line. The Model page still uses the full-width
-                    // language_row as before.
+                    // Offline pane only: 360px centred Language row and the
+                    // same-width connection form, 24px below the address
+                    // line. The Model page still uses the full-width row.
                     Element::from(
                         column![
                             head,
                             container(self.language_row(t)).width(Length::Fixed(360.0)),
+                            container(self.connection_form(t, false)).width(Length::Fixed(360.0)),
                         ]
                         .spacing(24)
                         .align_x(Alignment::Center),
@@ -2719,6 +2834,7 @@ impl App {
                     column![
                         view::model_panel(t, &self.model_settings).map(Message::Ui),
                         self.language_row(t),
+                        self.connection_form(t, true),
                     ]
                     .spacing(t.metrics.row_pad_h),
                 )
