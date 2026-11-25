@@ -605,6 +605,8 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ConnTokenLabel => "Token",
         // 连接  [approved, connection form]
         Key::ConnConnect => "Connect",
+        // 连接  [approved, connection form]
+        Key::ConnSectionTitle => "Connection",
         // 连接中…  [approved, connection form]
         Key::ConnConnecting => "Connecting…",
         // 显示  [approved, connection form]

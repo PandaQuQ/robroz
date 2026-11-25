@@ -309,6 +309,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ConnHostLabel => "地址",
         Key::ConnTokenLabel => "令牌",
         Key::ConnConnect => "连接",
+        Key::ConnSectionTitle => "连接",
         Key::ConnConnecting => "连接中…",
         Key::ConnShow => "显示",
         Key::ConnHide => "隐藏",

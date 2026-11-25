@@ -2483,8 +2483,9 @@ impl App {
     }
 
     /// Same connection form as the offline pane, as wide as the Language row.
-    fn connection_form(&self, t: &Skin) -> Element<'_, Message> {
-        conn_form::view(t, &self.conn_form).map(Message::Conn)
+    /// `titled` is Settings only: a heading matching the Model card.
+    fn connection_form(&self, t: &Skin, titled: bool) -> Element<'_, Message> {
+        conn_form::view(t, &self.conn_form, titled).map(Message::Conn)
     }
 
     /// Save (when the fields are not env-locked) and probe the host off the
@@ -2712,7 +2713,7 @@ impl App {
                         column![
                             head,
                             container(self.language_row(t)).width(Length::Fixed(360.0)),
-                            container(self.connection_form(t)).width(Length::Fixed(360.0)),
+                            container(self.connection_form(t, false)).width(Length::Fixed(360.0)),
                         ]
                         .spacing(24)
                         .align_x(Alignment::Center),
@@ -2770,7 +2771,7 @@ impl App {
                     column![
                         view::model_panel(t, &self.model_settings).map(Message::Ui),
                         self.language_row(t),
-                        self.connection_form(t),
+                        self.connection_form(t, true),
                     ]
                     .spacing(t.metrics.row_pad_h),
                 )

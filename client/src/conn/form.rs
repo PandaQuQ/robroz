@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use iced::widget::{button, column, container, row, text, text_input};
+use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length, Padding, Theme as IcedTheme,
 };
@@ -252,7 +252,8 @@ pub fn is_insecure_remote(host: &str) -> bool {
 }
 
 /// The connection form, as wide as its parent (Language row width).
-pub fn view<'a>(t: &Skin, form: &'a ConnForm) -> Element<'a, Event> {
+/// `titled` adds a Model-card-style heading — Settings only.
+pub fn view<'a>(t: &Skin, form: &'a ConnForm, titled: bool) -> Element<'a, Event> {
     let pad = Padding::from([t.metrics.row_pad_h * 0.75, t.metrics.row_pad_h]);
     let mut fields = column![].spacing(10);
 
@@ -341,10 +342,44 @@ pub fn view<'a>(t: &Skin, form: &'a ConnForm) -> Element<'a, Event> {
         }),
     ];
 
-    container(container(body).padding(pad).width(Fill))
+    let fields = container(body).padding(pad).width(Fill);
+    let card: Element<'a, Event> = if titled {
+        column![section_heading(t), divider(t), fields].into()
+    } else {
+        fields.into()
+    };
+    container(card)
         .width(Fill)
         .style(view::card_style(*t))
         .into()
+}
+
+fn section_heading<'a>(t: &Skin) -> Element<'a, Event> {
+    let m = t.metrics;
+    let head = row![text(Text::ConnSectionTitle)
+        .size(t.type_.list_title)
+        .font(view::bold())
+        .color(color(t.palette.text))]
+    .align_y(Alignment::Center);
+    container(head)
+        .height(Length::Fixed(m.panel_head_height))
+        .padding(Padding::from([0.0, m.row_pad_h]))
+        .align_y(Alignment::Center)
+        .into()
+}
+
+fn divider<'a>(t: &Skin) -> Element<'a, Event> {
+    let c = t.palette.divider;
+    container(
+        container(Space::new().width(Fill).height(t.stroke.divider)).style(move |_| {
+            container::Style {
+                background: Some(color(c).into()),
+                ..container::Style::default()
+            }
+        }),
+    )
+    .width(Fill)
+    .into()
 }
 
 fn field_label<'a>(t: &Skin, label: &'static str) -> Element<'a, Event> {
@@ -540,6 +575,13 @@ mod tests {
         let mut connecting = form(DEFAULT_HOST, Source::Default, TokenState::None);
         connecting.connecting = true;
         assert!(!connecting.connect_enabled());
+    }
+
+    #[test]
+    fn section_title_is_connection_in_both_locales() {
+        use robroz_ui::i18n::{text_in, Locale};
+        assert_eq!(text_in(Locale::En, Text::ConnSectionTitle), "Connection");
+        assert_eq!(text_in(Locale::Zh, Text::ConnSectionTitle), "连接");
     }
 
     #[test]
