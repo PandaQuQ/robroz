@@ -489,6 +489,38 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::ApprovalOnlyOwner => "Only {0} can approve this.",
         // 它的主人  [approved, group approval spec]
         Key::OwnerFallback => "its owner",
+        // 只有 {0} 能修改这个 bro。  [approved, status-code i18n; needs UI review]
+        Key::BroOnlyOwner => "Only {0} can change this bro.",
+        // 你拒绝了。  [approved, status-code i18n; needs UI review]
+        Key::FailDenied => "You denied this.",
+        // 审批已过期。  [approved, status-code i18n; needs UI review]
+        Key::FailApprovalExpired => "The approval expired.",
+        // 模型没有回复。  [approved, status-code i18n; needs UI review]
+        Key::FailModelNoReply => "The model did not reply.",
+        // 工具调用超过了轮次上限。  [approved, status-code i18n; needs UI review]
+        Key::FailToolRoundLimit => "The tool was called too many times.",
+        // 出网次数已达上限。  [approved, status-code i18n; needs UI review]
+        Key::FailOutboundOverQuota => "The outbound request quota was reached.",
+        // 出网只允许 GET。  [approved, status-code i18n; needs UI review]
+        Key::FailOutboundNotGet => "Outbound requests may only use GET.",
+        // 没能保存审批状态。  [approved, status-code i18n; needs UI review]
+        Key::FailSaveApprovalState => "Couldn't save the approval state.",
+        // 没能继续已批准的调用。  [approved, status-code i18n; needs UI review]
+        Key::FailResumeApprovedCall => "Couldn't resume the approved call.",
+        // 这次调用在等审批。  [approved, status-code i18n; needs UI review]
+        Key::FailWaitingApproval => "This call is waiting for approval.",
+        // 工具调用失败了。  [approved, status-code i18n; needs UI review]
+        Key::FailToolCall => "The tool call failed.",
+        // 这个工具还需要批准。  [approved, status-code i18n; needs UI review]
+        Key::FailToolNeedsApproval => "This tool still needs approval.",
+        // 没做成。  [approved, status-code i18n; needs UI review]
+        Key::FailOther => "This didn't get done.",
+        // 查看详情  [approved, status-code i18n; needs UI review]
+        Key::FailureDetailShow => "Show details",
+        // 收起详情  [approved, status-code i18n; needs UI review]
+        Key::FailureDetailHide => "Hide details",
+        // 请求没成功。  [approved, status-code i18n; needs UI review]
+        Key::ClientRequestFailed => "The request failed.",
         // 没选上：{0}  [approved, batch 2]
         Key::InteractRejected => "Choice not accepted: {0}",
         // 没成功：{0}  [approved, batch 2]

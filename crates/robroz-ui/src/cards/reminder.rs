@@ -83,16 +83,17 @@ impl Reminder {
         }
     }
 
-    /// The 11px time on the right. A result already says its time in the
-    /// sentence, so only a waiting or expired row shows one.
+    /// The 11px time on the right. Every row shows one: `createdAt` while
+    /// waiting, `answeredAt` (or `createdAt` if that is missing) otherwise.
     pub fn time<Tz: TimeZone>(&self, tz: &Tz) -> Option<String>
     where
         Tz::Offset: std::fmt::Display,
     {
         let at = match self.state {
             ReminderState::Waiting => self.created_at,
-            ReminderState::Expired => self.answered_at.unwrap_or(self.created_at),
-            ReminderState::Approved | ReminderState::Denied => return None,
+            ReminderState::Approved | ReminderState::Denied | ReminderState::Expired => {
+                self.answered_at.unwrap_or(self.created_at)
+            }
         };
         Some(clock_in(at, tz)).filter(|t| !t.is_empty())
     }
@@ -142,11 +143,12 @@ mod tests {
         .unwrap();
         let _g = scoped(Locale::En);
         assert_eq!(r.text(&Utc), "Approved by you at 19:02");
-        assert_eq!(r.time(&Utc), None);
+        assert_eq!(r.time(&Utc).as_deref(), Some("19:02"));
         assert_eq!(r.dot(), Dot::Done);
         let d = Reminder::from_event(&event(ReminderState::Denied, Some("2026-10-07T19:03:00Z")))
             .unwrap();
         assert_eq!(d.text(&Utc), "Denied by you at 19:03");
+        assert_eq!(d.time(&Utc).as_deref(), Some("19:03"));
         assert_eq!(d.dot(), Dot::Void);
     }
 
