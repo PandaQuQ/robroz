@@ -11,11 +11,11 @@
   <a href="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml"><img src="https://github.com/PandaQuQ/robroz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
-> **Repository split.** This repository holds the robroz host (server), the runner, the shared contract and the Docker images. The desktop and mobile client live in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client). Some documents below still describe both; they will be rewritten per repository.
+> This repository is the robroz **host** (server): the HTTP API, the runner, the shared contract and the Docker images. The desktop and mobile clients are in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client).
 
-Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. Rust host + native desktop client.
+Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. The host is written in Rust; the native clients are in [robroz-client](https://github.com/PandaQuQ/robroz-client).
 
-v0.1.0 is single-user and self-hosted. See [CHANGELOG.md](CHANGELOG.md) and [docs/install.md](docs/install.md).
+See [CHANGELOG.md](CHANGELOG.md) and [docs/install.md](docs/install.md).
 
 ## What is robroz
 
@@ -28,11 +28,7 @@ It is for people who want several AI agents in one workspace they control, and w
   <img src="docs/assets/main-en-dark.png" alt="robroz desktop client, dark theme: a group chat with status and delivery cards" width="49%">
 </p>
 
-<sub>Demo data</sub>
-
-The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [docs/configuration.md](docs/configuration.md) for the saved `lang` file.
-
-Under Language is an Appearance / 「外观」 row: System / 「跟随系统」, Light / 「浅色」, and Dark / 「深色」. The default is System, which follows the operating system as it changes. The choice is saved as one line (`system`, `light`, or `dark`) in a `theme` file next to `lang`.
+<sub>Demo data, shown in the desktop client</sub>
 
 ## Works today
 
@@ -54,18 +50,17 @@ These are accepted design or in progress. They are **not** shipped on `main`. De
 
 - Cancelling a timed-out step or stopping the container.
 - Accounts for more than one person on a host. Bro owners and owner-only approvals are on `main`; managing users and tokens is not.
-- The mobile client (`mobile/`, Android and iOS). It builds in CI but has not been tested on a real device, and the iOS build is unsigned.
 
 ## Quick start
 
-You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. To install a published binary instead, see [docs/install.md](docs/install.md). The walk-through there also uses `curl` and `jq`. From the repository root:
+You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. To install a published binary or run the host in Docker instead, see [docs/install.md](docs/install.md) and [docs/docker-host.md](docs/docker-host.md). The walk-through there also uses `curl` and `jq`. From the repository root:
 
 ```sh
-cargo build -p robroz-host -p robroz-client
 docker build -f runner/Dockerfile -t robroz-runner:local .
 cargo run -p robroz-host     # listens on 127.0.0.1:8790, no token required
-cargo run -p robroz-client   # in a second terminal; default host http://127.0.0.1:8790
 ```
+
+Then start a client from [robroz-client](https://github.com/PandaQuQ/robroz-client); its default host is `http://127.0.0.1:8790`.
 
 The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. A loopback listener needs no token; listening on a non-loopback address without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` refuses to start.
 
@@ -90,18 +85,14 @@ Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) an
 
 ## Architecture
 
-The native desktop client (`robroz-client`, [iced](https://iced.rs/) 0.14, Windows, Linux and macOS, no web view) talks to a single-machine host (`robroz-host`) over HTTP and SSE. The host owns SQLite, model and tool calls, search, MCP, approvals and the container pump. Each task runs in a Docker container (`robroz-runner`) with no network; the container never sees model keys. How the pieces fit together: [docs/architecture.md](docs/architecture.md).
+Clients from [robroz-client](https://github.com/PandaQuQ/robroz-client) talk to a single-machine host (`robroz-host`) over HTTP and SSE, using the types in `robroz-contract`; the client repository depends on it by git tag (`contract-v*`). The host owns SQLite, model and tool calls, search, MCP, approvals and the container pump. Each task runs in a Docker container (`robroz-runner`) with no network; the container never sees model keys. How the pieces fit together: [docs/architecture.md](docs/architecture.md).
 
 | Path | Crate | Role |
 | --- | --- | --- |
 | `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model and tool calls, search, MCP, auto-review |
 | `runner/` | `robroz-runner` | Task executor inside the container |
-| `client/` | `robroz-client` | iced desktop client |
 | `crates/robroz-contract` | `robroz-contract` | API contract: request and response bodies, event (card) types, task states |
 | `crates/robroz-policy` | `robroz-policy` | Permission tiers, outbound metering, blocking lines |
-| `crates/robroz-card` | `robroz-card` | Card status text, tone and actions |
-| `crates/robroz-tokens` | `robroz-tokens` | Design tokens generated from `tokens.json` |
-| `crates/robroz-ui` | `robroz-ui` | Shared client UI layer and theme |
 | `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
 | `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
 
@@ -123,7 +114,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | [docs/design/auto-review.md](docs/design/auto-review.md) | Auto-review and allow rules |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | Memory, skills, confirm cards |
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
-| [docs/client.md](docs/client.md) | Client UI behaviour |
+| [docs/client.md](docs/client.md) | Client UI behaviour (moving to robroz-client) |
 | [docs/architecture.md](docs/architecture.md) | Components, containers, theming |
 | [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Later roadmap |
@@ -141,13 +132,11 @@ Run the same commands as CI before opening a pull request:
 
 ```sh
 cargo test -p robroz-mcp --features fixture
-cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-card -p robroz-runner -p robroz-tokens
-cargo build -p robroz-client
-cargo test -p robroz-client -p robroz-ui -p robroz-tokens
+cargo test -p robroz-host -p robroz-contract -p robroz-policy -p robroz-runner
 scripts/e2e.sh   # needs Docker, curl and jq
 ```
 
-CI builds and tests the client on Linux for pull requests, and on Windows, Linux and macOS after merging to `main` and on a nightly schedule. A `cargo-deny` job checks that new dependencies use an AGPL-compatible licence and come from a known registry; advisories are reported and do not block the merge. Run the same checks locally after installing [cargo-deny](https://github.com/EmbarkStudios/cargo-deny):
+CI runs the host tests and the end-to-end script on Linux. A `cargo-deny` job checks that new dependencies use an AGPL-compatible licence and come from a known registry; advisories are reported and do not block the merge. Run the same checks locally after installing [cargo-deny](https://github.com/EmbarkStudios/cargo-deny):
 
 ```sh
 cargo deny check licenses bans sources
@@ -160,7 +149,7 @@ cargo deny check advisories   # reported, does not block merging
 - Every contributor must sign the [Contributor License Agreement](CLA.md) once: tick the CLA checkbox in the pull request template, or add the CLA line from `CLA.md` to the pull request body. Pull requests without it are not merged.
 - Commit messages and pull request titles and bodies are in English and follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(host): …`, `fix(client): …`, `docs: …`. Pull requests are squash-merged with the title as the commit message.
 - The contract is add-only: new card types, endpoints and optional fields are fine; existing fields, the task states and `botId` / `botName` are frozen.
-- `main` is protected: changes land only through a pull request, and the five CI checks (`host`, `cla`, `client (ubuntu-latest)`, `e2e`, `cargo-deny`) must pass before merge. No one can bypass this, admins included.
+- `main` is protected: changes land only through a pull request, and the four CI checks (`host`, `cla`, `e2e`, `cargo-deny`) must pass before merge. No one can bypass this, admins included.
 - No force-push. If your branch is behind, merge `main` into it.
 - Never commit `.env`, `.pem`, `.dev.vars`, keys or tokens.
 - Keep `README.md` and `README.zh-CN.md` in sync; change both in the same pull request.
@@ -173,6 +162,6 @@ SPDX-License-Identifier: `AGPL-3.0-only`
 
 robroz is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). If you modify robroz and let others use it over a network, you must offer them your modified source code (AGPL section 13).
 
-robroz is also available under a commercial licence for closed-source or proprietary use; see [COMMERCIAL.md](COMMERCIAL.md). For commercial licensing, [contact the author](https://github.com/PandaQuQ).
+The host in this repository is also available under a commercial licence for closed-source or proprietary use; the clients are AGPL-3.0 only. See [COMMERCIAL.md](COMMERCIAL.md). For commercial licensing, [contact the author](https://github.com/PandaQuQ).
 
 Contributions are accepted under the [Contributor License Agreement](CLA.md).
