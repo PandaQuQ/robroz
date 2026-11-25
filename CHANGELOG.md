@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Host Docker image and compose example ([#170](https://github.com/PandaQuQ/robroz/pull/170)): `host/Dockerfile` (`debian:bookworm-slim`, Docker CLI, no Node), `deploy/compose.host.yml`, and [docs/docker-host.md](docs/docker-host.md). The host binary release is unchanged.
+- Release builds push `ghcr.io/pandaquq/robroz-host:<tag>` next to the runner image ([#171](https://github.com/PandaQuQ/robroz/pull/171)): linux/amd64 only, version tags only, no `latest` tag.
+
+## [0.1.1] - 2026-11-25
+
+Published as a pre-release.
+
+### Changed
+
+- Release notes are written in English and Chinese, from `.github/release-notes/<tag>.md` or a template, and `v0.*` releases are marked as pre-releases ([#166](https://github.com/PandaQuQ/robroz/pull/166)).
+
 ### Fixed
 
 - The Linux client's X11 window icon (`_NET_WM_ICON`) is now 128×128 instead of 512×512, so window managers and taskbars that use it show the robroz icon instead of a generic one. The 512×512 property was about 1 MiB, larger than many X11 clients read ([#167](https://github.com/PandaQuQ/robroz/pull/167)).
@@ -38,5 +51,6 @@ Published as a pre-release. First release of robroz: a single-user, self-hosted 
 
 - Windows: an extra command-line window opens when the client starts. Leave it open; closing it also quits the client. Fixed in the next release.
 
-[Unreleased]: https://github.com/PandaQuQ/robroz/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/PandaQuQ/robroz/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/PandaQuQ/robroz/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PandaQuQ/robroz/releases/tag/v0.1.0
