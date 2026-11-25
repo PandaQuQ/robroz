@@ -7,11 +7,12 @@ name: Release
 # workflow_dispatch is a dry run: it builds and packages the same artifacts,
 # and builds the runner image without pushing it. It does not create a release.
 #
-# A separate job builds the runner image (linux/amd64) from runner/Dockerfile
-# (context is the repository root) and pushes it to
-# ghcr.io/pandaquq/robroz-runner:<tag>. The draft release does not wait for
-# that job, so host and client assets still upload if the image push fails.
-# There is no `latest` tag yet.
+# A separate job builds two images (linux/amd64, context is the repository
+# root) and pushes them with the version tag only:
+#   runner/Dockerfile -> ghcr.io/pandaquq/robroz-runner:<tag>
+#   host/Dockerfile   -> ghcr.io/pandaquq/robroz-host:<tag>
+# The draft release does not wait for that job, so host and client assets
+# still upload if an image push fails. There is no `latest` tag.
 on:
   push:
     tags: ["v*"]
@@ -159,7 +160,18 @@ jobs:
             --title "robroz ${GITHUB_REF_NAME}" \
             --notes-file notes.md
 
-  runner-image:
+  image:
+    name: image (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: robroz-runner
+            file: runner/Dockerfile
+            description: Task runner image for robroz host sandboxes
+          - image: robroz-host
+            file: host/Dockerfile
+            description: robroz host with the Docker CLI, for running the host in a container
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -179,10 +191,11 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           REF_NAME: ${{ github.ref_name }}
           EVENT_NAME: ${{ github.event_name }}
+          IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
           owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
-          echo "name=ghcr.io/${owner}/robroz-runner" >> "$GITHUB_OUTPUT"
+          echo "name=ghcr.io/${owner}/${IMAGE}" >> "$GITHUB_OUTPUT"
           tag="$REF_NAME"
           # A dispatched dry run may come from a branch whose name contains slashes.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -192,7 +205,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: runner/Dockerfile
+          file: ${{ matrix.file }}
           push: ${{ github.event_name == 'push' }}
           platforms: linux/amd64
           # Attestation needs id-token: write. Keep this job's permissions to
@@ -202,8 +215,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/PandaQuQ/robroz
             org.opencontainers.image.url=https://github.com/PandaQuQ/robroz
-            org.opencontainers.image.title=robroz-runner
-            org.opencontainers.image.description=Task runner image for robroz host sandboxes
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=AGPL-3.0-only
