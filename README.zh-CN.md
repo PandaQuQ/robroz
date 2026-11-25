@@ -21,11 +21,16 @@ v0.1.0 是单用户、自托管的。见 [CHANGELOG.md](CHANGELOG.md) 和 [docs/
 
 适合想在自己控制的电脑上用一组 AI 智能体、并且风险步骤要自己点头的人。
 
-<!-- TODO(screenshot): main window at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/app-main-zh-dark.png">
+  <img src="docs/assets/app-main-zh-light.png" alt="robroz 桌面客户端：群聊里的状态卡和交付卡" width="800">
+</picture>
+
+<sub>示例数据（Demo data）。</sub>
 
 桌面客户端界面默认是英文。要换成中文，到设置（模型）页的「Language / 语言」那一行切换。`ROBROZ_LANG=en|zh` 只对这一次运行生效，不会写回已保存的选择。保存的 `lang` 文件见 [docs/configuration.md](docs/configuration.md)。
 
-语言那一行下面是 Appearance / 「外观」：System / 「跟随系统」、Light / 「浅色」、Dark / 「深色」。默认是 System，会跟着操作系统实时切换。选择保存在 `lang` 旁边的 `theme` 文件里，一行，值为 `system`、`light` 或 `dark`。底栏没有 Dark 开关。
+语言那一行下面是 Appearance / 「外观」：System / 「跟随系统」、Light / 「浅色」、Dark / 「深色」。默认是 System，会跟着操作系统实时切换。选择保存在 `lang` 旁边的 `theme` 文件里，一行，值为 `system`、`light` 或 `dark`。
 
 ## 现在能用的
 
@@ -37,7 +42,6 @@ v0.1.0 是单用户、自托管的。见 [CHANGELOG.md](CHANGELOG.md) 和 [docs/
 - **私聊。** 可以和一个 bro 单独对话。
 - **Docker 沙箱。** 每份工作在你机器上的一个容器里跑，容器没有网络。
 - **审批和放行规则（Allow rules）。** 有风险的步骤会先问你。自动审核会按你的放行规则检查每张卡；没有规则放行时，卡会发到你的私聊。记忆和技能的变更也要先经你确认。
-  <!-- TODO(screenshot): approval card at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
 - **模型设置。** 可以接任意 OpenAI 兼容的模型。填了地址和模型名就算配好，密钥可选。可以在客户端填，也可以用环境变量。
 
 还可以用联网搜索（Brave 或 SearXNG）、MCP 工具和例行任务。某一步跑得太久或卡住时，卡片上会出现一行提示；工作本身不会被取消。
@@ -64,8 +68,6 @@ cargo run -p robroz-client   # 另开一个终端；默认连接 http://127.0.0.
 在客户端 Chats（「聊天」）标题旁点 Add a bro（「引入一个 bro」），打开私聊发一条消息，这就是第一个任务。没设置模型时，交付是 No model set up yet（「还没设置模型」），卡片上有 Set up（「去设置」）。
 
 ### 配置模型
-
-<!-- TODO(screenshot): settings page at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
 
 在客户端打开 Model（「模型」），或点交付卡上的 Set up（「去设置」）。填地址和模型名即可，密钥可选。保存时会试连。也可以用环境变量，并把密钥放在仓库外的文件里：
 

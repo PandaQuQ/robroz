@@ -21,11 +21,16 @@ You chat on your own machine with a group of AI bros. You give them work in plai
 
 It is for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
 
-<!-- TODO(screenshot): main window at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/app-main-en-dark.png">
+  <img src="docs/assets/app-main-en-light.png" alt="robroz desktop client: a group chat with status and delivery cards" width="800">
+</picture>
+
+<sub>Demo data.</sub>
 
 The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [docs/configuration.md](docs/configuration.md) for the saved `lang` file.
 
-Under Language is an Appearance / 「外观」 row: System / 「跟随系统」, Light / 「浅色」, and Dark / 「深色」. The default is System, which follows the operating system as it changes. The choice is saved as one line (`system`, `light`, or `dark`) in a `theme` file next to `lang`. There is no footer Dark toggle.
+Under Language is an Appearance / 「外观」 row: System / 「跟随系统」, Light / 「浅色」, and Dark / 「深色」. The default is System, which follows the operating system as it changes. The choice is saved as one line (`system`, `light`, or `dark`) in a `theme` file next to `lang`.
 
 ## Works today
 
@@ -37,7 +42,6 @@ Under Language is an Appearance / 「外观」 row: System / 「跟随系统」,
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
 - **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
-  <!-- TODO(screenshot): approval card at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
@@ -64,8 +68,6 @@ The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. 
 In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is No model set up yet (「还没设置模型」) and the card offers Set up (「去设置」).
 
 ### Configure a model
-
-<!-- TODO(screenshot): settings page at docs/assets/, caption: Demo data. Add after the theme PR merges and platform shots are re-run. -->
 
 Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
