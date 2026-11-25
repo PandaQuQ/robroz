@@ -18,6 +18,6 @@ pub mod view;
 #[cfg(feature = "gui")]
 mod widgets;
 
-pub use theme::{Mode, Skin};
+pub use theme::{Mode, Skin, CHAT_COMPACT_WIDTH};
 #[cfg(feature = "gui")]
 pub use view::Action;

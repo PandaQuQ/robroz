@@ -22,6 +22,8 @@ pub struct FakeSource {
 
 const SITE: &str = "g-site";
 const OPS: &str = "g-ops";
+/// Two bros delivering at the same time, plus one unattributed delivery.
+const TWO: &str = "g-two";
 /// A bro's private chat: a group whose only member is that bro.
 const DM: &str = "dm-ada";
 
@@ -30,6 +32,7 @@ impl FakeSource {
         let groups = vec![
             group(SITE, "公司官网建设"),
             group(OPS, "运营日报"),
+            group(TWO, "同时交付"),
             group(DM, "Ada"),
         ];
         let steps = vec![
@@ -53,7 +56,7 @@ impl FakeSource {
                     DM,
                     "m-dm1",
                     MessageKind::Text,
-                    "你好，我是 Ada。有事直接在这里找我。",
+                    "你好 Ada，以后有事我直接在这里找你。",
                 ),
             ],
             vec![status(
@@ -86,7 +89,16 @@ impl FakeSource {
             )],
             vec![
                 status(SITE, "t-hero", "bot-ada", "Ada", TaskState::Done, false),
-                delivery(SITE, "d1", "已写入结果", "tasks/t-hero/result.txt", false),
+                attributed_delivery(
+                    SITE,
+                    "d1",
+                    "已写入结果",
+                    "tasks/t-hero/result.txt",
+                    false,
+                    Some("t-hero"),
+                    Some("bot-ada"),
+                    Some("Ada"),
+                ),
             ],
             vec![status(
                 OPS,
@@ -117,7 +129,48 @@ impl FakeSource {
             )],
             vec![
                 status(OPS, "t-brief", "bot-dee", "Dee", TaskState::Done, false),
-                delivery(OPS, "d2", "已写入结果", "tasks/t-brief/result.txt", true),
+                attributed_delivery(
+                    OPS,
+                    "d2",
+                    "已写入结果",
+                    "tasks/t-brief/result.txt",
+                    true,
+                    Some("t-brief"),
+                    Some("bot-dee"),
+                    Some("Dee"),
+                ),
+            ],
+            // Two bros deliver at the same instant, then a delivery with
+            // no bot_name, so attribution can be checked at a glance.
+            vec![
+                msg(TWO, "m-two", MessageKind::Text, "Ada 和 Bea 同时交结果。"),
+                attributed_delivery(
+                    TWO,
+                    "d-ada",
+                    "已写入结果",
+                    "tasks/t-ada/result.txt",
+                    false,
+                    Some("t-ada"),
+                    Some("bot-ada"),
+                    Some("Ada"),
+                ),
+                attributed_delivery(
+                    TWO,
+                    "d-bea",
+                    "已写入结果",
+                    "tasks/t-bea/result.txt",
+                    false,
+                    Some("t-bea"),
+                    Some("bot-bea"),
+                    Some("Bea"),
+                ),
+                delivery(
+                    TWO,
+                    "d-orphan",
+                    "已写入结果",
+                    "tasks/t-orphan/result.txt",
+                    false,
+                ),
             ],
             // Phase-1 cards: a choice (contract event from robroz#15) plus
             // an approval and a draft (client-side until the backend adds
@@ -125,6 +178,22 @@ impl FakeSource {
             vec![
                 choice(SITE, "c-install", false),
                 choice(SITE, "c-pages", true),
+                // Six minutes later: a new group of the person's own.
+                msg_at(
+                    SITE,
+                    "m5",
+                    MessageKind::Text,
+                    "收到。CI 变绿就发。",
+                    "19:06:00",
+                ),
+                // A person's message and a bro's approval in the DM.
+                msg_at(
+                    DM,
+                    "m-dm2",
+                    MessageKind::Text,
+                    "帮我把旧日志清一下。",
+                    "19:00:40",
+                ),
             ],
         ];
         let last = steps.len() - 1;
@@ -136,6 +205,23 @@ impl FakeSource {
                     card: Card::Approval(ApprovalCard {
                         id: "a-logs".into(),
                         bot: "后端".into(),
+                        kind: ActionKind::Delete,
+                        summary: "清理 12 个旧日志文件".into(),
+                        path: Some("logs/2026-10/".into()),
+                        state: ApprovalState::Pending,
+                        mcp_server: None,
+                        mcp_tool: None,
+                        reason: None,
+                    }),
+                },
+            ),
+            (
+                last,
+                GroupCard {
+                    group_id: DM.into(),
+                    card: Card::Approval(ApprovalCard {
+                        id: "a-dm-logs".into(),
+                        bot: "Ada".into(),
                         kind: ActionKind::Delete,
                         summary: "清理 12 个旧日志文件".into(),
                         path: Some("logs/2026-10/".into()),
@@ -294,6 +380,7 @@ pub fn fake_chats() -> (Vec<Unread>, Vec<Bro>) {
             unread(SITE, 3, "40"),
             unread(DM, 1, "30"),
             unread(OPS, 0, "20"),
+            unread(TWO, 0, "03"),
         ],
         vec![Bro {
             id: "bot-ada".into(),
@@ -327,13 +414,18 @@ pub fn fake_schedules() -> Vec<ScheduleEntry> {
 }
 
 fn msg(group: &str, id: &str, kind: MessageKind, body: &str) -> GroupEvent {
+    msg_at(group, id, kind, body, "19:00:00")
+}
+
+/// A person's message sent at `hms` on the fake day (UTC).
+fn msg_at(group: &str, id: &str, kind: MessageKind, body: &str, hms: &str) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
         event: Event::Message {
             id: id.into(),
             kind,
             body: body.into(),
-            created_at: at("00"),
+            created_at: format!("2026-10-07T{hms}.000Z"),
         },
         approval_extras: None,
     }
@@ -368,6 +460,19 @@ fn status(
 }
 
 fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) -> GroupEvent {
+    attributed_delivery(group, id, summary, path, briefing, None, None, None)
+}
+
+fn attributed_delivery(
+    group: &str,
+    id: &str,
+    summary: &str,
+    path: &str,
+    briefing: bool,
+    task_id: Option<&str>,
+    bot_id: Option<&str>,
+    bot_name: Option<&str>,
+) -> GroupEvent {
     GroupEvent {
         group_id: group.into(),
         event: Event::Delivery {
@@ -378,6 +483,9 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
             created_at: at("03"),
             failure: None,
             needs_setup: None,
+            task_id: task_id.map(str::to_string),
+            bot_id: bot_id.map(str::to_string),
+            bot_name: bot_name.map(str::to_string),
         },
         approval_extras: None,
     }
@@ -386,7 +494,7 @@ fn delivery(group: &str, id: &str, summary: &str, path: &str, briefing: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Feed, Row};
+    use crate::model::{group_items, Feed, Row};
     use std::collections::HashMap;
 
     fn drain() -> HashMap<String, Feed> {
@@ -407,7 +515,7 @@ mod tests {
     #[test]
     fn fake_script_covers_every_case() {
         let mut source = FakeSource::new();
-        assert_eq!(source.groups().unwrap().len(), 3);
+        assert_eq!(source.groups().unwrap().len(), 4);
         let feeds = drain();
         let site: Vec<_> = feeds[SITE].rows().cloned().collect();
         let ops: Vec<_> = feeds[OPS].rows().cloned().collect();
@@ -468,6 +576,15 @@ mod tests {
         for id in ["c-install", "c-pages", "a-logs", "d-progress"] {
             assert!(site_feed.card(id).is_some(), "fake script has card {id}");
         }
+
+        let two_feed = &feeds[TWO];
+        let items: Vec<_> = two_feed.items().collect();
+        let groups = group_items(items.iter().map(|(r, m)| (*r, (*m).clone())), 120);
+        assert_eq!(groups.len(), 4);
+        assert!(groups[0].sender.is_own());
+        assert_eq!(groups[1].sender.name(), "Ada");
+        assert_eq!(groups[2].sender.name(), "Bea");
+        assert!(groups[3].sender.is_delivery());
     }
 
     #[test]

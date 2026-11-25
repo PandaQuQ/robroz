@@ -13,18 +13,28 @@
 
 Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. Rust host + native desktop client.
 
+v0.1.0 is single-user and self-hosted. See [CHANGELOG.md](CHANGELOG.md) and [docs/install.md](docs/install.md).
+
 ## What is robroz
 
 You chat on your own machine with a group of AI bros. You give them work in plain language; they do it in a sandbox on that machine, and they ask you before anything risky.
 
 It is for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
 
-<!-- TODO(screenshot): main window -->
+<p>
+  <img src="docs/assets/main-en-light.png" alt="robroz desktop client, light theme: a group chat with status and delivery cards" width="49%">
+  <img src="docs/assets/main-en-dark.png" alt="robroz desktop client, dark theme: a group chat with status and delivery cards" width="49%">
+</p>
+
+<sub>Demo data</sub>
 
 The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. See [docs/configuration.md](docs/configuration.md) for the saved `lang` file.
 
+Under Language is an Appearance / 「外观」 row: System / 「跟随系统」, Light / 「浅色」, and Dark / 「深色」. The default is System, which follows the operating system as it changes. The choice is saved as one line (`system`, `light`, or `dark`) in a `theme` file next to `lang`.
+
 ## Works today
 
+- **Chat bubbles.** Your messages sit on the right; bro cards sit on the left, grouped by sender. A delivery with a `bot_name` is attached to that bro; a delivery without one stands alone.
 - **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
 - **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
@@ -32,7 +42,6 @@ The desktop client UI is English by default. Switch to 中文 with the Language 
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
 - **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
-  <!-- TODO(screenshot): approval card -->
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
@@ -45,7 +54,7 @@ These are accepted design or in progress. They are **not** shipped on `main`. De
 
 ## Quick start
 
-You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. The walk-through in [docs/install.md](docs/install.md) also uses `curl` and `jq`. From the repository root:
+You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. To install a published binary instead, see [docs/install.md](docs/install.md). The walk-through there also uses `curl` and `jq`. From the repository root:
 
 ```sh
 cargo build -p robroz-host -p robroz-client
@@ -59,8 +68,6 @@ The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. 
 In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is No model set up yet (「还没设置模型」) and the card offers Set up (「去设置」).
 
 ### Configure a model
-
-<!-- TODO(screenshot): settings page -->
 
 Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
 
@@ -102,7 +109,9 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 
 | File | Contents |
 | --- | --- |
-| [docs/install.md](docs/install.md) | Prerequisites, build, run, connect a model, first task, tests |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [docs/install.md](docs/install.md) | Download a release, prerequisites, build, run, connect a model, first task, tests |
+| [docs/docker-host.md](docs/docker-host.md) | Run the host in Docker: compose, `docker.sock` risk, same-path mount, token |
 | [docs/configuration.md](docs/configuration.md) | All environment variables and defaults |
 | [docs/api.md](docs/api.md) | HTTP endpoints and events |
 | [docs/concepts.md](docs/concepts.md) | Glossary, task states, cards |
@@ -120,7 +129,7 @@ Most files under `docs/` are still Chinese-first. They will be switched to Engli
 
 ## Status
 
-There is no tagged release yet. Use `main` as a development branch, not as a formal release.
+v0.1.0 is the first planned tagged release. The notes are in [CHANGELOG.md](CHANGELOG.md). Until that tag is published, use `main` as a development branch, not as a formal release.
 
 ## Development
 

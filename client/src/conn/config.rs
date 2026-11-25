@@ -4,8 +4,6 @@
 //! The token never leaves this module as plaintext: `load` only returns a
 //! [`TokenState`], and [`Conn::from_env`] is how the client applies the
 //! stored values.
-#![allow(dead_code)] // save and ConnError are for the connection form, not this binary yet.
-
 use std::fmt;
 use std::fs;
 use std::io;
@@ -103,6 +101,7 @@ pub enum ConnError {
 
 impl ConnError {
     /// Map a status-and-body from the host into a typed error.
+    #[allow(dead_code)] // public for the form; the first Connect uses `as_conn_error`.
     pub fn from_status(status: u16, body: &str) -> Option<Self> {
         if status == 401 || crate::host_state::is_token_rejected(body) {
             Some(Self::Unauthorized)
@@ -696,7 +695,7 @@ mod tests {
             ConnError::Unreachable(robroz_ui::i18n::Key::ClientConnectionRefused.to_string())
         );
         let shown = ConnError::Unauthorized.to_string();
-        assert_eq!(shown, "The host rejected the token. Check `ROBROZ_TOKEN`.");
+        assert_eq!(shown, "The host rejected the token. Check ROBROZ_TOKEN.");
         let reach = ConnError::Unreachable("Connection refused".into()).to_string();
         assert!(
             reach.starts_with("Can't reach host."),
