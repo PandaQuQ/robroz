@@ -307,15 +307,22 @@ fn faded(c: Rgb, alpha: f32) -> Color {
     c
 }
 
-/// The UI font family. macOS and Windows name their Chinese-capable system
-/// UI font so every glyph of a CJK string comes from one font; left to the
-/// generic family, the text engine falls back glyph by glyph and mixes
+/// The UI font family. macOS and Windows name a Chinese-capable system
+/// font that fontdb can actually index, so every glyph of a CJK string
+/// comes from one font; left to the generic family (or a family fontdb
+/// cannot open), the text engine falls back glyph by glyph and mixes
 /// weights and even picks look-alike wrong characters (「发送」 → 「发遞」).
-/// Elsewhere (Linux) it stays the generic sans-serif.
+///
+/// On macOS this is Hiragino Sans GB, from
+/// `/System/Library/Fonts/Hiragino Sans GB.ttc` (W3 regular, W6 bold).
+/// PingFang SC is not used: on recent macOS it lives in a hidden asset
+/// path that fontdb does not index, so naming it fell back per glyph.
+/// On Windows this is Microsoft YaHei UI. Elsewhere (Linux) it stays
+/// the generic sans-serif.
 pub const fn ui_family() -> font::Family {
     #[cfg(target_os = "macos")]
     {
-        font::Family::Name("PingFang SC")
+        font::Family::Name("Hiragino Sans GB")
     }
     #[cfg(target_os = "windows")]
     {
@@ -335,10 +342,35 @@ pub const fn regular() -> Font {
     }
 }
 
+/// Bold UI font, same family as [`regular`]. On macOS, `Weight::Bold`
+/// should resolve to the W6 face in `Hiragino Sans GB.ttc`.
 pub fn bold() -> Font {
     Font {
         weight: font::Weight::Bold,
         ..regular()
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::{bold, regular, ui_family};
+    use iced::font::{self, Family};
+
+    #[test]
+    fn ui_family_is_a_fontdb_discoverable_system_font() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(ui_family(), Family::Name("Hiragino Sans GB"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(ui_family(), Family::Name("Microsoft YaHei UI"));
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(ui_family(), Family::SansSerif);
+    }
+
+    #[test]
+    fn bold_uses_the_same_family_as_regular() {
+        assert_eq!(regular().family, ui_family());
+        assert_eq!(bold().family, ui_family());
+        assert_eq!(bold().weight, font::Weight::Bold);
     }
 }
 
