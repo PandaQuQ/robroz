@@ -10,12 +10,12 @@ When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from th
 
 | Platform | Archive | Contents |
 | --- | --- | --- |
-| Linux x86_64 | `robroz-client-v0.1.0-linux-x86_64.tar.gz` | `robroz-client`, `robroz.desktop`, `icon-512.png` |
+| Linux x86_64 | `robroz-client-v0.1.0-linux-x86_64.tar.gz` | `robroz-client`, `robroz.desktop`, `robroz.png` |
 | Windows x86_64 | `robroz-client-v0.1.0-windows-x86_64.zip` | `robroz-client.exe` |
 | macOS aarch64 | `robroz-client-v0.1.0-macos-aarch64.zip` | `robroz.app` |
 | Linux x86_64 | `robroz-host-v0.1.0-linux-x86_64.tar.gz` | `robroz-host` |
 
-The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. `robroz.app` includes `icon.icns`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed.
+The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. `robroz.app` includes `icon.icns`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed. The Linux binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, RHEL 9+).
 
 Verify the files you download against `SHA256SUMS.txt` from the same release:
 

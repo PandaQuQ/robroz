@@ -26,7 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned so the Linux binaries link against glibc 2.35 and run on
+          # Ubuntu 22.04+, Debian 12+ and RHEL 9+. ubuntu-latest moves forward.
+          - os: ubuntu-22.04
             target: linux-x86_64
             packages: "-p robroz-client -p robroz-host"
             bins: "robroz-client robroz-host"
@@ -44,6 +46,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release binaries
         run: cargo build --release --locked ${{ matrix.packages }}
+      - name: Check glibc floor
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in ${{ matrix.bins }}; do
+            max=$(objdump -T "target/release/${bin}" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+            echo "${bin} needs glibc ${max}"
+            if [ "$(printf '%s\n2.35\n' "${max}" | sort -V | tail -1)" != "2.35" ]; then
+              echo "::error::${bin} needs glibc ${max}, above the 2.35 floor"
+              exit 1
+            fi
+          done
       - name: Package
         shell: bash
         run: |
@@ -88,7 +103,7 @@ jobs:
             fi
             if [ "${{ runner.os }}" = "Linux" ] && [ "${bin}" = "robroz-client" ]; then
               cp client/packaging/robroz.desktop "${stage}/"
-              cp assets/brand/icon-512.png "${stage}/"
+              cp assets/brand/icon-512.png "${stage}/robroz.png"
             fi
             if [ "${{ runner.os }}" = "Windows" ]; then
               (cd stage && 7z a -tzip "../dist/${name}.zip" "${name}" > /dev/null)
