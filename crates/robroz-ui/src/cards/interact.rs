@@ -14,6 +14,8 @@ use crate::i18n::{host_text, Key};
 pub enum Look {
     /// Orange, at most one per card.
     Primary,
+    /// Chat cards' primary: ink on light, inverted on dark (`Skin::chat`).
+    Ink,
     /// Outlined.
     Secondary,
     /// Picked: sunken fill, strong outline, check mark, bold.

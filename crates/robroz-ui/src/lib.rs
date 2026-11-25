@@ -16,5 +16,5 @@ pub mod theme;
 pub mod view;
 mod widgets;
 
-pub use theme::{Mode, Skin};
+pub use theme::{Mode, Skin, CHAT_COMPACT_WIDTH};
 pub use view::Action;
