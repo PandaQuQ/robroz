@@ -104,6 +104,8 @@ The host adds these limits at `docker run`:
 ./target/debug/robroz-host
 ```
 
+To run the host as a container instead, see [docker-host.md](docker-host.md).
+
 With no variables set:
 
 | Item | Default |

@@ -111,6 +111,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 | --- | --- |
 | [CHANGELOG.md](CHANGELOG.md) | 版本说明 |
 | [docs/install.md](docs/install.md) | 下载发行包、准备、构建、运行、接模型、第一个任务、测试 |
+| [docs/docker-host.md](docs/docker-host.md) | 用 Docker 运行宿主机：compose、`docker.sock` 风险、同路径挂载、令牌 |
 | [docs/configuration.md](docs/configuration.md) | 全部环境变量和默认值 |
 | [docs/api.md](docs/api.md) | HTTP 接口和事件 |
 | [docs/concepts.md](docs/concepts.md) | 术语、任务状态、卡片 |
