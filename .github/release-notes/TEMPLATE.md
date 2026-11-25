@@ -6,7 +6,7 @@ See [CHANGELOG.md](https://github.com/PandaQuQ/robroz/blob/${TAG}/CHANGELOG.md).
 
 ## Requirements
 
-- Linux binaries are built on Ubuntu 22.04. The client needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). The host needs glibc 2.34 or newer.
+- Linux binaries are built on Ubuntu 22.04. The host needs glibc 2.34 or newer. The desktop client is released from [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client).
 
 ## Known issues
 
@@ -24,7 +24,7 @@ ${TAG} 预发布版本。二进制文件没有代码签名，下载后请用 SHA
 
 ### 系统要求
 
-- Linux 版本在 Ubuntu 22.04 上构建。客户端需要 glibc 2.35 或更高（Ubuntu 22.04+、Debian 12+），host 需要 glibc 2.34 或更高。
+- Linux 版本在 Ubuntu 22.04 上构建。host 需要 glibc 2.34 或更高。桌面客户端在 [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) 单独发布。
 
 ### 已知问题
 
