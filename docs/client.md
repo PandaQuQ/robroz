@@ -53,7 +53,7 @@ Host-written `label`, `failure` and `progress` values on the wire are still Chin
 ### Conversation list previews
 
 - When a live run has a progress line, the preview uses that line (mapped into the UI language), for example Ada: Thinking about a reply or Ada: Step 2 of 3, not Ada: Running. Long text is cut to the column width with "…".
-- When `waitingFor` is `approval`, the preview is Ada：Needs your approval, and is not replaced by an approval card's summary that arrives at the same time.
+- When `waitingFor` is `approval`, the preview is Ada: Needs your approval, and is not replaced by an approval card's summary that arrives at the same time.
 - With no progress, or when the task is done, stuck, or failed, the preview uses the status line as usual.
 - Switching the language redraws every preview immediately from the events the client already has.
 

@@ -1,8 +1,49 @@
 # Install and first run
 
-How to build robroz from source, start the host and the desktop client, connect a model, and send a first task. The full list of environment variables is in [configuration.md](configuration.md).
+How to install robroz from a GitHub Release or build it from source, start the host and the desktop client, connect a model, and send a first task. The full list of environment variables is in [configuration.md](configuration.md).
 
 The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+
+## Download a release
+
+When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. v0.1.0 is the first planned release. Archives are named `<bin>-<tag>-<target>`.
+
+| Platform | Archive | Contents |
+| --- | --- | --- |
+| Linux x86_64 | `robroz-client-v0.1.0-linux-x86_64.tar.gz` | `robroz-client` |
+| Windows x86_64 | `robroz-client-v0.1.0-windows-x86_64.zip` | `robroz-client.exe` |
+| macOS aarch64 | `robroz-client-v0.1.0-macos-aarch64.zip` | `robroz.app` |
+| Linux x86_64 | `robroz-host-v0.1.0-linux-x86_64.tar.gz` | `robroz-host` |
+
+The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed.
+
+Verify the files you download against `SHA256SUMS.txt` from the same release:
+
+```sh
+# Linux (only the files you downloaded need to be present)
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# macOS: print the hash and compare it with the matching line in SHA256SUMS.txt
+shasum -a 256 robroz-client-v0.1.0-macos-aarch64.zip
+```
+
+On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-client-v0.1.0-windows-x86_64.zip` with the matching line in `SHA256SUMS.txt`.
+
+The host's default runner image is still `robroz-runner:local`. For a tagged release, point it at the image published for that tag (linux/amd64 only; there is no `latest` tag):
+
+```sh
+ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0 ./robroz-host
+```
+
+### Unsigned builds
+
+**macOS.** Gatekeeper warns the first time you open an unsigned `robroz.app`. To allow it: right-click the app, choose Open, and confirm; or go to System Settings > Privacy & Security and click Open Anyway. You can also clear the quarantine flag after unzipping:
+
+```sh
+xattr -dr com.apple.quarantine robroz-client-v0.1.0-macos-aarch64/robroz.app
+```
+
+**Windows.** SmartScreen may show "Windows protected your PC". Click More info, then Run anyway.
 
 ## Prerequisites
 
@@ -27,7 +68,7 @@ Add `--release` for a release build; the binaries then land in `target/release/`
 
 ### Runner image
 
-Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). Build it from the repository root, because the Dockerfile copies the workspace:
+Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.0` instead of a local build (linux/amd64 only; there is no `latest` tag). To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
@@ -122,7 +163,13 @@ Web search (Brave or SearXNG) can be set with environment variables or through t
 
 ## Run the client
 
-The client is a native iced desktop app. The command is the same on all three platforms; only the way you set environment variables changes. It connects to `http://127.0.0.1:8790` by default.
+The client is a native iced desktop app. A downloaded binary, `robroz.app`, or `cargo run -p robroz-client` all work the same way. It speaks HTTP or HTTPS (rustls) and connects to `http://127.0.0.1:8790` by default.
+
+Fill in Host and Token on the offline pane or in Settings, under Connection (「连接」), then click Connect (「连接」). The address is saved in a `host` file next to `lang` in the client config folder. The token is stored in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service on Linux), falling back to a `token` file next to `lang` with mode `0600` on Unix. The client never logs or displays the token. A saved token is shown as `••••••••`.
+
+`ROBROZ_HOST` and `ROBROZ_TOKEN` override saved values for this run and are never written back. A field set by the environment is read-only and shows Set by ROBROZ_HOST (「由 ROBROZ_HOST 设置」) or Set by ROBROZ_TOKEN (「由 ROBROZ_TOKEN 设置」). When both are set by the environment, Connect is disabled. The client reads `ROBROZ_TOKEN` only, not the host's `ROBROZ_TOKEN_FILE`. A non-local `http://` host shows Unencrypted. Use HTTPS for remote hosts. (「未加密，远程请用 HTTPS。」)
+
+A 401 is titled Token rejected (「令牌被拒绝」). The reason is The host rejected the token. Check ROBROZ_TOKEN. (「宿主拒绝了令牌，请检查 ROBROZ_TOKEN。」). An unreachable host is titled Can't reach the host (「连不上宿主」); the reason line is Can't reach host. (「连不上宿主。」) followed by the detail. If the host has never answered, the form stays on that pane. After the host has answered once, a later failure keeps what is already on screen and shows the error in the bottom bar.
 
 Linux / macOS:
 
@@ -140,11 +187,8 @@ $env:ROBROZ_TOKEN = "<your-token>"
 cargo run -p robroz-client
 ```
 
-- The client uses plain HTTP only, with no TLS. Across machines, stay on a private network or add your own tunnel.
-- The client reads `ROBROZ_TOKEN` only, not `ROBROZ_TOKEN_FILE`.
 - The group list comes from `GET /api/groups`. If `ROBROZ_GROUPS` is set, the client shows only those groups and does not follow the host's list.
 - To look at the UI without a host: `cargo run -p robroz-client -- --fake` (or `ROBROZ_FAKE=1`).
-- If the host cannot be reached, the client keeps what is already on screen and retries after a short wait.
 
 Linux needs a graphical session (X11 or Wayland). CI's `ubuntu-latest` can build the client without extra system packages.
 
