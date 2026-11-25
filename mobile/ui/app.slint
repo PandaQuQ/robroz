@@ -220,6 +220,8 @@ export component MainWindow inherits Window {
     background: Brand.paper;
     preferred-width: 390px;
     preferred-height: 844px;
+    min-width: 390px;
+    min-height: 844px;
 
     VerticalLayout {
         padding-left: 20px;
@@ -301,21 +303,26 @@ export component MainWindow inherits Window {
 
         if root.screen == 2: VerticalLayout {
             spacing: 10px;
+            width: 100%;
             Header { has-back: true; back-text: Tr.back; back => { root.back(); } }
             Text { text: root.chat-title; color: Brand.ink; font-size: 20px; font-weight: 700; overflow: elide; }
             if root.chat-note != "": Text { text: root.chat-note; color: Brand.muted; wrap: word-wrap; }
             ScrollView {
-                // Never scroll sideways: rows wrap to the screen width.
-                content-width: self.width;
-                VerticalLayout {
+                vertical-stretch: 1;
+                width: 100%;
+                feed := VerticalLayout {
+                    width: 100%;
                     spacing: 8px;
                     alignment: start;
+                    // Width of the feed, not root.width: binding the window
+                    // width to its children collapsed it to 1×1.
+                    property <length> col-w: self.width;
                     for row in root.chat: HorizontalLayout {
+                        width: 100%;
                         alignment: row.kind == 0 ? end : start;
-                        // Bubbles and cards never pass ~75% / 85% of the screen.
                         VerticalLayout {
                             spacing: 3px;
-                            max-width: row.kind == 2 ? root.width * 0.85 : root.width * 0.75;
+                            max-width: row.kind == 2 ? feed.col-w * 0.85 : feed.col-w * 0.75;
                             if row.kind == 1: Text {
                                 text: row.name;
                                 color: Brand.muted;

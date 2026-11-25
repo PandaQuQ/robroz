@@ -239,7 +239,11 @@ fn prepare_shot(ui: &MainWindow, state: &Arc<Mutex<State>>, shot: &str) {
         "chat-failed" => ("g2", 2),
         _ => return,
     };
-    if let Some(conn) = state.lock().unwrap().conn.clone() {
+    // Clone the conn first so the mutex is not held across events() or
+    // later UI updates (if-let would otherwise extend the guard's lifetime
+    // over the whole block).
+    let conn = state.lock().unwrap().conn.clone();
+    if let Some(conn) = conn {
         match conn.events(group_id) {
             Ok(events) => {
                 let name = names
