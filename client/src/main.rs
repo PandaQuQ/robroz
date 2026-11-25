@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! robroz desktop client: an IM for bros.
 //!
 //! Left: the conversation list (groups and bro DMs, newest first, unread
