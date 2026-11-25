@@ -6,7 +6,7 @@ The desktop client UI is English by default. Switch to 中文 with the Language 
 
 ## Download a release
 
-When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. v0.1.0 is the first planned release. Archives are named `<bin>-<tag>-<target>`.
+When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. v0.1.0, published on 2026-11-25, is the first release and is marked as a pre-release. Archives are named `<bin>-<tag>-<target>`.
 
 | Platform | Archive | Contents |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from th
 | macOS aarch64 | `robroz-client-v0.1.0-macos-aarch64.zip` | `robroz.app` |
 | Linux x86_64 | `robroz-host-v0.1.0-linux-x86_64.tar.gz` | `robroz-host` |
 
-The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. `robroz.app` includes `icon.icns`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed. The Linux binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). RHEL 9 ships glibc 2.34 and is not covered; build from source there, see [Build](#build). Check your version with `ldd --version`.
+The host is packaged for Linux x86_64 only. The macOS client is Apple Silicon only; Intel Macs are not covered. Each archive also includes `LICENSE` and `README.md`. `robroz.app` includes `icon.icns`. After unpacking, the binary or `robroz.app` is inside a folder named after the archive. Builds are not code-signed. The Linux binaries are built on Ubuntu 22.04. The client needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). The host needs glibc 2.34 or newer, so it also runs on RHEL 9. The client does not run on RHEL 9 (glibc 2.34); build it from source there, see [Build](#build). Check your version with `ldd --version`.
 
 Verify the files you download against `SHA256SUMS.txt` from the same release:
 
@@ -57,6 +57,8 @@ xattr -dr com.apple.quarantine robroz-client-v0.1.0-macos-aarch64/robroz.app
 ```
 
 **Windows.** SmartScreen may show "Windows protected your PC". Click More info, then Run anyway.
+
+In v0.1.0 an extra command-line window opens next to the client. Leave it open; closing it also quits the client. v0.1.1 removes it.
 
 ## Prerequisites
 
