@@ -41,7 +41,7 @@ Under Language is an Appearance / 「外观」 row: System / 「跟随系统」,
 - **Bigger tasks in steps.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
-- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card comes to you in a direct message. Memory and skill changes also wait for you to confirm.
+- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card stays where the task started and only the bro's owner can approve or deny it. For a card in a group, the owner also gets a reminder in their direct message with the bro. Memory and skill changes also wait for you to confirm.
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
@@ -51,6 +51,8 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
 - Cancelling a timed-out step or stopping the container.
+- Accounts for more than one person on a host. Bro owners and owner-only approvals are on `main`; managing users and tokens is not.
+- The mobile client (`mobile/`, Android and iOS). It builds in CI but has not been tested on a real device, and the iOS build is unsigned.
 
 ## Quick start
 
@@ -129,7 +131,7 @@ Most files under `docs/` are still Chinese-first. They will be switched to Engli
 
 ## Status
 
-v0.1.0 is the first planned tagged release. The notes are in [CHANGELOG.md](CHANGELOG.md). Until that tag is published, use `main` as a development branch, not as a formal release.
+The latest release is a pre-release; see [Releases](https://github.com/PandaQuQ/robroz/releases) and [CHANGELOG.md](CHANGELOG.md). `main` is a development branch for v0.2, not a formal release.
 
 ## Development
 
