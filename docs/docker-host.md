@@ -4,7 +4,7 @@
 
 The host can run as a container. The image holds the `robroz-host` binary and the Docker CLI only. It has no Docker daemon, no Node and no `npx`. The host still starts each task in a sibling runner container on the machine's own Docker engine, so the host container needs access to that engine's socket.
 
-- Image: `ghcr.io/pandaquq/robroz-host:<tag>` (linux/amd64 only; tagged per release; there is no `latest` tag). The package is private after the first push until the maintainer makes it public. If `docker pull` is denied, build it yourself (see below).
+- Image: `ghcr.io/pandaquq/robroz-host:<tag>` (linux/amd64 only; tagged per release; there is no `latest` tag). The package is public, so `docker pull` needs no login. Until the first release that includes the host image, only `main-<sha>` tags exist, which are built from `main` for CI; to run a fixed version, build it yourself (see below).
 - Example compose file: [`deploy/compose.host.yml`](../deploy/compose.host.yml).
 - Dockerfile: [`host/Dockerfile`](../host/Dockerfile). Base image `debian:bookworm-slim`, the same as the runner image.
 - The host binary release is unchanged. You can still run the host without Docker; see [install.md](install.md).
@@ -114,7 +114,7 @@ Build it, and point the `image:` line of the compose file at your tag. You can a
 
 宿主机可以作为容器运行。镜像里只有 `robroz-host` 二进制和 Docker 客户端（CLI），没有 Docker 守护进程，也没有 Node 和 `npx`。宿主机仍然在这台机器自己的 Docker 引擎上，为每个任务起一个并列的 runner 容器，所以宿主机容器必须能访问这个引擎的 socket。
 
-- 镜像：`ghcr.io/pandaquq/robroz-host:<tag>`（仅 linux/amd64；每个发布一个 tag，没有 `latest`）。第一次推送后这个包是私有的，要等维护者改成公开。如果 `docker pull` 被拒绝，请自己构建（见下）。
+- 镜像：`ghcr.io/pandaquq/robroz-host:<tag>`（仅 linux/amd64；每个发布一个 tag，没有 `latest`）。这个包是公开的，`docker pull` 不用登录。在第一个包含 host 镜像的发布之前，只有从 `main` 构建、给 CI 用的 `main-<sha>` tag；想跑固定版本，请自己构建（见下）。
 - Compose 示例：[`deploy/compose.host.yml`](../deploy/compose.host.yml)。
 - Dockerfile：[`host/Dockerfile`](../host/Dockerfile)。基础镜像是 `debian:bookworm-slim`，与 runner 镜像相同。
 - 宿主机二进制的发布方式不变。不用 Docker 也可以直接运行宿主机，见 [install.md](install.md)。
