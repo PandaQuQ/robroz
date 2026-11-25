@@ -2491,7 +2491,7 @@ impl App {
             choices = choices.push(
                 button(text(label).size(t.type_.body))
                     .height(Length::Fixed(t.controls.button_h))
-                    .style(view::nav_button_style(*t, pref == self.theme_pref))
+                    .style(view::segment_button_style(*t, pref == self.theme_pref))
                     .on_press(Message::SetTheme(pref)),
             );
         }
@@ -2524,7 +2524,7 @@ impl App {
             choices = choices.push(
                 button(text(locale.native_name()).size(t.type_.body))
                     .height(Length::Fixed(t.controls.button_h))
-                    .style(view::nav_button_style(*t, locale == active))
+                    .style(view::segment_button_style(*t, locale == active))
                     .on_press(Message::SetLocale(locale)),
             );
         }
