@@ -3007,22 +3007,32 @@ fn status_dot_view<'a>(t: &Skin, card: &StatusCard) -> Element<'a, Message> {
 
 /// Status card: a plain bro card with a status dot and the status word.
 /// The bro name lives in the group header, not inside the card. No fill.
+/// Layout: [dot 8px status (and "Step n of m" if shown)] [flex] [Take over].
 fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::Wrapping;
-    let head = row![status_dot_view(t, card), progress_cell(t, card, width)]
-        .spacing(t.metrics.dot_gap + 4.0)
-        .align_y(Alignment::Center)
-        .width(Fill);
-    let mut line = row![head].spacing(12).align_y(Alignment::Center);
-    if let Some(step) = visible_step_progress(t, card, width) {
+    let status_word = text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None);
+    let texts: Element<'a, Message> = if let Some(step) = visible_step_progress(t, card, width) {
         let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
-        line = line.push(
+        row![
             text(model::display(step).into_owned())
                 .color(color(rgb))
                 .wrapping(Wrapping::None),
-        );
-    }
-    line = line.push(text(model::display(&card.status_line).into_owned()).wrapping(Wrapping::None));
+            status_word,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        status_word.into()
+    };
+    let mut line = row![
+        row![status_dot_view(t, card), texts]
+            .spacing(view::STATUS_DOT_TEXT_GAP)
+            .align_y(Alignment::Center),
+        space::horizontal(),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
     if let Some(action) = card.action {
         let [pad_v, pad_h] = view::TAKE_OVER_PAD;
         line = line.push(
@@ -3032,7 +3042,13 @@ fn status_view<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Me
                 .on_press(Message::TakeOver(card.task_id.clone())),
         );
     }
-    container(line)
+    let body: Element<'a, Message> = match card.progress.as_deref() {
+        Some(_) => column![line, progress_cell(t, card, width)]
+            .spacing(t.metrics.dot_gap)
+            .into(),
+        None => line.into(),
+    };
+    container(body)
         .padding(view::status_card_padding(t))
         .width(Fill)
         .style(view::card_style(*t))
@@ -3055,12 +3071,10 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
     const WORD: f32 = 16.0;
     let inner = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
     let mut needed = t.metrics.dot
-        + t.metrics.dot_gap
-        + 4.0
+        + view::STATUS_DOT_TEXT_GAP
         + text_w(&model::display(raw), WORD)
-        + text_w(&model::display(&card.status_line), WORD)
         + 12.0
-        + 12.0;
+        + text_w(&model::display(&card.status_line), WORD);
     if let Some(action) = card.action {
         needed +=
             text_w(&model::display(action), t.type_.button) + 2.0 * view::TAKE_OVER_PAD[1] + 12.0;
@@ -3068,29 +3082,16 @@ fn visible_step_progress<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Opti
     (needed <= inner).then_some(raw)
 }
 
-/// Optional progress line under the status dot. One line, cut with "…", at
-/// a fixed line height, so the card is one row taller with progress and
-/// exactly its old height without it. The bro name is not drawn here.
+/// Optional progress line under the status row. One line, cut with "…",
+/// at a fixed line height. Not reserved when there is no progress. The
+/// bro name is not drawn here.
 fn progress_cell<'a>(t: &Skin, card: &'a StatusCard, width: f32) -> Element<'a, Message> {
     use iced::widget::text::{LineHeight, Wrapping};
     let Some(progress) = &card.progress else {
-        return container(iced::widget::Space::new()).width(Fill).into();
+        return space::horizontal().into();
     };
     let size = t.type_.status;
-    // Room left of the status word (and button), in ASCII width units.
-    let unit = |s: &str| {
-        s.chars()
-            .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
-            .sum::<f32>()
-    };
-    let right = unit(&model::display(&card.status_line)) * t.type_.body * t.type_.unit_width
-        + card.action.map_or(0.0, |a| {
-            unit(&model::display(a)) * t.type_.button * t.type_.unit_width
-                + 2.0 * view::TAKE_OVER_PAD[1]
-                + 12.0
-        })
-        + 12.0;
-    let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card) - right;
+    let room = width - 2.0 * (t.metrics.status_pad_h + t.stroke.card);
     let cols = (room / (size * t.type_.unit_width)).max(8.0) as usize;
     let fitted = robroz_ui::cards::status::clamp_lines(&model::display(progress), cols, 1);
     let rgb = robroz_ui::cards::status::progress_rgb(t.chat.bro_bg, t.palette.text);
@@ -3273,6 +3274,11 @@ mod tests {
     }
 
     #[test]
+    fn status_dot_sits_8px_before_the_status_word() {
+        assert_eq!(robroz_ui::view::STATUS_DOT_TEXT_GAP, 8.0);
+    }
+
+    #[test]
     fn router_step_fits_on_a_desktop_card_and_is_dropped_when_narrow() {
         use robroz_ui::i18n::{scoped, Locale};
         use robroz_ui::{Mode, Skin};
@@ -3302,6 +3308,6 @@ mod tests {
                 .as_deref(),
             Some("2/3 步")
         );
-        assert_eq!(super::visible_step_progress(&t, &card, 150.0), None);
+        assert_eq!(super::visible_step_progress(&t, &card, 120.0), None);
     }
 }

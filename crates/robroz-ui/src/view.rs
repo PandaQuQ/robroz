@@ -860,6 +860,10 @@ fn btn<'a>(
 /// horizontal, on every platform.
 pub const TAKE_OVER_PAD: [f32; 2] = [6.0, 12.0];
 
+/// Gap between the status dot and the status word (or "Step n of m")
+/// on a status card.
+pub const STATUS_DOT_TEXT_GAP: f32 = 8.0;
+
 fn btn_padded<'a>(
     t: &Skin,
     label: String,
