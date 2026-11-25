@@ -502,9 +502,11 @@ async fn an_approval_mid_step_keeps_its_card_progress_and_resumes_the_remaining_
     let status = h.status().await;
     assert_eq!(status["state"], "blocked", "{status}");
     assert_eq!(status["waitingFor"], "approval", "{status}");
-    assert_eq!(
-        status["progress"],
-        robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE,
+    assert!(
+        status["progress"]
+            .as_str()
+            .and_then(robroz_contract::host_text::parse_router_step_progress)
+            .is_none(),
         "{status}"
     );
     let (_, progress, _) = h.row(&task_id);
@@ -515,7 +517,7 @@ async fn an_approval_mid_step_keeps_its_card_progress_and_resumes_the_remaining_
     assert!(h.has_plan(&task_id));
     // A pass while blocked leaves it alone.
     h.host.pump_once(&mut sandbox).unwrap();
-    assert_eq!(
+    assert_ne!(
         h.status().await["progress"],
         robroz_contract::APPROVAL_SENT_TO_OWNER_DM_NOTICE
     );
@@ -527,10 +529,10 @@ async fn an_approval_mid_step_keeps_its_card_progress_and_resumes_the_remaining_
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["type"] == "approval")
+        .find(|e| e["type"] == "approval_reminder")
         .unwrap()
         .clone();
-    let id = card["id"].as_str().unwrap();
+    let id = card["approvalId"].as_str().unwrap();
     let (status, body) = http(
         &h.app,
         "POST",
@@ -577,8 +579,8 @@ async fn a_denied_step_ends_the_task_with_no_result_and_no_delivery() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["type"] == "approval")
-        .unwrap()["id"]
+        .find(|e| e["type"] == "approval_reminder")
+        .unwrap()["approvalId"]
         .as_str()
         .unwrap()
         .to_string();

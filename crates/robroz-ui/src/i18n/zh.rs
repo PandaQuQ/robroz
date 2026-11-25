@@ -66,6 +66,7 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::HostNothingToChange => ht::NOTHING_TO_CHANGE,
         Key::HostDatabaseError => ht::DATABASE_ERROR,
         Key::HostAlreadyAnswered => ht::ALREADY_ANSWERED,
+        Key::HostNotBroOwner => ht::NOT_BRO_OWNER,
         Key::HostSinceInvalid => ht::SINCE_INVALID,
         Key::HostReadAtInvalid => ht::READ_AT_INVALID,
         Key::HostUrlNeedsHttp => ht::URL_NEEDS_HTTP,

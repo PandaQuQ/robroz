@@ -1,10 +1,11 @@
-//! Unread counts: one read position per group (single owner for now).
+//! Unread counts: one read position per group (single owner for now;
+//! per-user read positions come with shared groups).
 //!
 //! - `GET  /api/unread`               all groups, most recently active first
 //! - `GET  /api/groups/{id}/unread`   one group
 //! - `POST /api/groups/{id}/read`     `{readAt?}`, default now, forward only
 //!
-//! What counts is defined once in [`UNREAD_SQL`]; see `robroz_contract::Unread`.
+//! What counts is defined once in [`unread_sql`]; see `robroz_contract::Unread`.
 
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
@@ -23,21 +24,34 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_reads (
 );";
 
 /// ?1 group id, ?2 read position ('' when never read, which sorts before any time).
-const UNREAD_SQL: &str = "SELECT
+/// v0.2: an `approval_reminder` line in a DM counts like a card there.
+fn unread_sql() -> String {
+    format!(
+        "SELECT
     (SELECT COUNT(*) FROM deliveries WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM choices WHERE group_id = ?1 AND created_at > ?2)
   + (SELECT COUNT(*) FROM approvals WHERE group_id = ?1 AND created_at > ?2
        AND (review_state IS NULL OR review_state = 'blocked'))
-  + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2 AND turn_hidden = 0)";
+  + (SELECT COUNT(*) FROM tasks WHERE group_id = ?1 AND state = 'blocked' AND updated_at > ?2 AND turn_hidden = 0)
+  + (SELECT COUNT(*) {} AND a.created_at > ?2)",
+        crate::approvals::REMINDERS_FROM
+    )
+}
 
-const LAST_ACTIVITY_SQL: &str = "SELECT MAX(at) FROM (
+fn last_activity_sql() -> String {
+    format!(
+        "SELECT MAX(at) FROM (
     SELECT MAX(created_at) AS at FROM messages WHERE group_id = ?1
     UNION ALL SELECT MAX(updated_at) FROM tasks WHERE group_id = ?1 AND turn_hidden = 0
     UNION ALL SELECT MAX(created_at) FROM deliveries WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM choices WHERE group_id = ?1
     UNION ALL SELECT MAX(COALESCE(answered_at, created_at)) FROM approvals
       WHERE (group_id = ?1 OR origin_group_id = ?1) AND (review_state IS NULL OR review_state = 'blocked')
-)";
+    UNION ALL SELECT MAX(COALESCE(a.answered_at, a.created_at)) {}
+)",
+        crate::approvals::REMINDERS_FROM
+    )
+}
 
 fn read_at(conn: &Connection, group_id: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
@@ -51,9 +65,9 @@ fn read_at(conn: &Connection, group_id: &str) -> rusqlite::Result<Option<String>
 fn unread_of(conn: &Connection, group_id: &str) -> rusqlite::Result<Unread> {
     let read_at = read_at(conn, group_id)?;
     let floor = read_at.clone().unwrap_or_default();
-    let unread: i64 = conn.query_row(UNREAD_SQL, params![group_id, floor], |r| r.get(0))?;
+    let unread: i64 = conn.query_row(&unread_sql(), params![group_id, floor], |r| r.get(0))?;
     let last_activity_at: Option<String> =
-        conn.query_row(LAST_ACTIVITY_SQL, [group_id], |r| r.get(0))?;
+        conn.query_row(&last_activity_sql(), [group_id], |r| r.get(0))?;
     Ok(Unread {
         group_id: group_id.to_string(),
         read_at,

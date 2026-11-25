@@ -39,6 +39,7 @@ pub(super) const WHOLE: &[(&str, Key)] = &[
     (ht::NOTHING_TO_CHANGE, Key::HostNothingToChange),
     (ht::DATABASE_ERROR, Key::HostDatabaseError),
     (ht::ALREADY_ANSWERED, Key::HostAlreadyAnswered),
+    (ht::NOT_BRO_OWNER, Key::HostNotBroOwner),
     (ht::SINCE_INVALID, Key::HostSinceInvalid),
     (ht::READ_AT_INVALID, Key::HostReadAtInvalid),
     (ht::URL_NEEDS_HTTP, Key::HostUrlNeedsHttp),

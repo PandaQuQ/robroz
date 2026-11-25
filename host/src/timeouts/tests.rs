@@ -308,8 +308,8 @@ impl Harness {
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["type"] == "approval")
-            .expect("approval card")["id"]
+            .find(|e| e["type"] == "approval_reminder")
+            .expect("approval reminder (v0.2: the card is in the group)")["approvalId"]
             .as_str()
             .unwrap()
             .to_string();

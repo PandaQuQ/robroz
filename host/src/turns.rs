@@ -183,7 +183,7 @@ pub(crate) fn open_bro_round(
         return Ok(None);
     };
     let depth = parent_depth + 1;
-    if depth > MAX_BRO_DEPTH || crate::bros::dm_owner(conn, &group_id)?.is_some() {
+    if depth > MAX_BRO_DEPTH || crate::bros::dm_bot(conn, &group_id)?.is_some() {
         return Ok(None);
     }
     let delivery: Option<String> = conn

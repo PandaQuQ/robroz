@@ -386,6 +386,7 @@ pub fn fake_chats() -> (Vec<Unread>, Vec<Bro>) {
             id: "bot-ada".into(),
             name: "Ada".into(),
             dm_group_id: Some(DM.into()),
+            owner_user_id: None,
         }],
     )
 }
@@ -426,6 +427,8 @@ fn msg_at(group: &str, id: &str, kind: MessageKind, body: &str, hms: &str) -> Gr
             kind,
             body: body.into(),
             created_at: format!("2026-10-07T{hms}.000Z"),
+            author_name: None,
+            author_user_id: None,
         },
         approval_extras: None,
     }
