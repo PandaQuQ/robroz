@@ -923,12 +923,6 @@ pub(super) fn text(key: Key) -> &'static str {
         Key::McpApproveFailed => "Approval failed: {0}",
         // 连不上：{0}  [approved, batch 2]
         Key::CannotConnect => "Can't connect: {0}",
-        // 地址  [approved]
-        Key::MobileHostLabel => "Host",
-        // 令牌  [approved]
-        Key::MobileTokenLabel => "Token",
-        // 连接  [approved]
-        Key::MobileConnect => "Connect",
         // 关于  [approved]
         Key::MobileAbout => "About",
         // 版本 {0}  [approved]

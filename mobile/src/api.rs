@@ -5,7 +5,9 @@
 //!
 //! ureq runs with rustls so an `https://` tunnel works on Android and iOS.
 //! The token is never printed: `Debug` hides it and error texts only carry
-//! the base URL.
+//! the base URL. A 401 is shown as
+//! [`robroz_ui::i18n::Key::ClientTokenRejected`], the same line the desktop
+//! client uses, and never includes the token or the raw host body.
 
 use std::fmt;
 use std::time::Duration;
@@ -59,6 +61,29 @@ pub fn normalize_base(input: &str) -> Option<String> {
         .then(|| with_scheme.trim_end_matches('/').to_string())
 }
 
+/// Whether `host` is a remote `http://` address (not loopback). Same rule
+/// as the desktop connection form: only then is
+/// [`Key::ConnUnencryptedHint`] shown.
+pub fn is_insecure_remote(host: &str) -> bool {
+    let host = host.trim();
+    let Some(rest) = host.strip_prefix("http://") else {
+        return false;
+    };
+    let rest = rest.split_once('@').map(|(_, h)| h).unwrap_or(rest);
+    let hostname = if let Some(rest) = rest.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        rest.split(['/', ':', '?']).next().unwrap_or("")
+    };
+    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
+    !matches!(hostname.as_str(), "127.0.0.1" | "localhost" | "::1")
+}
+
+/// The client-facing 401 line (UI-approved). Never includes the token.
+pub fn unauthorized_message() -> String {
+    Key::ClientTokenRejected.into()
+}
+
 impl Conn {
     pub fn new(base: &str, token: &str) -> Result<Self, ApiError> {
         if base.trim().is_empty() {
@@ -96,6 +121,11 @@ impl Conn {
             .map_err(|e| ApiError(Key::ClientReadFailed.fill(&[&url, &e])))?;
         if (200..300).contains(&status) {
             return Ok(body);
+        }
+        // Same as the desktop client: a 401 is always the approved token
+        // line, never the host body (which might echo the token).
+        if status == 401 {
+            return Err(ApiError(unauthorized_message()));
         }
         let msg = serde_json::from_str::<ErrorBody>(&body)
             .map(|e| host_text(&e.error).into_owned())
@@ -147,6 +177,48 @@ impl Conn {
             })
             .collect())
     }
+}
+
+/// Eight bullets: the only stand-in for a saved token, same as the desktop
+/// connection form. The real value never goes in the field.
+pub const TOKEN_MASK: &str = "••••••••";
+
+/// What the token field should show: the mask when a token is saved and
+/// the field has not been edited.
+pub fn display_token(saved: Option<&str>, draft: &str, dirty: bool) -> String {
+    if !dirty && saved.filter(|s| !s.is_empty()).is_some() {
+        TOKEN_MASK.to_string()
+    } else {
+        draft.to_string()
+    }
+}
+
+/// The token to send on Connect. Never treats the mask as the value.
+pub fn token_for_connect(saved: Option<&str>, field: &str, dirty: bool) -> String {
+    if !dirty {
+        return saved.unwrap_or("").trim().to_string();
+    }
+    let trimmed = field.trim();
+    if trimmed == TOKEN_MASK {
+        return saved.unwrap_or("").trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Apply an edit to the token field. Typing over the mask starts a new
+/// draft; leaving the mask in place keeps the saved token.
+pub fn edit_token(dirty: bool, new_value: &str) -> (String, bool) {
+    if !dirty {
+        if new_value == TOKEN_MASK || new_value.is_empty() {
+            return (String::new(), false);
+        }
+        let next = new_value
+            .strip_prefix(TOKEN_MASK)
+            .unwrap_or(new_value)
+            .to_string();
+        return (next, true);
+    }
+    (new_value.to_string(), true)
 }
 
 /// Sessions as the list shows them: most recently active first, with the
@@ -226,7 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn rejected_token_reads_as_the_host_text() {
+    fn a_401_is_the_same_token_message_as_desktop() {
+        use robroz_ui::i18n::{text_in, Locale};
         let body: &'static str = Box::leak(
             format!(
                 r#"{{"error":"{}"}}"#,
@@ -235,11 +308,32 @@ mod tests {
             .into_boxed_str(),
         );
         let (base, seen) = fake_host("401 Unauthorized", body);
-        let conn = Conn::new(&base, "wrong").unwrap();
+        let conn = Conn::new(&base, "dummy-token-for-fixture-only").unwrap();
         let err = conn.groups().unwrap_err();
         seen.join().unwrap();
-        let _en = robroz_ui::i18n::scoped(robroz_ui::i18n::Locale::En);
-        assert_eq!(err.0, host_text(robroz_contract::host_text::TOKEN_REJECTED));
+        assert_eq!(err.0, unauthorized_message());
+        assert_eq!(
+            text_in(Locale::En, Key::ClientTokenRejected),
+            "The host rejected the token. Check ROBROZ_TOKEN."
+        );
+        assert_eq!(
+            text_in(Locale::Zh, Key::ClientTokenRejected),
+            "宿主拒绝了令牌，请检查 ROBROZ_TOKEN。"
+        );
+        assert!(!err.0.to_ascii_lowercase().contains("bearer"));
+        assert!(!err.0.contains("dummy-token"));
+        assert!(!err.0.contains(robroz_contract::host_text::TOKEN_REJECTED));
+    }
+
+    #[test]
+    fn unencrypted_hint_matches_the_desktop_rule() {
+        assert!(!is_insecure_remote("http://127.0.0.1:8790"));
+        assert!(!is_insecure_remote("http://localhost:8790"));
+        assert!(!is_insecure_remote("http://[::1]:8790"));
+        assert!(!is_insecure_remote("https://example.invalid:8790"));
+        assert!(is_insecure_remote("http://example.invalid:8790"));
+        assert!(is_insecure_remote("http://192.168.1.8:8790"));
+        assert!(!is_insecure_remote("example.invalid"));
     }
 
     #[test]
@@ -259,6 +353,26 @@ mod tests {
     fn token_stays_out_of_debug_output() {
         let conn = Conn::new("http://127.0.0.1:1", "dummy-token-for-fixture-only").unwrap();
         assert!(!format!("{conn:?}").contains("dummy-token"));
+    }
+
+    #[test]
+    fn saved_token_is_exactly_eight_bullets() {
+        assert_eq!(TOKEN_MASK, "••••••••");
+        assert_eq!(TOKEN_MASK.chars().count(), 8);
+        assert_eq!(
+            display_token(Some("dummy-token-for-fixture-only"), "", false),
+            TOKEN_MASK
+        );
+        assert_eq!(
+            token_for_connect(Some("dummy-token-for-fixture-only"), TOKEN_MASK, false),
+            "dummy-token-for-fixture-only"
+        );
+        assert_eq!(token_for_connect(Some("saved"), "typed", true), "typed");
+        let (draft, dirty) = edit_token(false, TOKEN_MASK);
+        assert!(!dirty, "{draft}");
+        let (draft, dirty) = edit_token(false, format!("{TOKEN_MASK}abc").as_str());
+        assert!(dirty);
+        assert_eq!(draft, "abc");
     }
 
     #[test]

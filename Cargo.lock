@@ -5345,6 +5345,7 @@ version = "0.1.0"
 dependencies = [
  "robroz-card",
  "robroz-contract",
+ "robroz-tokens",
  "robroz-ui",
  "serde",
  "serde_json",

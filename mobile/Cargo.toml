@@ -22,6 +22,7 @@ robroz-contract = { path = "../crates/robroz-contract" }
 robroz-card = { path = "../crates/robroz-card" }
 # Only the i18n module and pure view models: no iced on mobile.
 robroz-ui = { path = "../crates/robroz-ui", default-features = false }
+robroz-tokens = { path = "../crates/robroz-tokens" }
 serde = "1"
 serde_json = "1"
 # rustls so an https:// tunnel works on Android and iOS; no system TLS.
