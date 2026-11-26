@@ -13,7 +13,9 @@ pub mod error_codes;
 pub mod legacy;
 
 pub use card_codes::{ApprovalReasonCode, ProgressCode, ProgressData, ProgressParams};
-pub use codes::{split_failure, CardStatusCode, DeliveryBadge, FailureCode};
+pub use codes::{
+    split_failure, CardStatusCode, DeliveryBadge, FailureCode, FailureData, FailureParams,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
@@ -2324,7 +2326,7 @@ mod tests {
             progress: None,
             status_code: Some(CardStatusCode::Done),
             failure_code: Some(FailureCode::ModelNoReply),
-            failure_detail: Some("模型服务返回 500".into()),
+            failure_detail: Some("500".into()),
             progress_code: None,
             progress_params: None,
         };
@@ -2337,7 +2339,7 @@ mod tests {
                 "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
                 "failure": "模型没回：模型服务返回 500",
                 "statusCode": "done", "failureCode": "model_no_reply",
-                "failureDetail": "模型服务返回 500"
+                "failureDetail": "500"
             }),
         );
         let old = serde_json::json!({

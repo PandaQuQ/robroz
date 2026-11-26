@@ -288,9 +288,15 @@ pub(crate) fn end_dead_run(
     updated_at: &str,
 ) -> rusqlite::Result<bool> {
     let changed = conn.execute(
-        "UPDATE tasks SET state = 'done', container_up = 0, failure = ?3, progress = NULL, updated_at = ?2
+        "UPDATE tasks SET state = 'done', container_up = 0, failure = ?3, failure_data = ?4, progress = NULL,
+                          updated_at = ?2
          WHERE id = ?1 AND state = 'running' AND container_up = 0",
-        params![task_id, newer_than(updated_at), DEAD_RUN_FAILURE],
+        params![
+            task_id,
+            newer_than(updated_at),
+            DEAD_RUN_FAILURE,
+            crate::failure::Failure::no_result().json()
+        ],
     )?;
     Ok(changed > 0)
 }

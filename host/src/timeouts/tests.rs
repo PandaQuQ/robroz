@@ -97,7 +97,7 @@ impl robroz_model::Model for Script {
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| ModelError("no split".into()))
+            .ok_or_else(|| ModelError::new("no split"))
     }
 
     fn chat(&self, _: &[ChatMessage], _: &[ToolDefinition]) -> Result<AssistantTurn, ModelError> {
@@ -110,7 +110,7 @@ impl robroz_model::Model for Script {
                 let _ = self.gate.lock().unwrap().recv();
                 Ok(turn)
             }
-            None => Err(ModelError("no more turns".into())),
+            None => Err(ModelError::new("no more turns")),
         }
     }
 }

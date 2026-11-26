@@ -107,8 +107,8 @@ impl robroz_model::Model for RouterModel {
         *self.replies.lock().unwrap() += 1;
         match self.split.lock().unwrap().pop_front() {
             Some(Ok(text)) => Ok(text),
-            Some(Err(err)) => Err(ModelError(err)),
-            None => Err(ModelError("no split answer".into())),
+            Some(Err(err)) => Err(ModelError::new(err)),
+            None => Err(ModelError::new("no split answer")),
         }
     }
 
@@ -138,7 +138,7 @@ impl robroz_model::Model for RouterModel {
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| ModelError("no more turns".into()))
+            .ok_or_else(|| ModelError::new("no more turns"))
     }
 }
 

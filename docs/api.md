@@ -535,27 +535,29 @@ A status card may carry this only when `done`; when there is also a delivery car
 v0.2 adds two optional fields next to it, on both the status and the delivery card (`robroz_contract::FailureCode`, `robroz_contract::split_failure`):
 
 - `failureCode`: a stable snake_case code, present exactly when `failure` is.
-- `failureDetail`: the raw reason **without any prefix**, omitted when the code needs none. The client adds exactly one prefix of its own (Couldn't finish: {detail}), so a card reads 「没做成：模型服务返回 500」 and never 「没做成：模型没回：模型服务返回 500」. A client must not show `failure` next to the code. `no_result` is shown without a prefix.
+- `failureDetail`: language-neutral raw data **without any prefix**, omitted when the code needs none: an HTTP status code, a tool name, a method, `used/limit`, raw upstream or OS error text, or a stable snake_case reason token. It never carries host-written Chinese such as 「模型服务返回 500」; that card's detail is `500`. The client adds exactly one prefix of its own (Couldn't finish: {detail}) where its rules call for one. A client must not show `failure` next to the code. `no_result` is shown without a prefix.
 
-The host derives both from the stored `failure` text when it builds the event, so rows written by an older host get codes too. Text the host does not recognise (a runner error) is `other`, with the whole text as `failureDetail`.
+Since #181 the host stores the failure typed (`robroz_contract::FailureData`: the code plus `FailureParams`) in a `failure_data` column on `tasks` and `deliveries`, next to the unchanged `failure` text, and builds both fields from it. Rows written before the column existed are read from their text once, by a backfill at startup (`FailureData::from_legacy`); rows that already have typed data are never re-read. Text the host does not recognise (a runner error) is `other`, with the whole text as `failureDetail`.
 
 | `failureCode` | `failure` starts with | `failureDetail` |
 | --- | --- | --- |
 | `no_result` | 「没写出结果」 | omitted |
-| `denied` | 「你拒绝了：」 | the denied task line, or `{server}.{tool}`, or 「MCP 工具」 when the card has none |
+| `denied` | 「你拒绝了：」 | `{server}.{tool}` for an MCP call, else the person's own task line; omitted when the card names neither |
 | `approval_expired` | 「审批已过期」 | omitted |
-| `model_no_reply` | 「模型没回：」 | the model error |
+| `model_no_reply` | 「模型没回：」 | the HTTP status code (`401`), else the raw transport error (`timed out`), else a reason token (see below) |
 | `tool_round_limit` | 「工具调用超过 8 轮」 | omitted |
 | `outbound_over_quota` | 「出网超额」 | `"{used}/{limit}"`, for example `"3/2"`; omitted when the host gave no numbers |
 | `outbound_not_get` | 「出网只允许 GET：」 | the HTTP method that was used, for example `POST` |
-| `save_approval_state_failed` | 「无法保存审批状态：」 | the error text |
-| `resume_approved_call_failed` | 「无法继续已批准的调用：」 | the error text (it may carry a nested host sentence) |
-| `waiting_approval` | 「等待批准：」 | the tool's display name |
-| `tool_call_failed` | 「调用失败：」 | the tool error |
+| `save_approval_state_failed` | 「无法保存审批状态：」 | the raw OS or encoding error, else a `pending_*` reason token |
+| `resume_approved_call_failed` | 「无法继续已批准的调用：」 | the raw OS or JSON error, else a `pending_*` reason token |
+| `waiting_approval` | 「等待批准：」 | the tool name |
+| `tool_call_failed` | 「调用失败：」 | the tool error (old rows only; the host does not end a task with it) |
 | `tool_needs_approval` | exactly 「调用失败：这个工具还需要批准」 | omitted |
 | `other` | anything else | the whole `failure` text |
 
-`failureDetail` is raw host or upstream text (an error, a name, a method) and is not translated by the host. The detail of `denied` and `model_no_reply` can be Chinese.
+Reason tokens for `model_no_reply`: `connect_failed`, `read_failed` (both usually come with the raw error instead), `response_not_json`, `response_missing_message`, `response_missing_content`, `response_empty_content`, `tool_calls_not_array`, `tool_call_missing_name`, `unsupported_tool_call_type`, `tools_unsupported`, `unexpected_tool_calls`. For the approval state: `pending_write_failed`, `pending_not_found`, `pending_corrupt`, `pending_not_approved`, `pending_missing_messages`, `pending_missing_remaining`, `pending_call_missing_id`, `pending_call_missing_name`, `pending_message_missing_role`, `pending_unknown_role`, `pending_encode_failed`.
+
+The only detail that can be in a human language is the person's own text (a denied task line) or `other`, which is whatever the runner wrote.
 
 | Case | `failure` | Delivery card? | Code |
 | --- | --- | --- | --- |
