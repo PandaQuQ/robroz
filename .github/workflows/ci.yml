@@ -97,10 +97,10 @@ jobs:
             echo "::error::.env must not set a model or token variable"; exit 1
           fi
           sudo sha256sum "$dir/.env" "$dir/secrets/robroz_token" > "${RUNNER_TEMP}/before.sha"
-          touch "$dir/data/keep-me"
+          sudo touch "$dir/data/keep-me"
           sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
           sudo sha256sum -c "${RUNNER_TEMP}/before.sha"
-          test -e "$dir/data/keep-me"
+          sudo test -e "$dir/data/keep-me"
           grep -q 'robroz-host:v9.9.9' "$dir/compose.yml"
           test -f "$dir/compose.yml.bak"
 
