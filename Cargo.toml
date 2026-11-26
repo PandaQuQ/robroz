@@ -19,3 +19,7 @@ resolver = "2"
 
 [workspace.package]
 license = "AGPL-3.0-only"
+
+# Release binaries (the tarball and the images) ship without debug symbols.
+[profile.release]
+strip = true
