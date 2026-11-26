@@ -15,7 +15,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
 robroz-contract = { path = "../crates/robroz-contract" }
 robroz-policy = { path = "../crates/robroz-policy" }
-tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "time", "signal"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "=1.11.0", features = ["v4"] }
 croner = "4.0.1"

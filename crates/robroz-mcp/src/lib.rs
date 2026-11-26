@@ -3,6 +3,9 @@
 //! The host talks to servers through [`McpConnector`]. Production uses
 //! [`RmcpConnector`] (the official `rmcp` crate). Tests can swap in
 //! [`FakeConnector`] or start the bundled fixture server.
+//!
+//! The host itself uses [`McpPool`], which keeps stdio servers running
+//! between tasks ([`pool`]) and sends HTTP servers through [`RmcpConnector`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,7 +22,14 @@ use serde_json::Value;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+pub mod managed;
+pub mod pool;
+
+pub use managed::{McpPool, RmcpStdioSpawner};
+pub use pool::{PoolConfig, StdioPool};
+
 /// How long a connect + `tools/list` or `tools/call` is allowed to take.
+/// [`McpPool`] applies it to starting a stdio process and to each request.
 pub const MCP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A tool as the host shows it: approval is required unless the server
@@ -103,7 +113,7 @@ impl McpConnector for RmcpConnector {
     }
 }
 
-fn secret_values(cfg: &ConnectConfig) -> Vec<String> {
+pub(crate) fn secret_values(cfg: &ConnectConfig) -> Vec<String> {
     cfg.env
         .iter()
         .map(|(_, v)| v.clone())
@@ -112,7 +122,7 @@ fn secret_values(cfg: &ConnectConfig) -> Vec<String> {
         .collect()
 }
 
-fn redact(err: &str, secrets: &[String]) -> String {
+pub(crate) fn redact(err: &str, secrets: &[String]) -> String {
     let mut out = err.to_string();
     for secret in secrets {
         if !secret.is_empty() && out.contains(secret) {
@@ -169,7 +179,7 @@ async fn call_tool_inner(
     }
 }
 
-fn stdio_transport(cfg: &ConnectConfig) -> Result<TokioChildProcess, String> {
+pub(crate) fn stdio_transport(cfg: &ConnectConfig) -> Result<TokioChildProcess, String> {
     let command = cfg
         .command
         .as_deref()
@@ -178,6 +188,8 @@ fn stdio_transport(cfg: &ConnectConfig) -> Result<TokioChildProcess, String> {
     let env = cfg.env.clone();
     TokioChildProcess::new(Command::new(command).configure(|cmd| {
         cmd.args(&args);
+        // A child left behind by a dropped client (or the host exiting) is killed.
+        cmd.kill_on_drop(true);
         for (k, v) in &env {
             cmd.env(k, v);
         }
@@ -199,8 +211,11 @@ where
         .await
         .map_err(|err| format!("无法列出工具：{err}"));
     let _ = client.cancel().await;
-    let listed = result?;
-    Ok(listed
+    Ok(listed_tools(result?))
+}
+
+pub(crate) fn listed_tools(listed: rmcp::model::ListToolsResult) -> Vec<ListedTool> {
+    listed
         .tools
         .into_iter()
         .map(|tool| ListedTool {
@@ -213,7 +228,7 @@ where
                 .unwrap_or(false),
             input_schema: Value::Object(tool.input_schema.as_ref().clone()),
         })
-        .collect())
+        .collect()
 }
 
 async fn serve_and_call<T, E, A>(
@@ -241,7 +256,7 @@ where
     Ok(format_tool_result(&result?))
 }
 
-fn format_tool_result(result: &CallToolResult) -> String {
+pub(crate) fn format_tool_result(result: &CallToolResult) -> String {
     let mut texts: Vec<String> = result
         .content
         .iter()
@@ -264,7 +279,7 @@ fn format_tool_result(result: &CallToolResult) -> String {
     }
 }
 
-fn client_service() -> ClientConfig {
+pub(crate) fn client_service() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("robroz-host", "0.1.0"),
