@@ -323,7 +323,7 @@ pub fn expire_due(
             &Settlement {
                 decision: ApprovalDecision::Denied,
                 reason: Some(APPROVAL_EXPIRED_REASON),
-                failure: Some(APPROVAL_EXPIRED_REASON),
+                failure: Some(crate::failure::Failure::approval_expired()),
                 ..Settlement::default()
             },
         )?;

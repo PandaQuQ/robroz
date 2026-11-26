@@ -10,7 +10,9 @@ pub mod error_codes;
 /// Deprecated Chinese card copy that used to live in `robroz-card`.
 pub mod legacy;
 
-pub use codes::{split_failure, CardStatusCode, DeliveryBadge, FailureCode};
+pub use codes::{
+    split_failure, CardStatusCode, DeliveryBadge, FailureCode, FailureData, FailureParams,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
@@ -2298,7 +2300,7 @@ mod tests {
             progress: None,
             status_code: Some(CardStatusCode::Done),
             failure_code: Some(FailureCode::ModelNoReply),
-            failure_detail: Some("模型服务返回 500".into()),
+            failure_detail: Some("500".into()),
         };
         assert_round_trip(
             &failed,
@@ -2309,7 +2311,7 @@ mod tests {
                 "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
                 "failure": "模型没回：模型服务返回 500",
                 "statusCode": "done", "failureCode": "model_no_reply",
-                "failureDetail": "模型服务返回 500"
+                "failureDetail": "500"
             }),
         );
         let old = serde_json::json!({
