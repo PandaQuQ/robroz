@@ -2,9 +2,11 @@
 //!
 //! Without a pool every `tools/list` and `tools/call` starts the server's
 //! command, does the MCP handshake and stops it again. [`StdioPool`] keeps one
-//! live connection per server id instead:
+//! live connection per (server id, group id) instead:
 //!
-//! - The connection is tied to a hash of everything that changes how the
+//! - A bro DM is a group of its own, so it gets its own process. Two groups
+//!   never share a process, even when they enable the same server.
+//! - The connection is also tied to a hash of everything that changes how the
 //!   process behaves (command, args, env, which includes the secrets). When the
 //!   hash changes (the command was edited or a key was rotated), the old
 //!   process is stopped and a new one is started on the next use.
@@ -17,7 +19,7 @@
 //! - A request that hits the timeout stops the process, the same as before the
 //!   pool existed, so a hung server does not stay around.
 //! - Each connection takes at most [`PoolConfig::max_in_flight`] requests at a
-//!   time. `1` serialises calls per server.
+//!   time. `1` serialises calls per (server, group).
 //! - [`StdioPool::reap_idle`] stops connections unused for
 //!   [`PoolConfig::idle_timeout`]. [`StdioPool::shutdown`] stops them all.
 //!
@@ -174,11 +176,15 @@ struct Slot {
     live: Option<Live>,
 }
 
-/// One live stdio connection per server id. See the module docs.
+/// (`server_id`, `group_id`).
+type SlotKey = (String, String);
+type SlotMap = HashMap<SlotKey, Arc<Mutex<Slot>>>;
+
+/// One live stdio connection per (server id, group id). See the module docs.
 pub struct StdioPool {
     cfg: PoolConfig,
     spawner: Arc<dyn StdioSpawner>,
-    slots: StdMutex<HashMap<String, Arc<Mutex<Slot>>>>,
+    slots: StdMutex<SlotMap>,
     closed: AtomicBool,
     spawns: AtomicU64,
 }
@@ -210,14 +216,19 @@ impl StdioPool {
         self.spawns.load(Ordering::Relaxed)
     }
 
-    /// The pid of the live process for `server_id`, if any.
-    pub async fn live_pid(&self, server_id: &str) -> Option<u32> {
-        let slot = self.slots.lock().unwrap().get(server_id).cloned()?;
+    /// The pid of the live process for (`server_id`, `group_id`), if any.
+    pub async fn live_pid(&self, server_id: &str, group_id: &str) -> Option<u32> {
+        let slot = self
+            .slots
+            .lock()
+            .unwrap()
+            .get(&(server_id.to_string(), group_id.to_string()))
+            .cloned()?;
         let guard = slot.lock().await;
         guard.live.as_ref().and_then(|live| live.conn.pid())
     }
 
-    /// Number of servers with a live process.
+    /// Number of (server, group) slots with a live process.
     pub async fn live_count(&self) -> usize {
         let slots: Vec<_> = self.slots.lock().unwrap().values().cloned().collect();
         let mut n = 0;
@@ -229,11 +240,11 @@ impl StdioPool {
         n
     }
 
-    fn slot(&self, server_id: &str) -> Arc<Mutex<Slot>> {
+    fn slot(&self, server_id: &str, group_id: &str) -> Arc<Mutex<Slot>> {
         self.slots
             .lock()
             .unwrap()
-            .entry(server_id.to_string())
+            .entry((server_id.to_string(), group_id.to_string()))
             .or_default()
             .clone()
     }
@@ -254,18 +265,19 @@ impl StdioPool {
         })
     }
 
-    /// Get a usable connection for `server_id`, replacing a stale, dead,
-    /// idle-expired or differently-configured one. Returns a request permit.
+    /// Get a usable connection for (`server_id`, `group_id`), replacing a
+    /// stale, dead, idle-expired or differently-configured one.
     async fn checkout(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
         hash: &str,
     ) -> Result<(Checkout, Arc<Mutex<Slot>>, Arc<Semaphore>), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err(POOL_CLOSED.into());
         }
-        let slot = self.slot(server_id);
+        let slot = self.slot(server_id, group_id);
         let mut guard = slot.lock().await;
         let now = Instant::now();
         let stale = guard.live.as_ref().is_some_and(|live| {
@@ -347,11 +359,12 @@ impl StdioPool {
     pub async fn list_tools(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
     ) -> Result<Vec<ListedTool>, String> {
         let hash = config_hash(cfg);
         for attempt in 0..2 {
-            let (checkout, slot, permits) = self.checkout(server_id, cfg, &hash).await?;
+            let (checkout, slot, permits) = self.checkout(server_id, group_id, cfg, &hash).await?;
             if let Some(tools) = checkout.cached_tools {
                 return Ok(tools);
             }
@@ -394,12 +407,13 @@ impl StdioPool {
     pub async fn call_tool(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
         name: &str,
         arguments: &Value,
     ) -> Result<String, String> {
         let hash = config_hash(cfg);
-        let (checkout, slot, permits) = self.checkout(server_id, cfg, &hash).await?;
+        let (checkout, slot, permits) = self.checkout(server_id, group_id, cfg, &hash).await?;
         let permit = self.permit(permits).await?;
         let result = timeout(
             self.cfg.call_timeout,
@@ -427,22 +441,43 @@ impl StdioPool {
         }
     }
 
-    /// Stop the process for `server_id` now, for example after the server was
-    /// edited, disabled or deleted.
+    /// Stop every process for `server_id`, across all groups, for example
+    /// after the server was edited, disabled or deleted.
     pub async fn evict(&self, server_id: &str) {
-        let slot = self.slots.lock().unwrap().remove(server_id);
-        if let Some(slot) = slot {
+        let slots = self.take_slots(|sid, _gid| sid == server_id);
+        for slot in slots {
             if let Some(old) = slot.lock().await.live.take() {
                 self.retire(old);
             }
         }
     }
 
+    /// Stop every process started for `group_id`. Ready for a later
+    /// `DELETE /api/groups/{id}`: that route does not exist yet.
+    pub async fn evict_group(&self, group_id: &str) {
+        let slots = self.take_slots(|_sid, gid| gid == group_id);
+        for slot in slots {
+            if let Some(old) = slot.lock().await.live.take() {
+                self.retire(old);
+            }
+        }
+    }
+
+    fn take_slots(&self, keep: impl Fn(&str, &str) -> bool) -> Vec<Arc<Mutex<Slot>>> {
+        let mut slots = self.slots.lock().unwrap();
+        let keys: Vec<_> = slots
+            .keys()
+            .filter(|(sid, gid)| keep(sid, gid))
+            .cloned()
+            .collect();
+        keys.into_iter().filter_map(|k| slots.remove(&k)).collect()
+    }
+
     /// Stop connections idle since before `now - idle_timeout` with no request
     /// in flight. Busy slots are skipped and looked at next time. Returns how
     /// many processes were stopped.
     pub async fn reap_idle(&self, now: Instant) -> usize {
-        let slots: Vec<(String, Arc<Mutex<Slot>>)> = self
+        let slots: Vec<(SlotKey, Arc<Mutex<Slot>>)> = self
             .slots
             .lock()
             .unwrap()
@@ -681,15 +716,19 @@ mod tests {
     async fn reuses_one_process_and_caches_tools_across_tasks() {
         let (pool, spawner) = pool();
         let c = cfg("srv");
-        let first = pool.list_tools("s1", &c).await.unwrap();
-        let second = pool.list_tools("s1", &c).await.unwrap();
+        let first = pool.list_tools("s1", "g", &c).await.unwrap();
+        let second = pool.list_tools("s1", "g", &c).await.unwrap();
         assert_eq!(first, second);
         assert_eq!(
-            pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap(),
+            pool.call_tool("s1", "g", &c, "ping", &json!({}))
+                .await
+                .unwrap(),
             "ping@1"
         );
         assert_eq!(
-            pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap(),
+            pool.call_tool("s1", "g", &c, "ping", &json!({}))
+                .await
+                .unwrap(),
             "ping@1"
         );
         assert_eq!(spawner.count(), 1, "one process for four requests");
@@ -698,14 +737,14 @@ mod tests {
             1,
             "tools/list cached"
         );
-        assert_eq!(pool.live_pid("s1").await, Some(1));
+        assert_eq!(pool.live_pid("s1", "g").await, Some(1));
     }
 
     #[tokio::test]
     async fn servers_get_separate_processes() {
         let (pool, spawner) = pool();
-        pool.list_tools("a", &cfg("srv")).await.unwrap();
-        pool.list_tools("b", &cfg("srv")).await.unwrap();
+        pool.list_tools("a", "g", &cfg("srv")).await.unwrap();
+        pool.list_tools("b", "g", &cfg("srv")).await.unwrap();
         assert_eq!(spawner.count(), 2);
         assert_eq!(pool.live_count().await, 2);
     }
@@ -714,13 +753,16 @@ mod tests {
     async fn config_change_restarts_the_process_and_drops_the_tool_cache() {
         let (pool, spawner) = pool();
         let old = cfg("srv");
-        assert_eq!(pool.list_tools("s1", &old).await.unwrap()[0].name, "tool1");
+        assert_eq!(
+            pool.list_tools("s1", "g", &old).await.unwrap()[0].name,
+            "tool1"
+        );
         let rotated = ConnectConfig {
             env: vec![("TOKEN".into(), "secret-2".into())],
             ..old.clone()
         };
         assert_eq!(
-            pool.list_tools("s1", &rotated).await.unwrap()[0].name,
+            pool.list_tools("s1", "g", &rotated).await.unwrap()[0].name,
             "tool2"
         );
         assert_eq!(spawner.count(), 2);
@@ -738,18 +780,18 @@ mod tests {
         spawner.delay_ms.store(50, Ordering::SeqCst);
         let pool = Arc::new(pool);
         let old = cfg("srv");
-        pool.list_tools("s1", &old).await.unwrap();
+        pool.list_tools("s1", "g", &old).await.unwrap();
         let slow = {
             let pool = pool.clone();
             let old = old.clone();
-            tokio::spawn(async move { pool.call_tool("s1", &old, "slow", &json!({})).await })
+            tokio::spawn(async move { pool.call_tool("s1", "g", &old, "slow", &json!({})).await })
         };
         tokio::time::sleep(Duration::from_millis(10)).await;
         let new = ConnectConfig {
             args: vec!["--y".into()],
             ..old
         };
-        pool.list_tools("s1", &new).await.unwrap();
+        pool.list_tools("s1", "g", &new).await.unwrap();
         assert_eq!(slow.await.unwrap().unwrap(), "slow@1", "not cut off");
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(
@@ -762,10 +804,14 @@ mod tests {
     async fn reconnects_after_the_child_exits() {
         let (pool, spawner) = pool();
         let c = cfg("srv");
-        pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "ping", &json!({}))
+            .await
+            .unwrap();
         spawner.conn(0).alive.store(false, Ordering::SeqCst);
         assert_eq!(
-            pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap(),
+            pool.call_tool("s1", "g", &c, "ping", &json!({}))
+                .await
+                .unwrap(),
             "ping@2"
         );
         assert_eq!(spawner.count(), 2);
@@ -775,9 +821,11 @@ mod tests {
     async fn broken_pipe_on_list_retries_once_on_a_new_process() {
         let (pool, spawner) = pool();
         let c = cfg("srv");
-        pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "ping", &json!({}))
+            .await
+            .unwrap();
         spawner.conn(0).break_next.store(true, Ordering::SeqCst);
-        let tools = pool.list_tools("s1", &c).await.unwrap();
+        let tools = pool.list_tools("s1", "g", &c).await.unwrap();
         assert_eq!(tools[0].name, "tool2");
         assert_eq!(spawner.count(), 2);
     }
@@ -786,17 +834,21 @@ mod tests {
     async fn broken_pipe_on_call_is_not_retried_but_the_next_call_reconnects() {
         let (pool, spawner) = pool();
         let c = cfg("srv");
-        pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "ping", &json!({}))
+            .await
+            .unwrap();
         spawner.conn(0).break_next.store(true, Ordering::SeqCst);
         let err = pool
-            .call_tool("s1", &c, "write", &json!({}))
+            .call_tool("s1", "g", &c, "write", &json!({}))
             .await
             .unwrap_err();
         assert_eq!(err, "Transport closed");
         assert_eq!(spawner.conn(0).calls.load(Ordering::SeqCst), 2, "no retry");
         assert_eq!(spawner.count(), 1);
         assert_eq!(
-            pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap(),
+            pool.call_tool("s1", "g", &c, "ping", &json!({}))
+                .await
+                .unwrap(),
             "ping@2"
         );
     }
@@ -806,11 +858,13 @@ mod tests {
         let (pool, spawner) = pool();
         let c = cfg("srv");
         let err = pool
-            .call_tool("s1", &c, "fail", &json!({}))
+            .call_tool("s1", "g", &c, "fail", &json!({}))
             .await
             .unwrap_err();
         assert_eq!(err, "调用失败：nope");
-        pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "ping", &json!({}))
+            .await
+            .unwrap();
         assert_eq!(spawner.count(), 1);
     }
 
@@ -820,12 +874,12 @@ mod tests {
         let c = cfg("srv");
         spawner.fail.store(true, Ordering::SeqCst);
         assert!(pool
-            .list_tools("s1", &c)
+            .list_tools("s1", "g", &c)
             .await
             .unwrap_err()
             .contains("无法启动"));
         spawner.fail.store(false, Ordering::SeqCst);
-        assert!(pool.list_tools("s1", &c).await.is_ok());
+        assert!(pool.list_tools("s1", "g", &c).await.is_ok());
     }
 
     #[tokio::test]
@@ -835,14 +889,14 @@ mod tests {
             ..PoolConfig::default()
         });
         let c = cfg("srv");
-        pool.list_tools("s1", &c).await.unwrap();
+        pool.list_tools("s1", "g", &c).await.unwrap();
         assert_eq!(pool.reap_idle(Instant::now()).await, 0, "not idle yet");
         let later = Instant::now() + Duration::from_millis(60);
         assert_eq!(pool.reap_idle(later).await, 1);
         assert!(spawner.conn(0).closed.load(Ordering::SeqCst));
         assert_eq!(pool.live_count().await, 0);
         // Next use starts a new process.
-        pool.list_tools("s1", &c).await.unwrap();
+        pool.list_tools("s1", "g", &c).await.unwrap();
         assert_eq!(spawner.count(), 2);
     }
 
@@ -853,10 +907,14 @@ mod tests {
             ..PoolConfig::default()
         });
         let c = cfg("srv");
-        pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "ping", &json!({}))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(
-            pool.call_tool("s1", &c, "ping", &json!({})).await.unwrap(),
+            pool.call_tool("s1", "g", &c, "ping", &json!({}))
+                .await
+                .unwrap(),
             "ping@2"
         );
         assert_eq!(spawner.count(), 2);
@@ -871,13 +929,15 @@ mod tests {
         spawner.delay_ms.store(30, Ordering::SeqCst);
         let pool = Arc::new(pool);
         let c = cfg("srv");
-        pool.call_tool("s1", &c, "warm", &json!({})).await.unwrap();
+        pool.call_tool("s1", "g", &c, "warm", &json!({}))
+            .await
+            .unwrap();
         let mut joins = Vec::new();
         for _ in 0..6 {
             let pool = pool.clone();
             let c = c.clone();
             joins.push(tokio::spawn(async move {
-                pool.call_tool("s1", &c, "ping", &json!({})).await
+                pool.call_tool("s1", "g", &c, "ping", &json!({})).await
             }));
         }
         for j in joins {
@@ -896,7 +956,7 @@ mod tests {
         spawner.delay_ms.store(200, Ordering::SeqCst);
         let c = cfg("srv");
         assert_eq!(
-            pool.call_tool("s1", &c, "slow", &json!({}))
+            pool.call_tool("s1", "g", &c, "slow", &json!({}))
                 .await
                 .unwrap_err(),
             TIMED_OUT
@@ -909,8 +969,8 @@ mod tests {
     #[tokio::test]
     async fn evict_and_shutdown_stop_processes() {
         let (pool, spawner) = pool();
-        pool.list_tools("a", &cfg("srv")).await.unwrap();
-        pool.list_tools("b", &cfg("srv")).await.unwrap();
+        pool.list_tools("a", "g", &cfg("srv")).await.unwrap();
+        pool.list_tools("b", "g", &cfg("srv")).await.unwrap();
         pool.evict("a").await;
         tokio::task::yield_now().await;
         assert!(spawner.conn(0).closed.load(Ordering::SeqCst));
@@ -918,9 +978,61 @@ mod tests {
         pool.shutdown().await;
         assert!(spawner.conn(1).closed.load(Ordering::SeqCst));
         assert_eq!(
-            pool.list_tools("b", &cfg("srv")).await.unwrap_err(),
+            pool.list_tools("b", "g", &cfg("srv")).await.unwrap_err(),
             POOL_CLOSED
         );
         assert_eq!(spawner.count(), 2, "no process after shutdown");
+    }
+
+    #[tokio::test]
+    async fn groups_get_separate_processes_and_the_same_group_reuses_one() {
+        let (pool, spawner) = pool();
+        let c = cfg("srv");
+        pool.list_tools("s1", "ga", &c).await.unwrap();
+        pool.list_tools("s1", "gb", &c).await.unwrap();
+        pool.list_tools("s1", "ga", &c).await.unwrap();
+        pool.call_tool("s1", "ga", &c, "ping", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(spawner.count(), 2, "one process per group");
+        assert_eq!(pool.live_pid("s1", "ga").await, Some(1));
+        assert_eq!(pool.live_pid("s1", "gb").await, Some(2));
+        assert_eq!(
+            spawner.conn(0).lists.load(Ordering::SeqCst),
+            1,
+            "group A cache reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_stops_every_group_for_that_server() {
+        let (pool, spawner) = pool();
+        let c = cfg("srv");
+        pool.list_tools("s1", "ga", &c).await.unwrap();
+        pool.list_tools("s1", "gb", &c).await.unwrap();
+        pool.list_tools("s2", "ga", &c).await.unwrap();
+        pool.evict("s1").await;
+        tokio::task::yield_now().await;
+        assert!(spawner.conn(0).closed.load(Ordering::SeqCst));
+        assert!(spawner.conn(1).closed.load(Ordering::SeqCst));
+        assert!(!spawner.conn(2).closed.load(Ordering::SeqCst));
+        assert_eq!(pool.live_count().await, 1);
+        assert_eq!(pool.live_pid("s2", "ga").await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn evict_group_stops_only_that_groups_processes() {
+        let (pool, spawner) = pool();
+        let c = cfg("srv");
+        pool.list_tools("s1", "ga", &c).await.unwrap();
+        pool.list_tools("s2", "ga", &c).await.unwrap();
+        pool.list_tools("s1", "gb", &c).await.unwrap();
+        pool.evict_group("ga").await;
+        tokio::task::yield_now().await;
+        assert!(spawner.conn(0).closed.load(Ordering::SeqCst));
+        assert!(spawner.conn(1).closed.load(Ordering::SeqCst));
+        assert!(!spawner.conn(2).closed.load(Ordering::SeqCst));
+        assert_eq!(pool.live_pid("s1", "gb").await, Some(3));
+        assert_eq!(pool.live_count().await, 1);
     }
 }
