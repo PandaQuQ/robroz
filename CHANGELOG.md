@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requests rejected before a handler runs (invalid JSON, a missing field, an unknown enum value, a wrong `Content-Type`, a path or query that does not parse) now get the standard JSON error body with a stable `code` (`invalid_json`, `missing_field`, `invalid_enum`, `unknown_field`, `invalid_field`, `unsupported_media_type`, `body_too_large`, `invalid_body`, `invalid_path`, `invalid_query`) instead of axum's plain text. HTTP statuses are unchanged ([#179](https://github.com/PandaQuQ/robroz/issues/179)).
 - `POST /api/approvals/{id}/approve` and `/deny` return 403 `{"code":"approval_forbidden","reason":"not_owner"|"decided"|"expired"}` instead of 409 for an answered or expired card, and for a caller who is not the bro's owner. Renaming a bro, opening its DM or adding it to a group by someone else is 403 `not_bro_owner`. `GET /api/bros` lists the caller's bros. The host no longer writes 「已发到主人私聊」 ([#174](https://github.com/PandaQuQ/robroz/pull/174)).
 
 ## [0.1.1] - 2026-11-25

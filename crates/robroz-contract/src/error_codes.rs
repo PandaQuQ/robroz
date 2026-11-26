@@ -134,6 +134,48 @@ pub fn fallback_code(status: u16) -> &'static str {
     }
 }
 
+/// Codes for a request the host rejects before any handler runs: a body
+/// that is not JSON or does not fit the endpoint, a wrong `Content-Type`, or
+/// a path or query that does not parse (#179). The HTTP status is axum's:
+/// 400 for syntax, path and query, 415 for the content type, 413 for a body
+/// over the limit, 422 for a body that is JSON but has the wrong shape.
+pub mod rejection {
+    /// 400: the body is not valid JSON (syntax error or cut short).
+    pub const INVALID_JSON: &str = "invalid_json";
+    /// 422: a required field is missing.
+    pub const MISSING_FIELD: &str = "missing_field";
+    /// 422: a field holds a value that is not one of the allowed names.
+    pub const INVALID_ENUM: &str = "invalid_enum";
+    /// 422: a field the endpoint does not accept.
+    pub const UNKNOWN_FIELD: &str = "unknown_field";
+    /// 422: a field has the wrong type or an invalid value.
+    pub const INVALID_FIELD: &str = "invalid_field";
+    /// 415: the request is not `Content-Type: application/json`.
+    pub const UNSUPPORTED_MEDIA_TYPE: &str = "unsupported_media_type";
+    /// 413: the body is over the size limit.
+    pub const BODY_TOO_LARGE: &str = "body_too_large";
+    /// 400: the body could not be read.
+    pub const INVALID_BODY: &str = "invalid_body";
+    /// 400: a path segment does not parse (for example a bad id).
+    pub const INVALID_PATH: &str = "invalid_path";
+    /// 400: the query string does not parse.
+    pub const INVALID_QUERY: &str = "invalid_query";
+
+    /// Every rejection code.
+    pub const ALL: [&str; 10] = [
+        INVALID_JSON,
+        MISSING_FIELD,
+        INVALID_ENUM,
+        UNKNOWN_FIELD,
+        INVALID_FIELD,
+        UNSUPPORTED_MEDIA_TYPE,
+        BODY_TOO_LARGE,
+        INVALID_BODY,
+        INVALID_PATH,
+        INVALID_QUERY,
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +195,22 @@ mod tests {
             );
             assert!(texts.insert(*text), "two codes for one text: {text}");
             assert!(codes.insert(*code), "two texts for one code: {code}");
+        }
+    }
+
+    #[test]
+    fn rejection_codes_are_snake_case_unique_and_not_host_text_codes() {
+        let mut seen = HashSet::new();
+        for code in rejection::ALL {
+            assert!(
+                code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{code}"
+            );
+            assert!(seen.insert(code), "{code}");
+            assert!(
+                ERROR_CODES.iter().all(|(_, c)| *c != code),
+                "{code} clashes with a host text code"
+            );
         }
     }
 

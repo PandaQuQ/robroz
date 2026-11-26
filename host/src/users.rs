@@ -11,11 +11,12 @@
 //!   code (tests today, per-user tokens later) can set another user.
 //! - `GET /api/me` returns the caller.
 
+use crate::extract::Json;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
+use axum::Extension;
 use robroz_contract::{Me, UserRole, BOOTSTRAP_ADMIN_ID, BOOTSTRAP_ADMIN_NAME};
 use rusqlite::{params, Connection, OptionalExtension};
 

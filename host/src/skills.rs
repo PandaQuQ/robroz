@@ -23,11 +23,12 @@
 //! A bro's proposals arrive as `pending` (`source=bot`) with a `confirm` card
 //! (see [`crate::proposals`]); `confirmId` names that card while it is open.
 
+use crate::extract::Json;
+use crate::extract::{Path as AxumPath, Query};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{
     parse_skill_slug, CreateSkill, MemoryScope, MemorySource, MemoryStatus, Skill, Skills,
     UpdateSkill, SKILL_INSTRUCTION_MAX, SKILL_TITLE_MAX,
@@ -296,9 +297,9 @@ pub(crate) async fn list_skills(
 
 pub(crate) async fn create_skill(
     State(state): State<AppState>,
-    body: Result<Json<CreateSkill>, JsonRejection>,
+    body: Result<axum::Json<CreateSkill>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
@@ -344,9 +345,9 @@ pub(crate) async fn create_skill(
 pub(crate) async fn update_skill(
     State(state): State<AppState>,
     AxumPath(slug): AxumPath<String>,
-    body: Result<Json<UpdateSkill>, JsonRejection>,
+    body: Result<axum::Json<UpdateSkill>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
