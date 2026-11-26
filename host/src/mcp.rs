@@ -389,6 +389,7 @@ fn list_enabled_for_group(conn: &Connection, group_id: &str) -> rusqlite::Result
 pub(crate) struct ReadyServer {
     pub id: String,
     pub name: String,
+    pub group_id: String,
     pub config: robroz_mcp::ConnectConfig,
 }
 
@@ -410,6 +411,7 @@ pub(crate) fn ready_servers_for_group(
             Ok(config) => out.push(ReadyServer {
                 id: row.id,
                 name: row.name,
+                group_id: group_id.to_string(),
                 config,
             }),
             Err(err) => {
@@ -1542,6 +1544,7 @@ mod tests {
         fn list_tools(
             &self,
             _server_id: &str,
+            _group_id: &str,
             _cfg: &ConnectConfig,
         ) -> Result<Vec<robroz_mcp::ListedTool>, String> {
             Err("spy".into())
@@ -1550,6 +1553,7 @@ mod tests {
         fn call_tool(
             &self,
             _server_id: &str,
+            _group_id: &str,
             _cfg: &ConnectConfig,
             _name: &str,
             _args: &Value,
@@ -1604,6 +1608,7 @@ mod tests {
         let server = ReadyServer {
             id: "srv-1".into(),
             name: "fixture".into(),
+            group_id: "group-a".into(),
             config: ConnectConfig {
                 transport: TransportKind::Stdio,
                 command: Some(bin.display().to_string()),
@@ -1619,6 +1624,7 @@ mod tests {
             let servers = vec![ReadyServer {
                 id: server.id.clone(),
                 name: server.name.clone(),
+                group_id: server.group_id.clone(),
                 config,
             }];
             std::thread::spawn(move || {
@@ -1629,6 +1635,7 @@ mod tests {
                 let out = crate::mcp_tools::McpRuntime::call_tool(
                     &*pooled,
                     "srv-1",
+                    "group-a",
                     &servers[0].config,
                     robroz_mcp::fixture::READ_ONLY_TOOL,
                     &json!({}),
