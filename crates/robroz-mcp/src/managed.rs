@@ -186,10 +186,11 @@ impl McpPool {
         }
     }
 
-    /// `tools/list` for server `server_id`.
+    /// `tools/list` for (`server_id`, `group_id`).
     pub async fn list_tools(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
     ) -> Result<Vec<ListedTool>, String> {
         if cfg.transport == TransportKind::Http || !self.config().pooling() {
@@ -197,16 +198,17 @@ impl McpPool {
         }
         let secrets = secret_values(cfg);
         let pool = self.stdio.clone();
-        let (id, cfg) = (server_id.to_string(), cfg.clone());
-        self.on_pool(async move { pool.list_tools(&id, &cfg).await })
+        let (id, gid, cfg) = (server_id.to_string(), group_id.to_string(), cfg.clone());
+        self.on_pool(async move { pool.list_tools(&id, &gid, &cfg).await })
             .await
             .map_err(|err| redact(&err, &secrets))
     }
 
-    /// `tools/call` for server `server_id`.
+    /// `tools/call` for (`server_id`, `group_id`).
     pub async fn call_tool(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
         name: &str,
         arguments: &Value,
@@ -216,24 +218,35 @@ impl McpPool {
         }
         let secrets = secret_values(cfg);
         let pool = self.stdio.clone();
-        let (id, cfg, name, arguments) = (
+        let (id, gid, cfg, name, arguments) = (
             server_id.to_string(),
+            group_id.to_string(),
             cfg.clone(),
             name.to_string(),
             arguments.clone(),
         );
-        self.on_pool(async move { pool.call_tool(&id, &cfg, &name, &arguments).await })
+        self.on_pool(async move { pool.call_tool(&id, &gid, &cfg, &name, &arguments).await })
             .await
             .map_err(|err| redact(&err, &secrets))
     }
 
-    /// Stop the process for `server_id` in the background. Does nothing
-    /// before the pool has started one.
+    /// Stop every process for `server_id` (all groups) in the background.
+    /// Does nothing before the pool has started one.
     pub fn evict(&self, server_id: &str) {
         if let Some(handle) = self.started() {
             let pool = self.stdio.clone();
             let id = server_id.to_string();
             handle.spawn(async move { pool.evict(&id).await });
+        }
+    }
+
+    /// Stop every process started for `group_id`. Ready for a later
+    /// delete-group route; nothing calls this yet.
+    pub fn evict_group(&self, group_id: &str) {
+        if let Some(handle) = self.started() {
+            let pool = self.stdio.clone();
+            let id = group_id.to_string();
+            handle.spawn(async move { pool.evict_group(&id).await });
         }
     }
 

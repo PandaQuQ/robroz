@@ -29,20 +29,31 @@ const PENDING_FILE: &str = "mcp-pending.json";
 
 /// Sync façade over the MCP client, for the host pump and step threads.
 ///
-/// `server_id` is the `mcp_servers.id` the config belongs to. The pooled
-/// runtime keeps one process per server id ([`robroz_mcp::StdioPool`]);
-/// other runtimes ignore it.
+/// `server_id` is the `mcp_servers.id` the config belongs to, and
+/// `group_id` is the group (or bro DM) the task is running in. The pooled
+/// runtime keeps one process per (server, group) ([`robroz_mcp::StdioPool`]);
+/// other runtimes ignore both ids.
 pub trait McpRuntime: Send + Sync {
-    fn list_tools(&self, server_id: &str, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String>;
+    fn list_tools(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String>;
     fn call_tool(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
         name: &str,
         args: &Value,
     ) -> Result<String, String>;
-    /// The server was edited, disabled or deleted: stop its pooled process.
+    /// The server was edited, disabled or deleted: stop every pooled
+    /// process for this server, in every group.
     fn evict(&self, _server_id: &str) {}
+    /// The group was deleted: stop every pooled process started for it.
+    /// No route calls this yet.
+    fn evict_group(&self, _group_id: &str) {}
     /// The host is exiting: stop every pooled process. Blocks up to a few seconds.
     fn shutdown(&self) {}
 }
@@ -54,22 +65,32 @@ pub struct PooledMcp(pub McpPool);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 impl McpRuntime for PooledMcp {
-    fn list_tools(&self, server_id: &str, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String> {
-        block_on(self.0.list_tools(server_id, cfg))
+    fn list_tools(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String> {
+        block_on(self.0.list_tools(server_id, group_id, cfg))
     }
 
     fn call_tool(
         &self,
         server_id: &str,
+        group_id: &str,
         cfg: &ConnectConfig,
         name: &str,
         args: &Value,
     ) -> Result<String, String> {
-        block_on(self.0.call_tool(server_id, cfg, name, args))
+        block_on(self.0.call_tool(server_id, group_id, cfg, name, args))
     }
 
     fn evict(&self, server_id: &str) {
         self.0.evict(server_id);
+    }
+
+    fn evict_group(&self, group_id: &str) {
+        self.0.evict_group(group_id);
     }
 
     fn shutdown(&self) {
@@ -109,13 +130,19 @@ pub fn real_mcp() -> Arc<dyn McpRuntime> {
 }
 
 impl McpRuntime for robroz_mcp::FakeConnector {
-    fn list_tools(&self, _server_id: &str, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String> {
+    fn list_tools(
+        &self,
+        _server_id: &str,
+        _group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String> {
         self.list_tools_sync(cfg)
     }
 
     fn call_tool(
         &self,
         _server_id: &str,
+        _group_id: &str,
         cfg: &ConnectConfig,
         name: &str,
         args: &Value,
@@ -200,7 +227,7 @@ pub fn register_tools(tools: &mut ToolRegistry, servers: &[ReadyServer], mcp: Ar
         .map(|d| d.name)
         .collect::<HashSet<_>>();
     for server in servers {
-        let listed = match mcp.list_tools(&server.id, &server.config) {
+        let listed = match mcp.list_tools(&server.id, &server.group_id, &server.config) {
             Ok(tools) => tools,
             Err(err) => {
                 eprintln!("mcp: skip server {} ({}): {err}", server.name, server.id);
@@ -232,6 +259,7 @@ pub fn register_tools(tools: &mut ToolRegistry, servers: &[ReadyServer], mcp: Ar
                     server_name: server.name.clone(),
                     tool_name: tool.name,
                 },
+                group_id: server.group_id.clone(),
                 config: server.config.clone(),
                 mcp: mcp.clone(),
             });
@@ -246,6 +274,7 @@ struct McpHostTool {
     schema: Value,
     effect: SideEffect,
     approval: McpApproval,
+    group_id: String,
     config: ConnectConfig,
     mcp: Arc<dyn McpRuntime>,
 }
@@ -281,6 +310,7 @@ impl Tool for McpHostTool {
         }
         self.mcp.call_tool(
             &self.approval.server_id,
+            &self.group_id,
             &self.config,
             &self.approval.tool_name,
             args,
