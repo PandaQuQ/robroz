@@ -114,7 +114,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 | [docs/design/auto-review.md](docs/design/auto-review.md) | 自动审核设计和放行规则 |
 | [docs/memory-and-skills.md](docs/memory-and-skills.md) | 记忆、技能、确认卡 |
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | 联网搜索和 MCP |
-| [docs/client.md](docs/client.md) | 客户端界面行为（之后移到 robroz-client） |
+| [client.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md) | 客户端界面行为，在客户端仓库 |
 | [docs/architecture.md](docs/architecture.md) | 各部分分工、容器、外观层 |
 | [docs/reference-features.md](docs/reference-features.md) | 参考产品和净室规则 |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | 后续路线图 |

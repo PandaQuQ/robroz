@@ -83,7 +83,7 @@ Details are in [search-and-mcp.md](search-and-mcp.md#模型怎么调用).
 
 ### answeredBy
 
-Who may answer is decided by the bro's owner (above). `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](client.md#who-answered).
+Who may answer is decided by the bro's owner (above). `answeredBy` is the device or person name the client reports when it answers; the host does not check it. Approval, choice and confirm cards all have this field. It is always present on the event; if it was omitted, the value is `null`. The rules are in [api.md, answeredBy](api.md#answeredby); how the client shows it is in [client.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#who-answered).
 
 ## waitingFor
 

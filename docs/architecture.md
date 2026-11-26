@@ -83,7 +83,7 @@
 
 ## 客户端
 
-- `client/` 是 iced 0.14 桌面程序，三个平台同一套代码。界面行为见 [client.md](client.md)。
+- `client/` 是 iced 0.14 桌面程序，三个平台同一套代码。界面行为见 [client.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md)。
 - 事件来源在 `client/src/source/`，藏在 `EventSource` trait 后面：
   - `HttpSource`（默认）：增量轮询 `GET /api/groups/{id}/events?since=`，解成 `robroz-contract` 的事件。不认识的 `type` 和解不开的单条事件跳过，不影响其他卡。
   - `stream`：打开的那个群走 SSE。断线后按 1、2、4…最多 30 秒重连，带 `Last-Event-ID`。SSE 断着时每秒轮询一次；连着时轮询放慢到每 10 秒一次兜底。其他群靠轮询和 `GET /api/unread` 更新。
