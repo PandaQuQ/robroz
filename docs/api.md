@@ -136,6 +136,9 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | `choice_no_such_option` | 「没有这个选项」 | `CHOICE_NO_SUCH_OPTION` |
 | `choice_already_picked` | 「已经选过了」 | `CHOICE_ALREADY_PICKED` |
 | `not_bro_owner` | 「只有这个 bro 的主人能这样做」 | `NOT_BRO_OWNER` |
+| `not_group_creator` | 「只有建群的人或管理员能改这个群」 | `NOT_GROUP_CREATOR` |
+| `not_group_member` | 「你不在这个群里」 | `NOT_GROUP_MEMBER` |
+| `group_is_dm` | 「私聊不能改名或删除」 | `GROUP_IS_DM` |
 | `command_not_approved` | 「command_not_approved」 | `MCP_COMMAND_NOT_APPROVED` |
 
 ## Endpoint list
@@ -145,7 +148,11 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | GET | `/api/me` | The calling user | `host/src/users.rs:me` |
 | POST | `/api/groups` | Create a group | `host/src/lib.rs:create_group` |
 | GET | `/api/groups` | List groups | `host/src/lib.rs:list_groups` |
+| PATCH | `/api/groups/{id}` | Rename a group | `host/src/groups.rs:rename_group` |
+| DELETE | `/api/groups/{id}` | Delete a group and everything in it | `host/src/groups.rs:delete_group` |
+| GET | `/api/groups/{id}/members` | Bros in a group and their owners | `host/src/groups.rs:list_members` |
 | POST | `/api/groups/{id}/members` | Add a bro to a group | `host/src/lib.rs:add_member` |
+| GET | `/api/groups/{id}/search` | Search a group's messages | `host/src/groups.rs:search_group` |
 | POST | `/api/bros` | Create a bro and its DM | `host/src/bros.rs:create_bro` |
 | GET | `/api/bros` | List bros | `host/src/bros.rs:list_bros` |
 | PATCH | `/api/bros/{id}` | Rename | `host/src/bros.rs:rename_bro` |
@@ -224,13 +231,13 @@ Create a group. `host/src/lib.rs:create_group`
 | --- | --- | --- | --- |
 | `name` | string | yes | Must be non-empty after trimming. |
 
-- 201 `Group`: `{"id","name","tenantId"}`.
+- 201 `Group`: `{"id","name","tenantId","createdBy"}`. `createdBy` is the caller's user id.
 - 400 「请填写名称」: `name` is blank.
 - 422 `missing_field`: `name` is missing.
 
 ```sh
 curl -s -X POST $B/api/groups -H 'content-type: application/json' -d '{"name":"官网"}'
-# {"id":"<groupId>","name":"官网","tenantId":"local"}
+# {"id":"<groupId>","name":"官网","tenantId":"local","createdBy":"local-admin"}
 ```
 
 ### GET /api/groups
@@ -238,6 +245,7 @@ curl -s -X POST $B/api/groups -H 'content-type: application/json' -d '{"name":"�
 List every group, **including DMs**, in creation order. `host/src/lib.rs:list_groups`
 
 - 200 `{"groups":[Group]}`; with no groups, `{"groups":[]}`.
+- `Group.createdBy` (optional) is the user who created the group. It is absent for groups created before it existed and for DMs created before v0.2; such groups can be renamed or deleted only by an admin.
 
 ```sh
 curl -s $B/api/groups
@@ -264,6 +272,69 @@ Note: a bot's name is global. `@name` in a group matches that global name (see `
 ```sh
 curl -s -X POST $B/api/groups/<groupId>/members -H 'content-type: application/json' \
   -d '{"botId":"bot-ada","name":"ada"}'
+```
+
+### Who may do what in a group
+
+Users are not members of a group by themselves. A user **has a part in** a group when they created it (`createdBy`), own a bro in it, or are an admin. A DM belongs to its user only (`dm_user_id`); not even an admin sees another user's DM here. `GET …/members` and `GET …/search` need a part in the group, else 403 `not_group_member`. `PATCH` and `DELETE` need the creator or an admin, else 403 `not_group_creator`; a group with no `createdBy` (created before this field) is admin-only. A DM can never be renamed or deleted here: 403 `group_is_dm` (its name follows the bro). An unknown group is 404 `group_not_found` in all four.
+
+### GET /api/groups/{id}/members
+
+`host/src/groups.rs:list_members`
+
+- 200 `GroupMembers`:
+
+```json
+{
+  "groupId": "<groupId>",
+  "createdBy": "u-mei",
+  "bros": [{ "botId": "bot-ada", "name": "Ada", "ownerUserId": "u-mei", "ownerName": "Mei" }],
+  "users": [{ "userId": "u-mei", "name": "Mei", "creator": true, "broIds": ["bot-ada"] }]
+}
+```
+
+- `bros` are in the order they were added. `users` are the creator (first, `creator: true`), the DM user, and every owner of a bro in the group, each once, with the ids of their bros here (`broIds`, possibly empty for the creator). `createdBy` is absent for old groups and for DMs. `name` / `ownerName` are absent when the user row is missing.
+- 403 `not_group_member`, 404 `group_not_found`.
+
+### PATCH /api/groups/{id}
+
+Rename. `host/src/groups.rs:rename_group`
+
+| Request field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `name` | string | yes | Trimmed; must not be blank. |
+
+- 200 `Group` with the new name.
+- 400 `need_name`; 422 `missing_field`; 403 `not_group_creator` or `group_is_dm`; 404 `group_not_found`.
+- No event is emitted: clients refetch `GET /api/groups` (or update their list from the 200 body).
+
+### DELETE /api/groups/{id}
+
+Delete a group. `host/src/groups.rs:delete_group`
+
+- 204, no body. 403 `not_group_creator` or `group_is_dm`; 404 `group_not_found` (also on a second delete).
+- **Removed**: the group itself, its messages (and their search index rows), tasks (status cards, turns, follow-ups, router plans, step clocks), deliveries, choice cards, routines (schedules), the bros' memberships of this group, the skills and MCP servers enabled in it (only the enablement), its read cursor, approval cards that are not shown as DM reminders (confirm cards for proposed memories/skills and cards still in auto-review), and its files: the group volume (`<volumes>/<groupId>`, delivery results and task files) and each task's control dir.
+- **Expired, then kept**: open bro approval cards become `decision: "denied"` with the expired reason, so the owner's DM `approval_reminder` shows `state: "expired"` (pushed on the DM stream) with the old group name. They can no longer be answered.
+- **Kept**: every bro (including bros that were only in this group), their DMs, bro and user memories, skills, MCP server configs and secrets, and every other group.
+- Running tasks: their rows are deleted in the same transaction and the pump stops their containers on its next pass (`container_reaps`); a step in flight is cancelled and its reply dropped. Files are removed and the group's pooled MCP processes are stopped (`McpRuntime::evict_group`) after the transaction commits.
+- No event is emitted: clients drop the group and refetch `GET /api/groups`. `GET`s on the group return 404 afterwards.
+
+### GET /api/groups/{id}/search
+
+Full-text search over the group's message text. `host/src/groups.rs:search_group`
+
+| Query | Required | Notes |
+| --- | --- | --- |
+| `q` | yes | Trimmed; blank is 400 `need_text`. Matched as a literal substring, ASCII case-insensitive (no operators). |
+| `limit` | no | Default 20; clamped to 1..=100. Not a number: 400 `invalid_query`. |
+
+- 200 `{"results":[GroupSearchHit]}`, each `{"messageId","snippet","createdAt","authorUserId","authorName"}`. `snippet` is plain text around the match with `…` where it was cut.
+- `q` of 3 or more characters uses the SQLite FTS5 index (`messages_fts`, trigram tokenizer, so Chinese needs no word splitting), ranked by bm25, then newest first. Shorter `q` (common for Chinese, for example 「周报」) scans the group's messages with `LIKE` and returns newest first.
+- The index is kept up to date by triggers on `messages` and built from existing messages when the host first starts with this version.
+- 403 `not_group_member`, 404 `group_not_found`.
+
+```sh
+curl -s "$B/api/groups/<groupId>/search?q=%E5%91%A8%E6%8A%A5&limit=5"
 ```
 
 ### POST /api/bros

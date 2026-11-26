@@ -200,13 +200,16 @@ pub(crate) fn timed_events(conn: &Connection, group_id: &str) -> rusqlite::Resul
 
 /// Reminder lines in DM `?1` (v0.2): every shown approval card of that
 /// DM's bro that sits in a group (not a DM), when the DM is the owner's.
+/// Cards of a deleted group stay, named from `group_tombstones`.
 /// Shared by [`reminder_events`] and unread ([`crate::unread`]).
 pub(crate) const REMINDERS_FROM: &str = "FROM approvals a
      JOIN groups d ON d.id = ?1 AND d.dm_bot_id = a.bot_id
      JOIN bots b ON b.id = a.bot_id
-     JOIN groups g ON g.id = a.group_id AND g.dm_bot_id IS NULL
+     LEFT JOIN groups g ON g.id = a.group_id
+     LEFT JOIN group_tombstones t ON t.id = a.group_id
      JOIN users u ON u.id = COALESCE(b.owner_user_id, 'local-admin')
      WHERE d.dm_user_id = u.id AND a.subject_kind IS NULL
+       AND ((g.id IS NOT NULL AND g.dm_bot_id IS NULL) OR (g.id IS NULL AND t.id IS NOT NULL))
        AND (a.review_state IS NULL OR a.review_state = 'blocked')";
 
 /// `id` of the reminder line for approval card `approval_id`.
@@ -231,7 +234,7 @@ pub(crate) fn reminder_events(
     group_id: &str,
 ) -> rusqlite::Result<Vec<TimedEvent>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.id, g.id, g.name, a.bot_id, b.name, u.id, u.name, a.decision, a.reason,
+        "SELECT a.id, a.group_id, COALESCE(g.name, t.name), a.bot_id, b.name, u.id, u.name, a.decision, a.reason,
                 a.created_at, a.answered_at
          {REMINDERS_FROM}"
     ))?;

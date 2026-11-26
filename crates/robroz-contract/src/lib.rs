@@ -168,6 +168,84 @@ pub struct Group {
     pub id: String,
     pub name: String,
     pub tenant_id: String,
+    /// The user who created the group. Only they or an admin may rename or
+    /// delete it. Omitted for groups created before this field existed (then
+    /// only an admin may) and for DMs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+}
+
+/// `PATCH /api/groups/{id}` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameGroup {
+    pub name: String,
+}
+
+/// `GET /api/groups/{id}/members`.
+///
+/// `users` is everyone connected to the group in the data model: the user
+/// who created it, and the owner of every bro in it (users are not members
+/// of a group on their own). For a DM it is the DM's user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembers {
+    pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// Bros in the group, in the order they were added.
+    pub bros: Vec<GroupMemberBro>,
+    /// Users, the creator first, then by name.
+    pub users: Vec<GroupMemberUser>,
+}
+
+/// A bro in [`GroupMembers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberBro {
+    pub bot_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+}
+
+/// A user in [`GroupMembers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberUser {
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// This user created the group.
+    pub creator: bool,
+    /// The bros in this group that this user owns.
+    pub bro_ids: Vec<String>,
+}
+
+/// `GET /api/groups/{id}/search?q=&limit=`: default and largest `limit`.
+pub const GROUP_SEARCH_DEFAULT_LIMIT: usize = 20;
+pub const GROUP_SEARCH_MAX_LIMIT: usize = 100;
+
+/// `GET /api/groups/{id}/search` body, best match first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSearch {
+    pub results: Vec<GroupSearchHit>,
+}
+
+/// One message that matches. `snippet` is plain text around the match (no
+/// markup), cut with 「…」.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSearchHit {
+    pub message_id: String,
+    pub snippet: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
 }
 
 /// `GET /api/groups` body, oldest group first.
@@ -2522,11 +2600,13 @@ mod tests {
                     id: "g1".into(),
                     name: "设计群".into(),
                     tenant_id: "local".into(),
+                    created_by: None,
                 },
                 Group {
                     id: "g2".into(),
                     name: "运营群".into(),
                     tenant_id: "local".into(),
+                    created_by: None,
                 },
             ],
         };
@@ -2615,6 +2695,54 @@ mod tests {
                 "command": "npx",
                 "args": ["-y", "pkg"]
             })
+        );
+    }
+
+    #[test]
+    fn group_management_types_are_camel_case_and_optional() {
+        use serde_json::json;
+        let old: Group =
+            serde_json::from_value(json!({"id":"g","name":"n","tenantId":"local"})).unwrap();
+        assert_eq!(old.created_by, None);
+        assert!(serde_json::to_value(&old)
+            .unwrap()
+            .get("createdBy")
+            .is_none());
+        let members = GroupMembers {
+            group_id: "g".into(),
+            created_by: Some("u".into()),
+            bros: vec![GroupMemberBro {
+                bot_id: "b".into(),
+                name: "Ada".into(),
+                owner_user_id: Some("u".into()),
+                owner_name: None,
+            }],
+            users: vec![GroupMemberUser {
+                user_id: "u".into(),
+                name: Some("Mei".into()),
+                creator: true,
+                bro_ids: vec!["b".into()],
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&members).unwrap(),
+            json!({
+                "groupId": "g",
+                "createdBy": "u",
+                "bros": [{"botId": "b", "name": "Ada", "ownerUserId": "u"}],
+                "users": [{"userId": "u", "name": "Mei", "creator": true, "broIds": ["b"]}]
+            })
+        );
+        let hit = GroupSearchHit {
+            message_id: "m".into(),
+            snippet: "…周报…".into(),
+            created_at: "t".into(),
+            author_user_id: None,
+            author_name: None,
+        };
+        assert_eq!(
+            serde_json::to_value(GroupSearch { results: vec![hit] }).unwrap(),
+            json!({"results": [{"messageId": "m", "snippet": "…周报…", "createdAt": "t"}]})
         );
     }
 }

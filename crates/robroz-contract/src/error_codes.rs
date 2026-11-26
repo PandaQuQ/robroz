@@ -81,6 +81,9 @@ pub const ERROR_CODES: &[(&str, &str)] = &[
     ),
     (host_text::MCP_STDIO_ONLY_APPROVE, "mcp_stdio_only_approve"),
     (host_text::DM_ONE_BRO, "dm_one_bro"),
+    (host_text::NOT_GROUP_CREATOR, "not_group_creator"),
+    (host_text::NOT_GROUP_MEMBER, "not_group_member"),
+    (host_text::GROUP_IS_DM, "group_is_dm"),
     (host_text::ACTION_NOT_SUPPORTED, "action_not_supported"),
     (host_text::ACTION_HOST_ONLY, "action_host_only"),
     (

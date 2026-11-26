@@ -189,6 +189,43 @@ pub(crate) fn pump_offloaded(
     pump_inner(&**db, sandbox, cfg, Some(ctx))
 }
 
+/// Stop the containers of tasks whose group was deleted
+/// ([`crate::groups::REAPS`]). A failed stop is retried next pass.
+fn reap_deleted(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    mut offload: Option<&mut OffloadCtx<'_>>,
+) -> rusqlite::Result<()> {
+    let reaps = db.with(crate::groups::pending_reaps)?;
+    for task_id in reaps {
+        if let Some(flag) = offload
+            .as_mut()
+            .and_then(|off| off.state.cancels.get(&task_id))
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
+        let name = container_name(&task_id);
+        match sandbox.phase(&name) {
+            Ok(ContainerPhase::Missing) => {}
+            Ok(_) => {
+                if let Err(err) = sandbox.remove(&name) {
+                    eprintln!("pump: stop deleted-group task {task_id}: {}", err.message);
+                    continue;
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "pump: inspect deleted-group task {task_id}: {}",
+                    err.message
+                );
+                continue;
+            }
+        }
+        db.with(|conn| crate::groups::reaped(conn, &task_id))?;
+    }
+    Ok(())
+}
+
 fn pump_inner(
     db: &impl Db,
     sandbox: &mut dyn Sandbox,
@@ -209,6 +246,7 @@ fn pump_inner(
             finish_start(db, sandbox, cfg, &done.started, Some(done.reply))?;
         }
     }
+    reap_deleted(db, sandbox, offload.as_mut())?;
     if let Some(timeout) = cfg.step_timeout {
         cancel_overdue(db, sandbox, cfg, offload.as_mut(), timeout)?;
     }
