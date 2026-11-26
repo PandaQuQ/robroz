@@ -88,6 +88,7 @@ async fn main() {
         })
         .with_control_root(control)
         .with_token(token.clone())
+        .with_single_responder(robroz_host::responder::enabled_from_env())
         .with_offloaded_steps(robroz_host::watchdog::WatchdogConfig::from_env());
     let app = host.router();
     let pumping = host.clone();

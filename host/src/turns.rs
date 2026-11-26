@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS turns (
     skipped INTEGER NOT NULL DEFAULT 0,
     depth INTEGER NOT NULL DEFAULT 0,
     speaker TEXT,
+    single INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS turns_open ON turns (message_id, position) WHERE task_id IS NULL AND skipped = 0;
@@ -71,6 +72,11 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     // The name of the bro whose reply opened the round; NULL for a person.
     let _ = conn.execute("ALTER TABLE turns ADD COLUMN speaker TEXT", []);
+    // 1 for a round opened by single-responder routing ([`crate::responder`]).
+    let _ = conn.execute(
+        "ALTER TABLE turns ADD COLUMN single INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(())
 }
 
@@ -118,9 +124,31 @@ pub(crate) fn open_round(
         }
         order.push((bot, None));
     }
-    insert_round(conn, group_id, message_id, body, &order, depth, None, now)?;
+    insert_round(
+        conn, group_id, message_id, body, &order, depth, None, false, now,
+    )?;
     advance(conn, None, now)?;
     Ok(())
+}
+
+/// Open a round for a group message that named nobody, when
+/// [`crate::responder`] picked `bot` to answer it: that bro's turn only, and
+/// it is recorded as started with `task_id` (visible from the start, like an
+/// `@name` turn). No other member gets a turn. The round is marked `single`,
+/// so a reply that opens a follow-on round wakes only a bro it names.
+pub(crate) fn open_single_round(
+    conn: &Connection,
+    group_id: &str,
+    message_id: &str,
+    body: &str,
+    (bot, task_id): (&str, &str),
+    depth: i64,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let order = [(bot.to_string(), Some(task_id.to_string()))];
+    insert_round(
+        conn, group_id, message_id, body, &order, depth, None, true, now,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,12 +160,13 @@ fn insert_round(
     order: &[(String, Option<String>)],
     depth: i64,
     speaker: Option<&str>,
+    single: bool,
     now: &str,
 ) -> rusqlite::Result<()> {
     for (position, (bot, task)) in order.iter().enumerate() {
         conn.execute(
-            "INSERT INTO turns (id, group_id, message_id, bot_id, position, body, task_id, depth, speaker, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO turns (id, group_id, message_id, bot_id, position, body, task_id, depth, speaker, single, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 crate::new_id(),
                 group_id,
@@ -148,6 +177,7 @@ fn insert_round(
                 task,
                 depth,
                 speaker,
+                single,
                 now
             ],
         )?;
@@ -172,14 +202,14 @@ pub(crate) fn open_bro_round(
         return Ok(None);
     }
     // The round this task's turn belongs to (its latest, after follow-ups).
-    let parent: Option<(String, i64, String)> = conn
+    let parent: Option<(String, i64, String, bool)> = conn
         .query_row(
-            "SELECT group_id, depth, message_id FROM turns WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            "SELECT group_id, depth, message_id, single FROM turns WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
             [task_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((group_id, parent_depth, parent_message)) = parent else {
+    let Some((group_id, parent_depth, parent_message, single)) = parent else {
         return Ok(None);
     };
     let depth = parent_depth + 1;
@@ -212,7 +242,7 @@ pub(crate) fn open_bro_round(
         let rows = stmt.query_map([&parent_message], |r| r.get(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    let others: Vec<(String, String)> = members(conn, &group_id)?
+    let mut others: Vec<(String, String)> = members(conn, &group_id)?
         .into_iter()
         .filter(|(id, _)| *id != speaker_id && !pending.contains(id))
         .collect();
@@ -224,6 +254,14 @@ pub(crate) fn open_bro_round(
         others.iter().map(|(id, name)| (id.as_str(), name.as_str())),
     )
     .map(|(bot, _)| bot);
+    if single {
+        // One bro answered a message that named nobody: only a bro its reply
+        // names takes the conversation on. The rest are not woken.
+        let Some(named) = &first else {
+            return Ok(None);
+        };
+        others.retain(|(id, _)| id == named);
+    }
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     if let Some(bot) = &first {
         order.push((bot.clone(), None));
@@ -242,6 +280,7 @@ pub(crate) fn open_bro_round(
         &order,
         depth,
         Some(&speaker_name),
+        single,
         delivered_at,
     )?;
     Ok(Some(depth))

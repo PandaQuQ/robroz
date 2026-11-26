@@ -503,7 +503,8 @@ merges. It is not a schedule.
 | New timeout on a model, tool, or live container, surfaced as `done` + `failure` without changing dead-run semantics | Done (#143) | A host/pump path, not a Watchdog state change (`host/src/timeouts.rs`). The step is cancelled, the container stopped, and the task ends as 「没写出结果」 like a failed Router step. Not a contract change (see section 3). |
 | Host Watchdog that detects timeout, a gone container, and stuck progress, then writes a log and a card hint | Done (#118) | Hints go in the existing `progress` field. Defaults: `ROBROZ_STEP_TIMEOUT_SECS` 600, `ROBROZ_STALL_SECS` 900. Does not change state except for the dead-task rule, and does not cancel the step. |
 | Ending a dead `running` task as `done` + `failure`, with the card showing 「没写出结果」 | Done (#118) | Compare-and-set while still `running`. `Outcome::Dead` and leftover cleanup write `robroz_card::NO_RESULT`. The card uses `failure_line`, not 「没做成：没写出结果」. No auto-requeue. |
-| A group-level Router that picks one assignee for an unaddressed message and posts the only reply | No | Superseded by turn-taking. No agent speaks for another. |
+| A group-level Router that posts the only reply for every bro | No | No agent speaks for another. The single responder below only picks which bro answers an unaddressed message; that bro answers as itself. |
+| Single responder: an unaddressed group message gets one bro, not a turn for every bro | Done (E, v0.2) | Rules: follow-up, only bro, model, fallback. `ROBROZ_SINGLE_RESPONDER=0` restores every-bro turns. See [Single responder](#single-responder). |
 | Auto-requeue of a dead or stalled run | No | The Worker may already have written to the group volume. This is why `pump` does not re-queue a missing container today. A rerun is the user's choice. |
 | A fifth task state | No | Frozen in `AGENTS.md` and `robroz-contract`. Use `done` + `failure`. |
 | Storage and compute split (cloud-stateless loop plus an on-device daemon, as in the writeup's section 5) | No | robroz is a single-machine host plus local Docker. That split does not match the current product and is not needed to land Router, Threads, or a Watchdog. |
@@ -561,6 +562,33 @@ Hint budgets shipped in #118: `ROBROZ_STEP_TIMEOUT_SECS` defaults to 600,
 `blocked` task attaches to that task and does not create a sibling; it is
 not a `resume`.
 
+## Single responder
+
+Status: built in v0.2 (`host/src/responder.rs`). It narrows the group turns above for one case: a person's group message that names nobody. It does not touch `@name` messages, DMs, `POST /messages`, `/tasks` or schedules.
+
+**Why.** Giving every bro a turn on every unaddressed message costs one model call per bro, mostly to produce `robroz-silent`, and the answer order is join order, not relevance. One bro should answer.
+
+**Selection**, first rule that applies:
+
+1. *Follow-up.* One bro is waiting on the person here: a visible `queued` / `running` / `blocked` task, or an unanswered choice card. The message joins that bro's work (the same follow-up path as `@name`). Several waiting bros narrow the next rule to them.
+2. *Only bro.* The group has one bro.
+3. *Model.* The model from the settings (or env) gets bro ids, names and one line each from the bro's kept `profile` memory, plus the message (clipped). It must reply `{"bro":"<id>"}` and nothing else. Limits: 5 seconds, `max_tokens` 48. The call runs on its own thread and without the database lock.
+4. *Fallback* on a model error, timeout, an id that is not a candidate, or no model: the bro that most recently delivered a failure-free reply in the group, else the first bro by join order.
+
+The `Selector` trait (`host/src/responder.rs`) hides the model, so tests pick bros without one.
+
+**Result.** The picked bro is handled like an `@name` bro: its task is visible at once, the prompt is the whole message (there is no mention to strip), `Said.task` carries it, and a follow-up joins its open task. The round holds that one turn (`turns.single = 1`). At most one task is made per message. When that bro's reply opens a follow-on round, only a bro the reply names with a leading `@name` is woken; with no mention nothing opens, so the chain stays at one bro unless that bro hands off.
+
+**Not decided by a model:** an `@name` message, a DM, or a group with one bro. A leading `@name` that matches no member names nobody.
+
+**Off switch.** `ROBROZ_SINGLE_RESPONDER=0` restores every-bro turns exactly as before.
+
+**Logging.** One line per pick, ids and rule only: `responder: group <id> bro <id> by follow_up|only_bro|model|last_answered|first_joined`, with `(model: no_model|error|timeout|invalid_id)` when rule 4 ran. The message text is never logged.
+
+**Contract.** No change. `Said.task` was already optional and now is set for these messages. The client cannot tell why a bro was picked; a future optional `Said.routedBy` could carry the rule.
+
+**Sources.** The idea of a fast decision model that only picks the responder, never does the work, answers a strict short format, has a bounded wait, and fails open to a fixed fallback (the room's lead, else the first member) comes from OpenMausBot's public `docs/decision-model.md` (Apache-2.0 core). No code or prompt text was copied; the prompt and rules here are our own.
+
 ## Implementation status
 
 Verified on `main` at `339b5e9` plus #143 (`host/src/turns.rs`, `host/src/follow_ups.rs`, `host/src/say.rs`,
@@ -573,7 +601,7 @@ Verified on `main` at `339b5e9` plus #143 (`host/src/turns.rs`, `host/src/follow
   mentioned bro uses today's fast path (mention stripped from the prompt,
   status card visible at once, task returned in `Said.task`). The rest go
   one at a time in join order (`memberships.rowid`). If no one is named,
-  `Said.task` is `null` and every member takes a turn in join order. Turns
+  `Said.task` is `null` and every member takes a turn in join order (since v0.2 a [single responder](#single-responder) answers instead, unless `ROBROZ_SINGLE_RESPONDER=0`). Turns
   in one round run sequentially: the next task is created only after every
   earlier turn's task is `done` or `blocked`. Later prompts quote earlier
   bros' failure-free deliveries (each clipped to 2000 characters, with
@@ -619,7 +647,7 @@ Verified on `main` at `339b5e9` plus #143 (`host/src/turns.rs`, `host/src/follow
   starts a new task. In the round the follow-up opens, the named bro's
   turn is the joined task (no extra hidden turn task); the other bros take
   their turns after it leaves `queued` / `running`, as for any `@name`.
-  Not follow-ups: group messages with no `@`, and an `@` to another bro.
+  Not follow-ups: an `@` to another bro, and group messages with no `@` unless the [single responder](#single-responder) picks the bro that has the open task.
   A turn also waits while its bro has any other task in the group still
   `queued` or `running` (its own task, or another round's turn), so one bro
   never runs twice on the group volume at once; the bros after it keep
