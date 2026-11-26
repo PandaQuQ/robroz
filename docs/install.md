@@ -26,6 +26,8 @@ shasum -a 256 robroz-client-v0.1.1-macos-aarch64.zip
 
 On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-client-v0.1.1-windows-x86_64.zip` with the matching line in `SHA256SUMS.txt`.
 
+To see which build you are running, use `./robroz-host --version` (or `-V`). It prints `robroz-host <version> (<short git sha>)` and exits with code 0 before it reads the token, opens the database or talks to Docker. The flag is in builds from `main` after v0.1.1; the v0.1.1 binary does not have it.
+
 The host's default runner image is still `robroz-runner:local`. For a tagged release, point it at the image published for that tag (linux/amd64 only; there is no `latest` tag):
 
 ```sh
