@@ -116,7 +116,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | Web search and MCP |
 | [client.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md) | Client UI behaviour, in the client repository |
 | [docs/architecture.md](docs/architecture.md) | Components, containers, theming |
-| [docs/reference-features.md](docs/reference-features.md) | Reference products and clean-room rules |
+| [docs/reference-features.md](docs/reference-features.md) | Reference products and source-reading rules by licence |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Later roadmap |
 | [docs/design/multi-agent.md](docs/design/multi-agent.md) | Group turns, follow-ups, Router and Watchdog design |
 
