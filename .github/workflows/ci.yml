@@ -34,6 +34,27 @@ jobs:
           ROBROZ_MODEL: echo
         run: scripts/e2e.sh
 
+  host-image:
+    # Builds host/Dockerfile like the release does (no push) and runs the
+    # stripped binary's --version inside the image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build robroz-host image
+        run: |
+          docker build -f host/Dockerfile \
+            --build-arg ROBROZ_GIT_SHA="${GITHUB_SHA}" \
+            -t robroz-host:ci .
+      - name: Run --version in the image
+        run: |
+          set -euo pipefail
+          line=$(docker run --rm robroz-host:ci --version)
+          echo "${line}"
+          case "${line}" in
+            "robroz-host "*" (${GITHUB_SHA::7})") ;;
+            *) echo "::error::unexpected --version output: ${line}"; exit 1 ;;
+          esac
+
   cargo-deny:
     runs-on: ubuntu-latest
     steps:

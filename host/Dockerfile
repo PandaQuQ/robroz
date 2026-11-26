@@ -4,9 +4,14 @@
 # token file). The image holds the host binary and the Docker CLI only.
 # It has no Docker daemon, no Node and no npx.
 FROM rust:1-bookworm AS build
+# `.git` is not in the build context, so the commit for `--version` comes in
+# as a build arg (CI passes the full sha; build.rs keeps 7 characters).
+ARG ROBROZ_GIT_SHA=unknown
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p robroz-host
+# `[profile.release] strip = true` in the workspace Cargo.toml strips it.
+RUN cargo build --release -p robroz-host \
+    && /src/target/release/robroz-host --version
 
 # A static Docker CLI. The host shells out to `docker run` / `inspect` / `rm`.
 FROM docker:27.5.1-cli AS dockercli

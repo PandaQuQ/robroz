@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `robroz-host --version` (and `-V`) prints `robroz-host <version> (<short git sha>)` and exits 0 without a token, database or Docker. Release builds are stripped (`[profile.release] strip = true`) for both the tarball and the images, and CI builds the host image and runs `--version` in it.
+
 - Host Docker image and compose example ([#170](https://github.com/PandaQuQ/robroz/pull/170)): `host/Dockerfile` (`debian:bookworm-slim`, Docker CLI, no Node), `deploy/compose.host.yml`, and [docs/docker-host.md](docs/docker-host.md). The host binary release is unchanged.
 - Release builds push `ghcr.io/pandaquq/robroz-host:<tag>` next to the runner image ([#171](https://github.com/PandaQuQ/robroz/pull/171)): linux/amd64 only, version tags only, no `latest` tag.
 - Bro owners and owner-only approvals (v0.2 accounts, first part): a `users` table with a bootstrap admin (the env token and no-token loopback act as it), `GET /api/me`, `Bro.ownerUserId`, one DM per (user, bro), `ownerUserId` / `ownerName` on approval cards, and `authorUserId` / `authorName` on `message` events. Approval cards stay in the group they were raised in; the owner's DM gets a new `approval_reminder` event. See [docs/permissions.md](docs/permissions.md) ([#174](https://github.com/PandaQuQ/robroz/pull/174)).
