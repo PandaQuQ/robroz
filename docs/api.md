@@ -573,7 +573,7 @@ An optional field on a delivery card. There are two values today, independent of
 - `"search"`: the task called `web_search` but web search is not set up (`web_fetch` does not record this). The task usually still writes a result, with `needsSetup` and no `failure`.
 - `"model"`: no model is set up (and the test switch `ROBROZ_MODEL=echo` is off). The result file is 「还没设置模型」 (No model set up yet); the prompt is not written through as the result.
 
-The client should send the user to the matching settings from this field, and must not match on the text. For search, see [client.md, Web search page](client.md#web-search-page); for the model, [client.md, Model page](client.md#model-page).
+The client should send the user to the matching settings from this field, and must not match on the text. For search, see [client.md, Web search page](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#web-search-page); for the model, [client.md, Model page](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#model-page).
 
 ---
 
