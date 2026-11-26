@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Client-visible text the host writes; see the module docs.
 pub mod host_text;
 
+/// Codes for card progress lines and approval reasons (#180).
+pub mod card_codes;
 /// Stable machine codes for task card states, results and failures.
 pub mod codes;
 /// Stable machine `code` for host error bodies.
@@ -10,6 +12,7 @@ pub mod error_codes;
 /// Deprecated Chinese card copy that used to live in `robroz-card`.
 pub mod legacy;
 
+pub use card_codes::{ApprovalReasonCode, ProgressCode, ProgressData, ProgressParams};
 pub use codes::{
     split_failure, CardStatusCode, DeliveryBadge, FailureCode, FailureData, FailureParams,
 };
@@ -1334,6 +1337,15 @@ pub enum Event {
         /// detail (see [`FailureCode`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_detail: Option<String>,
+        /// #180: the code form of `progress` (see [`ProgressCode`]).
+        /// Present only when `progress` is and the host stored a code for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_code: Option<ProgressCode>,
+        /// #180: the language-neutral parameters of `progressCode`
+        /// (tool, step/steps, minutes, or the bro's own text). Absent when
+        /// the code has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_params: Option<ProgressParams>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -1433,6 +1445,10 @@ pub enum Event {
         /// The owner's display name ("Waiting for {owner}").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_name: Option<String>,
+        /// #180: the code form of `reason` (see [`ApprovalReasonCode`]).
+        /// Absent when there is no `reason` or from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason_code: Option<ApprovalReasonCode>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1859,6 +1875,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1904,6 +1921,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -2098,6 +2116,8 @@ mod tests {
                 status_code: None,
                 failure_code: None,
                 failure_detail: None,
+                progress_code: None,
+                progress_params: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -2132,6 +2152,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&blocked).unwrap();
         assert_eq!(json["waitingFor"], "approval");
@@ -2152,6 +2174,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         assert_eq!(
             serde_json::to_value(&takeover).unwrap()["waitingFor"],
@@ -2193,6 +2217,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&running).unwrap();
         assert_eq!(json["progress"], "在沙箱里跑");
@@ -2301,6 +2327,8 @@ mod tests {
             status_code: Some(CardStatusCode::Done),
             failure_code: Some(FailureCode::ModelNoReply),
             failure_detail: Some("500".into()),
+            progress_code: None,
+            progress_params: None,
         };
         assert_round_trip(
             &failed,
