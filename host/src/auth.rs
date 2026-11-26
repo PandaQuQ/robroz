@@ -10,11 +10,12 @@
 
 use std::net::SocketAddr;
 
+use crate::extract::Json;
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::{Json, Router};
+use axum::Router;
 
 /// Shortest token accepted, so a non-loopback host is not guarded by `123`.
 pub const TOKEN_MIN_LEN: usize = 16;

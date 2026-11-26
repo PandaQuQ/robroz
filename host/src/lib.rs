@@ -1,11 +1,13 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path as AxumPath, Query, State};
+use crate::extract::Json;
+use crate::extract::{Path as AxumPath, Query};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{SecondsFormat, Utc};
 use robroz_contract::{
     AddMember, CreateGroup, CreateSchedule, CreateTask, ErrorBody, Event, Events, Group, Groups,
@@ -19,6 +21,7 @@ pub mod auth;
 mod bros;
 mod choices;
 mod error_code;
+mod extract;
 pub(crate) mod follow_ups;
 mod mcp;
 mod mcp_tools;
@@ -7601,5 +7604,65 @@ mod tests {
         run_rounds(&path, &volumes, &mut fake, &model, 4);
         assert_eq!(model.prompts().len(), 1);
         assert_eq!(count(&path, "SELECT COUNT(*) FROM turns"), before);
+    }
+
+    /// #179: rejections axum makes before a handler runs are JSON with a code,
+    /// on the real router (through the auth and error-code layers).
+    #[tokio::test]
+    async fn extractor_rejections_on_real_routes_are_coded_json() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group = create_group(&app, "家").await;
+        let group_id = group["id"].as_str().unwrap();
+        let raw = |uri: &str, ct: Option<&str>, body: &str| {
+            let mut b = Request::builder().method("POST").uri(uri);
+            if let Some(ct) = ct {
+                b = b.header("content-type", ct);
+            }
+            b.body(Body::from(body.to_string())).unwrap()
+        };
+        let approvals = format!("/api/groups/{group_id}/approvals");
+        let cases = [
+            (
+                raw("/api/groups", Some("application/json"), "{nope"),
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+            ),
+            (
+                post("/api/groups", json!({})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "missing_field",
+            ),
+            // Unknown enum names are covered in `extract::tests`: the request
+            // enums on real routes either take `#[serde(other)]` or are checked
+            // by the handler itself.
+            (
+                post(&approvals, json!({"botId": "bot-ada", "summary": "x"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "missing_field",
+            ),
+            (
+                post("/api/groups", json!({ "name": 7 })),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_field",
+            ),
+            (
+                raw("/api/groups", Some("text/plain"), r#"{"name":"x"}"#),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+            ),
+            (
+                get("/api/groups/%FF/events"),
+                StatusCode::BAD_REQUEST,
+                "invalid_path",
+            ),
+        ];
+        for (request, status, code) in cases {
+            let uri = request.uri().to_string();
+            let (got, body) = read_json(call(&app, request).await).await;
+            assert_eq!(got, status, "{uri}: {body}");
+            assert_eq!(body["code"], code, "{uri}: {body}");
+            assert!(body["error"].is_string(), "{uri}: {body}");
+        }
     }
 }
