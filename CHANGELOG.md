@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional bro avatar: `Bro.avatar` `{"shape": 0–11, "color": 0–9}` (`robroz_contract::BroAvatar`), indices into the client's own shapes and palette. Set on `POST /api/bros`, set or cleared (`null`) on `PATCH /api/bros/{id}` (owner only; an absent field is unchanged). Out of range is 400 `invalid_avatar`. Omitted when unset, so older JSON is unchanged. New contract types `BroAvatar` and `PatchBro`; `RenameBro` still works. See [docs/api.md](docs/api.md#bro-avatar).
+
 - `robroz-host --version` (and `-V`) prints `robroz-host <version> (<short git sha>)` and exits 0 without a token, database or Docker. Release builds are stripped (`[profile.release] strip = true`) for both the tarball and the images, and CI builds the host image and runs `--version` in it.
 
 - Host Docker image and compose example ([#170](https://github.com/PandaQuQ/robroz/pull/170)): `host/Dockerfile` (`debian:bookworm-slim`, Docker CLI, no Node), `deploy/compose.host.yml`, and [docs/docker-host.md](docs/docker-host.md). The host binary release is unchanged.

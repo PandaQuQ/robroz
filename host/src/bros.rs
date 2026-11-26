@@ -4,10 +4,11 @@
 //! member is that bro, marked by `groups.dm_bot_id`, so messages, tasks,
 //! events, the stream and unread all work on it unchanged. No new concept.
 //!
-//! - `POST  /api/bros`          `{name?}` → new bro + its DM. Default `bro`, `bro 2`…
+//! - `POST  /api/bros`          `{name?, avatar?}` → new bro + its DM. Default `bro`, `bro 2`…
 //!   Any user may create one; the caller becomes `owner_user_id`.
 //! - `GET   /api/bros`          the caller's bros with their DM group id
-//! - `PATCH /api/bros/{id}`     `{name}` rename; the DM's name follows. Owner only (403).
+//! - `PATCH /api/bros/{id}`     `{name?, avatar?}`: rename (the DM's name follows) and
+//!   set or clear (`null`) the avatar; an absent field is unchanged. Owner only (403).
 //! - `POST  /api/bros/{id}/dm`  get or create the owner's DM. Owner only (403).
 //!
 //! A DM keeps exactly one member: adding another bro to it is refused (409).
@@ -19,7 +20,7 @@ use crate::extract::Path as AxumPath;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use robroz_contract::{next_bro_name, Bro, Bros, CreateBro, RenameBro, BRO_NAME_MAX};
+use robroz_contract::{next_bro_name, Bro, BroAvatar, Bros, CreateBro, PatchBro, BRO_NAME_MAX};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::users::{CurrentUser, OWNER_SQL};
@@ -35,6 +36,10 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE groups ADD COLUMN dm_bot_id TEXT", []);
     let _ = conn.execute("ALTER TABLE groups ADD COLUMN dm_user_id TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN owner_user_id TEXT", []);
+    // Optional avatar (indices into the client's shape set and palette).
+    // Both NULL means unset; there is no backfill.
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN avatar_shape INTEGER", []);
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN avatar_color INTEGER", []);
     // Every v0.1 message was typed by the one person: the bootstrap admin.
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN author_user_id TEXT", []);
     conn.execute(
@@ -139,10 +144,18 @@ fn clean_name(raw: &str) -> Result<String, &'static str> {
     Ok(name.to_string())
 }
 
-/// `SELECT` for a [`Bro`]: id, name, the owner's DM, owner.
+/// 400 `invalid_avatar` unless both indices are in range.
+fn check_avatar(avatar: Option<&BroAvatar>) -> Result<(), &'static str> {
+    match avatar {
+        Some(a) if !a.is_valid() => Err(robroz_contract::host_text::INVALID_AVATAR),
+        _ => Ok(()),
+    }
+}
+
+/// `SELECT` for a [`Bro`]: id, name, the owner's DM, owner, avatar.
 fn bro_select() -> String {
     format!(
-        "SELECT b.id, b.name, g.id, {OWNER_SQL} FROM bots b
+        "SELECT b.id, b.name, g.id, {OWNER_SQL}, b.avatar_shape, b.avatar_color FROM bots b
          LEFT JOIN groups g ON g.dm_bot_id = b.id AND g.dm_user_id = {OWNER_SQL}"
     )
 }
@@ -153,7 +166,17 @@ fn bro_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Bro> {
         name: r.get(1)?,
         dm_group_id: r.get(2)?,
         owner_user_id: r.get(3)?,
+        avatar: avatar_from(r.get(4)?, r.get(5)?),
     })
+}
+
+/// A stored avatar, or `None` when unset or out of range (never sent).
+fn avatar_from(shape: Option<i64>, color: Option<i64>) -> Option<BroAvatar> {
+    let avatar = BroAvatar {
+        shape: u8::try_from(shape?).ok()?,
+        color: u8::try_from(color?).ok()?,
+    };
+    avatar.is_valid().then_some(avatar)
 }
 
 fn load(conn: &Connection, id: &str) -> rusqlite::Result<Option<Bro>> {
@@ -189,8 +212,12 @@ pub(crate) async fn create_bro(
     Extension(user): Extension<CurrentUser>,
     body: Option<Json<CreateBro>>,
 ) -> Response {
-    let requested = body.and_then(|Json(b)| b.name);
-    let requested = match requested.as_deref().map(clean_name) {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    if let Err(msg) = check_avatar(body.avatar.as_ref()) {
+        return error_response(StatusCode::BAD_REQUEST, msg);
+    }
+    let avatar = body.avatar;
+    let requested = match body.name.as_deref().map(clean_name) {
         None => None,
         Some(Ok(name)) => Some(name),
         Some(Err(msg)) => return error_response(StatusCode::BAD_REQUEST, msg),
@@ -210,8 +237,16 @@ pub(crate) async fn create_bro(
         };
         let id = new_id();
         tx.execute(
-            "INSERT INTO bots (id, tenant_id, name, owner_user_id) VALUES (?1, ?2, ?3, ?4)",
-            params![id, TENANT_ID, name, user.0],
+            "INSERT INTO bots (id, tenant_id, name, owner_user_id, avatar_shape, avatar_color)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                TENANT_ID,
+                name,
+                user.0,
+                avatar.map(|a| a.shape),
+                avatar.map(|a| a.color)
+            ],
         )?;
         ensure_dm(&tx, &id, &name)?;
         let bro = load(&tx, &id)?.expect("just inserted");
@@ -251,12 +286,15 @@ pub(crate) async fn rename_bro(
     State(state): State<AppState>,
     Extension(user): Extension<CurrentUser>,
     AxumPath(id): AxumPath<String>,
-    Json(body): Json<RenameBro>,
+    Json(body): Json<PatchBro>,
 ) -> Response {
-    let name = match clean_name(&body.name) {
+    let name = match body.name.as_deref().map(clean_name).transpose() {
         Ok(name) => name,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, msg),
     };
+    if let Err(msg) = check_avatar(body.avatar.flatten().as_ref()) {
+        return error_response(StatusCode::BAD_REQUEST, msg);
+    }
     let conn = lock_db(&state);
     let result = (|| {
         let tx = conn.unchecked_transaction()?;
@@ -265,11 +303,19 @@ pub(crate) async fn rename_bro(
             Some(false) => return Ok(Some(Err(crate::users::owner_of(&tx, &id)?))),
             Some(true) => {}
         }
-        tx.execute("UPDATE bots SET name = ?2 WHERE id = ?1", params![id, name])?;
-        tx.execute(
-            "UPDATE groups SET name = ?2 WHERE dm_bot_id = ?1",
-            params![id, name],
-        )?;
+        if let Some(name) = &name {
+            tx.execute("UPDATE bots SET name = ?2 WHERE id = ?1", params![id, name])?;
+            tx.execute(
+                "UPDATE groups SET name = ?2 WHERE dm_bot_id = ?1",
+                params![id, name],
+            )?;
+        }
+        if let Some(avatar) = body.avatar {
+            tx.execute(
+                "UPDATE bots SET avatar_shape = ?2, avatar_color = ?3 WHERE id = ?1",
+                params![id, avatar.map(|a| a.shape), avatar.map(|a| a.color)],
+            )?;
+        }
         let bro = load(&tx, &id)?.expect("exists");
         tx.commit()?;
         Ok::<_, rusqlite::Error>(Some(Ok(bro)))

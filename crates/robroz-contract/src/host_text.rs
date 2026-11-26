@@ -85,6 +85,8 @@ pub const BAD_SEARCH_PROVIDER: &str = "provider 只能是 brave 或 searxng";
 pub const TOKEN_REJECTED: &str = "缺少或错误的令牌";
 /// Bro name is too long.
 pub const NAME_TOO_LONG: &str = "名字太长";
+/// Bro avatar `shape` or `color` is out of range.
+pub const INVALID_AVATAR: &str = "头像的形状或颜色超出范围";
 /// MCP server name is over 80 characters.
 pub const NAME_MAX_80: &str = "名称最多 80 个字";
 /// MCP server name has a line break.
@@ -356,6 +358,7 @@ pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("BAD_SEARCH_PROVIDER", BAD_SEARCH_PROVIDER),
     ("TOKEN_REJECTED", TOKEN_REJECTED),
     ("NAME_TOO_LONG", NAME_TOO_LONG),
+    ("INVALID_AVATAR", INVALID_AVATAR),
     ("NAME_MAX_80", NAME_MAX_80),
     ("NAME_ONE_LINE", NAME_ONE_LINE),
     ("NAME_TAKEN", NAME_TAKEN),

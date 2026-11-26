@@ -96,6 +96,7 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | `bad_search_provider` | 「provider 只能是 brave 或 searxng」 | `BAD_SEARCH_PROVIDER` |
 | `token_rejected` | 「缺少或错误的令牌」 | `TOKEN_REJECTED` |
 | `name_too_long` | 「名字太长」 | `NAME_TOO_LONG` |
+| `invalid_avatar` | 「头像的形状或颜色超出范围」 | `INVALID_AVATAR` |
 | `name_max_80` | 「名称最多 80 个字」 | `NAME_MAX_80` |
 | `name_one_line` | 「名称只能一行」 | `NAME_ONE_LINE` |
 | `name_taken` | 「这个名字已经有了」 | `NAME_TAKEN` |
@@ -148,7 +149,7 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | POST | `/api/groups/{id}/members` | Add a bro to a group | `host/src/lib.rs:add_member` |
 | POST | `/api/bros` | Create a bro and its DM | `host/src/bros.rs:create_bro` |
 | GET | `/api/bros` | List bros | `host/src/bros.rs:list_bros` |
-| PATCH | `/api/bros/{id}` | Rename | `host/src/bros.rs:rename_bro` |
+| PATCH | `/api/bros/{id}` | Rename, set or clear avatar | `host/src/bros.rs:rename_bro` |
 | POST | `/api/bros/{id}/dm` | Get or create the DM | `host/src/bros.rs:open_dm` |
 | POST | `/api/groups/{id}/messages` | Store a message | `host/src/lib.rs:post_message` |
 | POST | `/api/groups/{id}/say` | Send a line, dispatch a task if needed | `host/src/say.rs:say` |
@@ -273,11 +274,13 @@ Create a bro and its DM at the same time. `host/src/bros.rs:create_bro`
 | Request field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `name` | string | no | Trimmed, non-empty, at most 64 characters. If omitted, the default is `bro`, then the first free name from `bro 2` upwards (`robroz_contract::next_bro_name`). Names may be repeated. |
+| `avatar` | `{"shape","color"}` or `null` | no | Optional avatar, see [Bro avatar](#bro-avatar). |
 
 The body may be `{}`, or omitted entirely (and then `Content-Type` is omitted too). If `Content-Type: application/json` is sent with an empty body, the host returns 400 `invalid_json`.
 
-- 201 `Bro` `{"id","name","dmGroupId","ownerUserId"}`. `id` is a UUID; `ownerUserId` is the caller.
+- 201 `Bro` `{"id","name","dmGroupId","ownerUserId","avatar"}`. `id` is a UUID; `ownerUserId` is the caller. `avatar` is omitted when unset.
 - 400 「请填写名称」 / 「名字太长」 (Name too long).
+- 400 `invalid_avatar`: `shape` or `color` is out of range. A value that is not a small non-negative integer (for example `300` or `-1`) is 422 `invalid_field` from the extractor.
 
 ```sh
 curl -s -X POST $B/api/bros -H 'content-type: application/json' -d '{"name":"bob"}'
@@ -292,20 +295,26 @@ List the caller's bots (including ones added only through `/members`), in creati
 
 ### PATCH /api/bros/{id}
 
-Rename; the DM's group name is renamed with it. `host/src/bros.rs:rename_bro`
+Rename the bro and/or set its avatar (`robroz_contract::PatchBro`). A field that is absent is left as it is; `{}` changes nothing and returns the bro. On rename the DM's group name is renamed with it. `host/src/bros.rs:rename_bro`
 
 | Request field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | yes | Same rules as `POST /api/bros`. |
+| `name` | string | no | Same rules as `POST /api/bros`. The older `{"name"}`-only body (`RenameBro`) still works. |
+| `avatar` | `{"shape","color"}` or `null` | no | Absent: unchanged. `null`: cleared, so the client falls back to its id-based default. An object: set. |
 
 - 200 `Bro`.
 - 400 「请填写名称」 / 「名字太长」.
+- 400 `invalid_avatar` (422 `invalid_field` for a value that is not a small non-negative integer). Nothing is changed.
 - 404 「bro 不存在」.
 - 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): the caller is not the owner (admins included).
 
 ```sh
 curl -s -X PATCH $B/api/bros/<botId> -H 'content-type: application/json' -d '{"name":"Bob"}'
 ```
+
+### Bro avatar
+
+`Bro.avatar` (`robroz_contract::BroAvatar`) is optional: `{"shape": 0–11, "color": 0–9}` (`AVATAR_SHAPES` = 12, `AVATAR_COLORS` = 10). Both are **indices** into the client's own shape set and color palette, not drawings or hex values, so each client draws its own shapes. When `avatar` is absent the client derives a default from the bro's `id` (for example a hash of `id` modulo 12 and 10); the host never fills one in. Only the bro's owner can set it (`PATCH` is owner-only, admins included). It is returned wherever a `Bro` is returned (`POST /api/bros`, `GET /api/bros`, `PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`); events do not carry `Bro` objects, so a client refetches `GET /api/bros` after changing it. Stored as `bots.avatar_shape` / `bots.avatar_color` (both `NULL` when unset).
 
 ### POST /api/bros/{id}/dm
 
