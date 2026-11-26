@@ -45,31 +45,31 @@ async fn second_task_reuses_the_process_and_the_tool_list() {
     let pool = McpPool::new(PoolConfig::default());
     let cfg = stdio_cfg();
     let t0 = Instant::now();
-    let tools = pool.list_tools("srv", &cfg).await.unwrap();
+    let tools = pool.list_tools("srv", "g", &cfg).await.unwrap();
     let cold = t0.elapsed();
     assert!(tools.iter().any(|t| t.name == fixture::READ_ONLY_TOOL));
-    let pid = pool.stdio().live_pid("srv").await.expect("live pid");
+    let pid = pool.stdio().live_pid("srv", "g").await.expect("live pid");
 
     let t1 = Instant::now();
-    let again = pool.list_tools("srv", &cfg).await.unwrap();
+    let again = pool.list_tools("srv", "g", &cfg).await.unwrap();
     let warm = t1.elapsed();
     assert_eq!(tools, again);
 
     let t2 = Instant::now();
     let pong = pool
-        .call_tool("srv", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
+        .call_tool("srv", "g", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
         .await
         .unwrap();
     let call = t2.elapsed();
     assert_eq!(pong, "pong");
     assert_eq!(
-        pool.call_tool("srv", &cfg, fixture::WRITE_TOOL, &json!({}))
+        pool.call_tool("srv", "g", &cfg, fixture::WRITE_TOOL, &json!({}))
             .await
             .unwrap(),
         "written"
     );
     assert_eq!(pool.stdio().spawn_count(), 1);
-    assert_eq!(pool.stdio().live_pid("srv").await, Some(pid));
+    assert_eq!(pool.stdio().live_pid("srv", "g").await, Some(pid));
     eprintln!("pool latency: cold tools/list {cold:?}, warm tools/list {warm:?}, warm tools/call {call:?}");
     pool.shutdown(Duration::from_secs(5)).await;
 }
@@ -89,11 +89,17 @@ fn processes_outlive_the_callers_runtime() {
                 .unwrap();
             rt.block_on(async {
                 let out = pool
-                    .call_tool("srv", &stdio_cfg(), fixture::READ_ONLY_TOOL, &json!({}))
+                    .call_tool(
+                        "srv",
+                        "g",
+                        &stdio_cfg(),
+                        fixture::READ_ONLY_TOOL,
+                        &json!({}),
+                    )
                     .await
                     .unwrap();
                 assert_eq!(out, "pong");
-                pool.stdio().live_pid("srv").await
+                pool.stdio().live_pid("srv", "g").await
             })
         })
         .join()
@@ -108,14 +114,14 @@ fn processes_outlive_the_callers_runtime() {
 async fn config_change_starts_a_new_process_and_stops_the_old_one() {
     let pool = McpPool::new(PoolConfig::default());
     let cfg = stdio_cfg();
-    pool.list_tools("srv", &cfg).await.unwrap();
-    let old = pool.stdio().live_pid("srv").await.unwrap();
+    pool.list_tools("srv", "g", &cfg).await.unwrap();
+    let old = pool.stdio().live_pid("srv", "g").await.unwrap();
     let rotated = ConnectConfig {
         env: vec![("FIXTURE_KEY".into(), "rotated".into())],
         ..cfg
     };
-    pool.list_tools("srv", &rotated).await.unwrap();
-    let new = pool.stdio().live_pid("srv").await.unwrap();
+    pool.list_tools("srv", "g", &rotated).await.unwrap();
+    let new = pool.stdio().live_pid("srv", "g").await.unwrap();
     assert_ne!(old, new);
     assert_eq!(pool.stdio().spawn_count(), 2);
     #[cfg(target_os = "linux")]
@@ -128,8 +134,8 @@ async fn config_change_starts_a_new_process_and_stops_the_old_one() {
 async fn reconnects_after_the_child_is_killed() {
     let pool = McpPool::new(PoolConfig::default());
     let cfg = stdio_cfg();
-    pool.list_tools("srv", &cfg).await.unwrap();
-    let pid = pool.stdio().live_pid("srv").await.unwrap();
+    pool.list_tools("srv", "g", &cfg).await.unwrap();
+    let pid = pool.stdio().live_pid("srv", "g").await.unwrap();
     let status = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .status()
@@ -140,11 +146,11 @@ async fn reconnects_after_the_child_is_killed() {
     // covered by the broken-pipe path.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let out = pool
-        .call_tool("srv", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
+        .call_tool("srv", "g", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
         .await
         .unwrap();
     assert_eq!(out, "pong");
-    let new = pool.stdio().live_pid("srv").await.unwrap();
+    let new = pool.stdio().live_pid("srv", "g").await.unwrap();
     assert_ne!(pid, new);
     pool.shutdown(Duration::from_secs(5)).await;
 }
@@ -157,8 +163,8 @@ async fn idle_process_is_stopped_by_the_reaper() {
         reap_interval: Duration::from_millis(50),
         ..PoolConfig::default()
     });
-    pool.list_tools("srv", &stdio_cfg()).await.unwrap();
-    let pid = pool.stdio().live_pid("srv").await.unwrap();
+    pool.list_tools("srv", "g", &stdio_cfg()).await.unwrap();
+    let pid = pool.stdio().live_pid("srv", "g").await.unwrap();
     assert!(running(pid));
     assert!(wait_gone(pid).await, "idle process {pid} still running");
     assert_eq!(pool.stdio().live_count().await, 0);
@@ -168,13 +174,13 @@ async fn idle_process_is_stopped_by_the_reaper() {
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_stops_children_and_refuses_new_ones() {
     let pool = McpPool::new(PoolConfig::default());
-    pool.list_tools("a", &stdio_cfg()).await.unwrap();
-    pool.list_tools("b", &stdio_cfg()).await.unwrap();
-    let a = pool.stdio().live_pid("a").await.unwrap();
-    let b = pool.stdio().live_pid("b").await.unwrap();
+    pool.list_tools("a", "g", &stdio_cfg()).await.unwrap();
+    pool.list_tools("b", "g", &stdio_cfg()).await.unwrap();
+    let a = pool.stdio().live_pid("a", "g").await.unwrap();
+    let b = pool.stdio().live_pid("b", "g").await.unwrap();
     pool.shutdown(Duration::from_secs(5)).await;
     assert!(wait_gone(a).await && wait_gone(b).await);
-    let err = pool.list_tools("a", &stdio_cfg()).await.unwrap_err();
+    let err = pool.list_tools("a", "g", &stdio_cfg()).await.unwrap_err();
     assert_eq!(err, robroz_mcp::pool::POOL_CLOSED);
 }
 
@@ -187,8 +193,8 @@ fn dropping_the_pool_kills_children() {
         .build()
         .unwrap();
     let pid = rt.block_on(async {
-        pool.list_tools("srv", &stdio_cfg()).await.unwrap();
-        pool.stdio().live_pid("srv").await.unwrap()
+        pool.list_tools("srv", "g", &stdio_cfg()).await.unwrap();
+        pool.stdio().live_pid("srv", "g").await.unwrap()
     });
     drop(pool);
     assert!(rt.block_on(wait_gone(pid)), "child {pid} outlived the pool");
@@ -201,10 +207,10 @@ async fn pooling_off_starts_a_process_per_request() {
         ..PoolConfig::default()
     });
     let cfg = stdio_cfg();
-    pool.list_tools("srv", &cfg).await.unwrap();
-    pool.list_tools("srv", &cfg).await.unwrap();
+    pool.list_tools("srv", "g", &cfg).await.unwrap();
+    pool.list_tools("srv", "g", &cfg).await.unwrap();
     assert_eq!(pool.stdio().spawn_count(), 0, "the pool is bypassed");
-    assert_eq!(pool.stdio().live_pid("srv").await, None);
+    assert_eq!(pool.stdio().live_pid("srv", "g").await, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -220,10 +226,35 @@ async fn http_servers_are_not_pooled() {
         headers: vec![],
     };
     assert_eq!(
-        pool.call_tool("h", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
+        pool.call_tool("h", "g", &cfg, fixture::READ_ONLY_TOOL, &json!({}))
             .await
             .unwrap(),
         "pong"
     );
     assert_eq!(pool.stdio().spawn_count(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn two_groups_get_different_pids_and_the_same_group_reuses_one() {
+    let pool = McpPool::new(PoolConfig::default());
+    let cfg = stdio_cfg();
+    pool.list_tools("srv", "ga", &cfg).await.unwrap();
+    let a = pool.stdio().live_pid("srv", "ga").await.unwrap();
+    pool.list_tools("srv", "gb", &cfg).await.unwrap();
+    let b = pool.stdio().live_pid("srv", "gb").await.unwrap();
+    assert_ne!(a, b, "groups must not share a process");
+    pool.list_tools("srv", "ga", &cfg).await.unwrap();
+    assert_eq!(pool.stdio().live_pid("srv", "ga").await, Some(a));
+    assert_eq!(pool.stdio().spawn_count(), 2);
+    pool.evict("srv");
+    // evict is async in the background via the pool runtime
+    for _ in 0..40 {
+        if !running(a) && !running(b) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!running(a) && !running(b), "evict must stop every group");
+    pool.shutdown(Duration::from_secs(5)).await;
 }
