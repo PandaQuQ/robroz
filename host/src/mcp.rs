@@ -3,11 +3,12 @@
 //! approved before `/test`, `/tools`, or a later model-loop registration
 //! starts the process.
 
+use crate::extract::Json;
+use crate::extract::Path as AxumPath;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{
     CreateMcpServer, McpCommandNotApproved, McpSecretIn, McpSecretInput, McpSecretPublic,
     McpServer, McpServers, McpTestResult, McpTool, McpTools, UpdateMcpServer,
@@ -648,9 +649,9 @@ pub(crate) async fn list_servers(State(state): State<AppState>) -> Response {
 
 pub(crate) async fn create_server(
     State(state): State<AppState>,
-    body: Result<Json<CreateMcpServer>, JsonRejection>,
+    body: Result<axum::Json<CreateMcpServer>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
@@ -671,9 +672,9 @@ pub(crate) async fn create_server(
 pub(crate) async fn patch_server(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-    body: Result<Json<UpdateMcpServer>, JsonRejection>,
+    body: Result<axum::Json<UpdateMcpServer>, JsonRejection>,
 ) -> Response {
-    let Json(patch) = match body {
+    let axum::Json(patch) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };

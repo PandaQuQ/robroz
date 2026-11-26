@@ -8,11 +8,11 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::extract::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{SearchSettings, SearchSettingsSource, SearchTestResult};
 use robroz_policy::SideEffect;
 use rusqlite::Connection;
@@ -419,9 +419,9 @@ struct PutSearch {
 
 pub async fn put_search(
     State(state): State<AppState>,
-    body: Result<Json<Value>, JsonRejection>,
+    body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-    let Json(raw) = match body {
+    let axum::Json(raw) = match body {
         Ok(body) => body,
         Err(_) => {
             return error_response(

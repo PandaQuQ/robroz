@@ -18,11 +18,12 @@
 //! When a task starts and a model is configured, [`kept_for`] plus
 //! [`prompt_section`] append a short paragraph to the system prompt.
 
+use crate::extract::Json;
+use crate::extract::{Path as AxumPath, Query};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{
     CreateMemory, Memories, Memory, MemoryKind, MemoryScope, MemorySource, MemoryStatus,
     UpdateMemory, MEMORY_TEXT_MAX,
@@ -279,9 +280,9 @@ pub(crate) async fn list_memories(
 
 pub(crate) async fn create_memory(
     State(state): State<AppState>,
-    body: Result<Json<CreateMemory>, JsonRejection>,
+    body: Result<axum::Json<CreateMemory>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
@@ -323,9 +324,9 @@ pub(crate) async fn create_memory(
 pub(crate) async fn update_memory(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-    body: Result<Json<UpdateMemory>, JsonRejection>,
+    body: Result<axum::Json<UpdateMemory>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
