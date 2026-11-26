@@ -116,7 +116,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 | [docs/search-and-mcp.md](docs/search-and-mcp.md) | 联网搜索和 MCP |
 | [docs/client.md](docs/client.md) | 客户端界面行为（之后移到 robroz-client） |
 | [docs/architecture.md](docs/architecture.md) | 各部分分工、容器、外观层 |
-| [docs/reference-features.md](docs/reference-features.md) | 参考产品和净室规则 |
+| [docs/reference-features.md](docs/reference-features.md) | 参考产品和读源码的规则（按许可证分） |
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | 后续路线图 |
 | [docs/design/multi-agent.md](docs/design/multi-agent.md) | 群轮次、追问、Router 和 Watchdog 设计 |
 
