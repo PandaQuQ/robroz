@@ -693,3 +693,139 @@ async fn a_person_message_carries_its_author_in_the_list_and_on_sse() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_bro_avatar_is_set_on_create_patched_cleared_and_owner_only() {
+    let h = harness();
+    // Create with an avatar; list returns it too.
+    let (status, bro) = h
+        .call(
+            Some(MEMBER),
+            "POST",
+            "/api/bros",
+            Some(json!({ "name": "mei", "avatar": { "shape": 11, "color": 9 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{bro}");
+    assert_eq!(bro["avatar"], json!({ "shape": 11, "color": 9 }));
+    let bot = bro["id"].as_str().unwrap().to_string();
+    let (_, mine) = h.call(Some(MEMBER), "GET", "/api/bros", None).await;
+    assert_eq!(
+        mine["bros"][0]["avatar"],
+        json!({ "shape": 11, "color": 9 })
+    );
+
+    // A bro created without one has no `avatar` key at all.
+    let (_, plain) = h
+        .call(
+            Some(MEMBER),
+            "POST",
+            "/api/bros",
+            Some(json!({ "name": "p" })),
+        )
+        .await;
+    assert!(plain.get("avatar").is_none(), "{plain}");
+
+    let uri = format!("/api/bros/{bot}");
+    // Name only: avatar unchanged.
+    let (status, body) = h
+        .call(
+            Some(MEMBER),
+            "PATCH",
+            &uri,
+            Some(json!({ "name": "mei 2" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "mei 2");
+    assert_eq!(body["avatar"], json!({ "shape": 11, "color": 9 }));
+    // Avatar only: name unchanged.
+    let (status, body) = h
+        .call(
+            Some(MEMBER),
+            "PATCH",
+            &uri,
+            Some(json!({ "avatar": { "shape": 0, "color": 3 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "mei 2");
+    assert_eq!(body["avatar"], json!({ "shape": 0, "color": 3 }));
+    // `null` clears it.
+    let (status, body) = h
+        .call(Some(MEMBER), "PATCH", &uri, Some(json!({ "avatar": null })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("avatar").is_none(), "{body}");
+    let stored: (Option<i64>, Option<i64>) = h
+        .conn()
+        .query_row(
+            "SELECT avatar_shape, avatar_color FROM bots WHERE id = ?1",
+            [&bot],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (None, None));
+
+    // Out of range is a coded 400, on create and on patch; nothing changes.
+    for avatar in [
+        json!({ "shape": 12, "color": 0 }),
+        json!({ "shape": 0, "color": 10 }),
+    ] {
+        let (status, body) = h
+            .call(
+                Some(MEMBER),
+                "PATCH",
+                &uri,
+                Some(json!({ "avatar": avatar })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "invalid_avatar", "{body}");
+        let (status, body) = h
+            .call(
+                Some(MEMBER),
+                "POST",
+                "/api/bros",
+                Some(json!({ "name": "bad", "avatar": avatar })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "invalid_avatar", "{body}");
+    }
+    // Not a small number at all: the extractor's coded 422.
+    let (status, body) = h
+        .call(
+            Some(MEMBER),
+            "PATCH",
+            &uri,
+            Some(json!({ "avatar": { "shape": 300, "color": 0 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "invalid_field", "{body}");
+    let (_, bros) = h.call(Some(MEMBER), "GET", "/api/bros", None).await;
+    assert!(
+        bros["bros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b["name"] != "bad"),
+        "{bros}"
+    );
+
+    // Someone else, admin included, gets the #174 403.
+    for who in [None, Some(OTHER)] {
+        let (status, body) = h
+            .call(
+                who,
+                "PATCH",
+                &uri,
+                Some(json!({ "avatar": { "shape": 1, "color": 1 } })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{who:?}: {body}");
+        assert_eq!(body["code"], "not_bro_owner");
+        assert_eq!(body["ownerUserId"], MEMBER);
+    }
+}

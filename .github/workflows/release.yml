@@ -47,6 +47,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release binaries
         run: cargo build --release --locked ${{ matrix.packages }}
+      # `[profile.release] strip = true` in the workspace Cargo.toml.
+      - name: Check binaries are stripped
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in ${{ matrix.bins }}; do
+            info=$(file "target/release/${bin}")
+            echo "${info}"
+            case "${info}" in
+              *"not stripped"*) echo "::error::${bin} is not stripped"; exit 1 ;;
+              *stripped*) ;;
+              *) echo "::error::cannot tell whether ${bin} is stripped"; exit 1 ;;
+            esac
+            "target/release/${bin}" --version
+          done
       - name: Check glibc floor
         if: runner.os == 'Linux'
         shell: bash
@@ -195,6 +211,8 @@ jobs:
           # Attestation needs id-token: write. Keep this job's permissions to
           # contents: read and packages: write only.
           provenance: false
+          build-args: |
+            ROBROZ_GIT_SHA=${{ github.sha }}
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/PandaQuQ/robroz

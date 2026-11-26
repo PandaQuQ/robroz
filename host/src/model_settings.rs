@@ -7,11 +7,11 @@
 
 use std::time::Duration;
 
+use crate::extract::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{ModelSettings, ModelSettingsSource, ModelTestResult, MODEL_TEST_BAD_KEY};
 use robroz_model::{ModelConfig, OpenAiCompat, ENV_BASE_URL, ENV_KEY, ENV_KEY_FILE, ENV_MODEL};
 use rusqlite::Connection;
@@ -220,9 +220,9 @@ struct PutModel {
 
 pub async fn put_model(
     State(state): State<AppState>,
-    body: Result<Json<Value>, JsonRejection>,
+    body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-    let Json(raw) = match body {
+    let axum::Json(raw) = match body {
         Ok(body) => body,
         Err(_) => {
             return error_response(
