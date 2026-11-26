@@ -3,11 +3,12 @@
 //! approved before `/test`, `/tools`, or a later model-loop registration
 //! starts the process.
 
+use crate::extract::Json;
+use crate::extract::Path as AxumPath;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{
     CreateMcpServer, McpCommandNotApproved, McpSecretIn, McpSecretInput, McpSecretPublic,
     McpServer, McpServers, McpTestResult, McpTool, McpTools, UpdateMcpServer,
@@ -388,6 +389,7 @@ fn list_enabled_for_group(conn: &Connection, group_id: &str) -> rusqlite::Result
 pub(crate) struct ReadyServer {
     pub id: String,
     pub name: String,
+    pub group_id: String,
     pub config: robroz_mcp::ConnectConfig,
 }
 
@@ -409,6 +411,7 @@ pub(crate) fn ready_servers_for_group(
             Ok(config) => out.push(ReadyServer {
                 id: row.id,
                 name: row.name,
+                group_id: group_id.to_string(),
                 config,
             }),
             Err(err) => {
@@ -646,9 +649,9 @@ pub(crate) async fn list_servers(State(state): State<AppState>) -> Response {
 
 pub(crate) async fn create_server(
     State(state): State<AppState>,
-    body: Result<Json<CreateMcpServer>, JsonRejection>,
+    body: Result<axum::Json<CreateMcpServer>, JsonRejection>,
 ) -> Response {
-    let Json(body) = match body {
+    let axum::Json(body) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
@@ -669,9 +672,9 @@ pub(crate) async fn create_server(
 pub(crate) async fn patch_server(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-    body: Result<Json<UpdateMcpServer>, JsonRejection>,
+    body: Result<axum::Json<UpdateMcpServer>, JsonRejection>,
 ) -> Response {
-    let Json(patch) = match body {
+    let axum::Json(patch) = match body {
         Ok(body) => body,
         Err(rejection) => return body_error(rejection),
     };
@@ -690,6 +693,11 @@ pub(crate) async fn patch_server(
         }
     })();
     drop(conn);
+    if matches!(result, Ok(Ok(_))) {
+        // The next task starts the server with the new config. Stop the old
+        // process now rather than when it idles out.
+        state.mcp.evict(&id);
+    }
     match result {
         Ok(Ok(row)) => (StatusCode::OK, Json(row.public())).into_response(),
         Ok(Err((status, msg))) => error_response(status, msg),
@@ -711,6 +719,9 @@ pub(crate) async fn delete_server(
         Ok::<_, rusqlite::Error>(Ok(()))
     })();
     drop(conn);
+    if matches!(result, Ok(Ok(()))) {
+        state.mcp.evict(&id);
+    }
     match result {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err((status, msg))) => error_response(status, msg),
@@ -1520,5 +1531,122 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = http(&app, get("/api/groups/missing/mcp")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    use super::ReadyServer;
+    use robroz_mcp::{ConnectConfig, TransportKind};
+
+    /// Records evictions; every other call fails.
+    #[derive(Default)]
+    struct EvictSpy(std::sync::Mutex<Vec<String>>);
+
+    impl crate::mcp_tools::McpRuntime for EvictSpy {
+        fn list_tools(
+            &self,
+            _server_id: &str,
+            _group_id: &str,
+            _cfg: &ConnectConfig,
+        ) -> Result<Vec<robroz_mcp::ListedTool>, String> {
+            Err("spy".into())
+        }
+
+        fn call_tool(
+            &self,
+            _server_id: &str,
+            _group_id: &str,
+            _cfg: &ConnectConfig,
+            _name: &str,
+            _args: &Value,
+        ) -> Result<String, String> {
+            Err("spy".into())
+        }
+
+        fn evict(&self, server_id: &str) {
+            self.0.lock().unwrap().push(server_id.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_and_delete_stop_the_pooled_process() {
+        let db = std::env::temp_dir().join(format!("robroz-mcp-{}.db", uuid::Uuid::new_v4()));
+        let volumes = temp_path("robroz-mcp-vol");
+        let spy = std::sync::Arc::new(EvictSpy::default());
+        let app = crate::Host::open(&db, &volumes, "robroz-runner:local")
+            .unwrap()
+            .with_mcp(spy.clone())
+            .router();
+        let (status, created) = create_stdio(&app, "notes", "/bin/true", Some("k1")).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+        let uri = format!("/api/mcp/servers/{id}");
+        let (status, _) = http(&app, json_req("PATCH", &uri, json!({ "enabled": false }))).await;
+        assert_eq!(status, StatusCode::OK);
+        // A rejected patch changes nothing and keeps the process.
+        let (status, _) = http(&app, json_req("PATCH", &uri, json!({ "name": "" }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = http(
+            &app,
+            Request::builder()
+                .method("DELETE")
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(*spy.0.lock().unwrap(), vec![id.clone(), id]);
+    }
+
+    /// Two tasks in a row, each on a step thread without a runtime, as in the
+    /// binary: one fixture process serves both tool lists and the call.
+    #[test]
+    fn pooled_runtime_reuses_one_process_across_tasks() {
+        let bin = fixture_bin();
+        let pooled = std::sync::Arc::new(crate::mcp_tools::PooledMcp(robroz_mcp::McpPool::new(
+            robroz_mcp::PoolConfig::default(),
+        )));
+        let server = ReadyServer {
+            id: "srv-1".into(),
+            name: "fixture".into(),
+            group_id: "group-a".into(),
+            config: ConnectConfig {
+                transport: TransportKind::Stdio,
+                command: Some(bin.display().to_string()),
+                args: vec![],
+                url: None,
+                env: vec![],
+                headers: vec![],
+            },
+        };
+        for _task in 0..2 {
+            let pooled = pooled.clone();
+            let config = server.config.clone();
+            let servers = vec![ReadyServer {
+                id: server.id.clone(),
+                name: server.name.clone(),
+                group_id: server.group_id.clone(),
+                config,
+            }];
+            std::thread::spawn(move || {
+                let mut tools = crate::tools::ToolRegistry::new();
+                crate::mcp_tools::register_tools(&mut tools, &servers, pooled.clone());
+                let names: Vec<String> = tools.definitions().into_iter().map(|d| d.name).collect();
+                assert!(names.contains(&"fixture__ping".to_string()), "{names:?}");
+                let out = crate::mcp_tools::McpRuntime::call_tool(
+                    &*pooled,
+                    "srv-1",
+                    "group-a",
+                    &servers[0].config,
+                    robroz_mcp::fixture::READ_ONLY_TOOL,
+                    &json!({}),
+                )
+                .unwrap();
+                assert_eq!(out, "pong");
+            })
+            .join()
+            .unwrap();
+        }
+        assert_eq!(pooled.0.stdio().spawn_count(), 1);
+        crate::mcp_tools::McpRuntime::shutdown(&*pooled);
     }
 }

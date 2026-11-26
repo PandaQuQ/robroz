@@ -18,6 +18,27 @@ fn ensure_control_outside_volumes(control: &std::path::Path, volumes: &std::path
     }
 }
 
+/// `robroz-host <version> (<short git sha>)`, for `--version` / `-V`.
+fn version_line() -> String {
+    format!(
+        "robroz-host {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("ROBROZ_GIT_SHA_SHORT")
+    )
+}
+
+/// `--version` / `-V` print the version and exit 0 before anything else, so
+/// they need no token, database or Docker.
+fn handle_version_flag() {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("{}", version_line());
+        std::process::exit(0);
+    }
+}
+
 fn fail(msg: &str) -> ! {
     eprintln!("robroz-host: {msg}");
     std::process::exit(2);
@@ -25,6 +46,7 @@ fn fail(msg: &str) -> ! {
 
 #[tokio::main]
 async fn main() {
+    handle_version_flag();
     let addr: SocketAddr = std::env::var("ROBROZ_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8790".to_string())
         .parse()
@@ -116,7 +138,42 @@ async fn main() {
         "仅本机，无令牌"
     };
     eprintln!("robroz-host listening on {addr}（{guard}）");
-    axum::serve(listener, app)
-        .await
-        .unwrap_or_else(|err| panic!("服务器退出: {err}"));
+    tokio::select! {
+        served = async { axum::serve(listener, app).await } => {
+            served.unwrap_or_else(|err| panic!("服务器退出: {err}"));
+        }
+        () = shutdown_signal() => {
+            // Pooled stdio MCP servers are child processes: stop them before
+            // exiting. Long-lived SSE streams are not drained.
+            eprintln!("robroz-host: 收到退出信号，正在停止 MCP 进程");
+            host.shutdown_mcp();
+            // Exit now, as before this handler existed: do not wait for
+            // in-flight model calls or open streams.
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Ctrl-C, or SIGTERM (what `docker stop` sends) on Unix.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = term => {}
+    }
 }

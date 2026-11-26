@@ -11,10 +11,11 @@
 //! ([`apply_confirmed`]); deny or expiry discards it. The pending text and
 //! the rule id are stored on the approval row (`summary`, `rule_id`).
 
-use axum::extract::{Path as AxumPath, State};
+use crate::extract::Json;
+use crate::extract::Path as AxumPath;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use robroz_contract::{
     CreateReviewRule, ReviewRule, ReviewRuleCreated, ReviewRules, REVIEW_RULE_MAX,
     SETTINGS_APPROVAL_BOT_ID,

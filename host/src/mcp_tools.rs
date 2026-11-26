@@ -9,8 +9,9 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use robroz_mcp::{ConnectConfig, ListedTool, McpConnector, RmcpConnector};
+use robroz_mcp::{ConnectConfig, ListedTool, McpPool, PoolConfig};
 use robroz_model::{ChatMessage, ToolCall};
 use robroz_policy::{action_hash, SideEffect};
 use rusqlite::Connection;
@@ -26,35 +27,126 @@ pub const MAX_MCP_RESULT_CHARS: usize = crate::tools::MAX_TOOL_RESULT_CHARS;
 
 const PENDING_FILE: &str = "mcp-pending.json";
 
-/// Sync façade over an async [`McpConnector`], for the host pump thread.
+/// Sync façade over the MCP client, for the host pump and step threads.
+///
+/// `server_id` is the `mcp_servers.id` the config belongs to, and
+/// `group_id` is the group (or bro DM) the task is running in. The pooled
+/// runtime keeps one process per (server, group) ([`robroz_mcp::StdioPool`]);
+/// other runtimes ignore both ids.
 pub trait McpRuntime: Send + Sync {
-    fn list_tools(&self, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String>;
-    fn call_tool(&self, cfg: &ConnectConfig, name: &str, args: &Value) -> Result<String, String>;
+    fn list_tools(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String>;
+    fn call_tool(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+        name: &str,
+        args: &Value,
+    ) -> Result<String, String>;
+    /// The server was edited, disabled or deleted: stop every pooled
+    /// process for this server, in every group.
+    fn evict(&self, _server_id: &str) {}
+    /// The group was deleted: stop every pooled process started for it.
+    /// No route calls this yet.
+    fn evict_group(&self, _group_id: &str) {}
+    /// The host is exiting: stop every pooled process. Blocks up to a few seconds.
+    fn shutdown(&self) {}
 }
 
-/// Wraps a [`McpConnector`] and blocks on its futures.
-pub struct BlockingMcp<C>(pub C);
+/// The production runtime: stdio servers stay running between tasks.
+pub struct PooledMcp(pub McpPool);
 
-impl<C: McpConnector> McpRuntime for BlockingMcp<C> {
-    fn list_tools(&self, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String> {
-        block_on(self.0.list_tools(cfg))
+/// How long [`McpRuntime::shutdown`] waits for pooled processes to exit.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+impl McpRuntime for PooledMcp {
+    fn list_tools(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String> {
+        block_on(self.0.list_tools(server_id, group_id, cfg))
     }
 
-    fn call_tool(&self, cfg: &ConnectConfig, name: &str, args: &Value) -> Result<String, String> {
-        block_on(self.0.call_tool(cfg, name, args))
+    fn call_tool(
+        &self,
+        server_id: &str,
+        group_id: &str,
+        cfg: &ConnectConfig,
+        name: &str,
+        args: &Value,
+    ) -> Result<String, String> {
+        block_on(self.0.call_tool(server_id, group_id, cfg, name, args))
     }
+
+    fn evict(&self, server_id: &str) {
+        self.0.evict(server_id);
+    }
+
+    fn evict_group(&self, group_id: &str) {
+        self.0.evict_group(group_id);
+    }
+
+    fn shutdown(&self) {
+        block_on(self.0.shutdown(SHUTDOWN_GRACE));
+    }
+}
+
+/// Pool settings from the environment (`ROBROZ_MCP_IDLE_SECS`,
+/// `ROBROZ_MCP_MAX_IN_FLIGHT`). A missing or invalid value keeps the default.
+pub fn pool_config_from_env() -> PoolConfig {
+    pool_config_from(
+        std::env::var("ROBROZ_MCP_IDLE_SECS").ok().as_deref(),
+        std::env::var("ROBROZ_MCP_MAX_IN_FLIGHT").ok().as_deref(),
+    )
+}
+
+fn pool_config_from(idle_secs: Option<&str>, max_in_flight: Option<&str>) -> PoolConfig {
+    let mut cfg = PoolConfig::default();
+    if let Some(secs) = idle_secs.and_then(|v| v.trim().parse::<u64>().ok()) {
+        cfg.idle_timeout = Duration::from_secs(secs);
+        if secs > 0 {
+            // Look often enough that a short idle limit is honoured.
+            cfg.reap_interval = cfg.reap_interval.min(Duration::from_secs(secs.div_ceil(2)));
+        }
+    }
+    if let Some(n) = max_in_flight
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        cfg.max_in_flight = n;
+    }
+    cfg
 }
 
 pub fn real_mcp() -> Arc<dyn McpRuntime> {
-    Arc::new(BlockingMcp(RmcpConnector))
+    Arc::new(PooledMcp(McpPool::new(pool_config_from_env())))
 }
 
 impl McpRuntime for robroz_mcp::FakeConnector {
-    fn list_tools(&self, cfg: &ConnectConfig) -> Result<Vec<ListedTool>, String> {
+    fn list_tools(
+        &self,
+        _server_id: &str,
+        _group_id: &str,
+        cfg: &ConnectConfig,
+    ) -> Result<Vec<ListedTool>, String> {
         self.list_tools_sync(cfg)
     }
 
-    fn call_tool(&self, cfg: &ConnectConfig, name: &str, args: &Value) -> Result<String, String> {
+    fn call_tool(
+        &self,
+        _server_id: &str,
+        _group_id: &str,
+        cfg: &ConnectConfig,
+        name: &str,
+        args: &Value,
+    ) -> Result<String, String> {
         self.call_tool_sync(cfg, name, args)
     }
 }
@@ -135,7 +227,7 @@ pub fn register_tools(tools: &mut ToolRegistry, servers: &[ReadyServer], mcp: Ar
         .map(|d| d.name)
         .collect::<HashSet<_>>();
     for server in servers {
-        let listed = match mcp.list_tools(&server.config) {
+        let listed = match mcp.list_tools(&server.id, &server.group_id, &server.config) {
             Ok(tools) => tools,
             Err(err) => {
                 eprintln!("mcp: skip server {} ({}): {err}", server.name, server.id);
@@ -167,6 +259,7 @@ pub fn register_tools(tools: &mut ToolRegistry, servers: &[ReadyServer], mcp: Ar
                     server_name: server.name.clone(),
                     tool_name: tool.name,
                 },
+                group_id: server.group_id.clone(),
                 config: server.config.clone(),
                 mcp: mcp.clone(),
             });
@@ -181,6 +274,7 @@ struct McpHostTool {
     schema: Value,
     effect: SideEffect,
     approval: McpApproval,
+    group_id: String,
     config: ConnectConfig,
     mcp: Arc<dyn McpRuntime>,
 }
@@ -214,8 +308,13 @@ impl Tool for McpHostTool {
         if let Err(over) = ctx.charge_get() {
             return Err(over.failure());
         }
-        self.mcp
-            .call_tool(&self.config, &self.approval.tool_name, args)
+        self.mcp.call_tool(
+            &self.approval.server_id,
+            &self.group_id,
+            &self.config,
+            &self.approval.tool_name,
+            args,
+        )
     }
 }
 
@@ -555,6 +654,19 @@ pub fn queue_approved(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_config_reads_idle_and_in_flight() {
+        let default = PoolConfig::default();
+        assert_eq!(pool_config_from(None, None), default);
+        assert_eq!(pool_config_from(Some("x"), Some("0")), default);
+        let cfg = pool_config_from(Some(" 0 "), Some("1"));
+        assert!(!cfg.pooling());
+        assert_eq!(cfg.max_in_flight, 1);
+        let cfg = pool_config_from(Some("20"), None);
+        assert_eq!(cfg.idle_timeout, Duration::from_secs(20));
+        assert_eq!(cfg.reap_interval, Duration::from_secs(10));
+    }
 
     #[test]
     fn registered_name_is_safe_and_maps_from_display() {
