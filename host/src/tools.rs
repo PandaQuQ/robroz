@@ -241,23 +241,25 @@ pub enum CompleteError {
 }
 
 impl CompleteError {
-    /// The task's `failure` text, and the result the runner will write.
-    pub fn failure_text(&self) -> String {
+    /// The task's typed failure; its text is the result the runner will write.
+    pub fn failure(&self) -> crate::failure::Failure {
+        use crate::failure::Failure;
         match self {
-            CompleteError::Model(err) => {
-                format!("{}{err}", robroz_contract::host_text::MODEL_NO_REPLY_PREFIX)
-            }
-            CompleteError::RoundLimit => ROUND_LIMIT_FAILURE.to_string(),
-            CompleteError::OverQuota(over) => over.failure(),
-            CompleteError::Cancelled => robroz_contract::legacy::NO_RESULT.to_string(),
-            CompleteError::NeedsApproval(pending) => {
-                format!(
-                    "{}{}",
-                    robroz_contract::host_text::WAITING_APPROVAL_PREFIX,
-                    pending.display_name
-                )
-            }
+            CompleteError::Model(err) => Failure::model(err),
+            CompleteError::RoundLimit => Failure::round_limit(),
+            CompleteError::OverQuota(over) => Failure::over_quota(over),
+            CompleteError::Cancelled => Failure::no_result(),
+            CompleteError::NeedsApproval(pending) => Failure::waiting_approval(
+                &pending.display_name,
+                pending.remaining.first().map(|call| call.name.as_str()),
+            ),
         }
+    }
+
+    /// The task's legacy `failure` text.
+    #[cfg(test)]
+    pub fn failure_text(&self) -> String {
+        self.failure().text
     }
 }
 
@@ -435,7 +437,7 @@ mod tests {
 
     impl Model for ScriptedModel {
         fn reply(&self, _prompt: &str, _memory: Option<&str>) -> Result<String, ModelError> {
-            Err(ModelError("测试里应该走 chat".into()))
+            Err(ModelError::new("测试里应该走 chat"))
         }
 
         fn chat(
@@ -449,7 +451,7 @@ mod tests {
                 .push((messages.to_vec(), tools.to_vec()));
             let mut turns = self.turns.lock().unwrap();
             if turns.is_empty() {
-                return Err(ModelError("模型没有更多返回".into()));
+                return Err(ModelError::new("模型没有更多返回"));
             }
             Ok(turns.remove(0))
         }

@@ -19,6 +19,7 @@ pub mod auth;
 mod bros;
 mod choices;
 mod error_code;
+mod failure;
 pub(crate) mod follow_ups;
 mod mcp;
 mod mcp_tools;
@@ -527,6 +528,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for table in ["tasks", "deliveries"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN failure TEXT"), []);
     }
+    // #181: the typed failure next to the legacy text; old rows backfilled once.
+    failure::migrate(conn)?;
     // What a running task is doing now, shown on its status card.
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
     // v0.2 accounts: users, then bro owners and per-(user, bro) DMs.
@@ -1143,7 +1146,7 @@ fn group_events(
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress
+                    t.progress, t.failure_data
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1 AND t.turn_hidden = 0",
@@ -1156,11 +1159,12 @@ fn group_events(
             let container_up = container_up != 0;
             let updated_at: String = row.get(5)?;
             // Only a finished task reports why it was not done.
-            let failure: Option<String> = if state == TaskState::Done {
-                row.get(7)?
-            } else {
-                None
-            };
+            let (failure, failure_data): (Option<String>, Option<String>) =
+                if state == TaskState::Done {
+                    (row.get(7)?, row.get(10)?)
+                } else {
+                    (None, None)
+                };
             // Only a blocked task says whether it is waiting for approval or a takeover.
             let waiting_for = if state == TaskState::Blocked {
                 let open_approval: i64 = row.get(8)?;
@@ -1175,7 +1179,8 @@ fn group_events(
             // v0.2: a group task's card stays in the group, so no
             // 「已发到主人私聊」 notice any more.
             let progress = progress::shown(state, container_up, row.get(9)?);
-            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
+            let (failure_code, failure_detail) =
+                failure::codes(failure.as_deref(), failure_data.as_deref());
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -1207,7 +1212,7 @@ fn group_events(
     {
         let mut delivery_stmt = conn.prepare(
             "SELECT d.id, d.summary, d.path, d.briefing, d.created_at, d.failure, d.needs_setup,
-                    d.task_id, t.assignee_bot_id, b.name
+                    d.task_id, t.assignee_bot_id, b.name, d.failure_data
              FROM deliveries d
              LEFT JOIN tasks t ON t.id = d.task_id
              LEFT JOIN bots b ON b.id = t.assignee_bot_id
@@ -1218,7 +1223,9 @@ fn group_events(
             let created_at: String = row.get(4)?;
             let briefing: i64 = row.get(3)?;
             let failure: Option<String> = row.get(5)?;
-            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
+            let failure_data: Option<String> = row.get(10)?;
+            let (failure_code, failure_detail) =
+                failure::codes(failure.as_deref(), failure_data.as_deref());
             Ok(TimedEvent {
                 changed_at: created_at.clone(),
                 created_at: created_at.clone(),
@@ -1259,16 +1266,6 @@ fn group_events(
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(Some(timed))
-}
-
-/// The `failureCode` and `failureDetail` for a stored `failure` text: the
-/// code and the raw reason without its prefix. The legacy `failure` text is
-/// sent unchanged next to them.
-fn failure_codes(failure: Option<&str>) -> (Option<robroz_contract::FailureCode>, Option<String>) {
-    match failure.map(robroz_contract::split_failure) {
-        Some((code, detail)) => (Some(code), detail),
-        None => (None, None),
-    }
 }
 
 #[cfg(test)]
@@ -5092,7 +5089,7 @@ mod tests {
 
     /// Fake model: answers or fails, and records each call's prompt and memory paragraph.
     struct FakeModel {
-        answer: Result<String, String>,
+        answer: Result<String, robroz_model::ModelError>,
         calls: std::sync::atomic::AtomicUsize,
         seen: std::sync::Mutex<Vec<(String, Option<String>)>>,
     }
@@ -5100,7 +5097,15 @@ mod tests {
     impl FakeModel {
         fn new(answer: Result<String, String>) -> Self {
             Self {
-                answer,
+                answer: answer.map_err(robroz_model::ModelError::new),
+                calls: Default::default(),
+                seen: Default::default(),
+            }
+        }
+
+        fn failing(err: robroz_model::ModelError) -> Self {
+            Self {
+                answer: Err(err),
                 calls: Default::default(),
                 seen: Default::default(),
             }
@@ -5127,10 +5132,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((prompt.to_string(), memory_section.map(str::to_string)));
-            self.answer
-                .clone()
-                .map(|a| format!("{a}（{prompt}）"))
-                .map_err(robroz_model::ModelError)
+            self.answer.clone().map(|a| format!("{a}（{prompt}）"))
         }
     }
 
@@ -5714,7 +5716,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
-        let model = FakeModel::new(Err("模型服务返回 401".into()));
+        let model = FakeModel::failing(robroz_model::ModelError::from_http_status(401));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
@@ -5733,11 +5735,11 @@ mod tests {
             "模型没回：模型服务返回 401",
             "card can say it was not done"
         );
-        // The code and the raw reason, with no prefix baked into the detail.
+        // The code and only the raw status code: no host-written copy in the detail.
         assert_eq!(deliveries(&events)[0]["failureCode"], "model_no_reply");
-        assert_eq!(deliveries(&events)[0]["failureDetail"], "模型服务返回 401");
+        assert_eq!(deliveries(&events)[0]["failureDetail"], "401");
         assert_eq!(statuses(&events)[0]["failureCode"], "model_no_reply");
-        assert_eq!(statuses(&events)[0]["failureDetail"], "模型服务返回 401");
+        assert_eq!(statuses(&events)[0]["failureDetail"], "401");
         assert_eq!(deliveries(&events)[0]["taskId"], task_id);
         assert_eq!(deliveries(&events)[0]["botId"], "bot-ada");
         assert_eq!(deliveries(&events)[0]["botName"], "Ada");
@@ -6958,7 +6960,7 @@ mod tests {
             self.prompts.lock().unwrap().push(prompt.to_string());
             let mut answers = self.answers.lock().unwrap();
             assert!(!answers.is_empty(), "unexpected model call: {prompt}");
-            answers.remove(0).map_err(robroz_model::ModelError)
+            answers.remove(0).map_err(robroz_model::ModelError::new)
         }
     }
 

@@ -463,12 +463,17 @@ const GATE_PREFIX: &str = robroz_contract::host_text::GATE_PREFIX;
 
 /// The task's first plain line, at most 60 characters.
 fn gate_line(prompt: &str) -> String {
-    let line = prompt
+    own_gate_line(prompt)
+        .unwrap_or_else(|| robroz_contract::host_text::GATE_FALLBACK_LINE.to_string())
+}
+
+/// [`gate_line`] without the host's fallback: the person's own line, or `None`.
+fn own_gate_line(prompt: &str) -> Option<String> {
+    prompt
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && robroz_policy::blocking_kind(l).is_none())
-        .unwrap_or(robroz_contract::host_text::GATE_FALLBACK_LINE);
-    crate::text::clip(line, 60)
+        .map(|line| crate::text::clip(line, 60))
 }
 
 /// Where a task's approval card goes (v0.2): the task's own group. A task
@@ -570,17 +575,16 @@ fn settle_task(
     task_id: &str,
     hash: &str,
     decision: ApprovalDecision,
-    failure: Option<&str>,
+    failure: Option<&crate::failure::Failure>,
 ) -> rusqlite::Result<()> {
     // Denied is done without the work: say so, so the card is not a green "done".
     // A task split by the Router ends whole: 「没写出结果」.
     let routed = decision == ApprovalDecision::Denied && crate::router::clear(conn, task_id)?;
+    use crate::failure::Failure;
     let (next, failure) = match decision {
         ApprovalDecision::Approved => ("queued", None),
-        ApprovalDecision::Denied if routed => {
-            ("done", Some(robroz_contract::legacy::NO_RESULT.to_string()))
-        }
-        ApprovalDecision::Denied if failure.is_some() => ("done", failure.map(String::from)),
+        ApprovalDecision::Denied if routed => ("done", Some(Failure::no_result())),
+        ApprovalDecision::Denied if failure.is_some() => ("done", failure.cloned()),
         ApprovalDecision::Denied => {
             let prompt: String =
                 conn.query_row("SELECT prompt FROM tasks WHERE id = ?1", [task_id], |r| {
@@ -588,19 +592,25 @@ fn settle_task(
                 })?;
             (
                 "done",
-                Some(format!(
-                    "{}{}",
-                    robroz_contract::host_text::DENIED_PREFIX,
-                    gate_line(&prompt)
+                Some(Failure::denied_line(
+                    &gate_line(&prompt),
+                    own_gate_line(&prompt).as_deref(),
                 )),
             )
         }
     };
     conn.execute(
-        "UPDATE tasks SET state = ?1, container_up = 0, updated_at = ?2, failure = ?5,
+        "UPDATE tasks SET state = ?1, container_up = 0, updated_at = ?2, failure = ?5, failure_data = ?6,
                           intent_kind = NULL, intent_line = NULL, intent_hash = NULL
          WHERE id = ?3 AND state = 'blocked' AND intent_hash = ?4",
-        params![next, now_rfc3339(), task_id, hash, failure],
+        params![
+            next,
+            now_rfc3339(),
+            task_id,
+            hash,
+            failure.as_ref().map(|f| f.text.as_str()),
+            failure.as_ref().map(Failure::json)
+        ],
     )?;
     Ok(())
 }
@@ -613,7 +623,7 @@ pub(crate) struct Settlement<'a> {
     /// Written to the card's `reason` when set.
     pub reason: Option<&'a str>,
     /// The task's `failure` on deny. `None`: 「你拒绝了：…」.
-    pub failure: Option<&'a str>,
+    pub failure: Option<crate::failure::Failure>,
     /// Only settle a card in this review state (`pending` for auto-review).
     /// `None`: only a card the owner can see.
     pub from_review: Option<&'a str>,
@@ -701,27 +711,27 @@ pub(crate) fn settle(
                     let _ = crate::mcp_tools::remove_pending(&control_root.join(task_id));
                 }
                 ApprovalDecision::Denied => {
-                    let failure = match how.failure {
-                        Some(f) => f.to_string(),
-                        None => {
-                            let line = match card {
-                                Event::Approval {
-                                    mcp_server: Some(s),
-                                    mcp_tool: Some(tool),
-                                    ..
-                                } => format!("{s}.{tool}"),
-                                Event::Approval { summary, .. } => summary.clone(),
-                                _ => robroz_contract::host_text::DENIED_MCP_FALLBACK.into(),
-                            };
-                            format!("{}{line}", robroz_contract::host_text::DENIED_PREFIX)
-                        }
+                    use crate::failure::Failure;
+                    let failure = match &how.failure {
+                        Some(f) => f.clone(),
+                        None => match card {
+                            Event::Approval {
+                                mcp_server: Some(s),
+                                mcp_tool: Some(tool),
+                                ..
+                            } => Failure::denied_tool(s, tool),
+                            Event::Approval { summary, .. } => Failure::denied_card(summary),
+                            _ => Failure::denied_card(
+                                robroz_contract::host_text::DENIED_MCP_FALLBACK,
+                            ),
+                        },
                     };
                     crate::mcp_tools::finish_denied(&tx, task_id, hash, &failure, &now)?;
                     let _ = crate::mcp_tools::remove_pending(&control_root.join(task_id));
                 }
             }
         } else {
-            settle_task(&tx, task_id, hash, decision, how.failure)?;
+            settle_task(&tx, task_id, hash, decision, how.failure.as_ref())?;
         }
     }
     if decision == ApprovalDecision::Approved {
@@ -880,7 +890,7 @@ fn decide(
                     &Settlement {
                         decision: ApprovalDecision::Denied,
                         reason: Some(APPROVAL_EXPIRED_REASON),
-                        failure: Some(APPROVAL_EXPIRED_REASON),
+                        failure: Some(crate::failure::Failure::approval_expired()),
                         ..Settlement::default()
                     },
                 )?;

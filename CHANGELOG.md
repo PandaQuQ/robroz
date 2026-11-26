@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `failureDetail` carries only language-neutral raw data: the HTTP status code (`401`, not 「模型服务返回 401」), a tool name, a method, `used/limit`, raw upstream or OS error text, or a snake_case reason token. The host stores each failure typed (`robroz_contract::FailureData`) in a new `failure_data` column on `tasks` and `deliveries` and no longer parses its own Chinese text to build events; older rows are backfilled once at startup. `failure` is unchanged ([#181](https://github.com/PandaQuQ/robroz/issues/181)).
 - `POST /api/approvals/{id}/approve` and `/deny` return 403 `{"code":"approval_forbidden","reason":"not_owner"|"decided"|"expired"}` instead of 409 for an answered or expired card, and for a caller who is not the bro's owner. Renaming a bro, opening its DM or adding it to a group by someone else is 403 `not_bro_owner`. `GET /api/bros` lists the caller's bros. The host no longer writes 「已发到主人私聊」 ([#174](https://github.com/PandaQuQ/robroz/pull/174)).
 
 ## [0.1.1] - 2026-11-25

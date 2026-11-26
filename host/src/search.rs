@@ -1379,7 +1379,7 @@ mod tests {
 
     impl robroz_model::Model for ScriptedModel {
         fn reply(&self, _: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
-            Err(robroz_model::ModelError("scripted model uses chat".into()))
+            Err(robroz_model::ModelError::new("scripted model uses chat"))
         }
 
         fn chat(
@@ -1391,7 +1391,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| robroz_model::ModelError("没有更多回合".into()))
+                .ok_or_else(|| robroz_model::ModelError::new("没有更多回合"))
         }
     }
 
