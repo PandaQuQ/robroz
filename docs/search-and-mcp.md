@@ -13,7 +13,7 @@
 
 - 权限归计数（Metered）一级：和其他出网一样按任务计次，上限 `ROBROZ_GET_LIMIT`。超额时任务变成带 `failure`「出网超额：已用 N 次，上限 M」的 `done`，没有交付卡。见 [permissions.md](permissions.md#permission-tiers)。
 - 服务由 robroz 用户自己选、自己填，密钥不必交给别人：[Brave Search](https://brave.com/search/api/) 或自建 [SearXNG](https://docs.searxng.org/)。
-- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」（`host/src/search.rs:NOT_CONFIGURED`），并给任务记上 `needsSetup: "search"`。这句话会加在结果文件开头，交付卡带可选字段 `needsSetup: "search"`。`web_fetch` 不用搜索服务，不会记这个字段。客户端按这个字段给出「去设置」，不匹配文字：只要带这个字段就会显示按钮，不要求同时有 `failure`；没有 `failure` 时路径下面再加一行灰字「这次没联网搜索：还没设置」。见 [client.md 的「联网搜索页」](client.md#web-search-page)。
+- 还没设置时 `web_search` 仍可调用，返回「还没设置联网搜索」（`host/src/search.rs:NOT_CONFIGURED`），并给任务记上 `needsSetup: "search"`。这句话会加在结果文件开头，交付卡带可选字段 `needsSetup: "search"`。`web_fetch` 不用搜索服务，不会记这个字段。客户端按这个字段给出「去设置」，不匹配文字：只要带这个字段就会显示按钮，不要求同时有 `failure`；没有 `failure` 时路径下面再加一行灰字「这次没联网搜索：还没设置」。见 [client.md 的「联网搜索页」](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#web-search-page)。
 - 设置存在本机 SQLite 的 `settings` 表。密钥不进日志、不进报错，接口只返回 `hasKey` 和 `keyLast4`。
 
 ### 设置和环境变量谁优先
@@ -22,7 +22,7 @@
 
 ### 怎么填搜索服务
 
-三种方式选一种：客户端的「联网搜索」页（见 [client.md](client.md#web-search-page)，背后就是下面的设置接口）、设置接口、环境变量。
+三种方式选一种：客户端的「联网搜索」页（见 [client.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#web-search-page)，背后就是下面的设置接口）、设置接口、环境变量。
 
 **用设置接口**（宿主机设了令牌时加 `-H "Authorization: Bearer <你的令牌>"`）：
 
@@ -81,7 +81,7 @@ curl -X PUT http://127.0.0.1:8790/api/settings/search \
 - 密钥：`hasKey` 为 true 的每条密钥在列工具和调用时都会带上（stdio 作环境变量，HTTP 作请求头）；没填值的那条不带。`keyLast4` 只用于显示，不影响调用。
 - 调用出错不会让任务失败：模型拿到「调用失败：{原因}」接着回答，原因里的密钥会被抹掉。
 - `needsApproval`（`GET …/tools` 的返回）和调用时的分级用的是同一条规则：没标 `readOnlyHint: true` 就要批准。
-- 客户端里的 MCP 页（增删改、试连、工具列表、按群启用、批准 stdio 命令）见 [client.md 的「MCP 页」](client.md#mcp-page)。对 `call` 审批卡的专门显示还没合入 `main`。
+- 客户端里的 MCP 页（增删改、试连、工具列表、按群启用、批准 stdio 命令）见 [client.md 的「MCP 页」](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md#mcp-page)。对 `call` 审批卡的专门显示还没合入 `main`。
 
 安全：
 

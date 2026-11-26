@@ -50,7 +50,7 @@ cargo deny check licenses bans sources   # 需要先装 cargo-deny
 
 ## 配置
 
-全部环境变量（宿主机、容器、开发测试专用；客户端的变量之后移到客户端仓库），每个的读取位置、默认值和示例见 [`docs/configuration.md`](docs/configuration.md)。
+全部环境变量（宿主机、容器、开发测试专用；客户端的变量在客户端仓库），每个的读取位置、默认值和示例见 [`docs/configuration.md`](docs/configuration.md)。
 
 ## docs 索引
 
@@ -66,7 +66,7 @@ cargo deny check licenses bans sources   # 需要先装 cargo-deny
 | [`docs/permissions.md`](docs/permissions.md) | 三级权限、阻塞行和接管标记、resume、审批卡、`waitingFor`、`failure`、模型工具调用的限制。 |
 | [`docs/memory-and-skills.md`](docs/memory-and-skills.md) | 记忆和技能的规则、拼进提示（4000 / 8000 字符）、bro 怎么提议、确认卡。 |
 | [`docs/search-and-mcp.md`](docs/search-and-mcp.md) | 联网搜索（怎么填、优先级、`source`、`needsSetup`）和 MCP（配置、模型调用、审批卡）。 |
-| [`docs/client.md`](docs/client.md) | （之后移到 robroz-client）客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、模型页（含「去设置」）、联网搜索页（含「去设置」）、MCP 页（含 stdio 命令批准）、例行任务。 |
+| [`docs/client.md`](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md) | 客户端仓库里的客户端界面：布局、各种卡怎么显示、处理人、记忆页、技能页、模型页（含「去设置」）、联网搜索页（含「去设置」）、MCP 页（含 stdio 命令批准）、例行任务。 |
 | [`docs/architecture.md`](docs/architecture.md) | 宿主机、pump、容器、runner、模型、例行任务、实时推送、卡片和外观层（Skin）、客户端事件来源。 |
 
 `README.md` 和 `README.zh-CN.md` 只放简介、功能、快速开始、文档入口和参与开发的要点，不写接口细节。新功能的说明写进上面对应的 `docs/` 文件；没有合适的文件就新建一个并加进这张表。

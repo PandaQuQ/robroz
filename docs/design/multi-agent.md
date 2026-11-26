@@ -451,7 +451,7 @@ The dead-task transition below has already shipped with the card-copy change.
   and the 「没写出结果」 copy) must change in the same PR as the host, never
   alone, so the card still shows 「没写出结果」 after the task is `done` +
   `failure`. A new host timeout can use the existing grey 「没做成：原因」
-  path (`client/src/model.rs`, [`docs/client.md`](../client.md),
+  path (`client/src/model.rs`, [`docs/client.md`](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md),
   [`docs/permissions.md`](../permissions.md)) without a new card type and
   without waiting for that dead-task PR. Optional fields may be added;
   no new required field.
@@ -471,7 +471,7 @@ never separately, and the update must be a compare-and-set as described
 above. Docs that state the current rule
 ([`docs/concepts.md`](../concepts.md), [`docs/api.md`](../api.md),
 [`docs/permissions.md`](../permissions.md),
-[`docs/client.md`](../client.md), [`docs/architecture.md`](../architecture.md))
+[`docs/client.md`](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md), [`docs/architecture.md`](../architecture.md))
 must be updated in that same PR.
 
 No new required field, and no new meaning of `progress`, `containerUp`, or
@@ -749,5 +749,5 @@ robroz behaviour cited above was checked against the tree at `7536c31` plus #132
 [`docs/architecture.md`](../architecture.md),
 [`docs/concepts.md`](../concepts.md),
 [`docs/permissions.md`](../permissions.md),
-[`docs/client.md`](../client.md), and
+[`docs/client.md`](https://github.com/PandaQuQ/robroz-client/blob/main/docs/client.md), and
 [`docs/api.md`](../api.md).
