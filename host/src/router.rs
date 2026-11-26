@@ -46,11 +46,8 @@ impl Plan {
     }
 
     /// Card `progress` for step `index` (0-based).
-    pub fn progress(&self, index: usize) -> String {
-        robroz_contract::host_text::router_step_progress(
-            (index + 1).min(self.steps.len()),
-            self.steps.len(),
-        )
+    pub(crate) fn progress(&self, index: usize) -> crate::progress::Progress {
+        crate::progress::Progress::router_step((index + 1).min(self.steps.len()), self.steps.len())
     }
 
     /// The one delivery: every step's result, in order, separated by a blank line.
@@ -189,10 +186,16 @@ pub(crate) fn end_denied(
     now: &str,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE tasks SET state = 'done', container_up = 0, updated_at = ?1, failure = ?2, progress = NULL,
-                          intent_kind = NULL, intent_line = NULL, intent_hash = NULL
+        "UPDATE tasks SET state = 'done', container_up = 0, updated_at = ?1, failure = ?2, failure_data = ?5,
+                          progress = NULL, intent_kind = NULL, intent_line = NULL, intent_hash = NULL
          WHERE id = ?3 AND state = 'blocked' AND intent_hash = ?4",
-        params![now, robroz_contract::legacy::NO_RESULT, task_id, hash],
+        params![
+            now,
+            robroz_contract::legacy::NO_RESULT,
+            task_id,
+            hash,
+            crate::failure::Failure::no_result().json()
+        ],
     )?;
     Ok(())
 }

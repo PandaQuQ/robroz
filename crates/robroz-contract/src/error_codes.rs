@@ -51,6 +51,7 @@ pub const ERROR_CODES: &[(&str, &str)] = &[
     (host_text::BAD_SEARCH_PROVIDER, "bad_search_provider"),
     (host_text::TOKEN_REJECTED, "token_rejected"),
     (host_text::NAME_TOO_LONG, "name_too_long"),
+    (host_text::INVALID_AVATAR, "invalid_avatar"),
     (host_text::NAME_MAX_80, "name_max_80"),
     (host_text::NAME_ONE_LINE, "name_one_line"),
     (host_text::NAME_TAKEN, "name_taken"),

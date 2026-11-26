@@ -363,8 +363,80 @@ fn pending_path(control_dir: &Path) -> std::path::PathBuf {
     control_dir.join(PENDING_FILE)
 }
 
+/// Why the paused MCP loop could not be saved or loaded. `Display` is the
+/// legacy Chinese text; `reason` and `error` are the language-neutral parts
+/// stored in the task's typed failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingError {
+    text: String,
+    pub reason: &'static str,
+    pub error: Option<String>,
+}
+
+impl PendingError {
+    fn token(text: &str) -> &'static str {
+        robroz_contract::codes::PENDING_REASONS
+            .iter()
+            .find(|(t, _)| *t == text)
+            .map(|(_, token)| *token)
+            .unwrap_or("pending_error")
+    }
+
+    /// A fixed text such as [`robroz_contract::host_text::PENDING_NOT_APPROVED`].
+    fn fixed(text: &'static str) -> Self {
+        Self {
+            text: text.to_string(),
+            reason: Self::token(text),
+            error: None,
+        }
+    }
+
+    /// A `*_PREFIX` text followed by a raw error (an OS or serde error).
+    fn prefixed(prefix: &'static str, error: impl std::fmt::Display) -> Self {
+        let error = error.to_string();
+        Self {
+            text: format!("{prefix}{error}"),
+            reason: Self::token(prefix),
+            error: Some(error),
+        }
+    }
+
+    /// Encoding the state failed before anything was written.
+    fn encode(error: impl std::fmt::Display) -> Self {
+        let error = error.to_string();
+        Self {
+            text: error.clone(),
+            reason: "pending_encode_failed",
+            error: Some(error),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PendingError {
+    /// A write failure with raw OS error `error`, for tests.
+    pub(crate) fn for_test(error: &str) -> Self {
+        Self::prefixed(
+            robroz_contract::host_text::PENDING_WRITE_FAILED_PREFIX,
+            error,
+        )
+    }
+}
+
+impl From<&'static str> for PendingError {
+    fn from(text: &'static str) -> Self {
+        Self::fixed(text)
+    }
+}
+
+impl std::fmt::Display for PendingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// Write the paused loop to `{control}/{task}/mcp-pending.json`.
-pub fn save_pending(control_dir: &Path, pending: &PendingApproval) -> Result<(), String> {
+pub fn save_pending(control_dir: &Path, pending: &PendingApproval) -> Result<(), PendingError> {
     let value = json!({
         "decision": Value::Null,
         "display_name": pending.display_name,
@@ -383,14 +455,9 @@ pub fn save_pending(control_dir: &Path, pending: &PendingApproval) -> Result<(),
     let path = pending_path(control_dir);
     std::fs::write(
         &path,
-        serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
+        serde_json::to_vec_pretty(&value).map_err(PendingError::encode)?,
     )
-    .map_err(|e| {
-        format!(
-            "{}{e}",
-            robroz_contract::host_text::PENDING_WRITE_FAILED_PREFIX
-        )
-    })
+    .map_err(|e| PendingError::prefixed(robroz_contract::host_text::PENDING_WRITE_FAILED_PREFIX, e))
 }
 
 pub fn mark_approved(control_dir: &Path) -> Result<(), String> {
@@ -421,16 +488,14 @@ pub fn pending_is_approved(control_dir: &Path) -> bool {
     value.get("decision").and_then(Value::as_str) == Some("approved")
 }
 
-pub fn load_approved(control_dir: &Path) -> Result<PendingApproval, String> {
+pub fn load_approved(control_dir: &Path) -> Result<PendingApproval, PendingError> {
     let path = pending_path(control_dir);
     let raw = std::fs::read_to_string(&path).map_err(|e| {
-        format!(
-            "{}{e}",
-            robroz_contract::host_text::PENDING_NOT_FOUND_PREFIX
-        )
+        PendingError::prefixed(robroz_contract::host_text::PENDING_NOT_FOUND_PREFIX, e)
     })?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("{}{e}", robroz_contract::host_text::PENDING_CORRUPT_PREFIX))?;
+    let value: Value = serde_json::from_str(&raw).map_err(|e| {
+        PendingError::prefixed(robroz_contract::host_text::PENDING_CORRUPT_PREFIX, e)
+    })?;
     if value.get("decision").and_then(Value::as_str) != Some("approved") {
         return Err(robroz_contract::host_text::PENDING_NOT_APPROVED.into());
     }
@@ -444,7 +509,7 @@ pub fn remove_pending(control_dir: &Path) -> std::io::Result<()> {
     }
 }
 
-fn parse_pending(value: &Value) -> Result<PendingApproval, String> {
+fn parse_pending(value: &Value) -> Result<PendingApproval, PendingError> {
     let mcp = value.get("mcp").and_then(|v| {
         if v.is_null() {
             None
@@ -497,7 +562,7 @@ fn call_to_json(call: &ToolCall) -> Value {
     })
 }
 
-fn call_from_json(value: &Value) -> Result<ToolCall, String> {
+fn call_from_json(value: &Value) -> Result<ToolCall, PendingError> {
     Ok(ToolCall {
         id: value
             .get("id")
@@ -539,7 +604,7 @@ fn message_to_json(message: &ChatMessage) -> Value {
     }
 }
 
-fn message_from_json(value: &Value) -> Result<ChatMessage, String> {
+fn message_from_json(value: &Value) -> Result<ChatMessage, PendingError> {
     let role = value
         .get("role")
         .and_then(Value::as_str)
@@ -590,9 +655,9 @@ fn message_from_json(value: &Value) -> Result<ChatMessage, String> {
                 .unwrap_or_default()
                 .to_string(),
         }),
-        other => Err(format!(
-            "{}{other}",
-            robroz_contract::host_text::PENDING_UNKNOWN_ROLE_PREFIX
+        other => Err(PendingError::prefixed(
+            robroz_contract::host_text::PENDING_UNKNOWN_ROLE_PREFIX,
+            other,
         )),
     }
 }
@@ -602,16 +667,16 @@ pub fn finish_denied(
     conn: &Connection,
     task_id: &str,
     hash: &str,
-    failure: &str,
+    failure: &crate::failure::Failure,
     now: &str,
 ) -> rusqlite::Result<()> {
     use rusqlite::params;
     // Caller holds the approval-answer transaction.
     let changed = conn.execute(
-        "UPDATE tasks SET state = 'done', container_up = 0, updated_at = ?1, failure = ?2, progress = NULL,
-                          intent_kind = NULL, intent_line = NULL, intent_hash = NULL
+        "UPDATE tasks SET state = 'done', container_up = 0, updated_at = ?1, failure = ?2, failure_data = ?5,
+                          progress = NULL, intent_kind = NULL, intent_line = NULL, intent_hash = NULL
          WHERE id = ?3 AND state = 'blocked' AND intent_hash = ?4",
-        params![now, failure, task_id, hash],
+        params![now, failure.text, task_id, hash, failure.json()],
     )?;
     if changed > 0 {
         let (group_id, briefing): (String, i64) = conn.query_row(
@@ -620,8 +685,9 @@ pub fn finish_denied(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         conn.execute(
-            "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure)
-             VALUES (?1, ?2, ?3, ?8, ?4, ?5, ?6, ?7)",
+            "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure,
+                                     failure_data)
+             VALUES (?1, ?2, ?3, ?8, ?4, ?5, ?6, ?7, ?9)",
             params![
                 crate::new_id(),
                 group_id,
@@ -629,8 +695,9 @@ pub fn finish_denied(
                 crate::sandbox::result_rel(task_id),
                 briefing,
                 now,
-                failure,
-                robroz_contract::host_text::DELIVERY_NOT_RUN
+                failure.text,
+                robroz_contract::host_text::DELIVERY_NOT_RUN,
+                failure.json()
             ],
         )?;
     }
@@ -771,7 +838,7 @@ mod tests {
 
     impl robroz_model::Model for ScriptedModel {
         fn reply(&self, _: &str, _: Option<&str>) -> Result<String, robroz_model::ModelError> {
-            Err(robroz_model::ModelError("scripted model uses chat".into()))
+            Err(robroz_model::ModelError::new("scripted model uses chat"))
         }
 
         fn chat(
@@ -787,7 +854,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| robroz_model::ModelError("没有更多回合".into()))
+                .ok_or_else(|| robroz_model::ModelError::new("没有更多回合"))
         }
     }
 

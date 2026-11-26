@@ -1,11 +1,17 @@
 # Licensing and commercial use
 
-robroz is dual-licensed.
+The robroz host is dual-licensed. The clients are open source only.
 
 1. **Open source: GNU AGPL-3.0-only.** The code in this repository is licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (SPDX: `AGPL-3.0-only`). Anyone may use, study, modify and share it, including for commercial purposes, as long as they follow the AGPL.
-2. **Commercial licence.** If you cannot or do not want to meet the AGPL's obligations, for example because you want to ship a modified robroz without publishing your source code, you can buy a separate commercial licence from the copyright holder, PandaQuQ.
+2. **Commercial licence.** If you cannot or do not want to meet the AGPL's obligations, for example because you want to ship a modified robroz without publishing your source code, you can buy a separate commercial licence for the host from the copyright holder, PandaQuQ.
 
 The copyright holder can offer both because every contributor signs the [Contributor License Agreement](CLA.md).
+
+## What the commercial licence covers
+
+The commercial licence covers this repository, [PandaQuQ/robroz](https://github.com/PandaQuQ/robroz): the host, the runner, the deployment files and the shared crates, including `robroz-contract`.
+
+The clients in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) (desktop and mobile) are not covered and are available only under the AGPL-3.0. The copyright holder does not sell a commercial licence for them.
 
 ## What the AGPL asks of you
 
@@ -23,9 +29,9 @@ If you use robroz unmodified, or you are happy to publish all your changes under
 
 You need a commercial licence from the copyright holder if, for example, you want to:
 
-- ship robroz, or a product that includes or is based on it, as closed-source or proprietary software;
-- run a modified robroz as a service for others without publishing your modifications;
-- combine robroz with code whose licence is incompatible with the AGPL-3.0;
+- ship the robroz host, or a product that includes or is based on it, as closed-source or proprietary software;
+- run a modified host as a service for others without publishing your modifications;
+- combine the host with code whose licence is incompatible with the AGPL-3.0;
 - get terms the AGPL does not offer (warranty, indemnity, support).
 
 ## Contact
@@ -36,10 +42,14 @@ For commercial licensing, contact the author through GitHub: <https://github.com
 
 ## 中文摘要
 
-robroz 采用双许可：
+robroz 的宿主机采用双许可，客户端只有开源许可：
 
 1. **开源许可：AGPL-3.0-only。** 任何人都可以使用、学习、修改和分享，包括商用，前提是遵守 AGPL：保留版权和许可证声明；分发软件（包括改过的版本）时要同时提供完整源码；基于 robroz 的作品整体也必须用 AGPL-3.0；**第 13 条：把改过的 robroz 通过网络给别人用（比如做成在线服务），也必须向这些用户免费提供改过的完整源码**，不分发安装包也不能免除。
-2. **商业授权。** 想闭源使用、私下修改后对外提供服务、或者和 AGPL 不兼容的代码合在一起，需要向著作权人 PandaQuQ单独购买商业授权。
+2. **商业授权。** 想闭源使用、私下修改后对外提供服务、或者和 AGPL 不兼容的代码合在一起，需要向著作权人 PandaQuQ 单独购买宿主机的商业授权。
+
+商业授权覆盖本仓库 [PandaQuQ/robroz](https://github.com/PandaQuQ/robroz)：宿主机、runner、部署文件和共享 crate（包括 `robroz-contract`）。
+
+[PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) 里的客户端（桌面和手机）不在商业授权范围内，只用 AGPL-3.0。著作权人不单独出售客户端的商业授权。
 
 原样使用，或者愿意把全部改动按 AGPL-3.0 公开的，即使是商用也不需要商业授权。所有贡献者都签了[贡献者许可协议](CLA.md)，所以著作权人可以同时提供这两种许可。
 

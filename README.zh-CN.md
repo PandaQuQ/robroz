@@ -126,6 +126,20 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 最新的发布是预发布版本，见 [Releases](https://github.com/PandaQuQ/robroz/releases) 和 [CHANGELOG.md](CHANGELOG.md)。`main` 是 v0.2 的开发分支，不是正式发版。
 
+**v0.2 范围**（2026-11-26 拍板）。带 PR 链接的项，PR 合进去之前都不在 `main` 里。
+
+- 失败原因和进度改成编码，由客户端翻译成文字（[#186](https://github.com/PandaQuQ/robroz/pull/186)、[#189](https://github.com/PandaQuQ/robroz/pull/189)）。
+- bro 头像：主人自己选形状和颜色（[#194](https://github.com/PandaQuQ/robroz/pull/194)）。
+- 群成员列表、改群名、删群、群内搜索（[#195](https://github.com/PandaQuQ/robroz/pull/195)）。
+- 事件流逐步推送进度，断线后能重放；长会话复用同一个容器，不再每条消息新开一个。
+- 消息里没 @ 任何 bro 时，只让一个 bro 回，不再每个 bro 都回一遍。
+- 一条命令装好：安装脚本拉 host 镜像，加一个 Compose 文件；客户端从它的 release 下载。
+- 客户端改版，在 [robroz-client](https://github.com/PandaQuQ/robroz-client) 里做。
+
+已经合进 `main` 的 v0.2 项：stdio MCP 进程池，每台服务器每个群一个进程（[#188](https://github.com/PandaQuQ/robroz/pull/188)、[#190](https://github.com/PandaQuQ/robroz/pull/190)）。
+
+**挪到 v0.3：** 分层记忆（常驻一份短笔记，其余按相关度召回）；派活树，子任务都交回后上游任务才算完成；会话级审批档位，以及回合中途提问、答完接着跑。
+
 ## 开发
 
 开 pull request 前跑一遍和 CI 相同的命令：

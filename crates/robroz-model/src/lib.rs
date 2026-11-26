@@ -42,28 +42,90 @@ pub trait Model: Send + Sync {
         tools: &[ToolDefinition],
     ) -> Result<AssistantTurn, ModelError> {
         let _ = (messages, tools);
-        Err(ModelError("此模型不支持工具调用".into()))
+        Err(ModelError::with_reason(
+            "此模型不支持工具调用",
+            "tools_unsupported",
+        ))
     }
 }
 
 /// Why a call failed. Never carries the key or the request headers.
+///
+/// `message` is the host's log text (and the legacy failure text). The rest
+/// is language-neutral and is what a client may show: the HTTP status code,
+/// a stable snake_case `reason` token, and the raw upstream `error` text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelError(pub String);
+pub struct ModelError {
+    message: String,
+    status: Option<u16>,
+    reason: Option<&'static str>,
+    error: Option<String>,
+}
 
 impl ModelError {
-    fn from_http_status(status: u16) -> Self {
-        Self(format!("模型服务返回 {status}"))
+    /// An error with only a message (fakes and tests).
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: None,
+            reason: None,
+            error: None,
+        }
+    }
+
+    /// A host-side reason with no raw error, e.g. `response_not_json`.
+    pub fn with_reason(message: impl Into<String>, reason: &'static str) -> Self {
+        Self {
+            reason: Some(reason),
+            ..Self::new(message)
+        }
+    }
+
+    /// A reason plus the raw error text from the transport or provider.
+    pub fn with_error(
+        message: impl Into<String>,
+        reason: &'static str,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            reason: Some(reason),
+            error: Some(error.into()),
+            ..Self::new(message)
+        }
+    }
+
+    /// The provider answered with a non-success HTTP status.
+    pub fn from_http_status(status: u16) -> Self {
+        Self {
+            status: Some(status),
+            ..Self::new(format!("模型服务返回 {status}"))
+        }
+    }
+
+    /// The host's log text, unchanged from before typed errors.
+    pub fn message(&self) -> &str {
+        &self.message
     }
 
     /// Status code when the provider answered with a non-success HTTP status.
     pub fn http_status(&self) -> Option<u16> {
-        self.0.strip_prefix("模型服务返回 ")?.parse().ok()
+        self.status
+    }
+
+    /// Stable snake_case reason token, when the host knows one.
+    pub fn reason(&self) -> Option<&'static str> {
+        self.reason
+    }
+
+    /// Raw error text from the transport or provider, when there is one.
+    pub fn raw_error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 }
 
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
@@ -214,7 +276,10 @@ pub fn request_body(model: &str, prompt: &str, memory_section: Option<&str>) -> 
 pub fn parse_reply(body: &str) -> Result<String, ModelError> {
     match parse_turn(body)? {
         AssistantTurn::Text(text) => Ok(text),
-        AssistantTurn::ToolCalls(_) => Err(ModelError("模型在没有工具时返回了工具调用".into())),
+        AssistantTurn::ToolCalls(_) => Err(ModelError::with_reason(
+            "模型在没有工具时返回了工具调用",
+            "unexpected_tool_calls",
+        )),
     }
 }
 
@@ -266,14 +331,26 @@ impl OpenAiCompat {
         let mut response = request
             .send(body.to_string().as_bytes())
             // ureq transport errors carry no headers, so no key.
-            .map_err(|err| ModelError(format!("连不上模型服务：{err}")))?;
+            .map_err(|err| {
+                ModelError::with_error(
+                    format!("连不上模型服务：{err}"),
+                    "connect_failed",
+                    err.to_string(),
+                )
+            })?;
         let status = response.status().as_u16();
         let text = response
             .body_mut()
             .with_config()
             .limit(4 * 1024 * 1024)
             .read_to_string()
-            .map_err(|err| ModelError(format!("读模型返回失败：{err}")))?;
+            .map_err(|err| {
+                ModelError::with_error(
+                    format!("读模型返回失败：{err}"),
+                    "read_failed",
+                    err.to_string(),
+                )
+            })?;
         if !(200..300).contains(&status) {
             return Err(ModelError::from_http_status(status));
         }
@@ -536,11 +613,11 @@ mod tests {
     fn http_errors_do_not_leak_the_key() {
         let (url, _rx) = fake_server(401, r#"{"error":"bad key sk-test-SECRET123"}"#);
         let err = model_at(&url).reply("hi", None).unwrap_err();
-        assert_eq!(err.0, "模型服务返回 401");
+        assert_eq!(err.message(), "模型服务返回 401");
         let dead = model_at("http://127.0.0.1:9")
             .reply("hi", None)
             .unwrap_err();
-        assert!(!dead.0.contains(SECRET), "{dead}");
+        assert!(!dead.message().contains(SECRET), "{dead}");
     }
 
     #[test]
@@ -590,6 +667,6 @@ mod tests {
             }
         }
         let err = OnlyReply.chat(&[], &[]).unwrap_err();
-        assert_eq!(err.0, "此模型不支持工具调用");
+        assert_eq!(err.message(), "此模型不支持工具调用");
     }
 }

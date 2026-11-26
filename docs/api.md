@@ -54,7 +54,7 @@ Every 4xx and 5xx JSON error body has a stable `code` next to `error`. **`error`
   | 400 | `invalid_body` | The body could not be read. |
   | 400 | `invalid_path` | A path segment does not parse (for example not UTF-8 after percent-decoding). |
   | 400 | `invalid_query` | The query string does not parse. |
-- **Not in this table:** `ok:false` test results (`POST …/test`, `{"ok":false,"error":"…"}`) are 200 responses, not errors, and are unchanged. Card `progress`, approval `reason` and Watchdog hints are still host text; a code form for them is not part of v0.2 yet.
+- **Not in this table:** `ok:false` test results (`POST …/test`, `{"ok":false,"error":"…"}`) are 200 responses, not errors, and are unchanged. Card `progress`, approval `reason` and Watchdog hints have a code form on the card itself (`progressCode` / `progressParams`, `reasonCode`); see [progress](#progress) and [Auto-review and expiry](#auto-review-and-expiry).
 
 The fixed host texts and their codes (`robroz_contract::error_codes`). A code is the lower-case name of the `robroz_contract::host_text` constant:
 
@@ -96,6 +96,7 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | `bad_search_provider` | 「provider 只能是 brave 或 searxng」 | `BAD_SEARCH_PROVIDER` |
 | `token_rejected` | 「缺少或错误的令牌」 | `TOKEN_REJECTED` |
 | `name_too_long` | 「名字太长」 | `NAME_TOO_LONG` |
+| `invalid_avatar` | 「头像的形状或颜色超出范围」 | `INVALID_AVATAR` |
 | `name_max_80` | 「名称最多 80 个字」 | `NAME_MAX_80` |
 | `name_one_line` | 「名称只能一行」 | `NAME_ONE_LINE` |
 | `name_taken` | 「这个名字已经有了」 | `NAME_TAKEN` |
@@ -155,7 +156,7 @@ The fixed host texts and their codes (`robroz_contract::error_codes`). A code is
 | GET | `/api/groups/{id}/search` | Search a group's messages | `host/src/groups.rs:search_group` |
 | POST | `/api/bros` | Create a bro and its DM | `host/src/bros.rs:create_bro` |
 | GET | `/api/bros` | List bros | `host/src/bros.rs:list_bros` |
-| PATCH | `/api/bros/{id}` | Rename | `host/src/bros.rs:rename_bro` |
+| PATCH | `/api/bros/{id}` | Rename, set or clear avatar | `host/src/bros.rs:rename_bro` |
 | POST | `/api/bros/{id}/dm` | Get or create the DM | `host/src/bros.rs:open_dm` |
 | POST | `/api/groups/{id}/messages` | Store a message | `host/src/lib.rs:post_message` |
 | POST | `/api/groups/{id}/say` | Send a line, dispatch a task if needed | `host/src/say.rs:say` |
@@ -345,11 +346,13 @@ Create a bro and its DM at the same time. `host/src/bros.rs:create_bro`
 | Request field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `name` | string | no | Trimmed, non-empty, at most 64 characters. If omitted, the default is `bro`, then the first free name from `bro 2` upwards (`robroz_contract::next_bro_name`). Names may be repeated. |
+| `avatar` | `{"shape","color"}` or `null` | no | Optional avatar, see [Bro avatar](#bro-avatar). |
 
 The body may be `{}`, or omitted entirely (and then `Content-Type` is omitted too). If `Content-Type: application/json` is sent with an empty body, the host returns 400 `invalid_json`.
 
-- 201 `Bro` `{"id","name","dmGroupId","ownerUserId"}`. `id` is a UUID; `ownerUserId` is the caller.
+- 201 `Bro` `{"id","name","dmGroupId","ownerUserId","avatar"}`. `id` is a UUID; `ownerUserId` is the caller. `avatar` is omitted when unset.
 - 400 「请填写名称」 / 「名字太长」 (Name too long).
+- 400 `invalid_avatar`: `shape` or `color` is out of range. A value that is not a small non-negative integer (for example `300` or `-1`) is 422 `invalid_field` from the extractor.
 
 ```sh
 curl -s -X POST $B/api/bros -H 'content-type: application/json' -d '{"name":"bob"}'
@@ -364,20 +367,26 @@ List the caller's bots (including ones added only through `/members`), in creati
 
 ### PATCH /api/bros/{id}
 
-Rename; the DM's group name is renamed with it. `host/src/bros.rs:rename_bro`
+Rename the bro and/or set its avatar (`robroz_contract::PatchBro`). A field that is absent is left as it is; `{}` changes nothing and returns the bro. On rename the DM's group name is renamed with it. `host/src/bros.rs:rename_bro`
 
 | Request field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | yes | Same rules as `POST /api/bros`. |
+| `name` | string | no | Same rules as `POST /api/bros`. The older `{"name"}`-only body (`RenameBro`) still works. |
+| `avatar` | `{"shape","color"}` or `null` | no | Absent: unchanged. `null`: cleared, so the client falls back to its id-based default. An object: set. |
 
 - 200 `Bro`.
 - 400 「请填写名称」 / 「名字太长」.
+- 400 `invalid_avatar` (422 `invalid_field` for a value that is not a small non-negative integer). Nothing is changed.
 - 404 「bro 不存在」.
 - 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): the caller is not the owner (admins included).
 
 ```sh
 curl -s -X PATCH $B/api/bros/<botId> -H 'content-type: application/json' -d '{"name":"Bob"}'
 ```
+
+### Bro avatar
+
+`Bro.avatar` (`robroz_contract::BroAvatar`) is optional: `{"shape": 0–11, "color": 0–9}` (`AVATAR_SHAPES` = 12, `AVATAR_COLORS` = 10). Both are **indices** into the client's own shape set and color palette, not drawings or hex values, so each client draws its own shapes. When `avatar` is absent the client derives a default from the bro's `id` (for example a hash of `id` modulo 12 and 10); the host never fills one in. Only the bro's owner can set it (`PATCH` is owner-only, admins included). It is returned wherever a `Bro` is returned (`POST /api/bros`, `GET /api/bros`, `PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`); events do not carry `Bro` objects, so a client refetches `GET /api/bros` after changing it. Stored as `bots.avatar_shape` / `bots.avatar_color` (both `NULL` when unset).
 
 ### POST /api/bros/{id}/dm
 
@@ -570,10 +579,10 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `type` | Always present | Optional | When it appears |
 | --- | --- | --- | --- |
 | `message` | `id` `kind` `body` `createdAt` | `authorUserId` `authorName` | A message stored by `/say` or `/messages`. v0.2: `authorUserId` / `authorName` are the person who sent it (`messages.author_user_id`; v0.1 rows are backfilled to the bootstrap admin). Only people write `message` events (a bro's output is a `delivery`), so both are present on every message from a v0.2 host; they are omitted, not `null`, when unknown, and older clients ignore them. A client should draw a message as its own when `authorUserId` equals `GET /api/me`'s `id`. |
-| `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` `statusCode` `failureCode` `failureDetail` | Exactly one per task; `id` equals `taskId`. v0.2: `statusCode` is always present from a v0.2 host (the code form of `label`); `failureCode` is present exactly when `failure` is, and `failureDetail` is the raw reason without a prefix (see [failure](#failure)). |
+| `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` `statusCode` `failureCode` `failureDetail` `progressCode` `progressParams` | Exactly one per task; `id` equals `taskId`. v0.2: `statusCode` is always present from a v0.2 host (the code form of `label`); `failureCode` is present exactly when `failure` is, and `failureDetail` is the raw reason without a prefix (see [failure](#failure)). `progressCode` / `progressParams` are the code form of `progress` (see [progress](#progress)). |
 | `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` `taskId` `botId` `botName` `badge` `failureCode` `failureDetail` | One when a task writes a result. `summary` is usually 「已写入结果」; when an MCP tool approval is denied it is 「未执行」 (Didn't run). `path` is the relative path in the group folder, `tasks/{taskId}/result.txt`. `briefing` true means the result of a routine. `taskId`, `botId` and `botName` identify the task and bro that produced it. The host fills them when the task or bro is known, including failed deliveries. All three are omitted when unknown, so older JSON is unchanged. v0.2: `badge` is `"briefing"` exactly when `briefing` is true, and omitted otherwise (the code form of the 「简报」 corner badge). `failureCode` / `failureDetail` are the code form of `failure`, as on `status`. |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | A choice card. `options` is `[{"id","label","primary"}]`. `choice` is `null` until answered, then an array of selected `id`s. |
-| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` `ownerUserId` `ownerName` | An approval card. `action` is `delete` / `send` / `spend` / `call` / `rule_add` / `rule_delete` (the last two are Allow-rule confirm cards, and `summary` is the rule text). An unknown value is parsed as a generic card; the whole event does not fail. `decision` is `approved` / `denied` or `null`. A card the host issues for a task has `taskId`. A write-tool MCP card has `mcpServer` and `mcpTool`; without those keys it is some other approval card. `reason` is why it was blocked or already settled; on expiry it is the contract constant `APPROVAL_EXPIRED_REASON` (「审批已过期」, Approval expired). `expiresAt` is the expiry time (RFC 3339, same format as `createdAt`). Both are optional and omitted when absent, so older JSON is unchanged. The host fills `expiresAt` on task approval cards, MCP tool approval cards, bro-issued approval cards and Allow-rule confirm cards. A card blocked by auto-review has `reason` (one sentence from the review model). Confirm cards (`confirm`) and a takeover do not expire. `ownerUserId` / `ownerName` (v0.2) are the bro's owner, the only user who may answer the card; omitted on Allow-rule confirm cards (an admin answers those). |
+| `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` `ownerUserId` `ownerName` `reasonCode` | An approval card. `action` is `delete` / `send` / `spend` / `call` / `rule_add` / `rule_delete` (the last two are Allow-rule confirm cards, and `summary` is the rule text). An unknown value is parsed as a generic card; the whole event does not fail. `decision` is `approved` / `denied` or `null`. A card the host issues for a task has `taskId`. A write-tool MCP card has `mcpServer` and `mcpTool`; without those keys it is some other approval card. `reason` is why it was blocked or already settled; on expiry it is the contract constant `APPROVAL_EXPIRED_REASON` (「审批已过期」, Approval expired). `expiresAt` is the expiry time (RFC 3339, same format as `createdAt`). Both are optional and omitted when absent, so older JSON is unchanged. The host fills `expiresAt` on task approval cards, MCP tool approval cards, bro-issued approval cards and Allow-rule confirm cards. A card blocked by auto-review has `reason` (one sentence from the review model). Confirm cards (`confirm`) and a takeover do not expire. `ownerUserId` / `ownerName` (v0.2) are the bro's owner, the only user who may answer the card; omitted on Allow-rule confirm cards (an admin answers those). `reasonCode` is the code form of `reason`, see [Auto-review and expiry](#auto-review-and-expiry). |
 | `approval_reminder` | `id` `approvalId` `groupId` `groupName` `botId` `botName` `ownerUserId` `ownerName` `state` `createdAt` | `answeredAt` | v0.2. Only in the owner's DM with that bro, for an approval card that sits in another group. `id` is `reminder:{approvalId}`. It has no buttons: the client opens `groupId` to answer. `state` is `waiting` / `approved` / `denied` / `expired`; it is pushed again with the same `id` when the card is answered or expires (`answeredAt` set). Counts as unread in the DM. Older clients skip it as an unknown `type`. |
 | `confirm` | `id` `botId` `botName` `subject` `taskId` `decision` `createdAt` `answeredAt` `answeredBy` | memory: `memoryId` `kind` `text` `scope`; skill: `slug` `title` `instruction` `scope` | A confirm card; `subject` is `memory` or `skill`. The body is how that memory or skill looks **now**. |
 
@@ -598,27 +607,29 @@ A status card may carry this only when `done`; when there is also a delivery car
 v0.2 adds two optional fields next to it, on both the status and the delivery card (`robroz_contract::FailureCode`, `robroz_contract::split_failure`):
 
 - `failureCode`: a stable snake_case code, present exactly when `failure` is.
-- `failureDetail`: the raw reason **without any prefix**, omitted when the code needs none. The client adds exactly one prefix of its own (Couldn't finish: {detail}), so a card reads 「没做成：模型服务返回 500」 and never 「没做成：模型没回：模型服务返回 500」. A client must not show `failure` next to the code. `no_result` is shown without a prefix.
+- `failureDetail`: language-neutral raw data **without any prefix**, omitted when the code needs none: an HTTP status code, a tool name, a method, `used/limit`, raw upstream or OS error text, or a stable snake_case reason token. It never carries host-written Chinese such as 「模型服务返回 500」; that card's detail is `500`. The client adds exactly one prefix of its own (Couldn't finish: {detail}) where its rules call for one. A client must not show `failure` next to the code. `no_result` is shown without a prefix.
 
-The host derives both from the stored `failure` text when it builds the event, so rows written by an older host get codes too. Text the host does not recognise (a runner error) is `other`, with the whole text as `failureDetail`.
+Since #181 the host stores the failure typed (`robroz_contract::FailureData`: the code plus `FailureParams`) in a `failure_data` column on `tasks` and `deliveries`, next to the unchanged `failure` text, and builds both fields from it. Rows written before the column existed are read from their text once, by a backfill at startup (`FailureData::from_legacy`); rows that already have typed data are never re-read. Text the host does not recognise (a runner error) is `other`, with the whole text as `failureDetail`.
 
 | `failureCode` | `failure` starts with | `failureDetail` |
 | --- | --- | --- |
 | `no_result` | 「没写出结果」 | omitted |
-| `denied` | 「你拒绝了：」 | the denied task line, or `{server}.{tool}`, or 「MCP 工具」 when the card has none |
+| `denied` | 「你拒绝了：」 | `{server}.{tool}` for an MCP call, else the person's own task line; omitted when the card names neither |
 | `approval_expired` | 「审批已过期」 | omitted |
-| `model_no_reply` | 「模型没回：」 | the model error |
+| `model_no_reply` | 「模型没回：」 | the HTTP status code (`401`), else the raw transport error (`timed out`), else a reason token (see below) |
 | `tool_round_limit` | 「工具调用超过 8 轮」 | omitted |
 | `outbound_over_quota` | 「出网超额」 | `"{used}/{limit}"`, for example `"3/2"`; omitted when the host gave no numbers |
 | `outbound_not_get` | 「出网只允许 GET：」 | the HTTP method that was used, for example `POST` |
-| `save_approval_state_failed` | 「无法保存审批状态：」 | the error text |
-| `resume_approved_call_failed` | 「无法继续已批准的调用：」 | the error text (it may carry a nested host sentence) |
-| `waiting_approval` | 「等待批准：」 | the tool's display name |
-| `tool_call_failed` | 「调用失败：」 | the tool error |
+| `save_approval_state_failed` | 「无法保存审批状态：」 | the raw OS or encoding error, else a `pending_*` reason token |
+| `resume_approved_call_failed` | 「无法继续已批准的调用：」 | the raw OS or JSON error, else a `pending_*` reason token |
+| `waiting_approval` | 「等待批准：」 | the tool name |
+| `tool_call_failed` | 「调用失败：」 | the tool error (old rows only; the host does not end a task with it) |
 | `tool_needs_approval` | exactly 「调用失败：这个工具还需要批准」 | omitted |
 | `other` | anything else | the whole `failure` text |
 
-`failureDetail` is raw host or upstream text (an error, a name, a method) and is not translated by the host. The detail of `denied` and `model_no_reply` can be Chinese.
+Reason tokens for `model_no_reply`: `connect_failed`, `read_failed` (both usually come with the raw error instead), `response_not_json`, `response_missing_message`, `response_missing_content`, `response_empty_content`, `tool_calls_not_array`, `tool_call_missing_name`, `unsupported_tool_call_type`, `tools_unsupported`, `unexpected_tool_calls`. For the approval state: `pending_write_failed`, `pending_not_found`, `pending_corrupt`, `pending_not_approved`, `pending_missing_messages`, `pending_missing_remaining`, `pending_call_missing_id`, `pending_call_missing_name`, `pending_message_missing_role`, `pending_unknown_role`, `pending_encode_failed`.
+
+The only detail that can be in a human language is the person's own text (a denied task line) or `other`, which is whatever the runner wrote.
 
 | Case | `failure` | Delivery card? | Code |
 | --- | --- | --- | --- |
@@ -648,6 +659,21 @@ Present only while `running` with `containerUp` true, or while the task is `bloc
 - When a bro's internal Router splits a task into 2–3 steps (`running` with the container up), this line is exactly `router_step_progress(n, m)`, that is 「{n}/{m} 步」, and is not combined with other text, including 「在想怎么回」 or 「在用 <工具名>」. A `robroz-progress:` line from the bro does not cover it. Clients can read n and m with `parse_router_step_progress`; the client shows "Step n of m". While `blocked` on an MCP approval the usual approval progress shows instead, not 「n/m 步」. A task that is not split (the plan failed, there is only one step, there is no model, or `ROBROZ_MODEL=echo`) never shows n/m. A Watchdog hint may still temporarily replace this line.
 - The Watchdog may also write 「模型和工具还没回，已等 N 分钟」 (No reply from the model or tools for N min, at half of `ROBROZ_STEP_TIMEOUT_SECS`) or 「N 分钟没有新进度」 (No new progress for N min). These are hints only and do not change the state. A step that reaches `ROBROZ_STEP_TIMEOUT_SECS` is cancelled and the task ends as `done` + 「没写出结果」; see step 7 of [What the pump does](#what-the-pump-does).
 - The text is normalized to one line: consecutive whitespace becomes a single space, ends are trimmed, at most 60 characters (longer text is cut to 59 characters plus 「…」). `updatedAt` is not updated when the text has not changed.
+
+**Codes (#180).** Next to `progress` the host sends `progressCode` (`robroz_contract::ProgressCode`) and, when it has any, `progressParams` (`robroz_contract::ProgressParams`, every key optional and language-neutral). A client renders from these through its own i18n; `progress` stays as it is for logs and old clients. Both are omitted exactly when `progress` is, and also on a progress line stored before the code existed.
+
+| `progressCode` | `progressParams` | `progress` text |
+| --- | --- | --- |
+| `started` | — | 「开始干活」 |
+| `thinking` | — | 「在想怎么回」 |
+| `in_sandbox` | — | 「在沙箱里跑」 |
+| `using_tool` | `tool` (the tool name, `{server}.{tool}` for MCP) | 「在用 {tool}」 |
+| `router_step` | `step`, `steps` (1-based) | 「{step}/{steps} 步」 |
+| `step_timeout` | `minutes` | 「模型和工具还没回，已等 {minutes} 分钟」 |
+| `stalled` | `minutes` | 「{minutes} 分钟没有新进度」 |
+| `custom` | `text` (the bro's own line, normalized as above) | the same text |
+
+`custom` is a line the bro wrote (`robroz-progress:` or the runner's progress file); its `text` is the bro's words, not host copy, so the client shows it as is. A client shows a generic line for a code it does not know.
 
 ### needsSetup
 
@@ -828,6 +854,16 @@ When the model wants to call an MCP tool that is not marked `readOnlyHint: true`
   - A review error or timeout: retry once, then block, with `reason` 「自动审核没有成功，需要你批准」 (Auto-review failed. Needs your approval.).
   - No model: block, with `reason` 「还没设置模型，没法自动审核」. It never defaults to allow.
 - **Expiry:** if the card is still unanswered at `expiresAt` (`ROBROZ_APPROVAL_TTL_SECS` after it was issued, default 24 hours), the host records `decision: denied`, `reason: "审批已过期"` (`APPROVAL_EXPIRED_REASON`, Approval expired), and leaves `answeredBy` empty. A task it was gating becomes `done`, `failure` 「审批已过期」. A later `approve` / `deny` returns 403 `approval_forbidden` with `reason` `expired`. A card past `expiresAt` that the sweep has not reached yet is expired on the spot and gets the same 403. Confirm cards (memory, skill) and a takeover (captcha) do not expire.
+- **`reasonCode` (#180):** every card with a `reason` written by the host also has `reasonCode` (`robroz_contract::ApprovalReasonCode`), so a client renders from the code and leaves `reason` for logs and old clients:
+  - `review_model`: `reason` is the review model's own sentence (show it as is, it is in the language of the rules).
+  - `review_allowed`: allowed, and the model gave no reason (「符合放行规则」).
+  - `review_no_match`: blocked, no rule allows it and the model gave no reason (「没有放行规则允许这个操作」).
+  - `review_no_model`: rules but no model (「还没设置模型，没法自动审核」).
+  - `review_failed`: review failed twice (「自动审核没有成功，需要你批准」).
+  - `review_allow_failed`: allowed, but the host could not write the continue marker, so the card is shown instead (`APPROVE_CONTINUE_MARKER_FAILED` / `APPROVE_TAKEOVER_MARKER_FAILED`).
+  - `expired`: `APPROVAL_EXPIRED_REASON`.
+
+  Omitted when there is no `reason`. Cards stored before the code existed are coded once on upgrade from their exact `reason` text (a reviewed card whose text is not a host constant is `review_model`).
 
 Task approval cards, MCP tool approval cards and bro-issued cards all go through the review above; a blocked card stays where it was raised, see [Where approval cards go](#where-approval-cards-go). A bro-issued card is not reviewed on the review thread; it is reviewed in the `POST /api/groups/{id}/approvals` request itself (the model is called outside the lock). If the request drops mid-review, the review thread takes over after 60 seconds. A card allowed by a rule (including a task card) can be read with `GET /api/approvals/{id}`; `approve` / `deny` return 403 `approval_forbidden` with `reason` `decided`. A card still in review is 404 at both. Unread only counts issued approval cards (and their reminders), not cards in review or auto-approved ones, see [Unread](#unread).
 

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Client-visible text the host writes; see the module docs.
 pub mod host_text;
 
+/// Codes for card progress lines and approval reasons (#180).
+pub mod card_codes;
 /// Stable machine codes for task card states, results and failures.
 pub mod codes;
 /// Stable machine `code` for host error bodies.
@@ -10,7 +12,10 @@ pub mod error_codes;
 /// Deprecated Chinese card copy that used to live in `robroz-card`.
 pub mod legacy;
 
-pub use codes::{split_failure, CardStatusCode, DeliveryBadge, FailureCode};
+pub use card_codes::{ApprovalReasonCode, ProgressCode, ProgressData, ProgressParams};
+pub use codes::{
+    split_failure, CardStatusCode, DeliveryBadge, FailureCode, FailureData, FailureParams,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
@@ -523,6 +528,34 @@ pub struct Bro {
     /// answer its cards. Absent from older hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_user_id: Option<String>,
+    /// The bro's avatar: a shape and a color from the client's own sets.
+    /// Omitted when unset; the client then derives one from `id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<BroAvatar>,
+}
+
+/// Number of avatar shapes: `shape` is `0..AVATAR_SHAPES`.
+pub const AVATAR_SHAPES: u8 = 12;
+/// Number of avatar colors: `color` is `0..AVATAR_COLORS`.
+pub const AVATAR_COLORS: u8 = 10;
+
+/// A bro avatar as two indices into the client's shape set and color
+/// palette. These are indices, not drawings or hex values, so each client
+/// draws its own shapes and picks its own palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BroAvatar {
+    /// `0..AVATAR_SHAPES` (0–11).
+    pub shape: u8,
+    /// `0..AVATAR_COLORS` (0–9).
+    pub color: u8,
+}
+
+impl BroAvatar {
+    /// Both indices are in range.
+    pub fn is_valid(&self) -> bool {
+        self.shape < AVATAR_SHAPES && self.color < AVATAR_COLORS
+    }
 }
 
 /// Host role of a user (v0.2). `admin` manages the host itself; it does not
@@ -629,12 +662,38 @@ pub struct Bros {
 pub struct CreateBro {
     #[serde(default)]
     pub name: Option<String>,
+    /// Optional avatar; out of range is 400 `invalid_avatar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<BroAvatar>,
 }
 
-/// `PATCH /api/bros/{id}` body.
+/// `PATCH /api/bros/{id}` body, name only. Still accepted; see [`PatchBro`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenameBro {
     pub name: String,
+}
+
+/// `PATCH /api/bros/{id}` body. Every field is optional: an absent field is
+/// left as it is. `avatar: null` clears the avatar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchBro {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `None`: unchanged. `Some(None)`: clear. `Some(Some(a))`: set.
+    #[serde(
+        default,
+        deserialize_with = "opt_opt_avatar",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub avatar: Option<Option<BroAvatar>>,
+}
+
+fn opt_opt_avatar<'de, D>(deserializer: D) -> Result<Option<Option<BroAvatar>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<BroAvatar>::deserialize(deserializer)?))
 }
 
 pub const BRO_DEFAULT_NAME: &str = "bro";
@@ -1362,6 +1421,15 @@ pub enum Event {
         /// detail (see [`FailureCode`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_detail: Option<String>,
+        /// #180: the code form of `progress` (see [`ProgressCode`]).
+        /// Present only when `progress` is and the host stored a code for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_code: Option<ProgressCode>,
+        /// #180: the language-neutral parameters of `progressCode`
+        /// (tool, step/steps, minutes, or the bro's own text). Absent when
+        /// the code has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_params: Option<ProgressParams>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -1461,6 +1529,10 @@ pub enum Event {
         /// The owner's display name ("Waiting for {owner}").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_name: Option<String>,
+        /// #180: the code form of `reason` (see [`ApprovalReasonCode`]).
+        /// Absent when there is no `reason` or from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason_code: Option<ApprovalReasonCode>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1614,12 +1686,64 @@ mod tests {
             name: "bro".into(),
             dm_group_id: Some("g".into()),
             owner_user_id: None,
+            avatar: None,
         })
         .unwrap();
         assert_eq!(
             json,
             serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": "g" })
         );
+    }
+
+    #[test]
+    fn bro_avatar_is_optional_and_camel_case() {
+        // Old JSON without `avatar` still parses.
+        let old: Bro = serde_json::from_value(
+            serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": null }),
+        )
+        .unwrap();
+        assert_eq!(old.avatar, None);
+        let with: Bro = serde_json::from_value(serde_json::json!({
+            "id": "b", "name": "bro", "dmGroupId": null, "avatar": { "shape": 11, "color": 9 }
+        }))
+        .unwrap();
+        assert_eq!(
+            with.avatar,
+            Some(BroAvatar {
+                shape: 11,
+                color: 9
+            })
+        );
+        assert!(with.avatar.unwrap().is_valid());
+        assert!(!BroAvatar {
+            shape: 12,
+            color: 0
+        }
+        .is_valid());
+        assert!(!BroAvatar {
+            shape: 0,
+            color: 10
+        }
+        .is_valid());
+        let null: Bro = serde_json::from_value(
+            serde_json::json!({ "id": "b", "name": "bro", "dmGroupId": null, "avatar": null }),
+        )
+        .unwrap();
+        assert_eq!(null.avatar, None);
+    }
+
+    #[test]
+    fn patch_bro_tells_absent_from_null() {
+        let absent: PatchBro = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert_eq!(absent.avatar, None);
+        let clear: PatchBro = serde_json::from_str(r#"{"avatar":null}"#).unwrap();
+        assert_eq!(clear.avatar, Some(None));
+        let set: PatchBro = serde_json::from_str(r#"{"avatar":{"shape":1,"color":2}}"#).unwrap();
+        assert_eq!(set.avatar, Some(Some(BroAvatar { shape: 1, color: 2 })));
+        let old: PatchBro =
+            serde_json::from_value(serde_json::to_value(RenameBro { name: "y".into() }).unwrap())
+                .unwrap();
+        assert_eq!(old.name.as_deref(), Some("y"));
     }
 
     use super::*;
@@ -1835,6 +1959,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1880,6 +2005,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -2074,6 +2200,8 @@ mod tests {
                 status_code: None,
                 failure_code: None,
                 failure_detail: None,
+                progress_code: None,
+                progress_params: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -2108,6 +2236,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&blocked).unwrap();
         assert_eq!(json["waitingFor"], "approval");
@@ -2128,6 +2258,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         assert_eq!(
             serde_json::to_value(&takeover).unwrap()["waitingFor"],
@@ -2169,6 +2301,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&running).unwrap();
         assert_eq!(json["progress"], "在沙箱里跑");
@@ -2276,7 +2410,9 @@ mod tests {
             progress: None,
             status_code: Some(CardStatusCode::Done),
             failure_code: Some(FailureCode::ModelNoReply),
-            failure_detail: Some("模型服务返回 500".into()),
+            failure_detail: Some("500".into()),
+            progress_code: None,
+            progress_params: None,
         };
         assert_round_trip(
             &failed,
@@ -2287,7 +2423,7 @@ mod tests {
                 "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
                 "failure": "模型没回：模型服务返回 500",
                 "statusCode": "done", "failureCode": "model_no_reply",
-                "failureDetail": "模型服务返回 500"
+                "failureDetail": "500"
             }),
         );
         let old = serde_json::json!({

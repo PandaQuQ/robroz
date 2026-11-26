@@ -319,9 +319,14 @@ pub(crate) fn delete_rows(conn: &Connection, id: &str, name: &str) -> rusqlite::
     // Open bro cards expire like any card past `expiresAt`, so the owner's DM
     // reminder shows 「已过期」. Cards shown as reminders are kept for the DM.
     conn.execute(
-        "UPDATE approvals SET decision = 'denied', answered_at = ?2, reason = ?3
+        "UPDATE approvals SET decision = 'denied', answered_at = ?2, reason = ?3, reason_code = ?4
          WHERE group_id = ?1 AND decision IS NULL",
-        params![id, now, APPROVAL_EXPIRED_REASON],
+        params![
+            id,
+            now,
+            APPROVAL_EXPIRED_REASON,
+            robroz_contract::ApprovalReasonCode::Expired.as_str()
+        ],
     )?;
     conn.execute(
         "DELETE FROM approvals WHERE group_id = ?1

@@ -113,6 +113,20 @@ pub struct Finding {
     pub task_id: String,
     pub kind: FindingKind,
     pub hint: String,
+    /// The minutes in [`Self::hint`], for the coded progress (#180).
+    pub minutes: u64,
+}
+
+impl Finding {
+    /// The hint as a coded progress line.
+    pub(crate) fn progress(&self) -> progress::Progress {
+        let line = match self.kind {
+            FindingKind::StepTimeout => progress::Progress::step_timeout(self.minutes),
+            FindingKind::Stalled => progress::Progress::stalled(self.minutes),
+        };
+        debug_assert_eq!(line.text, self.hint);
+        line
+    }
 }
 
 #[derive(Debug)]
@@ -183,6 +197,7 @@ impl Watchdog {
                         task_id: task.id.clone(),
                         kind: FindingKind::StepTimeout,
                         hint,
+                        minutes: minutes(elapsed),
                     });
                 }
                 continue;
@@ -195,6 +210,7 @@ impl Watchdog {
                     task_id: task.id.clone(),
                     kind: FindingKind::Stalled,
                     hint,
+                    minutes: minutes(idle),
                 });
             }
         }
@@ -238,7 +254,7 @@ impl Watchdog {
                     self.cfg.stall_after.as_secs()
                 ),
             }
-            progress::set_progress(conn, &f.task_id, &f.hint)?;
+            progress::set_progress(conn, &f.task_id, &f.progress())?;
         }
         Ok((ended, findings))
     }
@@ -272,9 +288,15 @@ pub(crate) fn end_dead_run(
     updated_at: &str,
 ) -> rusqlite::Result<bool> {
     let changed = conn.execute(
-        "UPDATE tasks SET state = 'done', container_up = 0, failure = ?3, progress = NULL, updated_at = ?2
+        "UPDATE tasks SET state = 'done', container_up = 0, failure = ?3, failure_data = ?4, progress = NULL,
+                          updated_at = ?2
          WHERE id = ?1 AND state = 'running' AND container_up = 0",
-        params![task_id, newer_than(updated_at), DEAD_RUN_FAILURE],
+        params![
+            task_id,
+            newer_than(updated_at),
+            DEAD_RUN_FAILURE,
+            crate::failure::Failure::no_result().json()
+        ],
     )?;
     Ok(changed > 0)
 }
@@ -343,6 +365,7 @@ mod tests {
                 task_id: "t1".into(),
                 kind: FindingKind::StepTimeout,
                 hint: "模型和工具还没回，已等 5 分钟".into(),
+                minutes: 5,
             }]
         );
         // The card now shows the hint; the same step is not flagged again,

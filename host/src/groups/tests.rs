@@ -596,6 +596,19 @@ async fn delete_removes_the_group_and_keeps_the_bros() {
     assert_eq!(reminders.len(), 1, "{events}");
     assert_eq!(reminders[0]["state"], "expired", "{}", reminders[0]);
     assert_eq!(reminders[0]["groupName"], "作战组", "{}", reminders[0]);
+    let code: Option<String> = h
+        .conn()
+        .query_row(
+            "SELECT reason_code FROM approvals WHERE id = ?1",
+            [&card_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        code.as_deref(),
+        Some("expired"),
+        "group delete codes the reason"
+    );
     let (status, body) = h
         .call(
             Some(MEI),
