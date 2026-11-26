@@ -34,6 +34,36 @@ The host's default runner image is still `robroz-runner:local`. For a tagged rel
 ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.1 ./robroz-host
 ```
 
+## One-command install (Docker)
+
+On a Linux machine with Docker Engine and the `docker compose` plugin, one command installs the host from the published images:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh
+```
+
+Read the script first if you like: [`deploy/install.sh`](../deploy/install.sh). To see what it would do without changing anything, add `--dry-run` (`... | sh -s -- --dry-run`).
+
+The script:
+
+1. Checks that `docker`, `docker compose` and the engine socket work. It stops with a message if not.
+2. Creates the install directory, `~/robroz` by default. Change it with `ROBROZ_DIR=/opt/robroz` or `--dir`.
+3. Writes `compose.yml` (the same file as [`deploy/compose.host.yml`](../deploy/compose.host.yml), with the image tags filled in), a `.env` with placeholders and local settings only, and `secrets/robroz_token`, a random token it generates on your machine. It never asks for a credential and writes none. Your model account goes into the client's settings.
+4. Pulls `ghcr.io/pandaquq/robroz-host` and `ghcr.io/pandaquq/robroz-runner` for the version it installs, and runs `docker compose up -d`.
+5. Prints the URL (`http://127.0.0.1:8790`, this machine only) and the next steps. It does not print the token; it tells you which file holds it.
+
+Images are tagged per release and there is no `latest` tag, so the script pins a version (see `DEFAULT_VERSION` at the top of the script). Choose another with `ROBROZ_VERSION=v0.2.1` or `--version v0.2.1`. If that tag has no image yet, the pull fails and the script says so; nothing is changed except the files in the install directory.
+
+Run it again to upgrade: it replaces `compose.yml` (the old copy is kept as `compose.yml.bak`), pulls the images for the version it names and recreates the container. It never overwrites an existing `.env`, `secrets/robroz_token` or anything under `data/`, so your database, group folders and settings stay.
+
+The data lives in `<install dir>/data`, mounted at the same absolute path inside the container, because the host starts runners through the engine; see the same-path rule in [docker-host.md](docker-host.md#same-absolute-path-inside-and-outside-the-container). The port is published on `127.0.0.1` only. To reach the host from another machine, put an HTTPS reverse proxy or tunnel in front, as described in [Connecting to a remote host](#connecting-to-a-remote-host). Mounting `docker.sock` is root-equivalent on that machine; read [docker-host.md](docker-host.md#security-dockersock-is-root-on-this-machine) before you run this on a shared server.
+
+Options: `--dir DIR`, `--version TAG`, `--dry-run`, `--no-start` (write the files, pull and start nothing), `-h`. Docker with a non-default socket (rootless Docker) is not handled by the script; follow docker-host.md by hand.
+
+### Get the client
+
+The host has no UI. Download the client for your computer from [GitHub Releases of PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client/releases): pick the archive for your platform and verify it against `SHA256SUMS.txt` from the same release (commands as in [Download a release](#download-a-release)). Builds are not code-signed. Then enter the host URL and the token from `secrets/robroz_token` in the client; the client's own [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md#download-a-release) has the per-platform steps. Show the token with `cat ~/robroz/secrets/robroz_token` (prefix it with `sudo` if you do not run as uid 1000, because the container reads that file as uid 1000).
+
 ## Prerequisites
 
 | Need | Used for | Notes |

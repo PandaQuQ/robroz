@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- One-command install, `deploy/install.sh`: checks docker and `docker compose`, writes `compose.yml`, a placeholder `.env` and a locally generated token into `~/robroz` (or `ROBROZ_DIR`), pulls the pinned host and runner images and runs `docker compose up -d`. A rerun upgrades and never overwrites `.env`, the token or `data/`. `--dry-run` and `--no-start` write or start nothing. `deploy/compose.host.yml` now reads optional `ROBROZ_DATA`, `ROBROZ_BIND` and `ROBROZ_PORT` (same defaults as before). CI runs shellcheck, a dry run and a no-start rerun on the script. See [docs/install.md](docs/install.md#one-command-install-docker).
+
 - Optional bro avatar: `Bro.avatar` `{"shape": 0–11, "color": 0–9}` (`robroz_contract::BroAvatar`), indices into the client's own shapes and palette. Set on `POST /api/bros`, set or cleared (`null`) on `PATCH /api/bros/{id}` (owner only; an absent field is unchanged). Out of range is 400 `invalid_avatar`. Omitted when unset, so older JSON is unchanged. New contract types `BroAvatar` and `PatchBro`; `RenameBro` still works. See [docs/api.md](docs/api.md#bro-avatar).
 
 - `robroz-host --version` (and `-V`) prints `robroz-host <version> (<short git sha>)` and exits 0 without a token, database or Docker. Release builds are stripped (`[profile.release] strip = true`) for both the tarball and the images, and CI builds the host image and runs `--version` in it.

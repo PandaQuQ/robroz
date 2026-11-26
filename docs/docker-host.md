@@ -5,7 +5,7 @@
 The host can run as a container. The image holds the `robroz-host` binary and the Docker CLI only. It has no Docker daemon, no Node and no `npx`. The host still starts each task in a sibling runner container on the machine's own Docker engine, so the host container needs access to that engine's socket.
 
 - Image: `ghcr.io/pandaquq/robroz-host:<tag>` (linux/amd64 only; tagged per release; there is no `latest` tag). The package is public, so `docker pull` needs no login. Until the first release that includes the host image, only `main-<sha>` tags exist, which are built from `main` for CI; to run a fixed version, build it yourself (see below).
-- Example compose file: [`deploy/compose.host.yml`](../deploy/compose.host.yml).
+- Example compose file: [`deploy/compose.host.yml`](../deploy/compose.host.yml). To set it up with one command instead of by hand, see [One-command install](install.md#one-command-install-docker): `deploy/install.sh` writes this file, a `.env` and a random token, then pulls and starts the host.
 - Dockerfile: [`host/Dockerfile`](../host/Dockerfile). Base image `debian:bookworm-slim`, the same as the runner image.
 - The host binary release is unchanged. You can still run the host without Docker; see [install.md](install.md).
 
