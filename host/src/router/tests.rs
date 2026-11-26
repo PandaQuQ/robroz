@@ -50,7 +50,10 @@ fn a_step_sees_the_task_and_earlier_results() {
         third.contains("资料 A") && third.contains("草稿 B"),
         "{third}"
     );
-    assert_eq!(plan.progress(2), "3/3 步");
+    assert_eq!(plan.progress(2).text, "3/3 步");
+    let data = plan.progress(2).data;
+    assert_eq!(data.code, robroz_contract::ProgressCode::RouterStep);
+    assert_eq!((data.params.step, data.params.steps), (Some(3), Some(3)));
     assert_eq!(plan.merged(), "资料 A\n\n草稿 B");
 }
 

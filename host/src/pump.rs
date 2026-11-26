@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::failure::Failure;
-use crate::progress;
+use crate::progress::{self, Progress};
 use crate::sandbox::{container_name, result_rel, ContainerPhase, RunRequest, Sandbox};
 use crate::steps::StepRunner;
 use crate::watchdog::{Watchdog, WatchdogConfig, DEAD_RUN_FAILURE};
@@ -395,8 +395,8 @@ fn start_task(
         };
         let first = match &route {
             Route::On(Some(plan)) => plan.progress(plan.next()),
-            _ if cfg.model.is_some() => progress::THINKING.to_string(),
-            _ => progress::STARTED.to_string(),
+            _ if cfg.model.is_some() => Progress::thinking(),
+            _ => Progress::started(),
         };
         let section = if cfg.model.is_some() {
             system_extra(
@@ -408,16 +408,17 @@ fn start_task(
         };
         let claimed = if mcp_resume {
             conn.execute(
-                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3
+                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
+                                  progress_data = ?4
                  WHERE id = ?2 AND state = 'queued'",
-                params![claimed_at, task.id, first],
+                params![claimed_at, task.id, first.text, first.json()],
             )?
         } else {
             conn.execute(
                 "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
-                                  get_count = 0, needs_setup = NULL
+                                  progress_data = ?4, get_count = 0, needs_setup = NULL
                  WHERE id = ?2 AND state = 'queued'",
-                params![claimed_at, task.id, first],
+                params![claimed_at, task.id, first.text, first.json()],
             )?
         };
         if claimed > 0 {
@@ -447,7 +448,7 @@ fn start_task(
     let offload = offload.and_then(|off| off.model.clone().map(|model| (off, model)));
     match offload {
         None => {
-            let mut on_progress = |line: &str| {
+            let mut on_progress = |line: &Progress| {
                 if let Err(err) = db.with(|conn| progress::set_progress(conn, &task.id, line)) {
                     eprintln!("pump: progress for {}: {err}", task.id);
                 }
@@ -480,7 +481,7 @@ fn start_task(
             let cancel = Arc::new(AtomicBool::new(false));
             let step_cancel = cancel.clone();
             let spawned = off.state.steps.spawn(&task.id, move || {
-                let mut on_progress = |line: &str| {
+                let mut on_progress = |line: &Progress| {
                     if let Err(err) =
                         shared.with(|conn| progress::set_progress(conn, &task_id, line))
                     {
@@ -709,9 +710,9 @@ fn finish_start(
     }
     // Key moment: the sandbox is up. The model's own progress line wins.
     // The container run is a step of its own, with a fresh clock.
-    let text = reply_progress.as_deref().unwrap_or(progress::IN_SANDBOX);
+    let line = reply_progress.unwrap_or_else(Progress::in_sandbox);
     db.with(|conn| {
-        progress::set_progress(conn, &task.id, text)?;
+        progress::set_progress(conn, &task.id, &line)?;
         crate::timeouts::start(conn, &task.id, &crate::now_rfc3339())
     })?;
     Ok(())
@@ -740,7 +741,9 @@ fn collect_task(
             if let Some(text) = read_progress(&group_dir, &task.id).filter(|_| !task.routed) {
                 // Keep the Watchdog's hint up until the runner says something new.
                 if !watchdog.is_some_and(|w| w.holds_hint(&task.id, &text)) {
-                    db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
+                    db.with(|conn| {
+                        progress::set_progress(conn, &task.id, &Progress::custom(&text))
+                    })?;
                 }
             }
             return Ok(());
@@ -1020,7 +1023,7 @@ fn write_reply(
     tools: &crate::tools::ToolRegistry,
     route: Route,
     cancel: Option<Arc<AtomicBool>>,
-    on_progress: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&Progress),
     on_plan: &mut dyn FnMut(&crate::router::Plan),
 ) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
@@ -1049,8 +1052,7 @@ fn write_reply(
     let mut router_failed = false;
     let (mut text, failure, over_quota, pending) = match plan.as_mut() {
         None => {
-            let mut on_using =
-                |name: &str| on_progress(&robroz_contract::host_text::using_tool(name));
+            let mut on_using = |name: &str| on_progress(&Progress::using_tool(name));
             model_step(
                 model,
                 control_dir,
@@ -1122,7 +1124,7 @@ fn write_reply(
     }
     let progress = match &plan {
         Some(plan) => Some(plan.progress(plan.steps.len() - 1)),
-        None => robroz_runner::last_progress(&text).map(str::to_string),
+        None => robroz_runner::last_progress(&text).map(Progress::custom),
     };
     let silent = pending.is_none() && plan.is_none() && crate::turns::is_silent(&text);
     if pending.is_none() && !router_failed {
@@ -1237,7 +1239,7 @@ fn model_step(
 /// What [`write_reply`] hands back to pump.
 struct Reply {
     failure: Option<Failure>,
-    progress: Option<String>,
+    progress: Option<Progress>,
     get_count: u64,
     needs_setup: Option<String>,
     over_quota: bool,
@@ -1256,18 +1258,19 @@ fn block_mcp_task(
     get_count: i64,
 ) -> rusqlite::Result<()> {
     let hash = crate::mcp_tools::intent_hash(&task.id, pending);
-    let line = robroz_contract::host_text::using_tool(&pending.display_name);
+    let line = Progress::using_tool(&pending.display_name);
     let changed = conn.execute(
         "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2, progress = ?4,
-                          intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6
+                          intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6, progress_data = ?7
          WHERE id = ?3 AND state = 'running'",
         params![
             get_count,
             updated_at,
             task.id,
-            line,
+            line.text,
             pending.display_name.as_str(),
             hash.as_str(),
+            line.json(),
         ],
     )?;
     if changed > 0 {

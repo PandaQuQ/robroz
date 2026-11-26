@@ -545,6 +545,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     failure::migrate(conn)?;
     // What a running task is doing now, shown on its status card.
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
+    progress::migrate(conn)?;
     // v0.2 accounts: users, then bro owners and per-(user, bro) DMs.
     users::migrate(conn)?;
     bros::migrate(conn)?;
@@ -1159,7 +1160,7 @@ fn group_events(
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress, t.failure_data
+                    t.progress, t.progress_data, t.failure_data
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1 AND t.turn_hidden = 0",
@@ -1174,7 +1175,7 @@ fn group_events(
             // Only a finished task reports why it was not done.
             let (failure, failure_data): (Option<String>, Option<String>) =
                 if state == TaskState::Done {
-                    (row.get(7)?, row.get(10)?)
+                    (row.get(7)?, row.get(11)?)
                 } else {
                     (None, None)
                 };
@@ -1192,6 +1193,9 @@ fn group_events(
             // v0.2: a group task's card stays in the group, so no
             // 「已发到主人私聊」 notice any more.
             let progress = progress::shown(state, container_up, row.get(9)?);
+            let progress_data: Option<String> = row.get(10)?;
+            let (progress_code, progress_params) =
+                progress::codes(progress.as_deref(), progress_data.as_deref());
             let (failure_code, failure_detail) =
                 failure::codes(failure.as_deref(), failure_data.as_deref());
             Ok(TimedEvent {
@@ -1214,6 +1218,8 @@ fn group_events(
                     status_code: Some(robroz_contract::CardStatusCode::of(state, container_up)),
                     failure_code,
                     failure_detail,
+                    progress_code,
+                    progress_params,
                 },
             })
         })?;
@@ -5298,6 +5304,8 @@ mod tests {
         assert_eq!(card["state"], "running");
         assert_eq!(card["containerUp"], true);
         assert_eq!(card["progress"], "模型和工具还没回，已等 11 分钟");
+        assert_eq!(card["progressCode"], "step_timeout");
+        assert_eq!(card["progressParams"], json!({ "minutes": 11 }));
         assert!(card.get("failure").is_none());
         assert_eq!(queued_count(&path), 0);
 
@@ -5601,6 +5609,8 @@ mod tests {
         let card = status_of(&events, &task_id).clone();
         assert_eq!(card["state"], "running");
         assert_eq!(card["progress"], "在沙箱里跑");
+        assert_eq!(card["progressCode"], "in_sandbox");
+        assert!(card.get("progressParams").is_none(), "{card}");
         let at = card["updatedAt"].as_str().unwrap().to_string();
 
         // The runner reports a step: same card, new text, newer updatedAt.
@@ -5616,6 +5626,8 @@ mod tests {
         assert_eq!(changed.len(), 1, "one new status for the new text: {fresh}");
         assert_eq!(changed[0]["taskId"], task_id.as_str());
         assert_eq!(changed[0]["progress"], "在查资料");
+        assert_eq!(changed[0]["progressCode"], "custom");
+        assert_eq!(changed[0]["progressParams"], json!({ "text": "在查资料" }));
         let at = changed[0]["updatedAt"].as_str().unwrap().to_string();
 
         // Same text again: nothing new to send.

@@ -497,6 +497,7 @@ async fn an_expired_rule_card_is_denied_and_a_later_answer_is_403_expired() {
     let card = h.card(&id).await;
     assert_eq!(card["decision"], "denied");
     assert_eq!(card["reason"], APPROVAL_EXPIRED_REASON);
+    assert_eq!(card["reasonCode"], "expired");
     assert_eq!(card["answeredBy"], Value::Null);
     assert!(card["answeredAt"].is_string());
     for verb in ["approve", "deny"] {
@@ -669,6 +670,7 @@ async fn no_match_blocks_and_the_card_goes_to_the_owner_with_a_reason() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0]["id"], approval.as_str());
     assert_eq!(cards[0]["reason"], "没有规则允许给老板发邮件");
+    assert_eq!(cards[0]["reasonCode"], "review_model");
     assert_eq!(cards[0]["decision"], Value::Null);
     assert!(cards[0]["expiresAt"].is_string());
     assert_eq!(h.task(&task_id).0, "blocked");
@@ -875,6 +877,7 @@ async fn a_matching_rule_allows_a_bro_card_inside_the_post() {
 
     assert_eq!(card["decision"], "approved", "{card}");
     assert_eq!(card["reason"], "规则 1 允许清理构建产物");
+    assert_eq!(card["reasonCode"], "review_model");
     assert!(card["answeredAt"].is_string());
     assert_eq!(card["answeredBy"], Value::Null, "nobody answered it");
     let (action, rules) = fake.seen.lock().unwrap()[0].clone();
@@ -937,6 +940,7 @@ async fn bro_card_review_errors_retry_once_then_block() {
     let card = h.bro_post(&group, &bot).await;
     assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
     assert_eq!(card["reason"], REVIEW_FAILED_REASON);
+    assert_eq!(card["reasonCode"], "review_failed");
     assert_eq!(card["decision"], Value::Null, "never default-allow");
     assert_eq!(h.approvals(&group).await.len(), 1);
     assert_eq!(h.reminders(&dm).await.len(), 1);
@@ -950,6 +954,7 @@ async fn without_a_model_a_bro_card_is_blocked() {
     h.add_rule("允许删除构建产物");
     let card = h.bro_post(&group, &bot).await;
     assert_eq!(card["reason"], NO_MODEL_REASON);
+    assert_eq!(card["reasonCode"], "review_no_model");
     assert_eq!(card["decision"], Value::Null);
     assert_eq!(h.approvals(&group).await.len(), 1);
     assert_eq!(h.reminders(&dm).await.len(), 1);
@@ -1067,4 +1072,56 @@ async fn a_group_bro_card_is_unread_in_the_group_and_its_reminder_in_the_dm() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(unread(dm.clone()).await, 0);
+}
+
+#[test]
+fn migrate_codes_old_reasons_once_from_their_exact_text() {
+    use robroz_contract::host_text as ht;
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::approvals::SCHEMA).unwrap();
+    for column in ["reason", "review_state"] {
+        conn.execute(
+            &format!("ALTER TABLE approvals ADD COLUMN {column} TEXT"),
+            [],
+        )
+        .unwrap();
+    }
+    let rows = [
+        ("a1", Some(APPROVAL_EXPIRED_REASON), None),
+        ("a2", Some(ht::REVIEW_NO_MODEL_REASON), Some("blocked")),
+        ("a3", Some(ht::REVIEW_ALLOW_FALLBACK), Some("allowed")),
+        ("a4", Some("规则 1 允许"), Some("allowed")),
+        (
+            "a5",
+            Some(ht::APPROVE_TAKEOVER_MARKER_FAILED),
+            Some("blocked"),
+        ),
+        ("a6", None, None),
+        ("a7", Some("别的话"), None),
+    ];
+    for (id, reason, review) in rows {
+        conn.execute(
+            "INSERT INTO approvals (id, group_id, bot_id, action, summary, created_at, reason, review_state)
+             VALUES (?1, 'g', 'b', 'send', 's', 't', ?2, ?3)",
+            rusqlite::params![id, reason, review],
+        )
+        .unwrap();
+    }
+    super::migrate(&conn).unwrap();
+    super::migrate(&conn).unwrap();
+    let code = |id: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT reason_code FROM approvals WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(code("a1").as_deref(), Some("expired"));
+    assert_eq!(code("a2").as_deref(), Some("review_no_model"));
+    assert_eq!(code("a3").as_deref(), Some("review_allowed"));
+    assert_eq!(code("a4").as_deref(), Some("review_model"));
+    assert_eq!(code("a5").as_deref(), Some("review_allow_failed"));
+    assert_eq!(code("a6"), None);
+    assert_eq!(code("a7"), None, "not reviewed, not a host text");
 }
