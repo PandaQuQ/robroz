@@ -141,7 +141,14 @@ impl Host {
         self
     }
 
-    /// Swap the MCP connector. Tests pass a fake; production keeps the official client.
+    /// Stop every pooled MCP server process. The binary calls this on
+    /// SIGTERM / Ctrl-C before it exits. Blocks for at most a few seconds.
+    pub fn shutdown_mcp(&self) {
+        self.mcp.shutdown();
+    }
+
+    /// Swap the MCP connector. Tests pass a fake; production keeps the
+    /// pooled official client ([`robroz_mcp::McpPool`]).
     pub fn with_mcp(mut self, mcp: Arc<dyn crate::mcp_tools::McpRuntime>) -> Self {
         self.mcp = mcp;
         self
@@ -231,6 +238,7 @@ impl Host {
             control_root: self.control_root.clone(),
             reviewer: self.reviewer.clone(),
             model: self.model.clone(),
+            mcp: self.mcp.clone(),
         })
         .layer(axum::middleware::from_fn(users::identify));
         auth::require_token(router, self.token.clone())
@@ -320,6 +328,8 @@ struct AppState {
     /// Auto-review of bro-posted cards: test override and fixed model, as on [`Host`].
     reviewer: Option<Arc<dyn review::Reviewer>>,
     model: Option<Arc<dyn robroz_model::Model>>,
+    /// To stop a pooled MCP process when its server is edited or deleted.
+    mcp: Arc<dyn crate::mcp_tools::McpRuntime>,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`

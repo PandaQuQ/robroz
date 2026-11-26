@@ -116,7 +116,42 @@ async fn main() {
         "仅本机，无令牌"
     };
     eprintln!("robroz-host listening on {addr}（{guard}）");
-    axum::serve(listener, app)
-        .await
-        .unwrap_or_else(|err| panic!("服务器退出: {err}"));
+    tokio::select! {
+        served = async { axum::serve(listener, app).await } => {
+            served.unwrap_or_else(|err| panic!("服务器退出: {err}"));
+        }
+        () = shutdown_signal() => {
+            // Pooled stdio MCP servers are child processes: stop them before
+            // exiting. Long-lived SSE streams are not drained.
+            eprintln!("robroz-host: 收到退出信号，正在停止 MCP 进程");
+            host.shutdown_mcp();
+            // Exit now, as before this handler existed: do not wait for
+            // in-flight model calls or open streams.
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Ctrl-C, or SIGTERM (what `docker stop` sends) on Unix.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = term => {}
+    }
 }
