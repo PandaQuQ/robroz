@@ -76,7 +76,7 @@ Set `ROBROZ_CONTAINER_USER` (the example uses `1000:1000`) to the uid:gid that s
 
 - Inside the container the host listens on `0.0.0.0:8790`, so a token is mandatory. Without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` the host exits with code 2.
 - Use a Compose **secret** file mounted at `/run/secrets/robroz_token` and `ROBROZ_TOKEN_FILE=/run/secrets/robroz_token`. Do not bake the token into an image, commit it, or write it into `environment:`. Set only one of `ROBROZ_TOKEN` and `ROBROZ_TOKEN_FILE`. The token must be at least 16 characters with no whitespace inside.
-- The secret file is bind-mounted with its host owner and mode. Make it readable by uid 1000 (`chown 1000:1000`, mode `0600`), or the host cannot read it.
+- The secret file is bind-mounted with its host owner and mode. Make it readable by the container user (`USER robroz`, uid 1000 in the image; compose does not set `user:`). For a manual setup, `chown 1000:1000` and mode `0600` is enough. `deploy/install.sh` instead uses mode `0640`, owner the installing user, group the container's gid, so you can read the file without being uid 1000. `group_add` / `DOCKER_GID` only grant access to the engine socket, not to the token.
 - Every `/api` request needs `Authorization: Bearer <token>`, including requests from the same machine. A missing or wrong token returns 401.
 - A model key follows the same pattern: a second secret and `ROBROZ_MODEL_KEY_FILE`, or enter it in the client. See [configuration.md](configuration.md).
 
@@ -186,7 +186,7 @@ docker build -f host/Dockerfile -t robroz-host:local .
 
 - 容器内宿主机监听 `0.0.0.0:8790`，所以令牌是必须的。没有 `ROBROZ_TOKEN` 或 `ROBROZ_TOKEN_FILE`，宿主机会以退出码 2 退出。
 - 用 Compose 的 **secret** 文件挂到 `/run/secrets/robroz_token`，并设 `ROBROZ_TOKEN_FILE=/run/secrets/robroz_token`。不要把令牌打进镜像、提交进仓库，或写在 `environment:` 里。`ROBROZ_TOKEN` 和 `ROBROZ_TOKEN_FILE` 只能设一个。令牌至少 16 个字符，中间不能有空白。
-- secret 文件按宿主上的属主和权限 bind mount。要让 uid 1000 能读（`chown 1000:1000`，权限 `0600`），否则宿主机读不到。
+- secret 文件按宿主上的属主和权限 bind mount。要让容器里的用户能读（镜像里是 `USER robroz`，uid 1000；compose 没有设 `user:`）。手工安装时，`chown 1000:1000`、权限 `0600` 即可。`deploy/install.sh` 会改成权限 `0640`、属主是执行脚本的用户、组是容器的 gid，这样你不必是 uid 1000 也能读。`group_add` / `DOCKER_GID` 只用来访问引擎 socket，和令牌文件无关。
 - 每个 `/api` 请求都要带 `Authorization: Bearer <令牌>`，本机请求也一样。缺少或错误的令牌返回 401。
 - 模型密钥同理：再加一个 secret 和 `ROBROZ_MODEL_KEY_FILE`，或者在客户端里填。见 [configuration.md](configuration.md)。
 

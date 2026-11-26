@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           dir="${RUNNER_TEMP}/robroz"
           sh deploy/install.sh --no-start --dir "$dir"
-          sudo test -s "$dir/secrets/robroz_token"
+          test -s "$dir/secrets/robroz_token"
           test -s "$dir/.env" && test -s "$dir/compose.yml" && test -d "$dir/data"
           # The generated compose file must be valid with the generated .env.
           (cd "$dir" && docker compose config --quiet)
@@ -96,11 +96,11 @@ jobs:
           if grep -E '^ROBROZ_(MODEL|TOKEN)' "$dir/.env"; then
             echo "::error::.env must not set a model or token variable"; exit 1
           fi
-          sudo sha256sum "$dir/.env" "$dir/secrets/robroz_token" > "${RUNNER_TEMP}/before.sha"
-          sudo touch "$dir/data/keep-me"
+          sha256sum "$dir/.env" "$dir/secrets/robroz_token" > "${RUNNER_TEMP}/before.sha"
+          touch "$dir/data/keep-me"
           sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
-          sudo sha256sum -c "${RUNNER_TEMP}/before.sha"
-          sudo test -e "$dir/data/keep-me"
+          sha256sum -c "${RUNNER_TEMP}/before.sha"
+          test -e "$dir/data/keep-me"
           grep -q 'robroz-host:v9.9.9' "$dir/compose.yml"
           test -f "$dir/compose.yml.bak"
 

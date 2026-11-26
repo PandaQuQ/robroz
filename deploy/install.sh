@@ -17,12 +17,14 @@
 #   5. prints the URL and the next steps.
 #
 # A rerun upgrades: it pulls the images for the version this script (or
-# --version) names and recreates the container. It never overwrites .env, the
-# token, or anything under data/.
+# --version / ROBROZ_VERSION) names and recreates the container. It never
+# overwrites .env, the token, or anything under data/.
 #
 # It asks for no credentials and writes none. The only secret it makes is the
-# API token, generated locally and stored in secrets/robroz_token (mode 0600).
-# The model account is entered later, in the client.
+# API token, generated locally and stored in secrets/robroz_token. After the
+# host image is pulled, the file is owned by you, group is the container's
+# gid, mode 0640, so both you and the host process can read it. The model
+# account is entered later, in the client.
 #
 # Read docs/docker-host.md first: the host container gets docker.sock, which is
 # root-equivalent on this machine.
@@ -33,17 +35,21 @@ REPO="PandaQuQ/robroz"
 HOST_IMAGE="ghcr.io/pandaquq/robroz-host"
 RUNNER_IMAGE="ghcr.io/pandaquq/robroz-runner"
 # Images are tagged per release and there is no `latest` tag, so the version is
-# pinned here. Bump it in the same change as deploy/compose.host.yml.
+# pinned here (override with ROBROZ_VERSION or --version). Do not look up
+# releases/latest: v0.* tags are pre-releases and that API skips them.
+# The release workflow refuses to publish a v* tag if this pin, or the tags in
+# deploy/compose.host.yml, do not match the tag. Bump both in a PR, merge to
+# main, then tag. The workflow never pushes to main.
 DEFAULT_VERSION="v0.2.0"
-# uid:gid of the `robroz` user inside the host image.
-CONTAINER_UID=1000
-CONTAINER_GID=1000
 SOCKET="/var/run/docker.sock"
+DOCKER_SOCK_DOCS="https://github.com/PandaQuQ/robroz/blob/main/docs/docker-host.md#security-dockersock-is-root-on-this-machine"
 
 DRY_RUN=0
 NO_START=0
 DIR="${ROBROZ_DIR:-}"
 VERSION="${ROBROZ_VERSION:-}"
+CONTAINER_UID=""
+CONTAINER_GID=""
 
 usage() {
   cat <<'EOF'
@@ -130,6 +136,8 @@ DOCKER_GID=${DOCKER_GID}
 
 # Where the host listens on this machine. Keep 127.0.0.1 and put an HTTPS
 # reverse proxy or tunnel in front for other machines (docs/docker-host.md).
+# To reach the host from a phone on this network, set ROBROZ_BIND to this
+# machine's LAN or Tailscale address and run the install script again.
 ROBROZ_BIND=127.0.0.1
 ROBROZ_PORT=8790
 
@@ -164,16 +172,18 @@ parse_args() {
 }
 
 check_docker() {
-  [ -z "${DOCKER_HOST:-}" ] \
-    || die "DOCKER_HOST is set ($DOCKER_HOST). This installer supports the default socket ${SOCKET} only; for rootless Docker see docs/docker-host.md"
+  if [ -n "${DOCKER_HOST:-}" ]; then
+    die "DOCKER_HOST is set (${DOCKER_HOST}). This installer only uses the default engine socket ${SOCKET}, so a rootless or remote engine is not supported. Start the host by hand: ${DOCKER_SOCK_DOCS}"
+  fi
   command -v docker >/dev/null 2>&1 \
     || die "docker is not installed. Install Docker Engine first: https://docs.docker.com/engine/install/"
   docker compose version >/dev/null 2>&1 \
     || die "the 'docker compose' plugin is missing (the old docker-compose command is not used). See https://docs.docker.com/compose/install/linux/"
   docker info >/dev/null 2>&1 \
     || die "cannot talk to the Docker engine. Is it running, and is your user in the 'docker' group (or run this as root)?"
-  [ -S "$SOCKET" ] \
-    || die "${SOCKET} is not a socket. This installer supports the default socket only; see docs/docker-host.md"
+  if [ ! -S "$SOCKET" ]; then
+    die "${SOCKET} is missing or is not a socket. This installer only uses that default engine socket, so a rootless engine (whose socket is typically /run/user/<uid>/docker.sock) is not supported. Start the host by hand: ${DOCKER_SOCK_DOCS}"
+  fi
   DOCKER_GID=$(stat -c %g "$SOCKET" 2>/dev/null) || die "cannot read the group of ${SOCKET}"
   if [ "$(uname -m)" != "x86_64" ] && [ "$(uname -m)" != "amd64" ]; then
     warn "the published images are linux/amd64 only and this machine is $(uname -m)"
@@ -201,19 +211,51 @@ prepare_dir() {
   DATA="$DIR/data"
 }
 
-# Creates $1 owned by the container user, unless it already exists.
-make_owned_dir() {
-  if [ -d "$1" ]; then
-    say "keep   $1 (exists)"
-    return
-  fi
-  note "create $1"
+# Sets CONTAINER_UID and CONTAINER_GID from the host image. The image USER is
+# `robroz` (host/Dockerfile, uid 1000 with a matching group). compose.yml does
+# not set user:, so that is the process that reads the token. group_add /
+# DOCKER_GID only adds the engine socket's group and is not used for the token.
+resolve_container_ids() {
+  CONTAINER_UID=""
+  CONTAINER_GID=""
+  docker image inspect "${HOST_IMAGE}:${VERSION}" >/dev/null 2>&1 || return 1
+  ids=$(docker run --rm --entrypoint /usr/bin/id "${HOST_IMAGE}:${VERSION}" 2>/dev/null) || return 1
+  CONTAINER_UID=$(printf '%s\n' "$ids" | sed -n 's/^uid=\([0-9][0-9]*\).*/\1/p')
+  CONTAINER_GID=$(printf '%s\n' "$ids" | sed -n 's/^uid=[^ ]* gid=\([0-9][0-9]*\).*/\1/p')
+  [ -n "$CONTAINER_UID" ] && [ -n "$CONTAINER_GID" ] || return 1
+}
+
+# Token: owner is the installing user, group is the container gid, mode 0640,
+# so you can cat it and the host process can read it. Data dir: owned by the
+# container uid:gid so the host can write. Existing file contents are not
+# touched.
+fix_access() {
   if [ "$DRY_RUN" -eq 1 ]; then
-    return
+    say "[dry-run] after pull, set token owner=$(id -u) group=<container gid> mode 0640, and the data directory to the container uid:gid"
+    return 0
   fi
-  mkdir -p "$1"
-  if [ "$(id -u)" -ne "$CONTAINER_UID" ]; then
-    as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$1"
+  if ! resolve_container_ids; then
+    if [ "$NO_START" -eq 1 ]; then
+      say "token and data ownership: left as uid $(id -u) until the host image is pulled"
+    else
+      warn "could not read the user of ${HOST_IMAGE}:${VERSION}; leave token and data ownership as they are"
+    fi
+    return 0
+  fi
+  say "container user ${CONTAINER_UID}:${CONTAINER_GID} (from ${HOST_IMAGE}:${VERSION})"
+  token="$DIR/secrets/robroz_token"
+  if [ -f "$token" ]; then
+    as_root chown "$(id -u):${CONTAINER_GID}" "$token"
+    as_root chmod 0640 "$token"
+    say "token  owner=$(id -u) group=${CONTAINER_GID} mode 0640"
+  fi
+  if [ -d "$DATA" ]; then
+    owner=$(stat -c %u "$DATA")
+    if [ "$owner" = "$(id -u)" ] || [ "$owner" = "$CONTAINER_UID" ]; then
+      as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$DATA"
+    else
+      warn "data directory $DATA is owned by uid $owner; the container runs as ${CONTAINER_UID}:${CONTAINER_GID} and may not be able to write"
+    fi
   fi
 }
 
@@ -273,34 +315,40 @@ install_files() {
     BIND=127.0.0.1
   fi
 
-  # Token: only when missing. Generated here, never printed.
+  # Token: only when missing. Generated here, never printed. Permissions are
+  # finished in fix_access once the container user is known.
   token="$DIR/secrets/robroz_token"
   if [ -f "$token" ]; then
     say "keep   $token (exists, not touched)"
   else
-    note "create $token (random, mode 0600)"
+    note "create $token (random, not printed)"
     if [ "$DRY_RUN" -eq 0 ]; then
       (umask 077 && od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$token")
       [ -s "$token" ] || die "could not generate a token"
-      # The host container runs as uid 1000 and must be able to read it.
-      if [ "$(id -u)" -ne "$CONTAINER_UID" ]; then
-        as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$token"
-      fi
     fi
   fi
 
   # Data directory: only when missing; existing data is never touched.
-  make_owned_dir "$DATA"
+  if [ -d "$DATA" ]; then
+    say "keep   $DATA (exists)"
+  else
+    note "create $DATA"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$DATA"
+    fi
+  fi
 }
 
 start_host() {
   if [ "$NO_START" -eq 1 ]; then
     say "skip   pulling images and starting (--no-start)"
+    fix_access
     return
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     say "[dry-run] docker pull ${RUNNER_IMAGE}:${VERSION}"
     say "[dry-run] docker compose pull   (in $DIR)"
+    fix_access
     say "[dry-run] docker compose up -d  (in $DIR)"
     return
   fi
@@ -311,6 +359,7 @@ start_host() {
   say "pull   ${HOST_IMAGE}:${VERSION}"
   docker compose pull \
     || die "could not pull ${HOST_IMAGE}:${VERSION}. Is ${VERSION} published? Check https://github.com/${REPO}/releases, and pass --version with a tag that exists."
+  fix_access
   say "start  docker compose up -d"
   docker compose up -d
 }
@@ -339,10 +388,11 @@ print_next_steps() {
     say "Dry run finished. Nothing was written or started."
     return
   fi
-  if [ "$(id -u)" -eq "$CONTAINER_UID" ]; then
-    show_token="cat $DIR/secrets/robroz_token"
+  token="$DIR/secrets/robroz_token"
+  if [ -r "$token" ]; then
+    show_token="cat $token"
   else
-    show_token="sudo cat $DIR/secrets/robroz_token"
+    show_token="sudo cat $token"
   fi
   say ""
   if [ "$NO_START" -eq 1 ]; then
@@ -353,7 +403,9 @@ print_next_steps() {
   say ""
   if [ "$BIND" = "127.0.0.1" ]; then where="this machine only"; else where="bound to ${BIND}, edit .env to change"; fi
   say "URL:    http://${BIND}:${PORT}  (${where})"
-  say "Token:  stored in $DIR/secrets/robroz_token (not printed here)"
+  say "        To connect from a phone, set ROBROZ_BIND in $DIR/.env to this"
+  say "        machine's LAN or Tailscale address and run this script again."
+  say "Token:  stored in $token (not printed here)"
   say "        show it with: $show_token"
   say "Data:   $DATA"
   say ""
@@ -371,7 +423,7 @@ print_next_steps() {
 
 main() {
   parse_args "$@"
-  [ "$(uname -s)" = "Linux" ] || die "this installer supports Linux only (see docs/docker-host.md for other setups)"
+  [ "$(uname -s)" = "Linux" ] || die "this installer supports Linux only. For other setups see https://github.com/PandaQuQ/robroz/blob/main/docs/docker-host.md"
   prepare_dir
   check_docker
   install_files
