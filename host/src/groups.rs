@@ -284,6 +284,7 @@ pub(crate) async fn rename_group(
             name: name.clone(),
             tenant_id,
             created_by: g.created_by,
+            dm: g.is_dm,
         })))
     })();
     drop(conn);

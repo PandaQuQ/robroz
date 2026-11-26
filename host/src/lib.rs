@@ -642,7 +642,7 @@ async fn list_groups(State(state): State<AppState>) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
         let mut stmt = conn.prepare(
-            "SELECT id, name, tenant_id, created_by FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
+            "SELECT id, name, tenant_id, created_by, dm_bot_id IS NOT NULL FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([TENANT_ID], |row| {
             Ok(Group {
@@ -650,6 +650,7 @@ async fn list_groups(State(state): State<AppState>) -> Response {
                 name: row.get(1)?,
                 tenant_id: row.get(2)?,
                 created_by: row.get(3)?,
+                dm: row.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -691,6 +692,7 @@ async fn create_group(
             name: name.to_string(),
             tenant_id: TENANT_ID.to_string(),
             created_by: Some(user.0.clone()),
+            dm: false,
         }),
     )
         .into_response()
@@ -4073,8 +4075,8 @@ mod tests {
             body,
             json!({
                 "groups": [
-                    { "id": first["id"], "name": "设计群", "tenantId": "local", "createdBy": "local-admin" },
-                    { "id": second["id"], "name": "运营群", "tenantId": "local", "createdBy": "local-admin" }
+                    { "id": first["id"], "name": "设计群", "tenantId": "local", "createdBy": "local-admin", "dm": false },
+                    { "id": second["id"], "name": "运营群", "tenantId": "local", "createdBy": "local-admin", "dm": false }
                 ]
             })
         );

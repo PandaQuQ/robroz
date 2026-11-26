@@ -231,13 +231,13 @@ Create a group. `host/src/lib.rs:create_group`
 | --- | --- | --- | --- |
 | `name` | string | yes | Must be non-empty after trimming. |
 
-- 201 `Group`: `{"id","name","tenantId","createdBy"}`. `createdBy` is the caller's user id.
+- 201 `Group`: `{"id","name","tenantId","createdBy","dm"}`. `createdBy` is the caller's user id. `dm` is always `false` here.
 - 400 「请填写名称」: `name` is blank.
 - 422 `missing_field`: `name` is missing.
 
 ```sh
 curl -s -X POST $B/api/groups -H 'content-type: application/json' -d '{"name":"官网"}'
-# {"id":"<groupId>","name":"官网","tenantId":"local","createdBy":"local-admin"}
+# {"id":"<groupId>","name":"官网","tenantId":"local","createdBy":"local-admin","dm":false}
 ```
 
 ### GET /api/groups
@@ -245,7 +245,8 @@ curl -s -X POST $B/api/groups -H 'content-type: application/json' -d '{"name":"�
 List every group, **including DMs**, in creation order. `host/src/lib.rs:list_groups`
 
 - 200 `{"groups":[Group]}`; with no groups, `{"groups":[]}`.
-- `Group.createdBy` (optional) is the user who created the group. It is absent for groups created before it existed and for DMs created before v0.2; such groups can be renamed or deleted only by an admin.
+- `Group.dm` (bool, always present, default `false` if a client reads older JSON) is `true` only for a bro DM. `Group.createdBy` (optional) is the user who created the group. It is absent for groups created before it existed and for DMs, so `createdBy` alone cannot tell those two apart.
+- Clients hide rename and delete unless `!group.dm && (me.role == admin || group.createdBy == me.userId)`. A missing `createdBy` on a non-DM group is admin-only. A DM is never renamed or deleted here (`403 group_is_dm`).
 
 ```sh
 curl -s $B/api/groups
@@ -276,7 +277,7 @@ curl -s -X POST $B/api/groups/<groupId>/members -H 'content-type: application/js
 
 ### Who may do what in a group
 
-Users are not members of a group by themselves. A user **has a part in** a group when they created it (`createdBy`), own a bro in it, or are an admin. A DM belongs to its user only (`dm_user_id`); not even an admin sees another user's DM here. `GET …/members` and `GET …/search` need a part in the group, else 403 `not_group_member`. `PATCH` and `DELETE` need the creator or an admin, else 403 `not_group_creator`; a group with no `createdBy` (created before this field) is admin-only. A DM can never be renamed or deleted here: 403 `group_is_dm` (its name follows the bro). An unknown group is 404 `group_not_found` in all four.
+Users are not members of a group by themselves. A user **has a part in** a group when they created it (`createdBy`), own a bro in it, or are an admin. A DM belongs to its user only (`dm_user_id`); not even an admin sees another user's DM here. `GET …/members` and `GET …/search` need a part in the group, else 403 `not_group_member`. `PATCH` and `DELETE` need the creator or an admin, else 403 `not_group_creator`; a group with no `createdBy` (created before this field) is admin-only. A DM can never be renamed or deleted here: 403 `group_is_dm` (its name follows the bro). An unknown group is 404 `group_not_found` in all four. Clients hide those entries unless `!group.dm && (me.role == admin || group.createdBy == me.userId)` (from `GET /api/groups` and `GET /api/me`); do not show a disabled button that then returns 403.
 
 ### GET /api/groups/{id}/members
 
@@ -304,7 +305,7 @@ Rename. `host/src/groups.rs:rename_group`
 | --- | --- | --- | --- |
 | `name` | string | yes | Trimmed; must not be blank. |
 
-- 200 `Group` with the new name.
+- 200 `Group` with the new name (`dm` is always `false` here: a DM cannot be renamed).
 - 400 `need_name`; 422 `missing_field`; 403 `not_group_creator` or `group_is_dm`; 404 `group_not_found`.
 - No event is emitted: clients refetch `GET /api/groups` (or update their list from the 200 body).
 

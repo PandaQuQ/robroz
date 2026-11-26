@@ -202,6 +202,53 @@ async fn new_groups_record_their_creator() {
         .unwrap()
         .clone();
     assert_eq!(row["createdBy"], MEI);
+    assert_eq!(row["dm"], false);
+}
+
+#[tokio::test]
+async fn groups_mark_whether_they_are_a_dm() {
+    let h = harness();
+    let (_ada, dm) = h.bro(Some(MEI), "Ada").await;
+    let (status, created) = h
+        .call(
+            Some(MEI),
+            "POST",
+            "/api/groups",
+            Some(json!({ "name": "周报" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["dm"], false, "{created}");
+    assert_eq!(created["createdBy"], MEI);
+    let g = created["id"].as_str().unwrap().to_string();
+
+    let (status, renamed) = h
+        .call(
+            Some(MEI),
+            "PATCH",
+            &format!("/api/groups/{g}"),
+            Some(json!({ "name": "周报组" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["dm"], false, "{renamed}");
+
+    let (_, list) = h.call(None, "GET", "/api/groups", None).await;
+    let find = |id: &str| {
+        list["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    let ordinary = find(&g);
+    assert_eq!(ordinary["dm"], false, "{ordinary}");
+    assert_eq!(ordinary["createdBy"], MEI);
+    let dm_row = find(&dm);
+    assert_eq!(dm_row["dm"], true, "{dm_row}");
+    assert!(dm_row.get("createdBy").is_none(), "{dm_row}");
 }
 
 // ---- members ----

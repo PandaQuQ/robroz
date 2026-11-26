@@ -170,9 +170,15 @@ pub struct Group {
     pub tenant_id: String,
     /// The user who created the group. Only they or an admin may rename or
     /// delete it. Omitted for groups created before this field existed (then
-    /// only an admin may) and for DMs.
+    /// only an admin may) and for DMs. `createdBy` alone cannot tell a DM
+    /// from an old group; use [`Self::dm`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// A bro DM (`groups.dm_bot_id` is set). Always serialized, so the
+    /// client can hide rename and delete with
+    /// `!group.dm && (me.role == admin || group.createdBy == me.userId)`.
+    #[serde(default)]
+    pub dm: bool,
 }
 
 /// `PATCH /api/groups/{id}` body.
@@ -2601,12 +2607,14 @@ mod tests {
                     name: "设计群".into(),
                     tenant_id: "local".into(),
                     created_by: None,
+                    dm: false,
                 },
                 Group {
                     id: "g2".into(),
                     name: "运营群".into(),
                     tenant_id: "local".into(),
                     created_by: None,
+                    dm: false,
                 },
             ],
         };
@@ -2615,8 +2623,8 @@ mod tests {
             value,
             serde_json::json!({
                 "groups": [
-                    { "id": "g1", "name": "设计群", "tenantId": "local" },
-                    { "id": "g2", "name": "运营群", "tenantId": "local" }
+                    { "id": "g1", "name": "设计群", "tenantId": "local", "dm": false },
+                    { "id": "g2", "name": "运营群", "tenantId": "local", "dm": false }
                 ]
             })
         );
@@ -2704,10 +2712,21 @@ mod tests {
         let old: Group =
             serde_json::from_value(json!({"id":"g","name":"n","tenantId":"local"})).unwrap();
         assert_eq!(old.created_by, None);
-        assert!(serde_json::to_value(&old)
-            .unwrap()
-            .get("createdBy")
-            .is_none());
+        assert!(!old.dm, "missing dm defaults to false");
+        let value = serde_json::to_value(&old).unwrap();
+        assert!(value.get("createdBy").is_none());
+        assert_eq!(value["dm"], false, "dm is always serialized");
+        let dm = Group {
+            id: "d".into(),
+            name: "Ada".into(),
+            tenant_id: "local".into(),
+            created_by: None,
+            dm: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&dm).unwrap(),
+            json!({"id":"d","name":"Ada","tenantId":"local","dm":true})
+        );
         let members = GroupMembers {
             group_id: "g".into(),
             created_by: Some("u".into()),
