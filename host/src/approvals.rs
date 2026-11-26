@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use robroz_contract::{
     clean_answered_by, Answer, ApprovalAction, ApprovalDecision, ApprovalForbidden,
-    ApprovalForbiddenReason, CreateApproval, Event, ReminderState, APPROVAL_EXPIRED_REASON,
-    APPROVAL_FORBIDDEN, APPROVAL_SUMMARY_MAX,
+    ApprovalForbiddenReason, ApprovalReasonCode, CreateApproval, Event, ReminderState,
+    APPROVAL_EXPIRED_REASON, APPROVAL_FORBIDDEN, APPROVAL_SUMMARY_MAX,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -38,8 +38,10 @@ pub(crate) const SCHEMA: &str = "
 /// Settings-page rule cards have no bro: `botId` / `botName` are the
 /// contract's `SETTINGS_APPROVAL_BOT_ID` / `SETTINGS_APPROVAL_BOT_NAME`.
 /// Columns 15 and 16 are the bro's owner (v0.2): `NULL` on settings cards.
+/// Column 17 is the `reason` code (#180).
 const SELECT: &str = "SELECT a.id, a.bot_id, COALESCE(b.name, CASE WHEN a.bot_id = 'settings' THEN '设置' END), a.action, a.summary, a.path, a.decision, a.created_at, a.answered_at, a.answered_by,
-            a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at, u.id, u.name
+            a.task_id, a.mcp_server, a.mcp_tool, a.reason, a.expires_at, u.id, u.name,
+            a.reason_code
      FROM approvals a LEFT JOIN bots b ON b.id = a.bot_id
      LEFT JOIN users u ON b.id IS NOT NULL AND u.id = COALESCE(b.owner_user_id, 'local-admin')
      WHERE (b.id IS NOT NULL OR a.bot_id = 'settings')";
@@ -121,6 +123,10 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         expires_at: row.get(14)?,
         owner_user_id: row.get(15)?,
         owner_name: row.get(16)?,
+        reason_code: row
+            .get::<_, Option<String>>(17)?
+            .as_deref()
+            .and_then(ApprovalReasonCode::parse),
     })
 }
 
@@ -612,6 +618,8 @@ pub(crate) struct Settlement<'a> {
     pub by: Option<&'a str>,
     /// Written to the card's `reason` when set.
     pub reason: Option<&'a str>,
+    /// Written to the card's `reasonCode` when set.
+    pub reason_code: Option<ApprovalReasonCode>,
     /// The task's `failure` on deny. `None`: 「你拒绝了：…」.
     pub failure: Option<&'a str>,
     /// Only settle a card in this review state (`pending` for auto-review).
@@ -627,6 +635,7 @@ impl Default for Settlement<'_> {
             decision: ApprovalDecision::Denied,
             by: None,
             reason: None,
+            reason_code: None,
             failure: None,
             from_review: None,
             to_review: None,
@@ -670,7 +679,8 @@ pub(crate) fn settle(
     let tx = conn.transaction()?;
     let changed = tx.execute(
         "UPDATE approvals SET decision = ?1, answered_at = ?2, answered_by = ?4,
-                              reason = COALESCE(?5, reason), review_state = COALESCE(?7, review_state)
+                              reason = COALESCE(?5, reason), review_state = COALESCE(?7, review_state),
+                              reason_code = COALESCE(?8, reason_code)
          WHERE id = ?3 AND decision IS NULL
            AND ((?6 IS NULL AND (review_state IS NULL OR review_state = 'blocked')) OR review_state = ?6)",
         params![
@@ -680,7 +690,8 @@ pub(crate) fn settle(
             how.by,
             how.reason,
             how.from_review,
-            how.to_review
+            how.to_review,
+            how.reason_code.map(ApprovalReasonCode::as_str)
         ],
     )?;
     if changed == 0 {
@@ -880,6 +891,7 @@ fn decide(
                     &Settlement {
                         decision: ApprovalDecision::Denied,
                         reason: Some(APPROVAL_EXPIRED_REASON),
+                        reason_code: Some(ApprovalReasonCode::Expired),
                         failure: Some(APPROVAL_EXPIRED_REASON),
                         ..Settlement::default()
                     },

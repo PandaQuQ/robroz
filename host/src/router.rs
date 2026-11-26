@@ -46,11 +46,8 @@ impl Plan {
     }
 
     /// Card `progress` for step `index` (0-based).
-    pub fn progress(&self, index: usize) -> String {
-        robroz_contract::host_text::router_step_progress(
-            (index + 1).min(self.steps.len()),
-            self.steps.len(),
-        )
+    pub(crate) fn progress(&self, index: usize) -> crate::progress::Progress {
+        crate::progress::Progress::router_step((index + 1).min(self.steps.len()), self.steps.len())
     }
 
     /// The one delivery: every step's result, in order, separated by a blank line.
