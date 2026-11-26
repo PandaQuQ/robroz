@@ -101,11 +101,14 @@ pub fn chat_body(model: &str, messages: &[ChatMessage], tools: &[ToolDefinition]
 
 /// `choices[0].message`: a text reply, or one or more tool calls.
 pub fn parse_turn(body: &str) -> Result<AssistantTurn, ModelError> {
-    let value: Value =
-        serde_json::from_str(body).map_err(|_| ModelError("模型返回的不是 JSON".into()))?;
-    let message = value
-        .pointer("/choices/0/message")
-        .ok_or_else(|| ModelError("模型返回里没有 choices[0].message".into()))?;
+    let value: Value = serde_json::from_str(body)
+        .map_err(|_| ModelError::with_reason("模型返回的不是 JSON", "response_not_json"))?;
+    let message = value.pointer("/choices/0/message").ok_or_else(|| {
+        ModelError::with_reason(
+            "模型返回里没有 choices[0].message",
+            "response_missing_message",
+        )
+    })?;
     let calls = parse_tool_calls(message.get("tool_calls"))?;
     if !calls.is_empty() {
         return Ok(AssistantTurn::ToolCalls(calls));
@@ -114,9 +117,17 @@ pub fn parse_turn(body: &str) -> Result<AssistantTurn, ModelError> {
         .get("content")
         .and_then(Value::as_str)
         .map(str::trim)
-        .ok_or_else(|| ModelError("模型返回里没有 choices[0].message.content".into()))?;
+        .ok_or_else(|| {
+            ModelError::with_reason(
+                "模型返回里没有 choices[0].message.content",
+                "response_missing_content",
+            )
+        })?;
     if content.is_empty() {
-        return Err(ModelError("模型返回了空内容".into()));
+        return Err(ModelError::with_reason(
+            "模型返回了空内容",
+            "response_empty_content",
+        ));
     }
     Ok(AssistantTurn::Text(content.to_string()))
 }
@@ -128,9 +139,9 @@ fn parse_tool_calls(value: Option<&Value>) -> Result<Vec<ToolCall>, ModelError> 
     if value.is_null() {
         return Ok(Vec::new());
     }
-    let array = value
-        .as_array()
-        .ok_or_else(|| ModelError("模型返回的 tool_calls 不是数组".into()))?;
+    let array = value.as_array().ok_or_else(|| {
+        ModelError::with_reason("模型返回的 tool_calls 不是数组", "tool_calls_not_array")
+    })?;
     let mut calls = Vec::with_capacity(array.len());
     for (index, item) in array.iter().enumerate() {
         let typ = item
@@ -138,7 +149,11 @@ fn parse_tool_calls(value: Option<&Value>) -> Result<Vec<ToolCall>, ModelError> 
             .and_then(Value::as_str)
             .unwrap_or("function");
         if typ != "function" {
-            return Err(ModelError(format!("不支持的 tool_call 类型：{typ}")));
+            return Err(ModelError::with_error(
+                format!("不支持的 tool_call 类型：{typ}"),
+                "unsupported_tool_call_type",
+                typ,
+            ));
         }
         let function = item.get("function").unwrap_or(item);
         let name = function
@@ -146,7 +161,9 @@ fn parse_tool_calls(value: Option<&Value>) -> Result<Vec<ToolCall>, ModelError> 
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| ModelError("工具调用里没有 name".into()))?;
+            .ok_or_else(|| {
+                ModelError::with_reason("工具调用里没有 name", "tool_call_missing_name")
+            })?;
         let id = item
             .get("id")
             .and_then(Value::as_str)
