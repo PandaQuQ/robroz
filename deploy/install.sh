@@ -13,12 +13,14 @@
 #   2. creates the install directory (default ~/robroz);
 #   3. writes compose.yml (always, the old copy is kept as compose.yml.bak when
 #      it differs), and .env, secrets/robroz_token and data/ only if missing;
-#   4. pulls the host and runner images and runs `docker compose up -d`;
+#   4. pulls the host and runner images (skipped when they are already local, or when --no-pull is set) and runs `docker compose up -d`;
 #   5. prints the URL and the next steps.
 #
 # A rerun upgrades: it pulls the images for the version this script (or
-# --version / ROBROZ_VERSION) names and recreates the container. It never
-# overwrites .env, the token, or anything under data/.
+# --version / ROBROZ_VERSION) names and recreates the container, unless the
+# images are already local or --no-pull is set. It never overwrites .env,
+# the token, or anything under data/. It also tightens the data directory
+# to mode 0700 and the database to 0600.
 #
 # It asks for no credentials and writes none. The only secret it makes is the
 # API token, generated locally and stored in secrets/robroz_token. After the
@@ -46,6 +48,7 @@ DOCKER_SOCK_DOCS="https://github.com/PandaQuQ/robroz/blob/main/docs/docker-host.
 
 DRY_RUN=0
 NO_START=0
+NO_PULL=0
 DIR="${ROBROZ_DIR:-}"
 VERSION="${ROBROZ_VERSION:-}"
 CONTAINER_UID=""
@@ -53,12 +56,14 @@ CONTAINER_GID=""
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--dir DIR] [--version TAG] [--dry-run] [--no-start]
+Usage: install.sh [--dir DIR] [--version TAG] [--dry-run] [--no-start] [--no-pull]
 
   --dir DIR      install directory (default: $HOME/robroz; env ROBROZ_DIR)
+                 path may only contain letters, digits and / . _ -
   --version TAG  image tag for host and runner (env ROBROZ_VERSION)
   --dry-run      check docker and print what would happen; write and start nothing
   --no-start     write the files, but do not pull images or start the host
+  --no-pull      do not pull images; they must already be present locally
   -h, --help     show this help
 EOF
 }
@@ -156,6 +161,7 @@ parse_args() {
     case "$1" in
       --dry-run) DRY_RUN=1 ;;
       --no-start) NO_START=1 ;;
+      --no-pull) NO_PULL=1 ;;
       --dir)
         [ $# -ge 2 ] || die "--dir needs a value"
         DIR="$2"; shift ;;
@@ -227,35 +233,88 @@ resolve_container_ids() {
 
 # Token: owner is the installing user, group is the container gid, mode 0640,
 # so you can cat it and the host process can read it. Data dir: owned by the
-# container uid:gid so the host can write. Existing file contents are not
-# touched.
+# container uid:gid, mode 0700, so the host can write and other users on this
+# machine cannot read the database. The database file (and its journal, if
+# present) is mode 0600. Existing file contents are not touched.
 fix_access() {
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "[dry-run] after pull, set token owner=$(id -u) group=<container gid> mode 0640, and the data directory to the container uid:gid"
+    say "[dry-run] after pull, set token owner=$(id -u) group=<container gid> mode 0640, data directory mode 0700 owned by the container uid:gid, and the database mode 0600"
     return 0
   fi
-  if ! resolve_container_ids; then
+  if resolve_container_ids; then
+    say "container user ${CONTAINER_UID}:${CONTAINER_GID} (from ${HOST_IMAGE}:${VERSION})"
+    token="$DIR/secrets/robroz_token"
+    if [ -f "$token" ]; then
+      as_root chown "$(id -u):${CONTAINER_GID}" "$token"
+      as_root chmod 0640 "$token"
+      say "token  owner=$(id -u) group=${CONTAINER_GID} mode 0640"
+    fi
+  else
     if [ "$NO_START" -eq 1 ]; then
-      say "token and data ownership: left as uid $(id -u) until the host image is pulled"
+      say "token ownership: left as uid $(id -u) until the host image is pulled"
     else
-      warn "could not read the user of ${HOST_IMAGE}:${VERSION}; leave token and data ownership as they are"
+      warn "could not read the user of ${HOST_IMAGE}:${VERSION}; leave token ownership as it is"
     fi
+  fi
+  tighten_data
+}
+
+# Mode 0700 on the data directory and 0600 on the database files. A rerun
+# tightens an older install. Ownership follows the container user when known.
+tighten_data() {
+  [ -d "$DATA" ] || return 0
+  owner=$(stat -c %u "$DATA")
+  me=$(id -u)
+  if [ -n "$CONTAINER_UID" ] && { [ "$owner" = "$me" ] || [ "$owner" = "$CONTAINER_UID" ]; }; then
+    as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$DATA"
+  elif [ -n "$CONTAINER_UID" ] && [ "$owner" != "$me" ] && [ "$owner" != "$CONTAINER_UID" ]; then
+    warn "data directory $DATA is owned by uid $owner; the container runs as ${CONTAINER_UID}:${CONTAINER_GID} and may not be able to write"
     return 0
   fi
-  say "container user ${CONTAINER_UID}:${CONTAINER_GID} (from ${HOST_IMAGE}:${VERSION})"
-  token="$DIR/secrets/robroz_token"
-  if [ -f "$token" ]; then
-    as_root chown "$(id -u):${CONTAINER_GID}" "$token"
-    as_root chmod 0640 "$token"
-    say "token  owner=$(id -u) group=${CONTAINER_GID} mode 0640"
-  fi
-  if [ -d "$DATA" ]; then
-    owner=$(stat -c %u "$DATA")
-    if [ "$owner" = "$(id -u)" ] || [ "$owner" = "$CONTAINER_UID" ]; then
-      as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$DATA"
-    else
-      warn "data directory $DATA is owned by uid $owner; the container runs as ${CONTAINER_UID}:${CONTAINER_GID} and may not be able to write"
+  # Test and chmod the database through as_root: after the directory is 0700
+  # and owned by the container user, the installing user may not be able to
+  # see the files (their uid is often not 1000).
+  for name in robroz.db robroz.db-wal robroz.db-shm robroz.db-journal; do
+    f="$DATA/$name"
+    as_root test -f "$f" || continue
+    if [ -n "$CONTAINER_UID" ]; then
+      as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$f"
     fi
+    as_root chmod 0600 "$f"
+    say "data   $f mode 0600"
+  done
+  as_root chmod 0700 "$DATA"
+  say "data   $DATA mode 0700"
+}
+
+# True when $1 (an image:tag) is already on this machine.
+image_present() {
+  docker image inspect "$1" >/dev/null 2>&1
+}
+
+# Pull $1 unless --no-pull is set or the image is already local.
+ensure_image() {
+  image=$1
+  if image_present "$image"; then
+    say "keep   $image (already present locally)"
+    return 0
+  fi
+  if [ "$NO_PULL" -eq 1 ]; then
+    die "$image is not present locally. Load or build it first, or omit --no-pull so the script can pull it."
+  fi
+  say "pull   $image"
+  docker pull "$image"     || die "could not pull $image. Is ${VERSION} published? Check https://github.com/${REPO}/releases, and pass --version with a tag that exists."
+}
+
+# What a dry-run would do for one image.
+note_pull() {
+  image=$1
+  if [ "$NO_PULL" -eq 1 ]; then
+    say "[dry-run] skip   pull $image (--no-pull)"
+  elif image_present "$image"; then
+    say "[dry-run] skip   pull $image (already present locally)"
+  else
+    say "[dry-run] docker pull $image"
   fi
 }
 
@@ -335,6 +394,7 @@ install_files() {
     note "create $DATA"
     if [ "$DRY_RUN" -eq 0 ]; then
       mkdir -p "$DATA"
+      chmod 0700 "$DATA"
     fi
   fi
 }
@@ -346,23 +406,22 @@ start_host() {
     return
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "[dry-run] docker pull ${RUNNER_IMAGE}:${VERSION}"
-    say "[dry-run] docker compose pull   (in $DIR)"
+    note_pull "${RUNNER_IMAGE}:${VERSION}"
+    note_pull "${HOST_IMAGE}:${VERSION}"
     fix_access
     say "[dry-run] docker compose up -d  (in $DIR)"
     return
   fi
   cd "$DIR"
-  say "pull   ${RUNNER_IMAGE}:${VERSION} (the runner image, started per task)"
-  docker pull "${RUNNER_IMAGE}:${VERSION}" \
-    || die "could not pull ${RUNNER_IMAGE}:${VERSION}. Is ${VERSION} published? Check https://github.com/${REPO}/releases, and pass --version with a tag that exists."
-  say "pull   ${HOST_IMAGE}:${VERSION}"
-  docker compose pull \
-    || die "could not pull ${HOST_IMAGE}:${VERSION}. Is ${VERSION} published? Check https://github.com/${REPO}/releases, and pass --version with a tag that exists."
+  say "runner image (started per task): ${RUNNER_IMAGE}:${VERSION}"
+  ensure_image "${RUNNER_IMAGE}:${VERSION}"
+  say "host image: ${HOST_IMAGE}:${VERSION}"
+  ensure_image "${HOST_IMAGE}:${VERSION}"
   fix_access
   say "start  docker compose up -d"
   docker compose up -d
 }
+
 
 wait_ready() {
   [ "$DRY_RUN" -eq 0 ] && [ "$NO_START" -eq 0 ] || return 0

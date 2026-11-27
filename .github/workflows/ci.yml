@@ -101,12 +101,35 @@ jobs:
             echo "::error::.env must not set a model or token variable"; exit 1
           fi
           sha256sum "$dir/.env" "$dir/secrets/robroz_token" > "${RUNNER_TEMP}/before.sha"
+          test "$(stat -c %a "$dir/data")" = "700"
+          chmod 0755 "$dir/data"
+          : > "$dir/data/robroz.db"
+          chmod 0644 "$dir/data/robroz.db"
           touch "$dir/data/keep-me"
           sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
           sha256sum -c "${RUNNER_TEMP}/before.sha"
           test -e "$dir/data/keep-me"
           grep -q 'robroz-host:v9.9.9' "$dir/compose.yml"
           test -f "$dir/compose.yml.bak"
+          test "$(stat -c %a "$dir/data")" = "700"
+          test "$(stat -c %a "$dir/data/robroz.db")" = "600"
+          # The installer uid may not be the container uid, so after data/ is
+          # 0700 they cannot see the database. The script must still tighten it.
+          sudo chown 1000:1000 "$dir/data" "$dir/data/robroz.db"
+          sudo chmod 0755 "$dir/data"
+          sudo chmod 0644 "$dir/data/robroz.db"
+          sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
+          test "$(sudo stat -c %a "$dir/data")" = "700"
+          test "$(sudo stat -c %a "$dir/data/robroz.db")" = "600"
+      - name: Help and dry-run mention --no-pull
+        run: |
+          set -euo pipefail
+          sh deploy/install.sh --help | grep -q -- --no-pull
+          dir="${RUNNER_TEMP}/dry-nopull"
+          out=$(sh deploy/install.sh --dry-run --no-pull --dir "$dir")
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -q -- '--no-pull'
+          test ! -e "$dir"
 
   cargo-deny:
     runs-on: ubuntu-latest

@@ -28,14 +28,58 @@ fn version_line() -> String {
 }
 
 /// `--version` / `-V` print the version and exit 0 before anything else, so
-/// they need no token, database or Docker.
-fn handle_version_flag() {
-    if std::env::args()
-        .skip(1)
-        .any(|arg| arg == "--version" || arg == "-V")
-    {
+/// they need no token, database or Docker. `--health` probes the already
+/// running process (used as the image `HEALTHCHECK`) and likewise needs no
+/// setup: it talks to 127.0.0.1 on the port in `ROBROZ_ADDR`.
+fn handle_early_flags() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{}", version_line());
         std::process::exit(0);
+    }
+    if args.iter().any(|arg| arg == "--health") {
+        std::process::exit(if health_ok() { 0 } else { 1 });
+    }
+}
+
+/// GET /api/bros on the local listener. 401 (token required) or 200 means
+/// the process is up; anything else, including a connection error, is down.
+fn health_ok() -> bool {
+    let raw = std::env::var("ROBROZ_ADDR").unwrap_or_else(|_| "127.0.0.1:8790".into());
+    let port = raw.rsplit_once(':').map(|(_, p)| p).unwrap_or("8790");
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1:8790".parse().unwrap()),
+        Duration::from_secs(2),
+    ) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    if std::io::Write::write_all(
+        &mut stream,
+        b"GET /api/bros HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 96];
+    let Ok(n) = std::io::Read::read(&mut stream, &mut buf) else {
+        return false;
+    };
+    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    head.starts_with("HTTP/1.") && (head.contains(" 401 ") || head.contains(" 200 "))
+}
+
+/// New files the host creates (the database, its journal, group folders)
+/// are mode 0600 / 0700, so other users on the machine cannot read them.
+fn tighten_umask() {
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o077);
     }
 }
 
@@ -46,7 +90,8 @@ fn fail(msg: &str) -> ! {
 
 #[tokio::main]
 async fn main() {
-    handle_version_flag();
+    handle_early_flags();
+    tighten_umask();
     let addr: SocketAddr = std::env::var("ROBROZ_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8790".to_string())
         .parse()

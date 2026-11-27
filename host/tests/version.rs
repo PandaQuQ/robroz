@@ -42,3 +42,24 @@ fn version_flags_print_version_and_sha_and_exit_zero_without_a_token() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn health_flag_exits_nonzero_without_opening_a_database_when_nothing_listens() {
+    let dir = std::env::temp_dir().join(format!("robroz-health-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_robroz-host"))
+        .arg("--health")
+        .current_dir(&dir)
+        .env_remove("ROBROZ_TOKEN")
+        .env_remove("ROBROZ_TOKEN_FILE")
+        .env("ROBROZ_ADDR", "127.0.0.1:1")
+        .env("ROBROZ_DB", dir.join("must-not-exist.db"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        !dir.join("must-not-exist.db").exists(),
+        "no database opened"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
