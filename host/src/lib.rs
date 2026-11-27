@@ -2824,9 +2824,8 @@ mod tests {
 
     /// Stream contract is the set of events, not their cross-type order.
     /// README「实时推送」promises framing, `Last-Event-ID` / `?since=`, and no
-    /// push when nothing changed. It does not promise order. A single snapshot
-    /// follows `GET …/events` (`createdAt`, then `id`), so two cards written in
-    /// the same millisecond may arrive either way.
+    /// push when nothing changed. It does not promise order across types. A
+    /// single snapshot follows `GET …/events`: `createdAt`, then `id`.
     fn assert_events_once(events: &[(String, String, Value)], want: &[&str]) {
         let mut got: Vec<&str> = events.iter().map(|(name, _, _)| name.as_str()).collect();
         let mut expect = want.to_vec();
@@ -3103,14 +3102,78 @@ mod tests {
         assert_eq!(frames[0].0, robroz_contract::STREAM_RESYNC);
         assert_eq!(frames[0].1, "", "the resync frame has no id");
         assert_eq!(frames[0].2, json!({ "type": "resync" }));
+        // Same sort as GET …/events (`createdAt`, then `id`), which need not
+        // be insertion order when two messages share a millisecond.
+        let events = events_of(&app, &group_id).await;
+        let want: Vec<&str> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["body"].as_str().unwrap())
+            .collect();
         let cards: Vec<&str> = frames[1..]
             .iter()
             .map(|(_, _, data)| data["body"].as_str().unwrap())
             .collect();
-        assert_eq!(cards, ["一", "二", "三"], "the full snapshot follows");
+        assert_eq!(cards, want, "the full snapshot follows GET …/events order");
+        let mut got = cards.clone();
+        got.sort_unstable();
+        let mut expect = vec!["一", "二", "三"];
+        expect.sort_unstable();
+        assert_eq!(got, expect, "every card is in the snapshot");
         assert_eq!(frames[1].1, "");
         assert_eq!(frames[2].1, "");
         assert!(frames[3].1.parse::<i64>().unwrap() > old.parse::<i64>().unwrap());
+    }
+
+    /// `group_cards` (shared by GET …/events and the SSE snapshot) sorts by
+    /// `createdAt`, then `id`. Insertion order is not the contract: two
+    /// messages with the same timestamp follow their ids.
+    #[tokio::test]
+    async fn snapshot_and_events_agree_when_created_at_ties() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "同时").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for text in ["一", "二", "三"] {
+            say(&app, &group_id, text).await;
+        }
+        // Force a createdAt tie and ids that sort differently from insert order.
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE messages SET created_at = '2026-11-27T00:00:00.000Z',
+                     id = CASE body
+                         WHEN '一' THEN 'card-c'
+                         WHEN '二' THEN 'card-a'
+                         WHEN '三' THEN 'card-b'
+                     END",
+                [],
+            )
+            .unwrap();
+
+        let events = events_of(&app, &group_id).await;
+        let rest: Vec<&str> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            rest,
+            ["二", "三", "一"],
+            "GET …/events is createdAt then id"
+        );
+
+        let mut body = open_stream(&app, &group_id, None).await.into_body();
+        let snapshot = sse_take(&mut body, 3, std::time::Duration::from_secs(3)).await;
+        let cards: Vec<&str> = snapshot
+            .iter()
+            .map(|(_, _, data)| data["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(cards, rest, "the SSE snapshot matches GET …/events");
     }
 
     #[tokio::test]
