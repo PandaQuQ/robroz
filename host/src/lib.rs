@@ -24,6 +24,7 @@ mod error_code;
 mod extract;
 mod failure;
 pub(crate) mod follow_ups;
+mod groups;
 mod mcp;
 mod mcp_tools;
 mod memories;
@@ -237,6 +238,7 @@ impl Host {
         let router = router_from(AppState {
             db: self.db.clone(),
             control_root: self.control_root.clone(),
+            volumes_root: self.volumes_root.clone(),
             reviewer: self.reviewer.clone(),
             model: self.model.clone(),
             mcp: self.mcp.clone(),
@@ -326,6 +328,8 @@ fn get_limit_from_env() -> u64 {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     control_root: std::path::PathBuf,
+    /// Group volumes, so deleting a group can remove its files.
+    volumes_root: std::path::PathBuf,
     /// Auto-review of bro-posted cards: test override and fixed model, as on [`Host`].
     reviewer: Option<Arc<dyn review::Reviewer>>,
     model: Option<Arc<dyn robroz_model::Model>>,
@@ -345,7 +349,15 @@ fn router_from(state: AppState) -> Router {
     Router::new()
         .route("/api/me", get(users::me))
         .route("/api/groups", post(create_group).get(list_groups))
-        .route("/api/groups/{id}/members", post(add_member))
+        .route(
+            "/api/groups/{id}",
+            patch(groups::rename_group).delete(groups::delete_group),
+        )
+        .route(
+            "/api/groups/{id}/members",
+            post(add_member).get(groups::list_members),
+        )
+        .route("/api/groups/{id}/search", get(groups::search_group))
         .route("/api/bros", post(bros::create_bro).get(bros::list_bros))
         .route("/api/bros/{id}", axum::routing::patch(bros::rename_bro))
         .route("/api/bros/{id}/dm", post(bros::open_dm))
@@ -569,6 +581,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(follow_ups::SCHEMA)?;
     conn.execute_batch(router::SCHEMA)?;
     conn.execute_batch(timeouts::SCHEMA)?;
+    groups::migrate(conn)?;
     Ok(())
 }
 
@@ -633,13 +646,15 @@ async fn list_groups(State(state): State<AppState>) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
         let mut stmt = conn.prepare(
-            "SELECT id, name, tenant_id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
+            "SELECT id, name, tenant_id, created_by, dm_bot_id IS NOT NULL FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([TENANT_ID], |row| {
             Ok(Group {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 tenant_id: row.get(2)?,
+                created_by: row.get(3)?,
+                dm: row.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -651,7 +666,11 @@ async fn list_groups(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
+async fn create_group(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<users::CurrentUser>,
+    Json(body): Json<CreateGroup>,
+) -> Response {
     let name = body.name.trim();
     if name.is_empty() {
         return error_response(
@@ -663,8 +682,8 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
     let created_at = now_rfc3339();
     let conn = lock_db(&state);
     let result = conn.execute(
-        "INSERT INTO groups (id, tenant_id, name, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![id, TENANT_ID, name, created_at],
+        "INSERT INTO groups (id, tenant_id, name, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, TENANT_ID, name, created_at, user.0],
     );
     drop(conn);
     if let Err(err) = result {
@@ -676,6 +695,8 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
             id,
             name: name.to_string(),
             tenant_id: TENANT_ID.to_string(),
+            created_by: Some(user.0.clone()),
+            dm: false,
         }),
     )
         .into_response()
@@ -4057,8 +4078,8 @@ mod tests {
             body,
             json!({
                 "groups": [
-                    { "id": first["id"], "name": "设计群", "tenantId": "local" },
-                    { "id": second["id"], "name": "运营群", "tenantId": "local" }
+                    { "id": first["id"], "name": "设计群", "tenantId": "local", "createdBy": "local-admin", "dm": false },
+                    { "id": second["id"], "name": "运营群", "tenantId": "local", "createdBy": "local-admin", "dm": false }
                 ]
             })
         );

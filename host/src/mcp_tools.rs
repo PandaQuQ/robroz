@@ -52,7 +52,7 @@ pub trait McpRuntime: Send + Sync {
     /// process for this server, in every group.
     fn evict(&self, _server_id: &str) {}
     /// The group was deleted: stop every pooled process started for it.
-    /// No route calls this yet.
+    /// `DELETE /api/groups/{id}` calls this after commit.
     fn evict_group(&self, _group_id: &str) {}
     /// The host is exiting: stop every pooled process. Blocks up to a few seconds.
     fn shutdown(&self) {}
