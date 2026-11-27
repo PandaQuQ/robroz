@@ -134,7 +134,7 @@ Most files under `docs/` are still Chinese-first. They will be switched to Engli
 
 ## Status
 
-The latest release is [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0), a pre-release; see [CHANGELOG.md](CHANGELOG.md). It ships the host as a Linux x86_64 tarball and the `robroz-host` and `robroz-runner` images on GHCR. The desktop and mobile clients are released from [robroz-client](https://github.com/PandaQuQ/robroz-client) and need `contract-v0.3.1` or newer. `main` is the development branch after v0.2.0.
+The latest release is [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0), a pre-release; see [CHANGELOG.md](CHANGELOG.md). It ships the host as a Linux x86_64 tarball and the `robroz-host` and `robroz-runner` images on GHCR. The desktop and mobile clients are released from [robroz-client](https://github.com/PandaQuQ/robroz-client), which has no release yet; build the client from source against `contract-v0.3.1` or newer. `main` is the development branch after v0.2.0.
 
 In v0.2.0:
 

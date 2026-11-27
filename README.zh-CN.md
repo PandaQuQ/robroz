@@ -134,7 +134,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 ## 状态
 
-最新的发布是 [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0)，预发布版本，见 [CHANGELOG.md](CHANGELOG.md)。它发布 host：一个 Linux x86_64 压缩包，以及 GHCR 上的 `robroz-host` 和 `robroz-runner` 镜像。桌面和手机客户端从 [robroz-client](https://github.com/PandaQuQ/robroz-client) 发布，需要 `contract-v0.3.1` 或更新。`main` 是 v0.2.0 之后的开发分支。
+最新的发布是 [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0)，预发布版本，见 [CHANGELOG.md](CHANGELOG.md)。它发布 host：一个 Linux x86_64 压缩包，以及 GHCR 上的 `robroz-host` 和 `robroz-runner` 镜像。桌面和手机客户端从 [robroz-client](https://github.com/PandaQuQ/robroz-client) 发布，那边还没有发过版；请从源码构建，基于 `contract-v0.3.1` 或更新。`main` 是 v0.2.0 之后的开发分支。
 
 v0.2.0 里有：
 
