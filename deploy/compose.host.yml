@@ -9,6 +9,12 @@
 #   docker compose -f compose.host.yml up -d
 #
 # Do not put a token or a model key in this file or in the repository.
+#
+# deploy/install.sh writes a copy of this file (with the image tags filled in)
+# and a .env next to it. These variables are optional here and default to the
+# values shown: ROBROZ_DATA (/srv/robroz), ROBROZ_BIND (127.0.0.1) and
+# ROBROZ_PORT (8790). CI checks that the copy inside install.sh matches this
+# file, so change both together.
 secrets:
   robroz_token:
     file: ./secrets/robroz_token
@@ -21,18 +27,18 @@ services:
     environment:
       ROBROZ_ADDR: "0.0.0.0:8790"
       # Same absolute path as the volume below, on both sides.
-      ROBROZ_DB: /srv/robroz/robroz.db
-      ROBROZ_VOLUMES: /srv/robroz/groups
-      ROBROZ_CONTROL: /srv/robroz/control
+      ROBROZ_DB: "${ROBROZ_DATA:-/srv/robroz}/robroz.db"
+      ROBROZ_VOLUMES: "${ROBROZ_DATA:-/srv/robroz}/groups"
+      ROBROZ_CONTROL: "${ROBROZ_DATA:-/srv/robroz}/control"
       ROBROZ_IMAGE: ghcr.io/pandaquq/robroz-runner:v0.2.0
       ROBROZ_TOKEN_FILE: /run/secrets/robroz_token
       # Owner of the files the runners write under /srv/robroz/groups.
       ROBROZ_CONTAINER_USER: "1000:1000"
     volumes:
-      - /srv/robroz:/srv/robroz
+      - "${ROBROZ_DATA:-/srv/robroz}:${ROBROZ_DATA:-/srv/robroz}"
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "127.0.0.1:8790:8790"
+      - "${ROBROZ_BIND:-127.0.0.1}:${ROBROZ_PORT:-8790}:8790"
     secrets:
       - robroz_token
     restart: unless-stopped

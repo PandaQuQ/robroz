@@ -55,6 +55,55 @@ jobs:
             *) echo "::error::unexpected --version output: ${line}"; exit 1 ;;
           esac
 
+  install-script:
+    # deploy/install.sh: shellcheck, a dry run, and a real run with --no-start
+    # (writes the files, does not pull or start). A second run must keep the
+    # .env, the token and the data. Nothing here pulls a robroz image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -s sh deploy/install.sh
+      - name: compose file inside the script matches deploy/compose.host.yml
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^DEFAULT_VERSION="\(.*\)"/\1/p' deploy/install.sh)
+          norm() { grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$'; }
+          sed -n '/^write_compose() {/,/^}/p' deploy/install.sh \
+            | sed '1,/<<'"'"'EOF'"'"'$/d' | sed '/^EOF$/,$d' \
+            | sed "s/__VERSION__/${version}/g" | norm > "${RUNNER_TEMP}/script-compose.yml"
+          norm < deploy/compose.host.yml > "${RUNNER_TEMP}/example-compose.yml"
+          test -s "${RUNNER_TEMP}/script-compose.yml"
+          diff -u "${RUNNER_TEMP}/example-compose.yml" "${RUNNER_TEMP}/script-compose.yml"
+      - name: Dry run writes nothing
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/dry"
+          sh deploy/install.sh --dry-run --dir "$dir"
+          test ! -e "$dir"
+      - name: No-start run, then a rerun that keeps everything
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/robroz"
+          sh deploy/install.sh --no-start --dir "$dir"
+          test -s "$dir/secrets/robroz_token"
+          test -s "$dir/.env" && test -s "$dir/compose.yml" && test -d "$dir/data"
+          # The generated compose file must be valid with the generated .env.
+          (cd "$dir" && docker compose config --quiet)
+          # Placeholders only: no model key line may be set.
+          if grep -E '^ROBROZ_(MODEL|TOKEN)' "$dir/.env"; then
+            echo "::error::.env must not set a model or token variable"; exit 1
+          fi
+          sha256sum "$dir/.env" "$dir/secrets/robroz_token" > "${RUNNER_TEMP}/before.sha"
+          touch "$dir/data/keep-me"
+          sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
+          sha256sum -c "${RUNNER_TEMP}/before.sha"
+          test -e "$dir/data/keep-me"
+          grep -q 'robroz-host:v9.9.9' "$dir/compose.yml"
+          test -f "$dir/compose.yml.bak"
+
   cargo-deny:
     runs-on: ubuntu-latest
     steps:

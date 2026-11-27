@@ -14,6 +14,14 @@ name: Release
 # The draft release does not wait for that job, so the host assets still
 # upload if an image push fails. There is no `latest` tag.
 #
+# Before tagging vX.Y.Z, merge a PR that sets DEFAULT_VERSION in
+# deploy/install.sh and the image tags in deploy/compose.host.yml to vX.Y.Z.
+# The pin-version job on a tag push fails the release (and skips the image
+# push) if they do not match, so a tag cannot ship an installer that pulls
+# the wrong image. This workflow never pushes to main; main is protected.
+# Do not use the GitHub releases/latest API: v0.* tags are pre-releases and
+# that endpoint skips them.
+#
 # Client binaries are released from https://github.com/PandaQuQ/robroz-client.
 on:
   push:
@@ -29,7 +37,34 @@ permissions:
   contents: write
 
 jobs:
+  pin-version:
+    # On a tag push, require the installer pin to match the tag before any
+    # binary or image is published. workflow_dispatch skips the check.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned install version matches the release tag
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          pinned=$(sed -n 's/^DEFAULT_VERSION="\(.*\)"/\1/p' deploy/install.sh)
+          if [ -z "${pinned}" ] || [ "${pinned}" != "${tag}" ]; then
+            echo "::error::deploy/install.sh DEFAULT_VERSION is '${pinned}', expected '${tag}'. Merge a PR that bumps DEFAULT_VERSION and the tags in deploy/compose.host.yml, then tag again. This job does not push to main."
+            exit 1
+          fi
+          if ! grep -q "ghcr.io/pandaquq/robroz-host:${tag}" deploy/compose.host.yml; then
+            echo "::error::deploy/compose.host.yml does not pin ghcr.io/pandaquq/robroz-host:${tag}"
+            exit 1
+          fi
+          if ! grep -q "ghcr.io/pandaquq/robroz-runner:${tag}" deploy/compose.host.yml; then
+            echo "::error::deploy/compose.host.yml does not pin ghcr.io/pandaquq/robroz-runner:${tag}"
+            exit 1
+          fi
+          echo "install pin and compose tags match ${tag}"
+
   build:
+    needs: [pin-version]
     if: ${{ !inputs.push_host_image }}
     strategy:
       fail-fast: false
@@ -150,6 +185,7 @@ jobs:
 
   image:
     name: image (${{ matrix.image }})
+    needs: [pin-version]
     strategy:
       fail-fast: false
       matrix:
