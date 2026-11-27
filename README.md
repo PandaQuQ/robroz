@@ -13,15 +13,15 @@
 
 > This repository is the robroz **host** (server): the HTTP API, the runner, the shared contract and the Docker images. The desktop and mobile clients are in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client).
 
-Self-hosted multi-agent workspace you drive through chat. Agents (bros) run in Docker sandboxes; approvals and results come back as cards. The host is written in Rust; the native clients are in [robroz-client](https://github.com/PandaQuQ/robroz-client).
+A self-hosted multi-agent workspace operated through chat. Agents (bros) run in Docker sandboxes; approvals and results are returned as cards. The host is written in Rust; the native clients are in [robroz-client](https://github.com/PandaQuQ/robroz-client).
 
 See [CHANGELOG.md](CHANGELOG.md) and [docs/install.md](docs/install.md).
 
-## What is robroz
+## Overview
 
-You chat on your own machine with a group of AI bros. You give them work in plain language; they do it in a sandbox on that machine, and they ask you before anything risky.
+robroz is a self-hosted workspace in which you assign work, in plain language, to a group of AI bros on your own machine. The bros carry out that work in a sandbox on that machine and request approval before any risky step.
 
-It is for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
+It is intended for people who want several AI agents in one workspace they control, and who want to approve risky steps themselves.
 
 <p>
   <img src="docs/assets/main-en-light.png" alt="robroz desktop client, light theme: a group chat with status and delivery cards" width="49%">
@@ -32,53 +32,55 @@ It is for people who want several AI agents in one workspace they control, and w
 
 ## Features
 
-- **Chat bubbles.** Your messages sit on the right; bro cards sit on the left, grouped by sender. A delivery with a `bot_name` is attached to that bro; a delivery without one stands alone.
-- **Group turns.** A message that names no bro gets one reply, from one bro the host picks. Name a bro with `@name` at the start and that bro speaks first; the others may then take a turn or stay quiet.
-- **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
-- **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
-- **Bigger tasks in steps.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
-- **Direct messages.** Talk one-to-one with a bro.
+- **Chat bubbles.** Your messages appear on the right; bro cards appear on the left, grouped by sender. A delivery with a `bot_name` is attached to that bro; a delivery without one stands alone.
+- **Group turns.** A message that names no bro receives one reply, from one bro selected by the host. Name a bro with `@name` at the start and that bro speaks first; the others may then take a turn or remain silent.
+- **Bros reply to each other.** When a bro replies in a group, the other bros may also reply. The exchange stops after two rounds.
+- **Follow-ups.** If a bro is still working, further instructions can be added to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, send the message without a mention.
+- **Multi-step tasks.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
+- **Direct messages.** One-to-one conversation with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
-- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card stays where the task started and you approve or deny it. For a card in a group, you also get a reminder in your direct message with the bro. Memory and skill changes also wait for you to confirm.
-- **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
+- **Approvals and Allow rules.** Risky steps require your approval. Auto-review checks each card against your allow rules; if no rule allows it, the card stays where the task started and you approve or deny it. For a card in a group, a reminder is also sent in your direct message with the bro. Memory and skill changes also require confirmation.
+- **Model settings.** Any OpenAI-compatible model can be connected. A base URL and a model name are sufficient; the key is optional. Settings can be applied in the client or with environment variables.
 
-You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
+Web search (Brave or SearXNG), MCP tools, and scheduled routines are also available. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
 
 ## Roadmap
 
-These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
+The following items are accepted design or are in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
 - Cancelling a timed-out step or stopping the container.
 - Accounts for more than one person on a host.
 
-## Quick start
+## Installation
 
-To run a released host in Docker on Linux, with no Rust toolchain:
+To install a released host in Docker on Linux, no Rust toolchain is required:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh
 ```
 
-The script pulls the `v0.2.0` host and runner images from GHCR, writes the token to `~/robroz/secrets/robroz_token`, and serves `127.0.0.1:8790`. Add `-s -- --dry-run` after `sh` to see what it would do first; [docs/docker-host.md](docs/docker-host.md) explains the `docker.sock` risk.
+The script pulls the `v0.2.0` host and runner images from GHCR, writes the token to `~/robroz/secrets/robroz_token`, and serves `127.0.0.1:8790`. Add `-s -- --dry-run` after `sh` to preview the actions first; [docs/docker-host.md](docs/docker-host.md) explains the `docker.sock` risk.
 
 To build from source instead:
 
-You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. To install a published binary or run the host in Docker instead, see [docs/install.md](docs/install.md) and [docs/docker-host.md](docs/docker-host.md). The walk-through there also uses `curl` and `jq`. From the repository root:
+A Rust stable toolchain (`rustup`, `cargo`) and Docker are required. To install a published binary or run the host in Docker instead, see [docs/install.md](docs/install.md) and [docs/docker-host.md](docs/docker-host.md). The walk-through there also uses `curl` and `jq`. From the repository root:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
 cargo run -p robroz-host     # listens on 127.0.0.1:8790, no token required
 ```
 
-Then start a client from [robroz-client](https://github.com/PandaQuQ/robroz-client); its default host is `http://127.0.0.1:8790`.
-
 The host writes `./robroz.db`, `./data/groups` and `./data/control` by default. A loopback listener needs no token; listening on a non-loopback address without `ROBROZ_TOKEN` or `ROBROZ_TOKEN_FILE` refuses to start.
+
+## Quick start
+
+Start a client from [robroz-client](https://github.com/PandaQuQ/robroz-client); the default host URL is `http://127.0.0.1:8790`.
 
 In the client, click Add a bro (「引入一个 bro」) next to the Chats (「聊天」) heading, open the DM and send a message. That is your first task. With no model configured, the delivery is No model set up yet (「还没设置模型」) and the card offers Set up (「去设置」).
 
 ### Configure a model
 
-Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. You can also set environment variables and keep the key in a file outside the repository:
+Open Model (「模型」) in the client, or the Set up (「去设置」) link on a delivery card. Fill in the address and the model name; the key is optional. Saving tests the connection. Environment variables may also be used, with the key kept in a file outside the repository:
 
 ```sh
 mkdir -p "$HOME/.config/robroz"
@@ -91,22 +93,7 @@ cargo run -p robroz-host
 
 `ROBROZ_MODEL=echo` is a test switch (CI uses it) that echoes the prompt when no complete model is configured. Do not set it in a real deployment.
 
-Other host variables you may want: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control how soon a long or stalled step shows a hint on the card; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
-
-## Architecture
-
-Clients from [robroz-client](https://github.com/PandaQuQ/robroz-client) talk to a single-machine host (`robroz-host`) over HTTP and SSE, using the types in `robroz-contract`; the client repository depends on it by git tag (`contract-v*`). The host owns SQLite, model and tool calls, search, MCP, approvals and the container pump. Each task runs in a Docker container (`robroz-runner`) with no network; the container never sees model keys. How the pieces fit together: [docs/architecture.md](docs/architecture.md).
-
-| Path | Crate | Role |
-| --- | --- | --- |
-| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model and tool calls, search, MCP, auto-review |
-| `runner/` | `robroz-runner` | Task executor inside the container |
-| `crates/robroz-contract` | `robroz-contract` | API contract: request and response bodies, event (card) types, task states |
-| `crates/robroz-policy` | `robroz-policy` | Permission tiers, outbound metering, blocking lines |
-| `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
-| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
-
-"Bro" is the UI name for a bot: code, API and the database still say bot (`botId` / `botName`). The four task states `queued` / `running` / `blocked` / `done` are frozen.
+Other host variables that are commonly useful: `ROBROZ_STEP_TIMEOUT_SECS` (default `600`) and `ROBROZ_STALL_SECS` (default `900`) control how soon a long or stalled step shows a hint on the card; `ROBROZ_APPROVAL_TTL_SECS` (default `86400`) is how long an approval card stays open. The full list is in [docs/configuration.md](docs/configuration.md). End-to-end setup, tokens, and a `curl` first-task walk-through are in [docs/install.md](docs/install.md).
 
 ## Documentation
 
@@ -139,7 +126,7 @@ The latest release is [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v
 
 In v0.2.0:
 
-- One-command install with Docker ([#197](https://github.com/PandaQuQ/robroz/pull/197), [#204](https://github.com/PandaQuQ/robroz/pull/204)); see [Quick start](#quick-start).
+- One-command install with Docker ([#197](https://github.com/PandaQuQ/robroz/pull/197), [#204](https://github.com/PandaQuQ/robroz/pull/204)); see [Installation](#installation).
 - A message that mentions no bro gets one reply instead of one from every bro ([#198](https://github.com/PandaQuQ/robroz/pull/198); `ROBROZ_SINGLE_RESPONDER=0` restores the old behaviour).
 - Bro owners and an optional bro avatar picked by the owner ([#174](https://github.com/PandaQuQ/robroz/pull/174), [#194](https://github.com/PandaQuQ/robroz/pull/194)).
 - Group member list, rename, delete and in-group search ([#195](https://github.com/PandaQuQ/robroz/pull/195)).
@@ -150,6 +137,21 @@ In v0.2.0:
 Known issues are listed in the [v0.2.0 release notes](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0). Long-lived sessions that reuse one container were in the v0.2 scope but are not in v0.2.0.
 
 **Moved to v0.3:** layered memory (a short always-loaded note plus recall by relevance), a delegation tree where a parent task finishes only after its subtasks report back, and per-session approval levels with questions answered mid-turn.
+
+## Architecture
+
+Clients from [robroz-client](https://github.com/PandaQuQ/robroz-client) talk to a single-machine host (`robroz-host`) over HTTP and SSE, using the types in `robroz-contract`; the client repository depends on it by git tag (`contract-v*`). The host owns SQLite, model and tool calls, search, MCP, approvals and the container pump. Each task runs in a Docker container (`robroz-runner`) with no network; the container never sees model keys. How the pieces fit together: [docs/architecture.md](docs/architecture.md).
+
+| Path | Crate | Role |
+| --- | --- | --- |
+| `host/` | `robroz-host` | HTTP API (axum), SQLite, container pump, schedules, model and tool calls, search, MCP, auto-review |
+| `runner/` | `robroz-runner` | Task executor inside the container |
+| `crates/robroz-contract` | `robroz-contract` | API contract: request and response bodies, event (card) types, task states |
+| `crates/robroz-policy` | `robroz-policy` | Permission tiers, outbound metering, blocking lines |
+| `crates/robroz-model` | `robroz-model` | OpenAI-compatible `/chat/completions` client with tool calls |
+| `crates/robroz-mcp` | `robroz-mcp` | MCP client (stdio and Streamable HTTP) |
+
+"Bro" is the UI name for a bot: code, API and the database still say bot (`botId` / `botName`). The four task states `queued` / `running` / `blocked` / `done` are frozen.
 
 ## Development
 

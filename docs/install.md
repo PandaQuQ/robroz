@@ -34,7 +34,7 @@ Options: `--dir DIR`, `--version TAG`, `--dry-run`, `--no-start` (write the file
 
 ### Get the client
 
-The host has no UI. [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) has no GitHub Release yet, so build the client from source against `contract-v0.3.1` or newer. Follow that repository's [README](https://github.com/PandaQuQ/robroz-client#quick-start) and [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md). Then enter the host URL (`http://127.0.0.1:8790` by default) and the token from `secrets/robroz_token` in the client. Show the token with `cat ~/robroz/secrets/robroz_token` (no `sudo` needed once the script has set mode 0640).
+The host has no UI. [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) has no GitHub Release yet, so build the client from source against `contract-v0.3.1` or newer. Follow that repository's [README](https://github.com/PandaQuQ/robroz-client#installation) and [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md). Then enter the host URL (`http://127.0.0.1:8790` by default) and the token from `secrets/robroz_token` in the client. Show the token with `cat ~/robroz/secrets/robroz_token` (no `sudo` needed once the script has set mode 0640).
 
 ## Download a release
 
