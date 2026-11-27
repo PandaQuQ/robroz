@@ -11,9 +11,22 @@ use robroz_model::{
 use robroz_policy::{tier, SideEffect, Tier};
 use serde_json::Value;
 
-/// Max model calls in one task. If the last one is still a tool call, the task
-/// finishes as done with [`ROUND_LIMIT_FAILURE`].
+/// Default for `ROBROZ_MAX_TOOL_ROUNDS`: max model calls in one step. If the
+/// last one is still a tool call, the task finishes as done with
+/// [`ROUND_LIMIT_FAILURE`].
 pub const MAX_TOOL_ROUNDS: usize = 8;
+
+/// `ROBROZ_MAX_TOOL_ROUNDS`, read once; a missing, zero or unparsable value
+/// keeps [`MAX_TOOL_ROUNDS`].
+pub fn max_tool_rounds_from_env() -> usize {
+    static ROUNDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *ROUNDS.get_or_init(|| rounds_from(crate::env_num::var("ROBROZ_MAX_TOOL_ROUNDS")))
+}
+
+fn rounds_from(raw: Option<u64>) -> usize {
+    raw.and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(MAX_TOOL_ROUNDS)
+}
 
 /// Longest tool result, in characters, including the truncation marker.
 pub const MAX_TOOL_RESULT_CHARS: usize = 16_000;
@@ -60,6 +73,8 @@ pub struct ToolCtx {
     /// Set by the host when the step timed out ([`crate::timeouts`]): the
     /// loop stops before its next model or tool call.
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Model calls allowed in one step (`ROBROZ_MAX_TOOL_ROUNDS`).
+    pub max_rounds: usize,
 }
 
 impl ToolCtx {
@@ -70,6 +85,7 @@ impl ToolCtx {
             needs_setup: None,
             over_quota: None,
             cancel: None,
+            max_rounds: max_tool_rounds_from_env(),
         }
     }
 
@@ -281,7 +297,7 @@ pub struct PendingApproval {
 }
 
 /// Ask the model, run any tool calls, and fill the results back, until a text
-/// reply or [`MAX_TOOL_ROUNDS`]. `on_using` is called with the tool name before
+/// reply or [`ToolCtx::max_rounds`]. `on_using` is called with the tool name before
 /// each invocation so the status card can say "在用 <工具名>".
 pub fn complete(
     model: &dyn Model,
@@ -351,7 +367,8 @@ fn complete_loop(
         fill_calls(rest, tools, ctx, &mut on_using, &mut messages, start_round)?;
         next_round = start_round.saturating_add(1);
     }
-    for round in next_round..=MAX_TOOL_ROUNDS {
+    let max_rounds = ctx.max_rounds.max(1);
+    for round in next_round..=max_rounds {
         if ctx.cancelled() {
             return Err(CompleteError::Cancelled);
         }
@@ -359,7 +376,7 @@ fn complete_loop(
         match turn {
             AssistantTurn::Text(text) => return Ok(text),
             AssistantTurn::ToolCalls(calls) => {
-                if round == MAX_TOOL_ROUNDS {
+                if round == max_rounds {
                     return Err(CompleteError::RoundLimit);
                 }
                 messages.push(ChatMessage::Assistant(AssistantTurn::ToolCalls(
@@ -633,6 +650,37 @@ mod tests {
         assert_eq!(model.seen.lock().unwrap().len(), MAX_TOOL_ROUNDS);
         // The last (8th) tool call is not executed.
         assert_eq!(used.lock().unwrap().len(), MAX_TOOL_ROUNDS - 1);
+    }
+
+    #[test]
+    fn a_configured_round_limit_is_used_instead_of_eight() {
+        let turns = (0..3)
+            .map(|i| AssistantTurn::ToolCalls(vec![call("echo", &format!("c{i}"), "{}")]))
+            .collect();
+        let model = ScriptedModel::new(turns);
+        let mut tools = ToolRegistry::new();
+        tools.register(FakeTool::ok("echo", "ok"));
+        let (cb, used) = using();
+        let mut ctx = ToolCtx::new(8);
+        ctx.max_rounds = 3;
+        let err = complete(&model, "循环", None, &tools, &mut ctx, cb).unwrap_err();
+        assert_eq!(err, CompleteError::RoundLimit);
+        assert_eq!(model.seen.lock().unwrap().len(), 3);
+        assert_eq!(used.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn max_tool_rounds_env_like_the_watchdog() {
+        assert_eq!(rounds_from(None), MAX_TOOL_ROUNDS);
+        assert_eq!(
+            rounds_from(crate::env_num::positive(Some("0"))),
+            MAX_TOOL_ROUNDS
+        );
+        assert_eq!(
+            rounds_from(crate::env_num::positive(Some("x"))),
+            MAX_TOOL_ROUNDS
+        );
+        assert_eq!(rounds_from(crate::env_num::positive(Some("20"))), 20);
     }
 
     #[test]

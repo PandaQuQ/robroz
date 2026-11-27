@@ -20,6 +20,7 @@ mod approvals;
 pub mod auth;
 mod bros;
 mod choices;
+mod env_num;
 mod error_code;
 mod extract;
 mod failure;
@@ -43,7 +44,7 @@ mod search;
 mod settings;
 mod skills;
 mod steps;
-mod stream;
+pub mod stream;
 mod text;
 mod timeouts;
 mod tools;
@@ -95,6 +96,10 @@ pub struct Host {
     single_responder: bool,
     /// Test hook: pick the bro with this instead of a model.
     selector: Option<Arc<dyn responder::Selector>>,
+    /// Poll, keep-alive, lifetime and count limits of live streams.
+    stream: stream::StreamConfig,
+    /// Live streams open right now, against [`stream::StreamConfig::max_streams`].
+    open_streams: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Host {
@@ -121,7 +126,16 @@ impl Host {
             step_timeout: None,
             single_responder: true,
             selector: None,
+            stream: stream::StreamConfig::default(),
+            open_streams: Arc::default(),
         })
+    }
+
+    /// Limits for `GET /api/groups/{id}/stream` ([`stream::StreamConfig`]).
+    /// The binary passes [`stream::StreamConfig::from_env`].
+    pub fn with_stream_config(mut self, config: stream::StreamConfig) -> Self {
+        self.stream = config;
+        self
     }
 
     /// Root for per-task control dirs (`{root}/{taskId}/takeover`). Only the host
@@ -266,6 +280,8 @@ impl Host {
             mcp: self.mcp.clone(),
             single_responder: self.single_responder,
             selector: self.selector.clone(),
+            stream: self.stream,
+            open_streams: self.open_streams.clone(),
         })
         .layer(axum::middleware::from_fn(users::identify));
         auth::require_token(router, self.token.clone())
@@ -276,6 +292,11 @@ impl Host {
     /// its own thread. The DB lock is only held for SQL, never across docker calls.
     /// Tests call [`pump`] directly and do not start that loop.
     pub fn pump_once(&self, sandbox: &mut dyn Sandbox) -> rusqlite::Result<()> {
+        // The newest progress line the throttle held back, once it may go out.
+        {
+            let conn = self.db.lock().expect("sqlite connection lock poisoned");
+            progress::flush_due(&conn)?;
+        }
         let mut tools = crate::tools::ToolRegistry::new();
         crate::search::register_tools(&mut tools, self.db.clone());
         enum Slot {
@@ -362,6 +383,9 @@ struct AppState {
     /// See [`Host::with_single_responder`] and the test hook behind it.
     single_responder: bool,
     selector: Option<Arc<dyn responder::Selector>>,
+    /// See [`Host::with_stream_config`].
+    stream: stream::StreamConfig,
+    open_streams: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
@@ -2768,6 +2792,114 @@ mod tests {
             .unwrap();
         assert_eq!(status.2["id"], task_id);
         assert_eq!(status.2["state"], "done");
+    }
+
+    fn stream_app(path: &Path, config: super::stream::StreamConfig) -> Router {
+        super::Host::open(path, temp_volumes(), "robroz-runner:local")
+            .unwrap()
+            .with_stream_config(config)
+            .router()
+    }
+
+    #[tokio::test]
+    async fn stream_closes_cleanly_at_its_max_age_and_a_reconnect_misses_nothing() {
+        let path = temp_db();
+        let config = super::stream::StreamConfig {
+            poll: std::time::Duration::from_millis(20),
+            max_age: std::time::Duration::from_millis(300),
+            ..Default::default()
+        };
+        let app = stream_app(&path, config);
+        let group_id = create_group(&app, "寿命").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        say(&app, &group_id, "一").await;
+        let resp = open_stream(&app, &group_id, None).await;
+        assert_eq!(resp.headers()["x-accel-buffering"], "no");
+        let mut body = resp.into_body();
+        let first = sse_take(&mut body, 1, std::time::Duration::from_secs(3)).await;
+        let last = first[0].1.clone();
+        // The body ends by itself shortly after max age.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(frame) = body.frame().await {
+                frame.unwrap();
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "stream should end at max age");
+        // Written while disconnected, delivered on reconnect.
+        say(&app, &group_id, "二").await;
+        let mut body = open_stream(&app, &group_id, Some(&last)).await.into_body();
+        // A time cursor may send the last card again (same millisecond);
+        // the new one must be there.
+        let resumed = sse_take(&mut body, 2, std::time::Duration::from_secs(1)).await;
+        assert!(
+            resumed.iter().any(|(_, _, d)| d["body"] == "二"),
+            "{resumed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_stream_too_many_gets_503_with_retry_after_and_a_slot_frees_on_drop() {
+        let path = temp_db();
+        let config = super::stream::StreamConfig {
+            max_streams: 2,
+            ..Default::default()
+        };
+        let app = stream_app(&path, config);
+        let group_id = create_group(&app, "满").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let a = open_stream(&app, &group_id, None).await;
+        let b = open_stream(&app, &group_id, None).await;
+        assert_eq!(a.status(), StatusCode::OK);
+        assert_eq!(b.status(), StatusCode::OK);
+        let c = open_stream(&app, &group_id, None).await;
+        assert_eq!(c.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(c.headers()["retry-after"], "5");
+        let (_, body) = read_json(c).await;
+        assert_eq!(body["code"], super::stream::TOO_MANY_STREAMS);
+        // A 404 does not take a slot either way; dropping a stream frees one.
+        drop(a);
+        let d = open_stream(&app, &group_id, None).await;
+        assert_eq!(d.status(), StatusCode::OK);
+        drop(b);
+        drop(d);
+        assert_eq!(
+            open_stream(&app, &group_id, None).await.status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_keep_alive_follows_the_config() {
+        let path = temp_db();
+        let config = super::stream::StreamConfig {
+            keep_alive: std::time::Duration::from_millis(100),
+            ..Default::default()
+        };
+        let app = stream_app(&path, config);
+        let group_id = create_group(&app, "保活").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut body = open_stream(&app, &group_id, None).await.into_body();
+        let mut text = String::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !text.contains(":") {
+            let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await else {
+                break;
+            };
+            if let Ok(bytes) = frame.into_data() {
+                text.push_str(std::str::from_utf8(&bytes).unwrap());
+            }
+        }
+        assert!(
+            text.starts_with(':'),
+            "a keep-alive comment within 2s: {text:?}"
+        );
     }
 
     #[tokio::test]
@@ -5691,9 +5823,16 @@ mod tests {
             "same progress, no new status: {fresh}"
         );
 
-        // Another step: a new status again.
+        // Another step within `ROBROZ_PROGRESS_MIN_MS` of the last one: held
+        // back, then written by the pump once the interval has passed.
         std::fs::write(&progress_file, "在排版").unwrap();
         pump_with_model(&path, &volumes, &mut fake, &model);
+        let (_, fresh) = read_json(call(&app, get(&since)).await).await;
+        assert!(statuses(&fresh).is_empty(), "throttled: {fresh}");
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(super::progress::flush_due_at(&conn, later).unwrap(), 1);
+        drop(conn);
         let (_, fresh) = read_json(call(&app, get(&since)).await).await;
         assert_eq!(statuses(&fresh).len(), 1);
         assert_eq!(statuses(&fresh)[0]["progress"], "在排版");

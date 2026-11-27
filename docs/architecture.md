@@ -65,7 +65,7 @@
 
 ### 实时推送
 
-`GET /api/groups/{id}/stream` 不改任何写入路径：宿主机大约每 250 毫秒查一次库，把变化过的卡推出去，没变化每 15 秒发一次保活注释。见 [api.md](api.md#real-time-updates)。
+`GET /api/groups/{id}/stream` 不改任何写入路径：宿主机默认每 250 毫秒查一次库，把变化过的卡推出去，没变化每 15 秒发一次保活注释；一条流最多开 1 小时就干净关掉让客户端续上，全宿主机最多同时 64 条（多了回 503 和 `Retry-After`）。这些数都能用环境变量改，见 [configuration.md](configuration.md)。见 [api.md](api.md#real-time-updates)。
 
 ## 卡片和界面层
 

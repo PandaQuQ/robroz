@@ -6,6 +6,19 @@
 //! Progress is shown while the task is `running` with a live container, and
 //! also while `blocked` if a line is still stored (an MCP tool waiting for
 //! approval). Other states do not show it.
+//!
+//! Production writes go through [`report`], which throttles the bro's own
+//! lines ([`ProgressCode::Custom`]) to one write per task per
+//! `ROBROZ_PROGRESS_MIN_MS` ([`DEFAULT_MIN_INTERVAL`]). A line that comes too
+//! soon is kept, and the pump writes the newest kept line once the interval
+//! has passed ([`flush_due`]), so the last thing the bro said always shows.
+//! Coded lines (started, thinking, a tool, a Router step, Watchdog hints) are
+//! written at once, drop any kept line, which they supersede, and restart the
+//! window.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use robroz_contract::{ProgressCode, ProgressData, ProgressParams};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -141,6 +154,173 @@ pub(crate) fn codes(
         Some(data) => (Some(data.code), data.wire_params()),
         None => (None, None),
     }
+}
+
+/// Default for `ROBROZ_PROGRESS_MIN_MS`.
+pub const DEFAULT_MIN_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Per-task write times and the newest line held back, for [`report`].
+#[derive(Debug)]
+pub(crate) struct Throttle {
+    min: Duration,
+    tasks: HashMap<String, Slot>,
+}
+
+#[derive(Debug)]
+struct Slot {
+    /// When the last custom line was written, and its text.
+    last: Instant,
+    text: Option<String>,
+    pending: Option<Progress>,
+}
+
+impl Throttle {
+    pub(crate) fn new(min: Duration) -> Self {
+        Self {
+            min,
+            tasks: HashMap::new(),
+        }
+    }
+
+    /// Whether `line` for `task_id` should be written now. A custom line
+    /// within the interval of the previous custom write is kept instead
+    /// (replacing an older kept one). A coded line always goes out, drops
+    /// the kept line it supersedes and restarts the window, so the bro's
+    /// next own line after it is news and goes out at once.
+    fn offer(&mut self, task_id: &str, line: &Progress, now: Instant) -> bool {
+        if line.data.code != ProgressCode::Custom || self.min.is_zero() {
+            self.tasks.remove(task_id);
+            return true;
+        }
+        let text = normalize(&line.text);
+        if let Some(slot) = self.tasks.get_mut(task_id) {
+            // The runner's file is read on every pump pass: the line on the
+            // card again is not a write, and it is newer than any kept one.
+            if slot.text == text {
+                slot.pending = None;
+                return false;
+            }
+            if now.saturating_duration_since(slot.last) < self.min {
+                slot.pending = Some(line.clone());
+                return false;
+            }
+        }
+        self.tasks.insert(
+            task_id.to_string(),
+            Slot {
+                last: now,
+                text,
+                pending: None,
+            },
+        );
+        true
+    }
+
+    /// Kept lines whose interval has passed, to write now. Forgets tasks
+    /// with nothing kept once their interval is over.
+    fn due(&mut self, now: Instant) -> Vec<(String, Progress)> {
+        let min = self.min;
+        let mut out = Vec::new();
+        self.tasks.retain(|task_id, slot| {
+            if now.saturating_duration_since(slot.last) < min {
+                return true;
+            }
+            match slot.pending.take() {
+                Some(line) => {
+                    slot.text = normalize(&line.text);
+                    out.push((task_id.clone(), line));
+                    slot.last = now;
+                    true
+                }
+                None => false,
+            }
+        });
+        out
+    }
+}
+
+/// `ROBROZ_PROGRESS_MIN_MS`; a missing, zero or unparsable value keeps
+/// [`DEFAULT_MIN_INTERVAL`].
+fn min_interval_from(raw: Option<u64>) -> Duration {
+    raw.map(Duration::from_millis)
+        .unwrap_or(DEFAULT_MIN_INTERVAL)
+}
+
+/// The host's one throttle, sized from the environment on first use.
+fn throttle() -> &'static Mutex<Throttle> {
+    static THROTTLE: OnceLock<Mutex<Throttle>> = OnceLock::new();
+    THROTTLE.get_or_init(|| {
+        Mutex::new(Throttle::new(min_interval_from(crate::env_num::var(
+            "ROBROZ_PROGRESS_MIN_MS",
+        ))))
+    })
+}
+
+/// [`set_progress`] through the host's throttle: coded lines at once, the
+/// bro's own lines at most once per interval (the newest is kept for
+/// [`flush_due`]). Returns whether the card changed now.
+pub(crate) fn report(
+    conn: &Connection,
+    task_id: &str,
+    progress: &Progress,
+) -> rusqlite::Result<bool> {
+    report_with(conn, task_id, progress, throttle(), Instant::now())
+}
+
+fn report_with(
+    conn: &Connection,
+    task_id: &str,
+    progress: &Progress,
+    throttle: &Mutex<Throttle>,
+    now: Instant,
+) -> rusqlite::Result<bool> {
+    let write = throttle
+        .lock()
+        .expect("progress throttle poisoned")
+        .offer(task_id, progress, now);
+    if !write {
+        return Ok(false);
+    }
+    let changed = set_progress(conn, task_id, progress)?;
+    if !changed {
+        // Nothing was written (same text, task not running): no window.
+        throttle
+            .lock()
+            .expect("progress throttle poisoned")
+            .tasks
+            .remove(task_id);
+    }
+    Ok(changed)
+}
+
+/// Write every kept line whose interval has passed. The pump calls this on
+/// each pass. Returns how many cards changed.
+pub(crate) fn flush_due(conn: &Connection) -> rusqlite::Result<usize> {
+    flush_due_with(conn, throttle(), Instant::now())
+}
+
+/// [`flush_due`] as if `now` had come (tests, to skip the interval).
+#[cfg(test)]
+pub(crate) fn flush_due_at(conn: &Connection, now: Instant) -> rusqlite::Result<usize> {
+    flush_due_with(conn, throttle(), now)
+}
+
+fn flush_due_with(
+    conn: &Connection,
+    throttle: &Mutex<Throttle>,
+    now: Instant,
+) -> rusqlite::Result<usize> {
+    let due = throttle
+        .lock()
+        .expect("progress throttle poisoned")
+        .due(now);
+    let mut changed = 0;
+    for (task_id, line) in due {
+        if set_progress(conn, &task_id, &line)? {
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Set the progress line of a running task. Returns `true` when the card
@@ -329,6 +509,95 @@ mod tests {
         assert_eq!(params.unwrap().tool.as_deref(), Some("web_search"));
         assert_eq!(codes(None, data.as_deref()), (None, None), "nothing shown");
         assert_eq!(codes(Some("x"), None), (None, None), "old row");
+    }
+
+    fn shown_now(conn: &Connection) -> Option<String> {
+        row(conn, "t1").1
+    }
+
+    #[test]
+    fn custom_lines_are_throttled_and_the_newest_is_written_later() {
+        let conn = db();
+        let t = Mutex::new(Throttle::new(Duration::from_millis(1000)));
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut writes = 0;
+        for i in 0..10u64 {
+            let line = Progress::custom(&format!("第{i}步"));
+            if report_with(&conn, "t1", &line, &t, at(i * 20)).unwrap() {
+                writes += 1;
+            }
+        }
+        assert_eq!(writes, 1, "ten lines in 200ms, one write");
+        assert_eq!(shown_now(&conn).as_deref(), Some("第0步"));
+        assert_eq!(flush_due_with(&conn, &t, at(500)).unwrap(), 0, "too soon");
+        assert_eq!(flush_due_with(&conn, &t, at(1000)).unwrap(), 1);
+        assert_eq!(shown_now(&conn).as_deref(), Some("第9步"), "the newest");
+        assert_eq!(flush_due_with(&conn, &t, at(2500)).unwrap(), 0);
+        assert!(t.lock().unwrap().tasks.is_empty(), "idle tasks forgotten");
+    }
+
+    #[test]
+    fn coded_lines_go_out_at_once_and_drop_a_kept_line() {
+        let conn = db();
+        let t = Mutex::new(Throttle::new(Duration::from_millis(1000)));
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        assert!(report_with(&conn, "t1", &Progress::custom("查资料"), &t, at(0)).unwrap());
+        assert!(!report_with(&conn, "t1", &Progress::custom("还在查"), &t, at(10)).unwrap());
+        assert!(report_with(&conn, "t1", &Progress::using_tool("web_search"), &t, at(20)).unwrap());
+        assert!(report_with(&conn, "t1", &Progress::router_step(1, 2), &t, at(30)).unwrap());
+        assert_eq!(
+            flush_due_with(&conn, &t, at(5000)).unwrap(),
+            0,
+            "superseded"
+        );
+        assert_eq!(shown_now(&conn).as_deref(), Some("1/2 步"));
+        // The bro's next own line after a coded one is news: at once.
+        assert!(report_with(&conn, "t1", &Progress::custom("写结论"), &t, at(35)).unwrap());
+        assert!(!report_with(&conn, "t1", &Progress::custom("改措辞"), &t, at(36)).unwrap());
+        // Other tasks have their own interval.
+        assert!(report_with(&conn, "t2", &Progress::custom("x"), &t, at(40)).is_ok());
+    }
+
+    #[test]
+    fn the_line_on_the_card_again_is_not_a_write_and_drops_a_kept_one() {
+        let conn = db();
+        let t = Mutex::new(Throttle::new(Duration::from_millis(1000)));
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        assert!(report_with(&conn, "t1", &Progress::custom("一"), &t, at(0)).unwrap());
+        assert!(!report_with(&conn, "t1", &Progress::custom("二"), &t, at(100)).unwrap());
+        // The runner went back to the shown line: nothing to flush.
+        assert!(!report_with(&conn, "t1", &Progress::custom("一"), &t, at(200)).unwrap());
+        assert_eq!(flush_due_with(&conn, &t, at(1500)).unwrap(), 0);
+        // Re-reading the same line every second does not hold back a new one.
+        assert!(!report_with(&conn, "t1", &Progress::custom("一"), &t, at(3000)).unwrap());
+        assert!(report_with(&conn, "t1", &Progress::custom("三"), &t, at(3010)).unwrap());
+    }
+
+    #[test]
+    fn a_zero_interval_writes_every_line() {
+        let conn = db();
+        let t = Mutex::new(Throttle::new(Duration::ZERO));
+        let now = Instant::now();
+        assert!(report_with(&conn, "t1", &Progress::custom("一"), &t, now).unwrap());
+        assert!(report_with(&conn, "t1", &Progress::custom("二"), &t, now).unwrap());
+    }
+
+    #[test]
+    fn progress_interval_env_like_the_watchdog() {
+        use crate::env_num::positive;
+        assert_eq!(min_interval_from(positive(None)), DEFAULT_MIN_INTERVAL);
+        assert_eq!(min_interval_from(positive(Some("0"))), DEFAULT_MIN_INTERVAL);
+        assert_eq!(
+            min_interval_from(positive(Some("abc"))),
+            DEFAULT_MIN_INTERVAL
+        );
+        assert_eq!(
+            min_interval_from(positive(Some("250"))),
+            Duration::from_millis(250)
+        );
     }
 
     #[test]

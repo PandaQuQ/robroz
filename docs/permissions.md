@@ -116,7 +116,7 @@ When the client sees `failure`, it shows a grey Couldn't finish: reason (「没�
 When the host calls the model it can register tools (`host/src/tools.rs`). Those tools use the same three tiers:
 
 - A Takeover MCP tool raises an approval card and is not executed until it is approved. The host's own tools today are Metered (`web_search` / `web_fetch`); any other Takeover tool is not executed.
-- A task may request at most 8 model rounds. If the 8th reply is still a tool call, the task ends as `done` with `failure` Stopped after 8 rounds of tool calls (「工具调用超过 8 轮」). An 8th reply that is plain text is accepted.
+- A task may request at most 8 model rounds (`ROBROZ_MAX_TOOL_ROUNDS`, see [configuration.md](configuration.md)). If the last allowed reply is still a tool call, the task ends as `done` with `failure` Stopped after 8 rounds of tool calls (「工具调用超过 8 轮」; the legacy text keeps saying 8 when the limit is changed, so clients should render `failureCode` `tool_round_limit`). A last reply that is plain text is accepted.
 - A single tool result is at most 16,000 characters. Longer text is cut and `…(truncated)` is appended, still within that 16,000-character cap.
 - If no tools are registered, the request does not include a `tools` field, and the behaviour is the same as a call with no tools.
 

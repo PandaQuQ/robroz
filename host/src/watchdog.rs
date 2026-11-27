@@ -254,7 +254,7 @@ impl Watchdog {
                     self.cfg.stall_after.as_secs()
                 ),
             }
-            progress::set_progress(conn, &f.task_id, &f.progress())?;
+            progress::report(conn, &f.task_id, &f.progress())?;
         }
         Ok((ended, findings))
     }

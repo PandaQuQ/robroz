@@ -707,9 +707,13 @@ Server-Sent Events, `text/event-stream`. `host/src/stream.rs:stream_events`
 | Query `since` | Same meaning. |
 
 - Each event: `event:` is the event `type`, `id:` is the time this card changed, `data:` is the event JSON (the same as in `/events`).
-- On connect, a snapshot is pushed first (or only changes after `since`); after that the host checks the database about every 250 milliseconds and pushes only when something changed. With no change, a keepalive comment is sent every 15 seconds.
+- On connect, a snapshot is pushed first (or only changes after `since`); after that the host checks the database every 250 milliseconds (`ROBROZ_SSE_POLL_MS`) and pushes only when something changed. With no change, a keepalive comment is sent every 15 seconds (`ROBROZ_SSE_KEEPALIVE_SECS`).
+- The response carries `X-Accel-Buffering: no`, so nginx does not buffer the stream.
+- A stream is closed cleanly after one hour (`ROBROZ_SSE_MAX_AGE_SECS`), between batches and never in the middle of one. Reconnect with `Last-Event-ID` as after any drop; nothing is missed.
+- At most 64 streams are open at once across all groups (`ROBROZ_SSE_MAX_STREAMS`). One more gets 503 `{"error":"…","code":"too_many_streams"}` with `Retry-After: 5`; wait that many seconds and reconnect.
+- The bro's own progress lines (`progressCode` `custom`) are written at most once a second per task (`ROBROZ_PROGRESS_MIN_MS`); the last line always arrives. Coded progress is not delayed.
 - A later change to the same card is pushed again with the same `data.id`. There is no agreed order between different event types; dedupe and replace in place by `id`.
-- 400 「since 不是合法时间」; 404 「群不存在」.
+- 400 「since 不是合法时间」; 404 「群不存在」; 503 `too_many_streams` (see above).
 - Polling `/events?since=` is the fallback.
 
 ```sh
