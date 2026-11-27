@@ -487,7 +487,7 @@ fn start_task(
     match offload {
         None => {
             let mut on_progress = |line: &Progress| {
-                if let Err(err) = db.with(|conn| progress::set_progress(conn, &task.id, line)) {
+                if let Err(err) = db.with(|conn| progress::report(conn, &task.id, line)) {
                     eprintln!("pump: progress for {}: {err}", task.id);
                 }
             };
@@ -520,9 +520,7 @@ fn start_task(
             let step_cancel = cancel.clone();
             let spawned = off.state.steps.spawn(&task.id, move || {
                 let mut on_progress = |line: &Progress| {
-                    if let Err(err) =
-                        shared.with(|conn| progress::set_progress(conn, &task_id, line))
-                    {
+                    if let Err(err) = shared.with(|conn| progress::report(conn, &task_id, line)) {
                         eprintln!("pump: progress for {task_id}: {err}");
                     }
                 };
@@ -750,7 +748,7 @@ fn finish_start(
     // The container run is a step of its own, with a fresh clock.
     let line = reply_progress.unwrap_or_else(Progress::in_sandbox);
     db.with(|conn| {
-        progress::set_progress(conn, &task.id, &line)?;
+        progress::report(conn, &task.id, &line)?;
         crate::timeouts::start(conn, &task.id, &crate::now_rfc3339())
     })?;
     Ok(())
@@ -779,9 +777,7 @@ fn collect_task(
             if let Some(text) = read_progress(&group_dir, &task.id).filter(|_| !task.routed) {
                 // Keep the Watchdog's hint up until the runner says something new.
                 if !watchdog.is_some_and(|w| w.holds_hint(&task.id, &text)) {
-                    db.with(|conn| {
-                        progress::set_progress(conn, &task.id, &Progress::custom(&text))
-                    })?;
+                    db.with(|conn| progress::report(conn, &task.id, &Progress::custom(&text)))?;
                 }
             }
             return Ok(());

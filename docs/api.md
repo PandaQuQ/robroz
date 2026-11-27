@@ -708,13 +708,17 @@ Server-Sent Events, `text/event-stream`. `host/src/stream.rs:stream_events`
 
 - Each event: `event:` is the event `type`, `data:` is the event JSON (the same as in `/events`).
 - `id:` is an **opaque decimal cursor** (for example `id: 1842`): how far through the host's change log the stream has got. Store it as a string and send it back as `Last-Event-ID`; do not parse or compare it, and do not pass it to `/events?since=`. Cards go out in batches (everything that changed since the last check) and only the **last frame of a batch** has an `id:` line, so a client cut off mid-batch keeps its previous id and gets the whole batch again on reconnect.
-- On connect without an id, a full snapshot is pushed first. After that the host checks its change log about every 250 milliseconds and pushes only the cards that changed. With no change, a keepalive comment is sent every 15 seconds.
+- On connect without an id, a full snapshot is pushed first. After that the host checks its change log every 250 milliseconds (`ROBROZ_SSE_POLL_MS`) and pushes only the cards that changed. With no change, a keepalive comment is sent every 15 seconds (`ROBROZ_SSE_KEEPALIVE_SECS`).
+- The response carries `X-Accel-Buffering: no`, so nginx does not buffer the stream.
+- A stream is closed cleanly after one hour (`ROBROZ_SSE_MAX_AGE_SECS`), between batches and never in the middle of one. Reconnect with `Last-Event-ID` as after any drop; nothing is missed.
+- At most 64 streams are open at once across all groups (`ROBROZ_SSE_MAX_STREAMS`). One more gets 503 `{"error":"…","code":"too_many_streams"}` with `Retry-After: 5`; wait that many seconds and reconnect.
+- The bro's own progress lines (`progressCode` `custom`) are written at most once a second per task (`ROBROZ_PROGRESS_MIN_MS`); the last line always arrives. Coded progress is not delayed.
 - Reconnect with `Last-Event-ID`:
   - a decimal id the log still covers: only the cards changed after it;
   - a decimal id from before what the log keeps (see `ROBROZ_EVENT_RETENTION_HOURS` in [configuration](configuration.md), 168 hours by default), or one this host never sent (the database was replaced): a full snapshot, exactly as on a fresh connect. Cards are replaced in place by `data.id`, so nothing is lost;
   - an RFC 3339 time (the `id:` hosts before v0.2 sent): the cards changed after that time, then decimal ids from there on.
 - A later change to the same card is pushed again with the same `data.id`. There is no agreed order between different event types; dedupe and replace in place by `id`.
-- 400 「since 不是合法时间」 (neither a decimal id nor an RFC 3339 time); 404 「群不存在」. The stream ends when the group is deleted.
+- 400 「since 不是合法时间」 (neither a decimal id nor an RFC 3339 time); 404 「群不存在」; 503 `too_many_streams` (see above). The stream ends when the group is deleted.
 - Polling `/events?since=<RFC 3339>` is the fallback and is unchanged.
 
 ```sh

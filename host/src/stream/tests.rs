@@ -1,8 +1,59 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::*;
 use crate::event_log::tests::{db, seed_every_card, T0};
+
+#[test]
+fn stream_config_env_like_the_watchdog() {
+    let none = StreamConfig::from_vars(|_| None);
+    assert_eq!(none, StreamConfig::default());
+    assert_eq!(none.poll, Duration::from_millis(250));
+    assert_eq!(none.keep_alive, Duration::from_secs(15));
+    assert_eq!(none.max_age, Duration::from_secs(3600));
+    assert_eq!(none.max_streams, 64);
+    let junk = StreamConfig::from_vars(|name| {
+        Some(match name {
+            "ROBROZ_SSE_POLL_MS" => "0".into(),
+            "ROBROZ_SSE_KEEPALIVE_SECS" => "".into(),
+            "ROBROZ_SSE_MAX_AGE_SECS" => "soon".into(),
+            _ => "-1".into(),
+        })
+    });
+    assert_eq!(junk, StreamConfig::default());
+    let set = StreamConfig::from_vars(|name| {
+        Some(match name {
+            "ROBROZ_SSE_POLL_MS" => "500".into(),
+            "ROBROZ_SSE_KEEPALIVE_SECS" => "30".into(),
+            "ROBROZ_SSE_MAX_AGE_SECS" => "600".into(),
+            _ => "8".into(),
+        })
+    });
+    assert_eq!(
+        set,
+        StreamConfig {
+            poll: Duration::from_millis(500),
+            keep_alive: Duration::from_secs(30),
+            max_age: Duration::from_secs(600),
+            max_streams: 8,
+        }
+    );
+}
+
+#[test]
+fn a_slot_is_counted_until_dropped() {
+    let open = Arc::new(AtomicUsize::new(0));
+    let a = Slot::take(&open, 2).unwrap();
+    let b = Slot::take(&open, 2).unwrap();
+    assert!(Slot::take(&open, 2).is_none());
+    assert_eq!(open.load(Ordering::SeqCst), 2, "a refused take is undone");
+    drop(a);
+    assert!(Slot::take(&open, 2).is_some());
+    drop(b);
+    assert_eq!(open.load(Ordering::SeqCst), 0);
+}
 
 fn ids(cards: &[TimedEvent]) -> BTreeSet<String> {
     cards.iter().map(|t| t.id.clone()).collect()
