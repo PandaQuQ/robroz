@@ -25,9 +25,10 @@ end.
 
 robroz is a single-machine, multi-bro IM workspace, not a single Super-agent
 facing the user. The mappings below keep that product shape: a person still
-addresses a named bro with `@name`; every bro in the room gets one turn on
-a group message (PR A, shipped in #129); and the four task states stay
-frozen.
+addresses a named bro with `@name`; an unaddressed group message is answered
+by one bro (single responder, shipped in v0.2); naming a bro still opens a
+turn for every member, with the named bro first (PR A, shipped in #129); and
+the four task states stay frozen.
 
 ## 1. Router and Worker
 
@@ -127,10 +128,11 @@ are not room members, they do not appear in the member list, and they do not
 speak in the group. A Worker reports to the bro that dispatched it; that bro
 speaks. No agent speaks for another.
 
-Group messages keep today's `@` routing, plus turn-taking (PR A, shipped):
+Group messages keep today's `@` routing, plus turn-taking (PR A, shipped).
+An unaddressed group message is answered by one bro (see [Single responder](#single-responder), on by default). `ROBROZ_SINGLE_RESPONDER=0` or a leading `@name` keeps the every-bro turn path below:
 
-- A group message gives every bro in the room one turn. Each bro decides to
-  speak or stay silent. Nothing is answered on anyone else's behalf.
+- When every bro gets a turn, each bro decides to speak or stay silent.
+  Nothing is answered on anyone else's behalf.
 - At most one bro speaks first: the one named by a leading `@name`. That
   bro uses the existing fast path (card visible at once, returned in
   `Said.task`). The rest take their turn one at a time in join order, and

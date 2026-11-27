@@ -33,13 +33,13 @@ It is for people who want several AI agents in one workspace they control, and w
 ## Works today
 
 - **Chat bubbles.** Your messages sit on the right; bro cards sit on the left, grouped by sender. A delivery with a `bot_name` is attached to that bro; a delivery without one stands alone.
-- **Group turns.** Send a message in a group and every bro can reply, or stay quiet. A bro you name with `@name` at the start of the message speaks first.
+- **Group turns.** A message that names no bro gets one reply, from one bro the host picks. Name a bro with `@name` at the start and that bro speaks first; the others may then take a turn or stay quiet.
 - **Bros reply to each other.** When a bro replies in a group, the other bros can join in. It stops after two rounds.
 - **Follow-ups.** If a bro is still working, you can add to that work instead of starting a new task. In a group, start the message with `@name`; in a direct message, just send it.
 - **Bigger tasks in steps.** A bro can split a task into up to 3 steps; the card shows "Step n of m".
 - **Direct messages.** Talk one-to-one with a bro.
 - **Docker sandbox.** Each job runs in a container on your machine, without network access.
-- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card stays where the task started and only the bro's owner can approve or deny it. For a card in a group, the owner also gets a reminder in their direct message with the bro. Memory and skill changes also wait for you to confirm.
+- **Approvals and Allow rules.** Risky steps wait for you. Auto-review checks each card against your allow rules; if no rule allows it, the card stays where the task started and you approve or deny it. For a card in a group, you also get a reminder in your direct message with the bro. Memory and skill changes also wait for you to confirm.
 - **Model settings.** Connect any OpenAI-compatible model. A base URL and a model name are enough; the key is optional. You can set this in the client or with environment variables.
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
@@ -49,7 +49,7 @@ You can also use web search (Brave or SearXNG), MCP tools, and scheduled routine
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
 - Cancelling a timed-out step or stopping the container.
-- Accounts for more than one person on a host. Bro owners and owner-only approvals are on `main`; managing users and tokens is not.
+- Accounts for more than one person on a host.
 
 ## Quick start
 
