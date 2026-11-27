@@ -15,7 +15,7 @@ export const zh: Messages = {
   nav: {
     lang: { en: 'EN', zh: '中文' },
     github: 'GitHub',
-    wiki: 'Wiki',
+    docs: '文档',
   },
   hero: {
     title: '在聊天里把任务交给 bro，活在你自己的电脑上干。',
@@ -122,10 +122,10 @@ cargo run -p robroz-client`,
       body: '源代码、Issue 和 PR。',
       url: 'https://github.com/PandaQuQ/robroz',
     },
-    wiki: {
-      label: 'Wiki',
-      body: '给人看的：安装、日常使用、配置、常见问题和路线图。',
-      url: 'https://github.com/PandaQuQ/robroz/wiki',
+    docs: {
+      label: '文档',
+      body: '给人看的：安装、配置、日常使用、审批、常见问题和路线图。',
+      url: 'https://github.com/PandaQuQ/robroz/blob/main/docs/zh-CN/index.md',
     },
     agents: {
       label: 'AGENTS.md',

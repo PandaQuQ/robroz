@@ -13,7 +13,7 @@ export const en = {
   nav: {
     lang: { en: 'EN', zh: '中文' },
     github: 'GitHub',
-    wiki: 'Wiki',
+    docs: 'Docs',
   },
   hero: {
     title: 'Hand tasks to bros in chat. They work on your machine.',
@@ -120,10 +120,10 @@ cargo run -p robroz-client`,
       body: 'Source code, issues and pull requests.',
       url: 'https://github.com/PandaQuQ/robroz',
     },
-    wiki: {
-      label: 'Wiki',
-      body: 'For people: installing, everyday use, configuration, FAQ and roadmap.',
-      url: 'https://github.com/PandaQuQ/robroz/wiki',
+    docs: {
+      label: 'Docs',
+      body: 'For people: installing, configuration, permissions, the API and more. The Chinese user guide is in docs/zh-CN.',
+      url: 'https://github.com/PandaQuQ/robroz#documentation',
     },
     agents: {
       label: 'AGENTS.md',
