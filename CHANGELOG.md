@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - unreleased
+
 ### Added
 
 - `deploy/install.sh --no-pull` skips pulling images, and a run without that flag also skips the pull when the host and runner images for the pinned tag are already on the machine (`docker image inspect`). The host image has a `HEALTHCHECK` that runs `robroz-host --health`, which treats HTTP 401 or 200 on `GET /api/bros` as alive (no new endpoint, no curl in the image). See [docs/install.md](docs/install.md#one-command-install-docker).
@@ -32,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `robroz-host` package version is `0.2.0`. `deploy/install.sh` sets the data directory to mode 0700 (owned by the container user) and the database file to mode 0600, and a rerun tightens an older install. The host process uses umask 0077 and tightens the mode of an existing database when it opens it, so a newly created database is also 0600.
 - `failureDetail` carries only language-neutral raw data: the HTTP status code (`401`, not 「模型服务返回 401」), a tool name, a method, `used/limit`, raw upstream or OS error text, or a snake_case reason token. The host stores each failure typed (`robroz_contract::FailureData`) in a new `failure_data` column on `tasks` and `deliveries` and no longer parses its own Chinese text to build events; older rows are backfilled once at startup. `failure` is unchanged ([#181](https://github.com/PandaQuQ/robroz/issues/181)).
-- The `robroz-host` package version is `0.1.1`, matching the `v0.1.1` tag, so `robroz-host --version` prints `0.1.1`.
 - Requests rejected before a handler runs (invalid JSON, a missing field, an unknown enum value, a wrong `Content-Type`, a path or query that does not parse) now get the standard JSON error body with a stable `code` (`invalid_json`, `missing_field`, `invalid_enum`, `unknown_field`, `invalid_field`, `unsupported_media_type`, `body_too_large`, `invalid_body`, `invalid_path`, `invalid_query`) instead of axum's plain text. HTTP statuses are unchanged ([#179](https://github.com/PandaQuQ/robroz/issues/179)).
 - Pooled stdio MCP processes are keyed by server id, config hash and `group_id`, so two groups (or a group and a bro DM) never share a process ([#190](https://github.com/PandaQuQ/robroz/pull/190)). `PATCH` or `DELETE` of a server still stops every per-group process for that server. See [docs/search-and-mcp.md](docs/search-and-mcp.md#stdio-连接池). No contract changes.
 - Stdio MCP servers stay running between tasks instead of being started for every `tools/list` and `tools/call` ([#188](https://github.com/PandaQuQ/robroz/pull/188)). The host keeps one process per server, keyed by the server id and a hash of its command, args and env, so editing a server or rotating a key starts a new process. The tool list is cached for the life of a process. A process that exited or broke its pipe is replaced on next use (`tools/list` retries once; `tools/call` never retries). Idle processes are stopped after `ROBROZ_MCP_IDLE_SECS` (default 600; `0` turns the pool off), each process takes at most `ROBROZ_MCP_MAX_IN_FLIGHT` requests at a time (default 4), and the 10-second limit still applies to each request. Editing or deleting a server stops its process at once, and the host stops all of them on SIGTERM or Ctrl-C. Approval, metering and secret handling are unchanged; HTTP servers and the `GET …/tools` and `POST …/test` routes are not pooled. See [docs/search-and-mcp.md](docs/search-and-mcp.md#stdio-连接池). No contract changes.
@@ -77,6 +78,7 @@ Published as a pre-release. First release of robroz: a single-user, self-hosted 
 
 - Windows: an extra command-line window opens when the client starts. Leave it open; closing it also quits the client. Fixed in the next release.
 
-[Unreleased]: https://github.com/PandaQuQ/robroz/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/PandaQuQ/robroz/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/PandaQuQ/robroz/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/PandaQuQ/robroz/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PandaQuQ/robroz/releases/tag/v0.1.0
