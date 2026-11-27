@@ -123,7 +123,8 @@ pub(crate) fn continue_after_done(
     let extra =
         format!("\n\nYour reply to the last step (already posted, don't repeat it):\n{quoted}");
     let changed = conn.execute(
-        "UPDATE tasks SET state = 'queued', prompt = prompt || ?3, updated_at = ?2, progress = NULL
+        "UPDATE tasks SET state = 'queued', prompt = prompt || ?3, updated_at = ?2, progress = NULL,
+                          started_at = NULL
          WHERE id = ?1 AND state = 'done' AND failure IS NULL AND needs_setup IS NULL",
         params![task_id, at, extra],
     )?;
