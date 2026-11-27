@@ -65,7 +65,7 @@
 
 ### 实时推送
 
-`GET /api/groups/{id}/stream` 不改任何写入路径：宿主机默认每 250 毫秒查一次库，把变化过的卡推出去，没变化每 15 秒发一次保活注释；一条流最多开 1 小时就干净关掉让客户端续上，全宿主机最多同时 64 条（多了回 503 和 `Retry-After`）。这些数都能用环境变量改，见 [configuration.md](configuration.md)。见 [api.md](api.md#real-time-updates)。
+`GET /api/groups/{id}/stream` 不改任何写入路径：卡片所在的表（`messages`、`tasks`、`deliveries`、`choices`、`approvals`，以及确认卡背后的 `memories` / `skills`）上挂了 SQLite 触发器，每次写入都往变更日志 `group_changes` 追加一行（`host/src/event_log.rs`）。流默认每 250 毫秒按群查一次这张日志，只重建变了的卡推出去；SSE 的 `id:` 是日志的 `seq`，按提交顺序递增，不看墙钟。没变化每 15 秒发一次保活注释。一条流最多开 1 小时就干净关掉让客户端续上，全宿主机最多同时 64 条（多了回 503 和 `Retry-After`）。这些数都能用环境变量改，见 [configuration.md](configuration.md)。日志每小时压缩成每张卡只留最新一行，超过 `ROBROZ_EVENT_RETENTION_HOURS`（默认 168）的行删掉；断线太久的客户端重连时拿全量快照。见 [api.md](api.md#real-time-updates)。
 
 ## 卡片和界面层
 

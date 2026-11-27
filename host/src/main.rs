@@ -97,12 +97,22 @@ async fn main() {
     // Docker CLI calls block, so the loop runs on its own OS thread, not on a
     // tokio worker. pump only takes the DB lock for SQL, so HTTP keeps serving.
     // Model and tool calls run on per-task step threads, so one slow call does
-    // not hold up other tasks. The Watchdog runs in the same loop.
+    // not hold up other tasks. The Watchdog runs in the same loop, and once an
+    // hour the live stream's change log is compacted and pruned.
+    let retention = robroz_host::event_log::retention_from_env();
     std::thread::Builder::new()
         .name("robroz-pump".into())
         .spawn(move || {
             let mut sandbox = DockerSandbox::new();
+            let mut next_log_pass = std::time::Instant::now();
             loop {
+                if std::time::Instant::now() >= next_log_pass {
+                    if let Err(err) = pumping.event_log_once(chrono::Utc::now(), retention) {
+                        eprintln!("event log: {err}");
+                    }
+                    next_log_pass =
+                        std::time::Instant::now() + robroz_host::event_log::MAINTAIN_EVERY;
+                }
                 // Schedules only create queued tasks; pump is what starts containers.
                 if let Err(err) = pumping.tick_once(chrono::Utc::now()) {
                     eprintln!("tick: {err}");

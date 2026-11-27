@@ -22,6 +22,7 @@ mod bros;
 mod choices;
 mod env_num;
 mod error_code;
+pub mod event_log;
 mod extract;
 mod failure;
 pub(crate) mod follow_ups;
@@ -250,6 +251,17 @@ impl Host {
             now,
         )
         .map(|_| ())
+    }
+
+    /// Compact the live stream's change log and drop rows older than
+    /// `retention` ([`event_log`]). The binary runs this once an hour.
+    pub fn event_log_once(
+        &self,
+        now: chrono::DateTime<Utc>,
+        retention: std::time::Duration,
+    ) -> rusqlite::Result<event_log::MaintainReport> {
+        let conn = self.db.lock().expect("sqlite connection lock poisoned");
+        event_log::maintain(&conn, now, retention)
     }
 
     /// One Watchdog pass at `now`: end dead runs as `done` + 「没写出结果」,
@@ -633,6 +645,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(router::SCHEMA)?;
     conn.execute_batch(timeouts::SCHEMA)?;
     groups::migrate(conn)?;
+    // Last: its triggers name columns the migrations above add.
+    event_log::migrate(conn)?;
     Ok(())
 }
 
@@ -1192,18 +1206,62 @@ fn group_events(
     group_id: &str,
     since: Option<&str>,
 ) -> rusqlite::Result<Option<Vec<TimedEvent>>> {
+    group_cards(conn, group_id, since.map_or(Cards::All, Cards::Since))
+}
+
+/// Which cards [`group_cards`] builds.
+#[derive(Clone, Copy)]
+enum Cards<'a> {
+    All,
+    /// Changed after this normalised RFC 3339 time (`?since=`).
+    Since(&'a str),
+    /// Only these card ids (the live stream, from [`event_log`]).
+    Only(&'a std::collections::HashSet<String>),
+}
+
+/// [`group_events`] with a [`Cards`] filter. For [`Cards::Only`] the
+/// messages, tasks and deliveries are filtered in SQL, so a stream rebuilds
+/// only what changed instead of the whole group.
+fn group_cards(
+    conn: &Connection,
+    group_id: &str,
+    which: Cards<'_>,
+) -> rusqlite::Result<Option<Vec<TimedEvent>>> {
     if !group_exists(conn, group_id)? {
         return Ok(None);
     }
+    let (since, only) = match which {
+        Cards::All => (None, None),
+        Cards::Since(since) => (Some(since), None),
+        Cards::Only(ids) => (None, Some(ids)),
+    };
+    // `?2` is a JSON array of ids, so the statement text stays fixed.
+    let only_json = only.map(|ids| serde_json::to_string(ids).expect("ids serialise"));
+    let args: Vec<&str> = std::iter::once(group_id)
+        .chain(only_json.as_deref())
+        .collect();
+    let args = || rusqlite::params_from_iter(args.iter());
+    let id_filter = |column: &str| match only {
+        Some(_) => format!(" AND {column} IN (SELECT value FROM json_each(?2))"),
+        None => String::new(),
+    };
+    // With an id list, look rows up by primary key: a unary `+` keeps SQLite
+    // from scanning the whole group through its `group_id` index instead.
+    let by_group = |column: &str| match only {
+        Some(_) => format!("+{column}"),
+        None => column.to_string(),
+    };
     let mut timed = Vec::new();
 
     {
-        let mut message_stmt = conn.prepare(
+        let mut message_stmt = conn.prepare(&format!(
             "SELECT m.id, m.kind, m.body, m.created_at, m.author_user_id, u.name
                  FROM messages m LEFT JOIN users u ON u.id = m.author_user_id
-                 WHERE m.group_id = ?1",
-        )?;
-        let messages = message_stmt.query_map([group_id], |row| {
+                 WHERE {} = ?1{}",
+            by_group("m.group_id"),
+            id_filter("m.id")
+        ))?;
+        let messages = message_stmt.query_map(args(), |row| {
             let id: String = row.get(0)?;
             let created_at: String = row.get(3)?;
             Ok(TimedEvent {
@@ -1226,7 +1284,7 @@ fn group_events(
     }
 
     {
-        let mut task_stmt = conn.prepare(
+        let mut task_stmt = conn.prepare(&format!(
             "SELECT t.id, t.assignee_bot_id, b.name, t.state, t.created_at, t.updated_at, t.container_up, t.failure,
                     EXISTS(
                         SELECT 1 FROM approvals a
@@ -1235,9 +1293,11 @@ fn group_events(
                     t.progress, t.progress_data, t.failure_data
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
-             WHERE t.group_id = ?1 AND t.turn_hidden = 0",
-        )?;
-        let tasks = task_stmt.query_map([group_id], |row| {
+             WHERE {} = ?1 AND t.turn_hidden = 0{}",
+            by_group("t.group_id"),
+            id_filter("t.id")
+        ))?;
+        let tasks = task_stmt.query_map(args(), |row| {
             let id: String = row.get(0)?;
             let created_at: String = row.get(4)?;
             let state = parse_state(row.get(3)?)?;
@@ -1301,15 +1361,17 @@ fn group_events(
     }
 
     {
-        let mut delivery_stmt = conn.prepare(
+        let mut delivery_stmt = conn.prepare(&format!(
             "SELECT d.id, d.summary, d.path, d.briefing, d.created_at, d.failure, d.needs_setup,
                     d.task_id, t.assignee_bot_id, b.name, d.failure_data
              FROM deliveries d
              LEFT JOIN tasks t ON t.id = d.task_id
              LEFT JOIN bots b ON b.id = t.assignee_bot_id
-             WHERE d.group_id = ?1",
-        )?;
-        let deliveries = delivery_stmt.query_map([group_id], |row| {
+             WHERE {} = ?1{}",
+            by_group("d.group_id"),
+            id_filter("d.id")
+        ))?;
+        let deliveries = delivery_stmt.query_map(args(), |row| {
             let id: String = row.get(0)?;
             let created_at: String = row.get(4)?;
             let briefing: i64 = row.get(3)?;
@@ -1349,6 +1411,10 @@ fn group_events(
     timed.extend(proposals::timed_events(conn, group_id)?);
     if let Some(since) = since {
         timed.retain(|item| item.changed_at.as_str() > since);
+    }
+    // Choices, approvals, reminders and confirm cards are few; filter here.
+    if let Some(ids) = only {
+        timed.retain(|item| ids.contains(&item.id));
     }
 
     timed.sort_by(|a, b| {
@@ -2779,7 +2845,13 @@ mod tests {
         );
 
         // Reconnect from the last id: only what changed afterwards.
-        let last = live.iter().map(|(_, id, _)| id.clone()).max().unwrap();
+        let last = live
+            .iter()
+            .rev()
+            .find(|(_, id, _)| !id.is_empty())
+            .map(|(_, id, _)| id.clone())
+            .unwrap();
+        assert!(last.parse::<i64>().is_ok(), "decimal cursor: {last}");
         drop(body);
         fake.finish(0);
         pump_db(&path, &volumes, &mut fake);
@@ -2828,16 +2900,18 @@ mod tests {
         })
         .await;
         assert!(ended.is_ok(), "stream should end at max age");
-        // Written while disconnected, delivered on reconnect.
+        // Written while disconnected, delivered on reconnect. A seq cursor
+        // does not resend the last card of the previous stream.
+        assert!(last.parse::<i64>().is_ok(), "decimal cursor: {last}");
         say(&app, &group_id, "二").await;
         let mut body = open_stream(&app, &group_id, Some(&last)).await.into_body();
-        // A time cursor may send the last card again (same millisecond);
-        // the new one must be there.
         let resumed = sse_take(&mut body, 2, std::time::Duration::from_secs(1)).await;
-        assert!(
-            resumed.iter().any(|(_, _, d)| d["body"] == "二"),
-            "{resumed:?}"
+        assert_eq!(
+            resumed.len(),
+            1,
+            "seq cursor does not resend the last card: {resumed:?}"
         );
+        assert_eq!(resumed[0].2["body"], "二");
     }
 
     #[tokio::test]
@@ -2900,6 +2974,44 @@ mod tests {
             text.starts_with(':'),
             "a keep-alive comment within 2s: {text:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn stream_ids_are_a_decimal_cursor_on_the_last_frame_of_a_batch() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "批").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for text in ["一", "二", "三"] {
+            say(&app, &group_id, text).await;
+        }
+        let wait = std::time::Duration::from_secs(3);
+        let mut body = open_stream(&app, &group_id, None).await.into_body();
+        let snapshot = sse_take(&mut body, 3, wait).await;
+        assert_eq!(snapshot.len(), 3);
+        let ids: Vec<&str> = snapshot.iter().map(|(_, id, _)| id.as_str()).collect();
+        assert_eq!(&ids[..2], ["", ""], "only the last frame carries the id");
+        let cursor: i64 = ids[2].parse().expect("decimal id");
+        drop(body);
+
+        // Resuming from it: nothing new, nothing sent.
+        let mut body = open_stream(&app, &group_id, Some(ids[2])).await.into_body();
+        assert!(sse_take(&mut body, 1, super::stream::POLL * 4)
+            .await
+            .is_empty());
+        say(&app, &group_id, "四").await;
+        let live = sse_take(&mut body, 1, wait).await;
+        assert_eq!(live[0].2["body"], "四");
+        assert!(live[0].1.parse::<i64>().unwrap() > cursor);
+        drop(body);
+
+        // An older host's RFC 3339 id still works, by time.
+        let mut body = open_stream(&app, &group_id, Some("2000-01-01T00:00:00Z"))
+            .await
+            .into_body();
+        assert_eq!(sse_take(&mut body, 4, wait).await.len(), 4);
     }
 
     #[tokio::test]

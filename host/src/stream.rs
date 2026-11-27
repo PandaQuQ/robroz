@@ -1,14 +1,26 @@
 //! `GET /api/groups/{id}/stream`: live events over Server-Sent Events.
 //!
-//! Each SSE message is one contract `Event` as JSON (`data:`), its `type` as the
-//! SSE `event:` name, and the card's change time as `id:`. Reconnect with the
-//! standard `Last-Event-ID` header (or `?since=`) to get only what changed after
-//! it. A card that changes again is sent again with the same `data.id`, so the
-//! client replaces it in place, exactly as with `GET …/events`. Nothing changed
-//! means nothing is sent apart from keep-alive comments. Polling `…/events?since=`
-//! stays as the fallback.
+//! Each SSE message is one contract `Event` as JSON (`data:`) with its `type`
+//! as the SSE `event:` name. A card that changes again is sent again with the
+//! same `data.id`, so the client replaces it in place, exactly as with
+//! `GET …/events`. Nothing changed means nothing is sent apart from keep-alive
+//! comments. Polling `…/events?since=` stays as the fallback.
 //!
-//! The stream reads the same query as `…/events` on a short interval, so write
+//! The SSE `id:` is an opaque decimal cursor: the [`crate::event_log`] `seq`
+//! the stream has caught up to. Cards go out in batches (everything that
+//! changed since the last poll) and only the **last** frame of a batch carries
+//! the `id:`, so a client cut off mid-batch keeps its previous id and gets the
+//! whole batch again on reconnect. Reconnect with the standard
+//! `Last-Event-ID` header (or `?since=`):
+//!
+//! - a decimal id the log still covers: only the cards changed after it;
+//! - a decimal id from before what the log kept, or one the log never handed
+//!   out: a full snapshot, as on a fresh connect;
+//! - an RFC 3339 time (the id an older host sent): the cards changed after
+//!   that time, then the stream carries on with decimal ids.
+//!
+//! Each poll reads only the log for this group (indexed) and rebuilds just the
+//! cards it names, so an idle stream costs one small query per poll and write
 //! paths stay untouched.
 //!
 //! Long-lived streams are bounded ([`StreamConfig`]): the poll interval and
@@ -19,7 +31,7 @@
 //! `Retry-After: 5`. Responses carry `X-Accel-Buffering: no` so a reverse
 //! proxy does not hold frames back.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -30,9 +42,12 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use rusqlite::Connection;
 
+use crate::event_log;
 use crate::{
-    error_response, group_events, lock_db, parse_since, AppState, EventsQuery, TimedEvent,
+    error_response, group_cards, group_exists, lock_db, parse_since, AppState, Cards, EventsQuery,
+    TimedEvent,
 };
 
 /// Default for `ROBROZ_SSE_POLL_MS`.
@@ -125,57 +140,91 @@ fn too_many_streams() -> Response {
     response
 }
 
-/// Where a stream has got to. Rows written in the same millisecond as the
-/// cursor are tracked by id so they are neither lost nor sent twice.
-struct Cursor {
-    at: Option<String>,
-    sent_at_cursor: HashSet<String>,
+/// Where a reconnecting client says it got to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Resume {
+    /// No id: full snapshot.
+    Fresh,
+    /// A decimal id this host sent.
+    Seq(i64),
+    /// An RFC 3339 id from an older host (normalised to millis).
+    Legacy(String),
 }
 
-impl Cursor {
-    fn take_new(&mut self, timed: Vec<TimedEvent>) -> Vec<TimedEvent> {
-        let fresh: Vec<TimedEvent> = timed
-            .into_iter()
-            .filter(|t| match &self.at {
-                None => true,
-                Some(at) => {
-                    t.changed_at > *at
-                        || (t.changed_at == *at && !self.sent_at_cursor.contains(&t.id))
-                }
-            })
-            .collect();
-        for t in &fresh {
-            if self.at.as_ref().is_none_or(|at| t.changed_at > *at) {
-                self.at = Some(t.changed_at.clone());
-                self.sent_at_cursor.clear();
-            }
+fn parse_resume(raw: Option<&str>) -> Result<Resume, ()> {
+    match raw.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(Resume::Fresh),
+        Some(v) if v.bytes().all(|b| b.is_ascii_digit()) => {
+            v.parse::<i64>().map(Resume::Seq).map_err(|_| ())
         }
-        if let Some(at) = &self.at {
-            for t in fresh.iter().filter(|t| &t.changed_at == at) {
-                self.sent_at_cursor.insert(t.id.clone());
-            }
-        }
-        fresh
-    }
-
-    /// Lower bound for the next query: `>= at`, so same-millisecond rows show up.
-    fn query_since(&self) -> Option<String> {
-        self.at.as_ref().map(|at| {
-            let t = chrono::DateTime::parse_from_rfc3339(at).expect("cursor is our own timestamp");
-            (t - chrono::Duration::milliseconds(1))
-                .with_timezone(&chrono::Utc)
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-        })
+        Some(v) => match parse_since(Some(v))? {
+            Some(at) => Ok(Resume::Legacy(at)),
+            None => Ok(Resume::Fresh),
+        },
     }
 }
 
-fn to_sse(t: &TimedEvent) -> SseEvent {
+/// One batch of frames: every card in order, the cursor on the last one.
+fn batch(cards: Vec<TimedEvent>, cursor: i64) -> Vec<SseEvent> {
+    let ids = frame_ids(cards.len(), cursor);
+    cards.iter().zip(ids).map(|(t, id)| to_sse(t, id)).collect()
+}
+
+/// The `id:` of each of `n` frames in a batch: only the last has one.
+fn frame_ids(n: usize, cursor: i64) -> Vec<Option<i64>> {
+    (0..n).map(|i| (i + 1 == n).then_some(cursor)).collect()
+}
+
+fn to_sse(t: &TimedEvent, id: Option<i64>) -> SseEvent {
     let value = serde_json::to_value(&t.event).expect("contract events serialise");
     let name = value["type"].as_str().unwrap_or("event").to_string();
-    SseEvent::default()
-        .event(name)
-        .id(t.changed_at.clone())
-        .data(value.to_string())
+    let sse = SseEvent::default().event(name).data(value.to_string());
+    match id {
+        Some(id) => sse.id(id.to_string()),
+        None => sse,
+    }
+}
+
+/// First batch and the cursor after it, read under one lock so nothing
+/// written meanwhile falls between them. `None` when the group is gone.
+fn first_batch(
+    conn: &Connection,
+    group_id: &str,
+    resume: &Resume,
+) -> rusqlite::Result<Option<(Vec<TimedEvent>, i64)>> {
+    let head = event_log::head(conn)?;
+    let cards = match resume {
+        Resume::Seq(after) if event_log::replayable(conn, *after)? => {
+            match event_log::changed_since(conn, group_id, *after)? {
+                Some((ids, _)) => group_cards(conn, group_id, Cards::Only(&ids))?,
+                None => group_exists(conn, group_id)?.then(Vec::new),
+            }
+        }
+        Resume::Legacy(at) => group_cards(conn, group_id, Cards::Since(at))?,
+        // Fresh, or a cursor the log can no longer replay: everything.
+        Resume::Seq(_) | Resume::Fresh => group_cards(conn, group_id, Cards::All)?,
+    };
+    Ok(cards.map(|cards| (cards, head)))
+}
+
+/// What changed after `cursor`, and the new cursor: the log's head, read
+/// under the same lock, so an idle stream keeps up with pruning too.
+/// `Ok(None)` ends the stream (group gone).
+fn next_batch(
+    conn: &Connection,
+    group_id: &str,
+    cursor: i64,
+) -> rusqlite::Result<Option<(Vec<TimedEvent>, i64)>> {
+    if !event_log::replayable(conn, cursor)? {
+        // Pruned past us (or the log was reset): start over with a snapshot.
+        return first_batch(conn, group_id, &Resume::Fresh);
+    }
+    let head = event_log::head(conn)?;
+    let cards = match event_log::changed_since(conn, group_id, cursor)? {
+        None => group_exists(conn, group_id)?.then(Vec::new),
+        Some((ids, _)) => group_cards(conn, group_id, Cards::Only(&ids))?,
+    };
+    Ok(cards.map(|cards| (cards, head)))
 }
 
 pub(crate) async fn stream_events(
@@ -189,7 +238,7 @@ pub(crate) async fn stream_events(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .or_else(|| query.get("since").cloned());
-    let Ok(since) = parse_since(raw.as_deref()) else {
+    let Ok(resume) = parse_resume(raw.as_deref()) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             robroz_contract::host_text::SINCE_INVALID,
@@ -200,15 +249,11 @@ pub(crate) async fn stream_events(
         return too_many_streams();
     };
     let deadline = tokio::time::Instant::now() + config.max_age;
-    let mut cursor = Cursor {
-        at: since,
-        sent_at_cursor: HashSet::new(),
-    };
     let first = {
         let conn = lock_db(&state);
-        group_events(&conn, &group_id, cursor.query_since().as_deref())
+        first_batch(&conn, &group_id, &resume)
     };
-    let pending: VecDeque<TimedEvent> = match first {
+    let (pending, cursor): (VecDeque<SseEvent>, i64) = match first {
         Ok(None) => {
             return error_response(
                 StatusCode::NOT_FOUND,
@@ -216,7 +261,7 @@ pub(crate) async fn stream_events(
             )
         }
         Err(err) => return crate::db_error(err),
-        Ok(Some(timed)) => cursor.take_new(timed).into(),
+        Ok(Some((cards, cursor))) => (batch(cards, cursor).into(), cursor),
     };
 
     let stream = futures_util::stream::unfold(
@@ -224,9 +269,8 @@ pub(crate) async fn stream_events(
         move |(state, group_id, mut cursor, mut pending, slot)| async move {
             loop {
                 if let Some(next) = pending.pop_front() {
-                    let sse = to_sse(&next);
                     return Some((
-                        Ok::<_, Infallible>(sse),
+                        Ok::<_, Infallible>(next),
                         (state, group_id, cursor, pending, slot),
                     ));
                 }
@@ -242,10 +286,13 @@ pub(crate) async fn stream_events(
                 }
                 let found = {
                     let conn = lock_db(&state);
-                    group_events(&conn, &group_id, cursor.query_since().as_deref())
+                    next_batch(&conn, &group_id, cursor)
                 };
                 match found {
-                    Ok(Some(timed)) => pending.extend(cursor.take_new(timed)),
+                    Ok(Some((cards, next))) => {
+                        pending.extend(batch(cards, next));
+                        cursor = next;
+                    }
                     Ok(None) => return None,
                     Err(err) => {
                         eprintln!("stream {group_id}: {err}");
@@ -265,92 +312,4 @@ pub(crate) async fn stream_events(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stream_config_env_like_the_watchdog() {
-        let none = StreamConfig::from_vars(|_| None);
-        assert_eq!(none, StreamConfig::default());
-        assert_eq!(none.poll, Duration::from_millis(250));
-        assert_eq!(none.keep_alive, Duration::from_secs(15));
-        assert_eq!(none.max_age, Duration::from_secs(3600));
-        assert_eq!(none.max_streams, 64);
-        let junk = StreamConfig::from_vars(|name| {
-            Some(match name {
-                "ROBROZ_SSE_POLL_MS" => "0".into(),
-                "ROBROZ_SSE_KEEPALIVE_SECS" => "".into(),
-                "ROBROZ_SSE_MAX_AGE_SECS" => "soon".into(),
-                _ => "-1".into(),
-            })
-        });
-        assert_eq!(junk, StreamConfig::default());
-        let set = StreamConfig::from_vars(|name| {
-            Some(match name {
-                "ROBROZ_SSE_POLL_MS" => "500".into(),
-                "ROBROZ_SSE_KEEPALIVE_SECS" => "30".into(),
-                "ROBROZ_SSE_MAX_AGE_SECS" => "600".into(),
-                _ => "8".into(),
-            })
-        });
-        assert_eq!(
-            set,
-            StreamConfig {
-                poll: Duration::from_millis(500),
-                keep_alive: Duration::from_secs(30),
-                max_age: Duration::from_secs(600),
-                max_streams: 8,
-            }
-        );
-    }
-
-    #[test]
-    fn a_slot_is_counted_until_dropped() {
-        let open = Arc::new(AtomicUsize::new(0));
-        let a = Slot::take(&open, 2).unwrap();
-        let b = Slot::take(&open, 2).unwrap();
-        assert!(Slot::take(&open, 2).is_none());
-        assert_eq!(open.load(Ordering::SeqCst), 2, "a refused take is undone");
-        drop(a);
-        assert!(Slot::take(&open, 2).is_some());
-        drop(b);
-        assert_eq!(open.load(Ordering::SeqCst), 0);
-    }
-    use robroz_contract::{Event, MessageKind};
-
-    fn msg(id: &str, at: &str) -> TimedEvent {
-        TimedEvent {
-            created_at: at.into(),
-            changed_at: at.into(),
-            id: id.into(),
-            event: Event::Message {
-                id: id.into(),
-                kind: MessageKind::Text,
-                body: String::new(),
-                created_at: at.into(),
-                author_name: None,
-                author_user_id: None,
-            },
-        }
-    }
-
-    #[test]
-    fn same_millisecond_rows_are_neither_lost_nor_repeated() {
-        let t = "2026-11-20T02:00:00.000Z";
-        let mut c = Cursor {
-            at: None,
-            sent_at_cursor: HashSet::new(),
-        };
-        assert_eq!(c.take_new(vec![msg("a", t)]).len(), 1);
-        // A second row lands in the same millisecond after the first read.
-        let again = c.take_new(vec![msg("a", t), msg("b", t)]);
-        assert_eq!(
-            again.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
-            ["b"]
-        );
-        assert!(c.take_new(vec![msg("a", t), msg("b", t)]).is_empty());
-        let later = c.take_new(vec![msg("a", t), msg("c", "2026-11-20T02:00:00.001Z")]);
-        assert_eq!(later.len(), 1);
-        assert_eq!(c.query_since().as_deref(), Some(t));
-    }
-}
+mod tests;
