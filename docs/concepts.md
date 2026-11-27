@@ -2,7 +2,7 @@
 
 Names, task states and cards in robroz. Exact API fields are in [api.md](api.md). This page is about the ideas; if it disagrees with api.md or the code, those win.
 
-The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row under Settings, General (not on the Model page). Open Settings from your name at the bottom of the chat list. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Glossary
 
@@ -86,7 +86,7 @@ Each item in the event stream is an `Event`, distinguished by `type`. Full field
 | `approval` | An approval card: ask a person before deleting, sending, spending, or calling a tool. The host also issues one when a task wants to write outside (with `taskId`). | A bro or the host |
 | `confirm` | A confirm card: a bro proposed a memory or a skill, and a person decides. | The host, after a successful task |
 
-Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 403 with `reason` `decided`). If the card is blocked or there are no rules, it is shown with `expiresAt` set, in the conversation where it was raised. Only the bro's owner may answer it. A card in a group also puts an `approval_reminder` line (no buttons) in the owner's DM with that bro; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02). A card that expires has `reason` Approval expired (「审批已过期」). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
+Approvals are checked against your Allow rules first (auto-review), including cards a bro issues itself with `POST /api/groups/{id}/approvals`. If a rule allows the action, no card is shown; the action goes ahead, and `GET /api/approvals/{id}` can still read it (`decision` is `"approved"`; approve or deny later returns 403 with `reason` `decided`). If the card is blocked or there are no rules, it is shown with `expiresAt` set, in the conversation where it was raised. You approve or deny it. A card in a group also puts an `approval_reminder` line (no buttons) in your DM with that bro; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02). A card that expires has `reason` Approval expired (「审批已过期」). Confirm cards and a takeover do not expire. Allow-rule changes (`rule_add` / `rule_delete`) use an approval card on the settings page; they are not sent to any chat.
 
 Rules:
 

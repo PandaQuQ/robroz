@@ -97,23 +97,16 @@ export const zh: Messages = {
   },
   quickstart: {
     title: '自己部署',
-    lede: '需要 Rust stable 工具链和 Docker。在仓库根目录：',
-    code: `# 宿主机和桌面客户端
-cargo build -p robroz-host -p robroz-client
-# 跑任务用的 runner 镜像
-docker build -f runner/Dockerfile -t robroz-runner:local .
-# 只监听 127.0.0.1:8790，不用令牌
-cargo run -p robroz-host
-# 另开一个终端
-cargo run -p robroz-client`,
-    next: '在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。没接模型时，bro 会把你的话原样写成结果。',
-    more: '接 OpenAI 兼容模型、设置联网搜索、设令牌、从别的机器访问宿主机，见安装文档。',
+    lede: '在 Linux 上用 Docker，一条命令就能装上已发布的宿主机，不需要 Rust 工具链：',
+    code: `curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh`,
+    next: '脚本从 GHCR 拉取 v0.2.0 的 host 和 runner 镜像，把令牌写到 ~/robroz/secrets/robroz_token，监听 127.0.0.1:8790。然后到 PandaQuQ/robroz-client 从源码构建桌面客户端（客户端还没有 Release），指向这个地址。在客户端「聊天」标题旁点「引入一个 bro」，进它的私聊发一条消息，这就是第一个任务。没设置模型时，交付是 No model set up yet（「还没设置模型」），卡片上有 Set up（「去设置」）。',
+    more: '接 OpenAI 兼容模型、设置联网搜索、设令牌、从别的机器访问宿主机，见安装文档。想先看脚本会做什么，在 sh 后面加 -s -- --dry-run。',
     moreLink: {
       label: '安装文档',
       href: 'https://github.com/PandaQuQ/robroz/blob/main/docs/install.md',
     },
     platforms:
-      '宿主机、执行器（runner）和桌面客户端全部用 Rust 写。客户端是 Windows、Linux、macOS 上的原生程序，不套网页。',
+      '宿主机和执行器（runner）用 Rust 写。桌面客户端在单独的仓库里，是 Windows、Linux、macOS 上的原生程序，不套网页。',
   },
   links: {
     title: '了解更多',

@@ -1,42 +1,12 @@
 # Install and first run
 
-How to install the robroz host from a GitHub Release or build it from source, run it, connect a model, and send a first task. Installing and running the desktop or mobile client is in the client repository's [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md). The full list of environment variables is in [configuration.md](configuration.md).
+How to install the robroz host, run it, connect a model, and send a first task. On Linux the usual path is the [one-command Docker install](#one-command-install-docker) below: `deploy/install.sh` pulls the published GHCR images. You can also [download a host release](#download-a-release) or [build from source](#build). The desktop and mobile clients live in [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client); that repository has no GitHub Release yet, so [build the client from source](#get-the-client). The full list of environment variables is in [configuration.md](configuration.md).
 
 Quoted UI text below is what the English client shows; the Chinese is in parentheses where it helps.
 
-## Download a release
-
-When a `v*` tag is published, download the archives and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. The current release is v0.1.1, published on 2026-11-25 as a pre-release. The examples below use v0.1.1; replace it with the tag you download. Archives are named `<bin>-<tag>-<target>`.
-
-| Platform | Archive | Contents |
-| --- | --- | --- |
-| Linux x86_64 | `robroz-host-v0.1.1-linux-x86_64.tar.gz` | `robroz-host` |
-
-The host is packaged for Linux x86_64 only. The v0.1.1 release also has the client archives; later client releases come from [robroz-client](https://github.com/PandaQuQ/robroz-client/releases), see its [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md#download-a-release). Each archive also includes `LICENSE` and `README.md`. After unpacking, the binary is inside a folder named after the archive. Builds are not code-signed. The Linux binary is built on Ubuntu 22.04 and needs glibc 2.34 or newer, so it also runs on RHEL 9. Check your version with `ldd --version`.
-
-Verify the files you download against `SHA256SUMS.txt` from the same release:
-
-```sh
-# Linux (only the files you downloaded need to be present)
-sha256sum -c SHA256SUMS.txt --ignore-missing
-
-# macOS: print the hash and compare it with the matching line in SHA256SUMS.txt
-shasum -a 256 robroz-client-v0.1.1-macos-aarch64.zip
-```
-
-On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-client-v0.1.1-windows-x86_64.zip` with the matching line in `SHA256SUMS.txt`.
-
-To see which build you are running, use `./robroz-host --version` (or `-V`). It prints `robroz-host <version> (<short git sha>)` and exits with code 0 before it reads the token, opens the database or talks to Docker. The flag is in builds from `main` after v0.1.1; the v0.1.1 binary does not have it.
-
-The host's default runner image is still `robroz-runner:local`. For a tagged release, point it at the image published for that tag (linux/amd64 only; there is no `latest` tag):
-
-```sh
-ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.1 ./robroz-host
-```
-
 ## One-command install (Docker)
 
-On a Linux machine with Docker Engine and the `docker compose` plugin, one command installs the host from the published images. This command works from the v0.2.0 release, once the v0.2.0 host image has been published and this script is on `main`. Until then the pull of `ghcr.io/pandaquq/robroz-host:v0.2.0` fails; run the script from a checkout, or wait for that release.
+On a Linux machine with Docker Engine and the `docker compose` plugin, one command installs the published v0.2.0 host and runner images from GHCR.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh
@@ -64,7 +34,37 @@ Options: `--dir DIR`, `--version TAG`, `--dry-run`, `--no-start` (write the file
 
 ### Get the client
 
-The host has no UI. Download the client for your computer from [GitHub Releases of PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client/releases): pick the archive for your platform and verify it against `SHA256SUMS.txt` from the same release (commands as in [Download a release](#download-a-release)). Builds are not code-signed. Then enter the host URL and the token from `secrets/robroz_token` in the client; the client's own [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md#download-a-release) has the per-platform steps. Show the token with `cat ~/robroz/secrets/robroz_token` (no `sudo` needed once the script has set mode 0640).
+The host has no UI. [PandaQuQ/robroz-client](https://github.com/PandaQuQ/robroz-client) has no GitHub Release yet, so build the client from source against `contract-v0.3.1` or newer. Follow that repository's [README](https://github.com/PandaQuQ/robroz-client#quick-start) and [install.md](https://github.com/PandaQuQ/robroz-client/blob/main/docs/install.md). Then enter the host URL (`http://127.0.0.1:8790` by default) and the token from `secrets/robroz_token` in the client. Show the token with `cat ~/robroz/secrets/robroz_token` (no `sudo` needed once the script has set mode 0640).
+
+## Download a release
+
+When a `v*` tag is published, download the host archive and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/PandaQuQ/robroz/releases) for that tag. The current release is v0.2.0, published on 2026-11-27 as a pre-release. The examples below use v0.2.0; replace it with the tag you download. Archives are named `<bin>-<tag>-<target>`.
+
+| Platform | Archive | Contents |
+| --- | --- | --- |
+| Linux x86_64 | `robroz-host-v0.2.0-linux-x86_64.tar.gz` | `robroz-host` |
+
+The host is packaged for Linux x86_64 only. v0.2.0 is the host only: this tarball and the `ghcr.io/pandaquq/robroz-host:v0.2.0` and `ghcr.io/pandaquq/robroz-runner:v0.2.0` images. The desktop and mobile clients live in [robroz-client](https://github.com/PandaQuQ/robroz-client) and have no release yet; build them from source (see [Get the client](#get-the-client)). Each archive also includes `LICENSE` and `README.md`. After unpacking, the binary is inside a folder named after the archive. Builds are not code-signed. The Linux binary is built on Ubuntu 22.04 and needs glibc 2.34 or newer, so it also runs on RHEL 9. Check your version with `ldd --version`.
+
+Verify the files you download against `SHA256SUMS.txt` from the same release:
+
+```sh
+# Linux (only the files you downloaded need to be present)
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# macOS: print the hash and compare it with the matching line in SHA256SUMS.txt
+shasum -a 256 robroz-host-v0.2.0-linux-x86_64.tar.gz
+```
+
+On Windows, compare `Get-FileHash -Algorithm SHA256 .\robroz-host-v0.2.0-linux-x86_64.tar.gz` with the matching line in `SHA256SUMS.txt`.
+
+To see which build you are running, use `./robroz-host --version` (or `-V`). It prints `robroz-host <version> (<short git sha>)` and exits with code 0 before it reads the token, opens the database or talks to Docker. The flag is in v0.2.0 and later; the v0.1.1 binary does not have it.
+
+The host's default runner image is still `robroz-runner:local`. For a tagged release, point it at the image published for that tag (linux/amd64 only; there is no `latest` tag):
+
+```sh
+ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.2.0 ./robroz-host
+```
 
 ## Prerequisites
 
@@ -86,7 +86,7 @@ Add `--release` for a release build; the binary then lands in `target/release/`.
 
 ### Runner image
 
-Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.1.1` instead of a local build (linux/amd64 only; there is no `latest` tag). The package is public, so `docker pull` needs no login. To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
+Each task runs in a Docker container that contains `robroz-runner`. The host's default image name is `robroz-runner:local` (override with `ROBROZ_IMAGE`). For a tagged release you can use `ROBROZ_IMAGE=ghcr.io/pandaquq/robroz-runner:v0.2.0` instead of a local build (linux/amd64 only; there is no `latest` tag). The package is public, so `docker pull` needs no login. To build the image yourself, run this from the repository root, because the Dockerfile copies the workspace:
 
 ```sh
 docker build -f runner/Dockerfile -t robroz-runner:local .
@@ -152,7 +152,7 @@ Until a model is configured, a task delivers No model set up yet (「还没设�
 
 ### In the client
 
-Open Model (「模型」) in the sidebar, or Set up (「去设置」) on a delivery card. The Language / 语言 row is on this page: English is the default, and you can switch to 中文. `ROBROZ_LANG=en|zh` overrides the saved choice for one run.
+Open Settings, then Bros, then Model (「模型」), or Set up (「去设置」) on a delivery card. The Language / 语言 row is under Settings, General, not on the Model page. English is the default; you can switch to 中文. `ROBROZ_LANG=en|zh` overrides the saved choice for one run.
 
 - Three fields: URL (「地址」), Model name (「模型名」), and Key (optional) (「密钥（选填）」). The key field is shown for every provider, including Ollama.
 - Picking a provider fills in its OpenAI-compatible address. Example model names: Gemini `gemini-3.8-flash`, Groq `llama-3.3-70b-versatile`, OpenRouter `meta-llama/llama-3.3-70b-instruct:free`, Ollama `llama3.2`; Custom leaves the name empty. For OpenRouter, a grey line under the model name says Free model names end in :free (「免费模型的名字以 :free 结尾」).
@@ -246,8 +246,8 @@ GID=$(curl -s -X POST $B/api/groups -H "$J" -d '{"name":"website"}' | jq -r .id)
 curl -s -X POST $B/api/groups/$GID/members -H "$J" -d '{"botId":"bot-ada","name":"ada"}'
 
 # 3. Speak in the group. A leading @name gives that bro the first turn
-#    and returns its task. A message with no @ still gives every bro a turn;
-#    Said.task is then null.
+#    and returns its task. A message with no @ is answered by one bro
+#    (single responder, on by default) and also returns Said.task.
 curl -s -X POST $B/api/groups/$GID/say -H "$J" -d '{"body":"@ada Write a welcome line"}'
 ```
 

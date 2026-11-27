@@ -2,7 +2,7 @@
 
 What a bro may do, when it stops to ask a person, and how a person takes over. The tiers live in `crates/robroz-policy`; they are applied in `host/src/pump.rs`, `host/src/approvals.rs`, `host/src/tools.rs` and `host/src/mcp_tools.rs`. API details are in [api.md](api.md).
 
-The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row on the Settings (Model) page. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
+The desktop client UI is English by default. Switch to 中文 with the Language / 语言 row under Settings, General (not on the Model page). Open Settings from your name at the bottom of the chat list. `ROBROZ_LANG=en|zh` overrides the saved choice for one run and is not written back. Quoted UI text below is what the English UI shows; the Chinese is in parentheses where it helps. See [configuration.md](configuration.md) for the saved `lang` file.
 
 ## Permission tiers
 
@@ -45,12 +45,12 @@ Approvals are checked against your Allow rules (「放行规则」) first, inclu
 
 ### Who may answer, and where the card goes (v0.2)
 
-Every bro has an owner (the user who created it; bros from a v0.1 database belong to the bootstrap admin). **Only the bro's owner may approve or deny its cards.** An admin is not an exception, except for Allow-rule confirm cards on the settings page, which any admin answers. One more exception in v0.2: a card whose bro no longer exists (for example, the bro was deleted while the card was pending) is not checked at all, so any signed-in user may approve or deny it (`host/src/approvals.rs:may_answer`, the last match arm). v0.3 will let only an admin answer such a card, and deleting a bro will mark its pending cards `expired`, as deleting a group already does. Each approval card carries `ownerUserId` and `ownerName` so the client can show who decides.
+The host is single-token in v0.2: every request is the bootstrap admin `local-admin` (`host/src/users.rs`). A bro still has an owner (the user who created it; bros from a v0.1 database belong to the bootstrap admin). The API only lets that owner approve or deny the bro's cards. Allow-rule confirm cards on the settings page are the exception: any admin may answer those. One more exception in v0.2: a card whose bro no longer exists (for example, the bro was deleted while the card was pending) is not checked at all (`host/src/approvals.rs:may_answer`, the last match arm). v0.3 will let only an admin answer such a card, and deleting a bro will mark its pending cards `expired`, as deleting a group already does. Each approval card carries `ownerUserId` and `ownerName`.
 
-- A card raised in a **group** stays in that group, with its buttons. The owner's DM with that bro gets an `approval_reminder` line: no buttons, it names the group and the bro, counts as unread in the DM, and changes to approved / denied / expired when the card is settled. The v0.1 behaviour of moving the card to the DM and showing Sent to owner's DM (「已发到主人私聊」) in the group is gone.
+- A card raised in a **group** stays in that group, with its buttons. Your DM with that bro gets an `approval_reminder` line: no buttons, it names the group and the bro, counts as unread in the DM, and changes to approved / denied / expired when the card is settled. The v0.1 behaviour of moving the card to the DM and showing Sent to owner's DM (「已发到主人私聊」) in the group is gone.
 - A card raised in the bro's **DM** stays in the DM, with its buttons, and there is no reminder.
-- Anyone else who tries to answer gets 403 `{"code":"approval_forbidden","reason":"not_owner",…}`. A card that was already answered gets 403 with `reason` `decided`, and one that expired gets 403 with `reason` `expired`. These were 409 before v0.2. A 403 is never a token problem; a bad token is still 401. Details are in [api.md, approve / deny](api.md#post-apiapprovalsidapprove-and-deny).
-- The same owner rule covers renaming a bro, opening its DM and adding it to another group (403 `not_bro_owner`, with `ownerUserId` / `ownerName`; the client shows "Only {owner} can change this bro.").
+- A caller who is not the bro's owner gets 403 `{"code":"approval_forbidden","reason":"not_owner",…}`. In v0.2 every caller is `local-admin`, who owns the bros created through the API. A card that was already answered gets 403 with `reason` `decided`, and one that expired gets 403 with `reason` `expired`. These were 409 before v0.2. A 403 is never a token problem; a bad token is still 401. Details are in [api.md, approve / deny](api.md#post-apiapprovalsidapprove-and-deny).
+- The same owner check covers renaming a bro, opening its DM and adding it to another group (403 `not_bro_owner`, with `ownerUserId` / `ownerName`).
 
 ### Cards a bro issues
 

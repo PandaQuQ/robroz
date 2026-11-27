@@ -37,9 +37,9 @@ Every 4xx and 5xx JSON error body has a stable `code` next to `error`. **`error`
   | other 5xx | `internal_error` |
 
 - **Extra fields stay.** `{"error":"command_not_approved","command","args","code":"command_not_approved"}` keeps `command` and `args`.
-- **The two 403s** keep their own body (they already had `code`), and both keep `ownerUserId` / `ownerName`:
-  - `not_bro_owner` (`robroz_contract::NotBroOwner`): rename a bro, open its DM, add it to a group. UI key `BroOnlyOwner`: "Only {owner} can change this bro." / 「只有 {owner} 能修改这个 bro。」, with {owner} = `ownerName`, or "its owner" / 「它的主人」 when absent.
-  - `approval_forbidden` (`robroz_contract::ApprovalForbidden`) with `reason`: `not_owner` shows UI key `ApprovalOnlyOwner`: "Only {owner} can approve this." / 「只有 {owner} 能审批。」; `decided` and `expired` are not shown as errors: the client fetches the card again and shows its outcome.
+- **The two 403s** keep their own body (they already had `code`), and both keep `ownerUserId` / `ownerName`. In v0.2 every caller is the bootstrap admin `local-admin`, so these are contract codes rather than a path for a second person:
+  - `not_bro_owner` (`robroz_contract::NotBroOwner`): rename a bro, open its DM, add it to a group. The body has `ownerUserId` / `ownerName` when known. The client's UI key is `BroOnlyOwner`.
+  - `approval_forbidden` (`robroz_contract::ApprovalForbidden`) with `reason`: `not_owner` uses UI key `ApprovalOnlyOwner`; `decided` and `expired` are not shown as errors: the client fetches the card again and shows its outcome.
 - **Framework rejections** (#179) are JSON with one of these codes (`robroz_contract::error_codes::rejection`). Endpoints marked “custom” keep their own code (for example `bad_request_format` or `body_not_json`).
 
   | Status | `code` | When |
@@ -223,7 +223,7 @@ The user the request acts as. `host/src/users.rs:me`
 
 ### Bro owners
 
-Every bro has an owner (`bots.owner_user_id`, `Bro.ownerUserId`). A bro made with `POST /api/bros`, or first added by `botId` with `POST /api/groups/{id}/members`, is owned by the caller. Bros from a v0.1 database are owned by the bootstrap admin. Only the owner may rename a bro, open its DM, add it to another group, or answer its approval cards; an admin is not an exception. Anyone else gets 403 `NotBroOwner` `{"error","code":"not_bro_owner","ownerUserId","ownerName"}`. `error` is `NOT_BRO_OWNER` (for logs only); the client shows "Only {owner} can change this bro." from `ownerName`. There is no `DELETE /api/bros/{id}` yet.
+Every bro has an owner (`bots.owner_user_id`, `Bro.ownerUserId`). A bro made with `POST /api/bros`, or first added by `botId` with `POST /api/groups/{id}/members`, is owned by the caller. Bros from a v0.1 database are owned by the bootstrap admin. Only the owner may rename a bro, open its DM, add it to another group, or answer its approval cards; an admin is not an exception. A caller who is not the owner gets 403 `NotBroOwner` `{"error","code":"not_bro_owner","ownerUserId","ownerName"}`. `error` is `NOT_BRO_OWNER` (for logs only). In v0.2 every request is the bootstrap admin `local-admin` (`GET /api/me`). There is no `DELETE /api/bros/{id}` yet.
 
 ### POST /api/groups
 
@@ -268,7 +268,7 @@ Add a bro to a group. `host/src/lib.rs:add_member`
 - 400 「请填写名称」: `botId` or `name` is blank.
 - 404 「群不存在」.
 - 409 「私聊里只能有一个 bro」: adding another bro to a DM.
-- 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): `botId` is an existing bro owned by someone else. A new `botId` creates a bro owned by the caller.
+- 403 `NotBroOwner` (`code` `not_bro_owner`, plus `ownerUserId` / `ownerName`): `botId` is an existing bro whose owner is not the caller. A new `botId` creates a bro owned by the caller. In v0.2 every caller is `local-admin`.
 
 Note: a bot's name is global. `@name` in a group matches that global name (see `/say`). Rename with `PATCH /api/bros/{id}`. A bot created here has no DM, and `dmGroupId` is `null`, until `POST /api/bros/{id}/dm`.
 
@@ -279,7 +279,7 @@ curl -s -X POST $B/api/groups/<groupId>/members -H 'content-type: application/js
 
 ### Who may do what in a group
 
-Users are not members of a group by themselves. A user **has a part in** a group when they created it (`createdBy`), own a bro in it, or are an admin. A DM belongs to its user only (`dm_user_id`); not even an admin sees another user's DM here. `GET …/members` and `GET …/search` need a part in the group, else 403 `not_group_member`. `PATCH` and `DELETE` need the creator or an admin, else 403 `not_group_creator`; a group with no `createdBy` (created before this field) is admin-only. A DM can never be renamed or deleted here: 403 `group_is_dm` (its name follows the bro). An unknown group is 404 `group_not_found` in all four. Clients hide those entries unless `!group.dm && (me.role == admin || group.createdBy == me.userId)` (from `GET /api/groups` and `GET /api/me`); do not show a disabled button that then returns 403.
+Users are not members of a group by themselves. A user **has a part in** a group when they created it (`createdBy`), own a bro in it, or are an admin. A DM belongs to its user only (`dm_user_id`); a caller who is not that user does not see it here, including an admin. `GET …/members` and `GET …/search` need a part in the group, else 403 `not_group_member`. `PATCH` and `DELETE` need the creator or an admin, else 403 `not_group_creator`; a group with no `createdBy` (created before this field) is admin-only. A DM can never be renamed or deleted here: 403 `group_is_dm` (its name follows the bro). An unknown group is 404 `group_not_found` in all four. Clients hide those entries unless `!group.dm && (me.role == admin || group.createdBy == me.userId)` (from `GET /api/groups` and `GET /api/me`); do not show a disabled button that then returns 403.
 
 ### GET /api/groups/{id}/members
 
@@ -387,7 +387,7 @@ curl -s -X PATCH $B/api/bros/<botId> -H 'content-type: application/json' -d '{"n
 
 ### Bro avatar
 
-`Bro.avatar` (`robroz_contract::BroAvatar`) is optional: `{"shape": 0–11, "color": 0–9}` (`AVATAR_SHAPES` = 12, `AVATAR_COLORS` = 10). Both are **indices** into the client's own shape set and color palette, not drawings or hex values, so each client draws its own shapes. When `avatar` is absent the client derives a default from the bro's `id` (for example a hash of `id` modulo 12 and 10); the host never fills one in. Only the bro's owner can set it (`PATCH` is owner-only, admins included). It is returned wherever a `Bro` is returned (`POST /api/bros`, `GET /api/bros`, `PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`); events do not carry `Bro` objects, so a client refetches `GET /api/bros` after changing it. Stored as `bots.avatar_shape` / `bots.avatar_color` (both `NULL` when unset).
+`Bro.avatar` (`robroz_contract::BroAvatar`) is optional: `{"shape": 0–11, "color": 0–9}` (`AVATAR_SHAPES` = 12, `AVATAR_COLORS` = 10). Both are **indices** into the client's own shape set and color palette, not drawings or hex values, so each client draws its own shapes. When `avatar` is absent the client derives a default from the bro's `id` (for example a hash of `id` modulo 12 and 10); the host never fills one in. Only the bro's owner can set it (`PATCH` is owner-only, including when the caller is an admin). In v0.2 every caller is `local-admin`. It is returned wherever a `Bro` is returned (`POST /api/bros`, `GET /api/bros`, `PATCH /api/bros/{id}`, `POST /api/bros/{id}/dm`); events do not carry `Bro` objects, so a client refetches `GET /api/bros` after changing it. Stored as `bots.avatar_shape` / `bots.avatar_color` (both `NULL` when unset).
 
 ### POST /api/bros/{id}/dm
 
@@ -432,7 +432,7 @@ The choice is logged as ids and the rule only (`responder: group <id> bro <id> b
 **Group turns** (`host/src/turns.rs`): when the single responder is off, or for an `@name` message, every `/say` in a group (not a DM) gives each bro in the group one turn; a bro may stay silent.
 
 - Order: the bro named with `@` goes first (that is the task above, unchanged: the prompt has `@name` stripped, the status card appears immediately, and it is returned in `Said.task`). The other members follow in join order. With no name and the single responder off, `Said.task` is `null`, and every member takes a turn in join order.
-- One at a time: the host only creates the next bro's task after every earlier turn has left `queued` / `running` (become `done` or `blocked`). That bro's prompt includes the original message and earlier bros' delivered results (at most 2,000 characters each), and tells it to reply with a single line `robroz-silent` if it has nothing to say (`robroz_host::turns::SILENT_REPLY`). Quoted text has every line starting with `robroz-` stripped, so someone else's line cannot trigger an outbound write, a progress update, or silence for this bro.
+- One at a time: the host only creates the next bro's task after every earlier turn has left `queued` / `running` (become `done` or `blocked`). That bro's prompt includes the original message and earlier bros' delivered results (at most 2,000 characters each), and tells it to reply with a single line `robroz-silent` if it has nothing to say (`robroz_host::turns::SILENT_REPLY`). Quoted text has every line starting with `robroz-` stripped, so another bro's line cannot trigger an outbound write, a progress update, or silence for this bro.
 - Until the model replies, an unnamed turn is **hidden**: no status card, no unread, and it does not count in `lastActivityAt`. After the model replies:
   - If the reply is `robroz-silent` (that line alone; `robroz-progress:` lines do not count) or empty: the task becomes `done` and stays hidden. The client sees nothing: no message, no status card, no delivery, no unread.
   - If the model call fails, or no model is set up: treated as silence as well; no 「模型没回」 card is shown (only a log line).
@@ -872,7 +872,7 @@ curl -s -X POST $B/api/groups/<groupId>/approvals -H 'content-type: application/
 
 Since v0.2 an approval card stays in **the conversation where it was raised** (`host/src/approvals.rs:card_group`, `bro_card_group`). This covers task approval cards, MCP tool approval cards and cards a bro posts with `POST /api/groups/{id}/approvals`.
 
-- **Group (not a DM):** the card, with its buttons, is only in the group. Only the bro's owner (`ownerUserId`) may answer it. The owner's DM with that bro gets an `approval_reminder` (see [Event types](#event-types)): no buttons, it links to the group, and its `state` follows the card. If the owner has no DM with the bro yet, the host creates one, the same as `POST /api/bros/{id}/dm`. The status card is `blocked` + `waitingFor:"approval"` and no longer shows 「已发到主人私聊」.
+- **Group (not a DM):** the card, with its buttons, is only in the group. The bro's `ownerUserId` may answer it; in v0.2 that is the signed-in caller. Your DM with that bro gets an `approval_reminder` (see [Event types](#event-types)): no buttons, it links to the group, and its `state` follows the card. If the owner has no DM with the bro yet, the host creates one, the same as `POST /api/bros/{id}/dm`. The status card is `blocked` + `waitingFor:"approval"` and no longer shows 「已发到主人私聊」.
 - **DM:** the card and its buttons stay in the DM. There is no reminder.
 - Both SSE streams follow the card: the group stream pushes the `approval`, and the DM stream pushes the `approval_reminder`, once when it is raised and again when it is answered or expires.
 - After approval the task is requeued in its group, finishes in the group folder, and the delivery is in the group.
@@ -943,10 +943,10 @@ Answer an approval card, and also a confirm card (see [Confirm cards](#confirm-c
 - 200 the same card, with `decision` `approved` / `denied`, and `answeredAt` and `answeredBy` filled.
 - 404 「审批卡不存在」: the id does not exist (the same for a confirm card), or the card is still in auto-review.
 - 403 `ApprovalForbidden` (v0.2; was 409 before): the caller may not answer this card. The body is `{"error","code":"approval_forbidden","reason","ownerUserId"?,"ownerName"?}` (`robroz_contract::ApprovalForbidden`). The client shows copy from `code` / `reason` and `ownerName`; `error` is for logs only. `reason` is exactly one of:
-  - `not_owner`: the caller is not the bro's owner (client: "Only {owner} can approve this."). For an Allow-rule card: the caller is not an admin. A card whose bro no longer exists is never `not_owner` in v0.2: anyone may answer it (v0.3 will limit it to admins; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02)). Checked first, so a non-owner gets `not_owner` even on a decided card.
+  - `not_owner`: the caller is not the bro's owner. For an Allow-rule card: the caller is not an admin. A card whose bro no longer exists is never `not_owner` in v0.2 (v0.3 will limit that case to admins; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02)). Checked first, so a caller who is not the owner gets `not_owner` even on a decided card. In v0.2 every caller is `local-admin`.
   - `decided`: the card was already answered, by a person or by auto-review. The client does not show an error; it reloads the card and shows the result.
   - `expired`: the card expired. The client does not show an error; it shows that the card has expired.
-  `ownerUserId` / `ownerName` name the bro's owner, so the client can say who to ask; they are omitted for Allow-rule cards. `code` is stable and a 403 is never a token problem (that is 401).
+  `ownerUserId` / `ownerName` name the bro's owner; they are omitted for Allow-rule cards. `code` is stable and a 403 is never a token problem (that is 401).
 - 409 「已经答过了」: a memory or skill confirm card that was already answered (unchanged).
 - Approving a `rule_add` card adds that rule; approving a `rule_delete` card deletes it. Deny or expiry leaves the rule list unchanged.
 - 400 「answeredBy 只能一行，最多 40 个字」.
@@ -956,7 +956,7 @@ Answer an approval card, and also a confirm card (see [Confirm cards](#confirm-c
 
 ```sh
 curl -s -X POST $B/api/approvals/<approvalId>/approve
-# not the owner:
+# when the caller is not the bro's owner (contract shape; v0.2 is single-token):
 # 403 {"error":"只有这个 bro 的主人能这样做","code":"approval_forbidden","reason":"not_owner","ownerUserId":"u-mei","ownerName":"Mei"}
 curl -s -X POST $B/api/approvals/<approvalId>/deny -H 'content-type: application/json' -d '{"answeredBy":"书房电脑"}'
 ```
@@ -1166,7 +1166,7 @@ A bro cannot write a memory or skill directly; it can only propose, and a person
 - **How to propose:** a line in the prompt or the model reply, `robroz-memory:{"kind":"habit","text":"周报用中文","scope":"user"}`, or `robroz-skill:{"slug":"weekly-report","title":"写周报","instruction":"先列三点","scope":"user"}`. `scope` may be omitted; it defaults to `bot:<assignee>`. The runner writes them to the group folder as `tasks/{taskId}/proposals.jsonl`; these lines do not go into `result.txt`.
 - **When they are collected:** when the task is `done` with no `failure`, the host reads this file and then deletes it. Each item is stored as a memory or skill with `source=bot`, `status=pending`, and a `confirm` card is issued.
 - **What is not collected:** bad JSON, an unknown `type`, illegal fields, a bad `scope` or a missing bro; a memory with the same `scope`, `kind` and text (consecutive whitespace counts as one) that already exists and has not been forgotten (any status); a skill with the same `slug` that already exists and has not been forgotten. At most 20 items are collected per task (`PROPOSALS_PER_TASK_MAX`).
-- **Answering:** `POST /api/approvals/{confirmId}/approve` (becomes `kept`) or `/deny` (becomes `rejected`). The body, `answeredBy` and 404 「审批卡不存在」 are the same as for an approval card, and only the bro's owner may answer (403 `approval_forbidden`, `reason` `not_owner`). An already answered confirm card still returns 409 「已经答过了」. This is the only way to change `status`.
+- **Answering:** `POST /api/approvals/{confirmId}/approve` (becomes `kept`) or `/deny` (becomes `rejected`). The body, `answeredBy` and 404 「审批卡不存在」 are the same as for an approval card, and only the bro's owner may answer (403 `approval_forbidden`, `reason` `not_owner`; in v0.2 every caller is `local-admin`). An already answered confirm card still returns 409 「已经答过了」. This is the only way to change `status`.
 - Confirm cards live in the same table as approval cards, but they only appear as a `confirm` event and do not affect a status card's `waitingFor`. A new card counts as one unread.
 - If a `pending` memory or skill is changed with `PATCH`, the confirm card is pushed again with the new content.
 

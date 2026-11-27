@@ -95,23 +95,16 @@ export const en = {
   },
   quickstart: {
     title: 'Self-host it',
-    lede: 'You need the Rust stable toolchain and Docker. From the repository root:',
-    code: `# host and desktop client
-cargo build -p robroz-host -p robroz-client
-# runner image used for tasks
-docker build -f runner/Dockerfile -t robroz-runner:local .
-# listens on 127.0.0.1:8790 only, no token needed
-cargo run -p robroz-host
-# in a second terminal
-cargo run -p robroz-client`,
-    next: 'In the client, click 「引入一个 bro」 (*add a bro*) next to the 「聊天」 (*Chats*) heading, open its DM and send a message: that is your first task. Without a model configured, the bro writes your message back as the result.',
-    more: 'To connect an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide.',
+    lede: 'On Linux with Docker, one command installs the published host. No Rust toolchain is required:',
+    code: `curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh`,
+    next: 'The script pulls the v0.2.0 host and runner images from GHCR, writes the token to ~/robroz/secrets/robroz_token, and serves 127.0.0.1:8790. Then build the desktop client from source in PandaQuQ/robroz-client (there is no client release yet) and point it at that address. In the client, click Add a bro next to the Chats heading, open its DM and send a message: that is your first task. Without a model configured, the delivery is No model set up yet, and the card offers Set up.',
+    more: 'To connect an OpenAI-compatible model, set up web search, set a token or reach the host from another machine, see the install guide. Add -s -- --dry-run after sh to see what the script would do first.',
     moreLink: {
       label: 'Install guide',
       href: 'https://github.com/PandaQuQ/robroz/blob/main/docs/install.md',
     },
     platforms:
-      'The host, the runner and the desktop client are written in Rust. The client is native on Windows, Linux and macOS, with no web view.',
+      'The host and the runner are written in Rust. The desktop client, in a separate repository, is native on Windows, Linux and macOS, with no web view.',
   },
   links: {
     title: 'Read more',
