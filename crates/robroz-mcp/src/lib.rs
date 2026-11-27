@@ -282,7 +282,7 @@ pub(crate) fn format_tool_result(result: &CallToolResult) -> String {
 pub(crate) fn client_service() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
-        Implementation::new("robroz-host", "0.1.0"),
+        Implementation::new("robroz-host", env!("CARGO_PKG_VERSION")),
     )
 }
 
