@@ -24,11 +24,11 @@
 适合希望在自己控制的工作区中使用多个 AI 智能体、并由自己批准风险步骤的用户。
 
 <p>
-  <img src="docs/assets/main-zh-light.png" alt="robroz 桌面客户端，浅色：群聊里的状态卡和交付卡" width="49%">
-  <img src="docs/assets/main-zh-dark.png" alt="robroz 桌面客户端，深色：群聊里的状态卡和交付卡" width="49%">
+  <img src="docs/assets/screenshots/main-desktop-zh-light.png" alt="桌面客户端浅色主题：「发布周」群中有已完成的结果、两张待批准的审批卡，以及仍在处理中的任务" width="49%">
+  <img src="docs/assets/screenshots/main-desktop-zh-dark.png" alt="桌面客户端深色主题：「发布周」群中有已完成的结果、两张待批准的审批卡，以及仍在处理中的任务" width="49%">
 </p>
 
-<sub>演示数据，桌面客户端截图</sub>
+<sub>桌面客户端中的「发布周」群，浅色与深色主题。演示数据。</sub>
 
 ## 功能
 
