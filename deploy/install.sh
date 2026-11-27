@@ -271,17 +271,20 @@ tighten_data() {
     warn "data directory $DATA is owned by uid $owner; the container runs as ${CONTAINER_UID}:${CONTAINER_GID} and may not be able to write"
     return 0
   fi
-  as_root chmod 0700 "$DATA"
-  say "data   $DATA mode 0700"
+  # Test and chmod the database through as_root: after the directory is 0700
+  # and owned by the container user, the installing user may not be able to
+  # see the files (their uid is often not 1000).
   for name in robroz.db robroz.db-wal robroz.db-shm robroz.db-journal; do
     f="$DATA/$name"
-    [ -f "$f" ] || continue
+    as_root test -f "$f" || continue
     if [ -n "$CONTAINER_UID" ]; then
       as_root chown "${CONTAINER_UID}:${CONTAINER_GID}" "$f"
     fi
     as_root chmod 0600 "$f"
     say "data   $f mode 0600"
   done
+  as_root chmod 0700 "$DATA"
+  say "data   $DATA mode 0700"
 }
 
 # True when $1 (an image:tag) is already on this machine.

@@ -113,6 +113,14 @@ jobs:
           test -f "$dir/compose.yml.bak"
           test "$(stat -c %a "$dir/data")" = "700"
           test "$(stat -c %a "$dir/data/robroz.db")" = "600"
+          # The installer uid may not be the container uid, so after data/ is
+          # 0700 they cannot see the database. The script must still tighten it.
+          sudo chown 1000:1000 "$dir/data" "$dir/data/robroz.db"
+          sudo chmod 0755 "$dir/data"
+          sudo chmod 0644 "$dir/data/robroz.db"
+          sh deploy/install.sh --no-start --dir "$dir" --version v9.9.9
+          test "$(sudo stat -c %a "$dir/data")" = "700"
+          test "$(sudo stat -c %a "$dir/data/robroz.db")" = "600"
       - name: Help and dry-run mention --no-pull
         run: |
           set -euo pipefail
