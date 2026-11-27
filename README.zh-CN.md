@@ -53,6 +53,16 @@
 
 ## 快速开始
 
+在 Linux 上用 Docker 跑已发布的宿主机，不需要 Rust 工具链：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh
+```
+
+脚本从 GHCR 拉取 `v0.2.0` 的 host 和 runner 镜像，把令牌写到 `~/robroz/secrets/robroz_token`，监听 `127.0.0.1:8790`。想先看它会做什么，在 `sh` 后面加 `-s -- --dry-run`；`docker.sock` 的风险见 [docs/docker-host.md](docs/docker-host.md)。
+
+从源码构建：
+
 需要 Rust stable 工具链（`rustup`、`cargo`）和 Docker。如果要安装已经发布的二进制，或者用 Docker 跑宿主机，见 [docs/install.md](docs/install.md) 和 [docs/docker-host.md](docs/docker-host.md)。那里的逐步示例还用到 `curl` 和 `jq`。在仓库根目录：
 
 ```sh
