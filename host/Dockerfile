@@ -43,4 +43,8 @@ ENV ROBROZ_ADDR=0.0.0.0:8790 \
 USER robroz
 WORKDIR /srv/robroz
 EXPOSE 8790
+# 401 or 200 on GET /api/bros means the process is up (a token is required).
+# The binary itself probes 127.0.0.1, so the image needs no curl.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD robroz-host --health
 ENTRYPOINT ["/usr/local/bin/robroz-host"]

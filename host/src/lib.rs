@@ -103,6 +103,27 @@ pub struct Host {
     open_streams: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// Mode 0600 on the database and its journal, so other users on the machine
+/// cannot read it. The host process also sets umask 0077 in `main`, so a
+/// newly created file is already 0600; this covers an older, looser file.
+fn tighten_db_file_mode(db_path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = db_path.to_string_lossy();
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let p = std::path::PathBuf::from(format!("{path}{suffix}"));
+            if let Ok(meta) = std::fs::metadata(&p) {
+                let mut perm = meta.permissions();
+                perm.set_mode(0o600);
+                let _ = std::fs::set_permissions(&p, perm);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = db_path;
+}
+
 impl Host {
     pub fn open(
         db_path: &Path,
@@ -112,6 +133,8 @@ impl Host {
         let conn = Connection::open(db_path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         init_schema(&conn)?;
+        // After schema setup so a WAL or SHM created on open is also 0600.
+        tighten_db_file_mode(db_path);
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             volumes_root: volumes_root.into(),
@@ -1448,6 +1471,21 @@ mod tests {
             "tests must not use the default database path"
         );
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_database_file_is_mode_0600_even_if_it_was_looser() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_db();
+        std::fs::write(&path, b"").unwrap();
+        let mut loose = std::fs::metadata(&path).unwrap().permissions();
+        loose.set_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+        let _host = super::Host::open(&path, std::env::temp_dir(), "robroz-runner:local").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o600, "open tightens an existing file");
     }
 
     /// Volumes and control dirs go to temp, never `./data` in the repo.
