@@ -447,14 +447,15 @@ fn start_task(
         let claimed = if mcp_resume {
             conn.execute(
                 "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
-                                  progress_data = ?4
+                                  progress_data = ?4, started_at = COALESCE(started_at, ?1)
                  WHERE id = ?2 AND state = 'queued'",
                 params![claimed_at, task.id, first.text, first.json()],
             )?
         } else {
             conn.execute(
                 "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
-                                  progress_data = ?4, get_count = 0, needs_setup = NULL
+                                  progress_data = ?4, get_count = 0, needs_setup = NULL,
+                                  started_at = COALESCE(started_at, ?1)
                  WHERE id = ?2 AND state = 'queued'",
                 params![claimed_at, task.id, first.text, first.json()],
             )?

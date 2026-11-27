@@ -543,7 +543,9 @@ pub(crate) fn end_silent(
 /// Show a turn task that decided to speak: its status card appears now.
 pub(crate) fn reveal(conn: &Connection, task_id: &str, at: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE tasks SET turn_hidden = 0, created_at = ?2, updated_at = ?2 WHERE id = ?1 AND turn_hidden = 1",
+        "UPDATE tasks SET turn_hidden = 0, created_at = ?2, updated_at = ?2,
+                          started_at = MAX(COALESCE(started_at, ?2), ?2)
+         WHERE id = ?1 AND turn_hidden = 1",
         params![task_id, at],
     )?;
     Ok(())
