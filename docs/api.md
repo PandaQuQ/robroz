@@ -907,7 +907,7 @@ Answer an approval card, and also a confirm card (see [Confirm cards](#confirm-c
 - 200 the same card, with `decision` `approved` / `denied`, and `answeredAt` and `answeredBy` filled.
 - 404 「审批卡不存在」: the id does not exist (the same for a confirm card), or the card is still in auto-review.
 - 403 `ApprovalForbidden` (v0.2; was 409 before): the caller may not answer this card. The body is `{"error","code":"approval_forbidden","reason","ownerUserId"?,"ownerName"?}` (`robroz_contract::ApprovalForbidden`). The client shows copy from `code` / `reason` and `ownerName`; `error` is for logs only. `reason` is exactly one of:
-  - `not_owner`: the caller is not the bro's owner (client: "Only {owner} can approve this."). For an Allow-rule card: the caller is not an admin. Checked first, so a non-owner gets `not_owner` even on a decided card.
+  - `not_owner`: the caller is not the bro's owner (client: "Only {owner} can approve this."). For an Allow-rule card: the caller is not an admin. A card whose bro no longer exists is never `not_owner` in v0.2: anyone may answer it (v0.3 will limit it to admins; see [permissions.md](permissions.md#who-may-answer-and-where-the-card-goes-v02)). Checked first, so a non-owner gets `not_owner` even on a decided card.
   - `decided`: the card was already answered, by a person or by auto-review. The client does not show an error; it reloads the card and shows the result.
   - `expired`: the card expired. The client does not show an error; it shows that the card has expired.
   `ownerUserId` / `ownerName` name the bro's owner, so the client can say who to ask; they are omitted for Allow-rule cards. `code` is stable and a 403 is never a token problem (that is 401).
