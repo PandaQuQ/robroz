@@ -110,11 +110,12 @@ Clients from [robroz-client](https://github.com/PandaQuQ/robroz-client) talk to 
 
 ## Documentation
 
-Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/wiki) is informal; when the two disagree, this repository wins. Rules for contributors and coding agents: [AGENTS.md](AGENTS.md).
+Repository docs are the contract; when another source disagrees, this repository wins. The Chinese user guide lives in [docs/zh-CN/](docs/zh-CN/index.md). Rules for contributors and coding agents: [AGENTS.md](AGENTS.md).
 
 | File | Contents |
 | --- | --- |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [docs/zh-CN/](docs/zh-CN/index.md) | Chinese user guide for v0.2.0: install, configuration, daily use, approvals, memory and skills, search and MCP, FAQ, roadmap |
 | [docs/install.md](docs/install.md) | Download a release, prerequisites, build, run, connect a model, first task, tests |
 | [docs/docker-host.md](docs/docker-host.md) | Run the host in Docker: compose, `docker.sock` risk, same-path mount, token |
 | [docs/configuration.md](docs/configuration.md) | All environment variables and defaults |
@@ -130,7 +131,7 @@ Repository docs are the contract. The [wiki](https://github.com/PandaQuQ/robroz/
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | Later roadmap |
 | [docs/design/multi-agent.md](docs/design/multi-agent.md) | Group turns, follow-ups, Router and Watchdog design |
 
-Most files under `docs/` are still Chinese-first. They will be switched to English in follow-up PRs; quoted UI strings stay in the language the client currently shows.
+Most files under `docs/` are in English. `docs/architecture.md`, `docs/memory-and-skills.md`, `docs/search-and-mcp.md`, `docs/reference-features.md` and `docs/roadmap-phase2.md` are still Chinese-first and will be switched to English in follow-up PRs; `docs/docker-host.md` has both languages. `docs/zh-CN/` is the Chinese user guide and stays in Chinese. Quoted UI strings stay in the language the client currently shows.
 
 ## Status
 

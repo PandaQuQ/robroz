@@ -110,11 +110,12 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 ## 文档
 
-仓库里的文档才是契约。[wiki](https://github.com/PandaQuQ/robroz/wiki) 是非正式说明，两边冲突时以仓库为准。贡献者和编码 agent 的规则见 [AGENTS.md](AGENTS.md)。
+仓库里的文档才是契约，和别处说法冲突时以仓库为准。中文使用文档在 [docs/zh-CN/](docs/zh-CN/index.md)。贡献者和编码 agent 的规则见 [AGENTS.md](AGENTS.md)。
 
 | 文件 | 内容 |
 | --- | --- |
 | [CHANGELOG.md](CHANGELOG.md) | 版本说明 |
+| [docs/zh-CN/](docs/zh-CN/index.md) | v0.2.0 中文使用文档：安装、配置、日常使用、审批、记忆和技能、搜索和 MCP、常见问题、路线图 |
 | [docs/install.md](docs/install.md) | 下载发行包、准备、构建、运行、接模型、第一个任务、测试 |
 | [docs/docker-host.md](docs/docker-host.md) | 用 Docker 运行宿主机：compose、`docker.sock` 风险、同路径挂载、令牌 |
 | [docs/configuration.md](docs/configuration.md) | 全部环境变量和默认值 |
@@ -130,7 +131,7 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 | [docs/roadmap-phase2.md](docs/roadmap-phase2.md) | 后续路线图 |
 | [docs/design/multi-agent.md](docs/design/multi-agent.md) | 群轮次、追问、Router 和 Watchdog 设计 |
 
-`docs/` 下大多数文件目前仍以中文为主，会在后续 PR 里改成英文为主。引用的界面文案仍按客户端当前显示的语言写。
+`docs/` 下大多数文件是英文。`docs/architecture.md`、`docs/memory-and-skills.md`、`docs/search-and-mcp.md`、`docs/reference-features.md` 和 `docs/roadmap-phase2.md` 目前仍以中文为主，会在后续 PR 里改成英文为主；`docs/docker-host.md` 中英文都有。`docs/zh-CN/` 是中文使用文档，保持中文。引用的界面文案仍按客户端当前显示的语言写。
 
 ## 状态
 
