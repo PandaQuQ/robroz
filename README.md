@@ -30,7 +30,7 @@ It is for people who want several AI agents in one workspace they control, and w
 
 <sub>Demo data, shown in the desktop client</sub>
 
-## Works today
+## Features
 
 - **Chat bubbles.** Your messages sit on the right; bro cards sit on the left, grouped by sender. A delivery with a `bot_name` is attached to that bro; a delivery without one stands alone.
 - **Group turns.** A message that names no bro gets one reply, from one bro the host picks. Name a bro with `@name` at the start and that bro speaks first; the others may then take a turn or stay quiet.
@@ -44,7 +44,7 @@ It is for people who want several AI agents in one workspace they control, and w
 
 You can also use web search (Brave or SearXNG), MCP tools, and scheduled routines. When a step runs long or stalls, a hint appears on the card; the work is not cancelled.
 
-## Not yet
+## Roadmap
 
 These are accepted design or in progress. They are **not** shipped on `main`. Details: [docs/design/multi-agent.md](docs/design/multi-agent.md).
 
