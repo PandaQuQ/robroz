@@ -53,6 +53,16 @@ These are accepted design or in progress. They are **not** shipped on `main`. De
 
 ## Quick start
 
+To run a released host in Docker on Linux, with no Rust toolchain:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PandaQuQ/robroz/main/deploy/install.sh | sh
+```
+
+The script pulls the `v0.2.0` host and runner images from GHCR, writes the token to `~/robroz/secrets/robroz_token`, and serves `127.0.0.1:8790`. Add `-s -- --dry-run` after `sh` to see what it would do first; [docs/docker-host.md](docs/docker-host.md) explains the `docker.sock` risk.
+
+To build from source instead:
+
 You need a Rust stable toolchain (`rustup`, `cargo`) and Docker. To install a published binary or run the host in Docker instead, see [docs/install.md](docs/install.md) and [docs/docker-host.md](docs/docker-host.md). The walk-through there also uses `curl` and `jq`. From the repository root:
 
 ```sh
