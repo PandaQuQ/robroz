@@ -26,6 +26,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use robroz_contract::ApprovalReasonCode;
 use robroz_contract::{ApprovalDecision, APPROVAL_EXPIRED_REASON};
 use rusqlite::{params, Connection};
 
@@ -61,10 +62,45 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         );
     }
+    // #180: `reason_code`, the code for the host's fixed `reason` texts.
+    let added = conn
+        .execute("ALTER TABLE approvals ADD COLUMN reason_code TEXT", [])
+        .is_ok();
+    if added {
+        backfill_reason_codes(conn)?;
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS approvals_open_expiry ON approvals(expires_at) WHERE decision IS NULL;
          CREATE INDEX IF NOT EXISTS approvals_review_state ON approvals(review_state) WHERE decision IS NULL;",
     )
+}
+
+/// Code every stored `reason` once, from its exact text (see
+/// [`ApprovalReasonCode::from_legacy`]). Runs only when the column is added.
+fn backfill_reason_codes(conn: &Connection) -> rusqlite::Result<()> {
+    let rows: Vec<(String, String, bool)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, reason, review_state IS NOT NULL FROM approvals
+             WHERE reason IS NOT NULL AND reason_code IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, reason, reviewed) in rows {
+        if let Some(code) = ApprovalReasonCode::from_legacy(&reason, reviewed) {
+            conn.execute(
+                "UPDATE approvals SET reason_code = ?2 WHERE id = ?1",
+                params![id, code.as_str()],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The code for a `reason` the reviewer wrote: one of the host's fixed texts,
+/// or the model's own words.
+fn review_code(reason: &str) -> ApprovalReasonCode {
+    ApprovalReasonCode::from_legacy(reason, true).unwrap_or(ApprovalReasonCode::ReviewModel)
 }
 
 /// Approval card lifetime from `ROBROZ_APPROVAL_TTL_SECS`. Unset, empty,
@@ -250,6 +286,7 @@ pub(crate) fn apply(
                 &Settlement {
                     decision: ApprovalDecision::Approved,
                     reason: Some(reason),
+                    reason_code: Some(review_code(reason)),
                     from_review: Some(PENDING),
                     to_review: Some(ALLOWED),
                     ..Settlement::default()
@@ -262,10 +299,17 @@ pub(crate) fn apply(
                 }
                 Err((status, _)) if status == axum::http::StatusCode::CONFLICT => Ok(false),
                 // The continue marker could not be written: ask the owner instead.
-                Err((_, message)) => block(conn, id, message, ttl, now),
+                Err((_, message)) => block(
+                    conn,
+                    id,
+                    message,
+                    ApprovalReasonCode::ReviewAllowFailed,
+                    ttl,
+                    now,
+                ),
             }
         }
-        Verdict::Block(reason) => block(conn, id, reason, ttl, now),
+        Verdict::Block(reason) => block(conn, id, reason, review_code(reason), ttl, now),
     }
 }
 
@@ -275,14 +319,16 @@ fn block(
     conn: &Connection,
     id: &str,
     reason: &str,
+    code: ApprovalReasonCode,
     ttl: Duration,
     now: DateTime<Utc>,
 ) -> rusqlite::Result<bool> {
     let at = rfc3339(now);
     let changed = conn.execute(
-        "UPDATE approvals SET review_state = 'blocked', reason = ?2, created_at = ?3, expires_at = ?4
+        "UPDATE approvals SET review_state = 'blocked', reason = ?2, created_at = ?3, expires_at = ?4,
+                              reason_code = ?5
          WHERE id = ?1 AND review_state = 'pending' AND decision IS NULL",
-        params![id, reason, at, rfc3339(now + ttl)],
+        params![id, reason, at, rfc3339(now + ttl), code.as_str()],
     )?;
     if changed > 0 {
         eprintln!("review: {id} blocked: {reason}");
@@ -323,7 +369,8 @@ pub fn expire_due(
             &Settlement {
                 decision: ApprovalDecision::Denied,
                 reason: Some(APPROVAL_EXPIRED_REASON),
-                failure: Some(APPROVAL_EXPIRED_REASON),
+                reason_code: Some(ApprovalReasonCode::Expired),
+                failure: Some(crate::failure::Failure::approval_expired()),
                 ..Settlement::default()
             },
         )?;

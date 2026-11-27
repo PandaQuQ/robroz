@@ -22,7 +22,9 @@ mod bros;
 mod choices;
 mod error_code;
 mod extract;
+mod failure;
 pub(crate) mod follow_ups;
+mod groups;
 mod mcp;
 mod mcp_tools;
 mod memories;
@@ -258,6 +260,7 @@ impl Host {
         let router = router_from(AppState {
             db: self.db.clone(),
             control_root: self.control_root.clone(),
+            volumes_root: self.volumes_root.clone(),
             reviewer: self.reviewer.clone(),
             model: self.model.clone(),
             mcp: self.mcp.clone(),
@@ -349,6 +352,8 @@ fn get_limit_from_env() -> u64 {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     control_root: std::path::PathBuf,
+    /// Group volumes, so deleting a group can remove its files.
+    volumes_root: std::path::PathBuf,
     /// Auto-review of bro-posted cards: test override and fixed model, as on [`Host`].
     reviewer: Option<Arc<dyn review::Reviewer>>,
     model: Option<Arc<dyn robroz_model::Model>>,
@@ -371,7 +376,15 @@ fn router_from(state: AppState) -> Router {
     Router::new()
         .route("/api/me", get(users::me))
         .route("/api/groups", post(create_group).get(list_groups))
-        .route("/api/groups/{id}/members", post(add_member))
+        .route(
+            "/api/groups/{id}",
+            patch(groups::rename_group).delete(groups::delete_group),
+        )
+        .route(
+            "/api/groups/{id}/members",
+            post(add_member).get(groups::list_members),
+        )
+        .route("/api/groups/{id}/search", get(groups::search_group))
         .route("/api/bros", post(bros::create_bro).get(bros::list_bros))
         .route("/api/bros/{id}", axum::routing::patch(bros::rename_bro))
         .route("/api/bros/{id}/dm", post(bros::open_dm))
@@ -567,8 +580,11 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     for table in ["tasks", "deliveries"] {
         let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN failure TEXT"), []);
     }
+    // #181: the typed failure next to the legacy text; old rows backfilled once.
+    failure::migrate(conn)?;
     // What a running task is doing now, shown on its status card.
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN progress TEXT", []);
+    progress::migrate(conn)?;
     // v0.2 accounts: users, then bro owners and per-(user, bro) DMs.
     users::migrate(conn)?;
     bros::migrate(conn)?;
@@ -592,6 +608,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(follow_ups::SCHEMA)?;
     conn.execute_batch(router::SCHEMA)?;
     conn.execute_batch(timeouts::SCHEMA)?;
+    groups::migrate(conn)?;
     Ok(())
 }
 
@@ -656,13 +673,15 @@ async fn list_groups(State(state): State<AppState>) -> Response {
     let conn = lock_db(&state);
     let result = (|| {
         let mut stmt = conn.prepare(
-            "SELECT id, name, tenant_id FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
+            "SELECT id, name, tenant_id, created_by, dm_bot_id IS NOT NULL FROM groups WHERE tenant_id = ?1 ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([TENANT_ID], |row| {
             Ok(Group {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 tenant_id: row.get(2)?,
+                created_by: row.get(3)?,
+                dm: row.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -674,7 +693,11 @@ async fn list_groups(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGroup>) -> Response {
+async fn create_group(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<users::CurrentUser>,
+    Json(body): Json<CreateGroup>,
+) -> Response {
     let name = body.name.trim();
     if name.is_empty() {
         return error_response(
@@ -686,8 +709,8 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
     let created_at = now_rfc3339();
     let conn = lock_db(&state);
     let result = conn.execute(
-        "INSERT INTO groups (id, tenant_id, name, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![id, TENANT_ID, name, created_at],
+        "INSERT INTO groups (id, tenant_id, name, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, TENANT_ID, name, created_at, user.0],
     );
     drop(conn);
     if let Err(err) = result {
@@ -699,6 +722,8 @@ async fn create_group(State(state): State<AppState>, Json(body): Json<CreateGrou
             id,
             name: name.to_string(),
             tenant_id: TENANT_ID.to_string(),
+            created_by: Some(user.0.clone()),
+            dm: false,
         }),
     )
         .into_response()
@@ -1183,7 +1208,7 @@ fn group_events(
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress
+                    t.progress, t.progress_data, t.failure_data
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE t.group_id = ?1 AND t.turn_hidden = 0",
@@ -1196,11 +1221,12 @@ fn group_events(
             let container_up = container_up != 0;
             let updated_at: String = row.get(5)?;
             // Only a finished task reports why it was not done.
-            let failure: Option<String> = if state == TaskState::Done {
-                row.get(7)?
-            } else {
-                None
-            };
+            let (failure, failure_data): (Option<String>, Option<String>) =
+                if state == TaskState::Done {
+                    (row.get(7)?, row.get(11)?)
+                } else {
+                    (None, None)
+                };
             // Only a blocked task says whether it is waiting for approval or a takeover.
             let waiting_for = if state == TaskState::Blocked {
                 let open_approval: i64 = row.get(8)?;
@@ -1215,7 +1241,11 @@ fn group_events(
             // v0.2: a group task's card stays in the group, so no
             // 「已发到主人私聊」 notice any more.
             let progress = progress::shown(state, container_up, row.get(9)?);
-            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
+            let progress_data: Option<String> = row.get(10)?;
+            let (progress_code, progress_params) =
+                progress::codes(progress.as_deref(), progress_data.as_deref());
+            let (failure_code, failure_detail) =
+                failure::codes(failure.as_deref(), failure_data.as_deref());
             Ok(TimedEvent {
                 changed_at: updated_at.clone(),
                 created_at: created_at.clone(),
@@ -1236,6 +1266,8 @@ fn group_events(
                     status_code: Some(robroz_contract::CardStatusCode::of(state, container_up)),
                     failure_code,
                     failure_detail,
+                    progress_code,
+                    progress_params,
                 },
             })
         })?;
@@ -1247,7 +1279,7 @@ fn group_events(
     {
         let mut delivery_stmt = conn.prepare(
             "SELECT d.id, d.summary, d.path, d.briefing, d.created_at, d.failure, d.needs_setup,
-                    d.task_id, t.assignee_bot_id, b.name
+                    d.task_id, t.assignee_bot_id, b.name, d.failure_data
              FROM deliveries d
              LEFT JOIN tasks t ON t.id = d.task_id
              LEFT JOIN bots b ON b.id = t.assignee_bot_id
@@ -1258,7 +1290,9 @@ fn group_events(
             let created_at: String = row.get(4)?;
             let briefing: i64 = row.get(3)?;
             let failure: Option<String> = row.get(5)?;
-            let (failure_code, failure_detail) = failure_codes(failure.as_deref());
+            let failure_data: Option<String> = row.get(10)?;
+            let (failure_code, failure_detail) =
+                failure::codes(failure.as_deref(), failure_data.as_deref());
             Ok(TimedEvent {
                 changed_at: created_at.clone(),
                 created_at: created_at.clone(),
@@ -1299,16 +1333,6 @@ fn group_events(
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(Some(timed))
-}
-
-/// The `failureCode` and `failureDetail` for a stored `failure` text: the
-/// code and the raw reason without its prefix. The legacy `failure` text is
-/// sent unchanged next to them.
-fn failure_codes(failure: Option<&str>) -> (Option<robroz_contract::FailureCode>, Option<String>) {
-    match failure.map(robroz_contract::split_failure) {
-        Some((code, detail)) => (Some(code), detail),
-        None => (None, None),
-    }
 }
 
 #[cfg(test)]
@@ -4085,8 +4109,8 @@ mod tests {
             body,
             json!({
                 "groups": [
-                    { "id": first["id"], "name": "设计群", "tenantId": "local" },
-                    { "id": second["id"], "name": "运营群", "tenantId": "local" }
+                    { "id": first["id"], "name": "设计群", "tenantId": "local", "createdBy": "local-admin", "dm": false },
+                    { "id": second["id"], "name": "运营群", "tenantId": "local", "createdBy": "local-admin", "dm": false }
                 ]
             })
         );
@@ -5136,7 +5160,7 @@ mod tests {
 
     /// Fake model: answers or fails, and records each call's prompt and memory paragraph.
     struct FakeModel {
-        answer: Result<String, String>,
+        answer: Result<String, robroz_model::ModelError>,
         calls: std::sync::atomic::AtomicUsize,
         seen: std::sync::Mutex<Vec<(String, Option<String>)>>,
     }
@@ -5144,7 +5168,15 @@ mod tests {
     impl FakeModel {
         fn new(answer: Result<String, String>) -> Self {
             Self {
-                answer,
+                answer: answer.map_err(robroz_model::ModelError::new),
+                calls: Default::default(),
+                seen: Default::default(),
+            }
+        }
+
+        fn failing(err: robroz_model::ModelError) -> Self {
+            Self {
+                answer: Err(err),
                 calls: Default::default(),
                 seen: Default::default(),
             }
@@ -5171,10 +5203,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((prompt.to_string(), memory_section.map(str::to_string)));
-            self.answer
-                .clone()
-                .map(|a| format!("{a}（{prompt}）"))
-                .map_err(robroz_model::ModelError)
+            self.answer.clone().map(|a| format!("{a}（{prompt}）"))
         }
     }
 
@@ -5327,6 +5356,8 @@ mod tests {
         assert_eq!(card["state"], "running");
         assert_eq!(card["containerUp"], true);
         assert_eq!(card["progress"], "模型和工具还没回，已等 11 分钟");
+        assert_eq!(card["progressCode"], "step_timeout");
+        assert_eq!(card["progressParams"], json!({ "minutes": 11 }));
         assert!(card.get("failure").is_none());
         assert_eq!(queued_count(&path), 0);
 
@@ -5630,6 +5661,8 @@ mod tests {
         let card = status_of(&events, &task_id).clone();
         assert_eq!(card["state"], "running");
         assert_eq!(card["progress"], "在沙箱里跑");
+        assert_eq!(card["progressCode"], "in_sandbox");
+        assert!(card.get("progressParams").is_none(), "{card}");
         let at = card["updatedAt"].as_str().unwrap().to_string();
 
         // The runner reports a step: same card, new text, newer updatedAt.
@@ -5645,6 +5678,8 @@ mod tests {
         assert_eq!(changed.len(), 1, "one new status for the new text: {fresh}");
         assert_eq!(changed[0]["taskId"], task_id.as_str());
         assert_eq!(changed[0]["progress"], "在查资料");
+        assert_eq!(changed[0]["progressCode"], "custom");
+        assert_eq!(changed[0]["progressParams"], json!({ "text": "在查资料" }));
         let at = changed[0]["updatedAt"].as_str().unwrap().to_string();
 
         // Same text again: nothing new to send.
@@ -5758,7 +5793,7 @@ mod tests {
         let volumes = temp_volumes();
         let app = test_app(&path);
         let (group_id, task_id) = seed_task(&app, "模型", "写周报").await;
-        let model = FakeModel::new(Err("模型服务返回 401".into()));
+        let model = FakeModel::failing(robroz_model::ModelError::from_http_status(401));
         let mut fake = super::sandbox::FakeSandbox::new();
         pump_with_model(&path, &volumes, &mut fake, &model);
         fake.finish(0);
@@ -5777,11 +5812,11 @@ mod tests {
             "模型没回：模型服务返回 401",
             "card can say it was not done"
         );
-        // The code and the raw reason, with no prefix baked into the detail.
+        // The code and only the raw status code: no host-written copy in the detail.
         assert_eq!(deliveries(&events)[0]["failureCode"], "model_no_reply");
-        assert_eq!(deliveries(&events)[0]["failureDetail"], "模型服务返回 401");
+        assert_eq!(deliveries(&events)[0]["failureDetail"], "401");
         assert_eq!(statuses(&events)[0]["failureCode"], "model_no_reply");
-        assert_eq!(statuses(&events)[0]["failureDetail"], "模型服务返回 401");
+        assert_eq!(statuses(&events)[0]["failureDetail"], "401");
         assert_eq!(deliveries(&events)[0]["taskId"], task_id);
         assert_eq!(deliveries(&events)[0]["botId"], "bot-ada");
         assert_eq!(deliveries(&events)[0]["botName"], "Ada");
@@ -7002,7 +7037,7 @@ mod tests {
             self.prompts.lock().unwrap().push(prompt.to_string());
             let mut answers = self.answers.lock().unwrap();
             assert!(!answers.is_empty(), "unexpected model call: {prompt}");
-            answers.remove(0).map_err(robroz_model::ModelError)
+            answers.remove(0).map_err(robroz_model::ModelError::new)
         }
     }
 

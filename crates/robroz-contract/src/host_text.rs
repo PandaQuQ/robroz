@@ -143,6 +143,12 @@ pub const MCP_STDIO_ONLY_APPROVE: &str = "只有 stdio 服务器需要批准启�
 /// its DM, or answer its card). Only the owner may do this.
 /// A DM already has its one bro.
 pub const DM_ONE_BRO: &str = "私聊里只能有一个 bro";
+/// 403: only the group's creator or an admin may rename or delete it.
+pub const NOT_GROUP_CREATOR: &str = "只有建群的人或管理员能改这个群";
+/// 403: the caller has no part in this group.
+pub const NOT_GROUP_MEMBER: &str = "你不在这个群里";
+/// 403: a DM cannot be renamed or deleted (its name follows the bro).
+pub const GROUP_IS_DM: &str = "私聊不能改名或删除";
 /// Approval action is not supported.
 pub const ACTION_NOT_SUPPORTED: &str = "不支持这个动作";
 /// Only the host may raise this approval action.
@@ -386,6 +392,9 @@ pub const HOST_UI_STRINGS: &[(&str, &str)] = &[
     ("MCP_NOT_ENABLED_IN_GROUP", MCP_NOT_ENABLED_IN_GROUP),
     ("MCP_STDIO_ONLY_APPROVE", MCP_STDIO_ONLY_APPROVE),
     ("DM_ONE_BRO", DM_ONE_BRO),
+    ("NOT_GROUP_CREATOR", NOT_GROUP_CREATOR),
+    ("NOT_GROUP_MEMBER", NOT_GROUP_MEMBER),
+    ("GROUP_IS_DM", GROUP_IS_DM),
     ("ACTION_NOT_SUPPORTED", ACTION_NOT_SUPPORTED),
     ("ACTION_HOST_ONLY", ACTION_HOST_ONLY),
     (

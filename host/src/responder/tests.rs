@@ -392,6 +392,33 @@ async fn a_message_that_names_nobody_makes_exactly_one_task_for_the_picked_bro()
 }
 
 #[tokio::test]
+async fn deleting_a_group_drops_its_single_responder_rounds_and_tasks() {
+    let model = Scripted::answering("b-bob");
+    let h = harness(true, Some(&model));
+    let g = h.group(&THREE).await;
+    let other = h.group(&THREE).await;
+    h.say(&g, "帮我整理一下周报").await;
+    h.say(&other, "另一个群里的话").await;
+    assert_eq!((h.turns(&g), h.tasks(&g)), (1, 1));
+
+    let (status, body) = h.call("DELETE", &format!("/api/groups/{g}"), None).await;
+    assert!(status.is_success(), "{status} {body}");
+    // The responder keeps nothing in memory: its state is the `turns` row
+    // (with `single`) and the task, and the group delete removes both.
+    assert_eq!((h.turns(&g), h.tasks(&g)), (0, 0));
+    assert_eq!(
+        (h.turns(&other), h.tasks(&other)),
+        (1, 1),
+        "other groups are untouched"
+    );
+
+    // A later message in another group still picks one bro.
+    let again = h.say(&other, "再来一条").await;
+    assert!(again["task"].is_object(), "{again}");
+    assert_eq!(h.turns(&other), 2);
+}
+
+#[tokio::test]
 async fn a_group_with_one_bro_goes_to_it_without_asking_a_model() {
     let model = Scripted::answering("b-zzz");
     let h = harness(true, Some(&model));

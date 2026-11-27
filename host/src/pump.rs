@@ -9,7 +9,8 @@ use robroz_policy::{blocking_effect, meter, tier, OverQuota, SideEffect, Tier};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-use crate::progress;
+use crate::failure::Failure;
+use crate::progress::{self, Progress};
 use crate::sandbox::{container_name, result_rel, ContainerPhase, RunRequest, Sandbox};
 use crate::steps::StepRunner;
 use crate::watchdog::{Watchdog, WatchdogConfig, DEAD_RUN_FAILURE};
@@ -78,7 +79,7 @@ enum Outcome {
     Blocked(Option<robroz_policy::BlockingLine>),
     /// Done without the work, with the task's `failure` (e.g. over the GET
     /// quota). No delivery, never blocked.
-    Failed(String),
+    Failed(Failure),
     /// Exited without a result, or vanished: `done` + [`DEAD_RUN_FAILURE`].
     Dead,
     Done,
@@ -189,6 +190,43 @@ pub(crate) fn pump_offloaded(
     pump_inner(&**db, sandbox, cfg, Some(ctx))
 }
 
+/// Stop the containers of tasks whose group was deleted
+/// ([`crate::groups::REAPS`]). A failed stop is retried next pass.
+fn reap_deleted(
+    db: &impl Db,
+    sandbox: &mut dyn Sandbox,
+    mut offload: Option<&mut OffloadCtx<'_>>,
+) -> rusqlite::Result<()> {
+    let reaps = db.with(crate::groups::pending_reaps)?;
+    for task_id in reaps {
+        if let Some(flag) = offload
+            .as_mut()
+            .and_then(|off| off.state.cancels.get(&task_id))
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
+        let name = container_name(&task_id);
+        match sandbox.phase(&name) {
+            Ok(ContainerPhase::Missing) => {}
+            Ok(_) => {
+                if let Err(err) = sandbox.remove(&name) {
+                    eprintln!("pump: stop deleted-group task {task_id}: {}", err.message);
+                    continue;
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "pump: inspect deleted-group task {task_id}: {}",
+                    err.message
+                );
+                continue;
+            }
+        }
+        db.with(|conn| crate::groups::reaped(conn, &task_id))?;
+    }
+    Ok(())
+}
+
 fn pump_inner(
     db: &impl Db,
     sandbox: &mut dyn Sandbox,
@@ -209,6 +247,7 @@ fn pump_inner(
             finish_start(db, sandbox, cfg, &done.started, Some(done.reply))?;
         }
     }
+    reap_deleted(db, sandbox, offload.as_mut())?;
     if let Some(timeout) = cfg.step_timeout {
         cancel_overdue(db, sandbox, cfg, offload.as_mut(), timeout)?;
     }
@@ -394,8 +433,8 @@ fn start_task(
         };
         let first = match &route {
             Route::On(Some(plan)) => plan.progress(plan.next()),
-            _ if cfg.model.is_some() => progress::THINKING.to_string(),
-            _ => progress::STARTED.to_string(),
+            _ if cfg.model.is_some() => Progress::thinking(),
+            _ => Progress::started(),
         };
         let section = if cfg.model.is_some() {
             system_extra(
@@ -407,16 +446,17 @@ fn start_task(
         };
         let claimed = if mcp_resume {
             conn.execute(
-                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3
+                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
+                                  progress_data = ?4
                  WHERE id = ?2 AND state = 'queued'",
-                params![claimed_at, task.id, first],
+                params![claimed_at, task.id, first.text, first.json()],
             )?
         } else {
             conn.execute(
-                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, progress = ?3,
-                                  get_count = 0, needs_setup = NULL
+                "UPDATE tasks SET state = 'running', container_up = 1, updated_at = ?1, failure = NULL, failure_data = NULL, progress = ?3,
+                                  progress_data = ?4, get_count = 0, needs_setup = NULL
                  WHERE id = ?2 AND state = 'queued'",
-                params![claimed_at, task.id, first],
+                params![claimed_at, task.id, first.text, first.json()],
             )?
         };
         if claimed > 0 {
@@ -446,7 +486,7 @@ fn start_task(
     let offload = offload.and_then(|off| off.model.clone().map(|model| (off, model)));
     match offload {
         None => {
-            let mut on_progress = |line: &str| {
+            let mut on_progress = |line: &Progress| {
                 if let Err(err) = db.with(|conn| progress::set_progress(conn, &task.id, line)) {
                     eprintln!("pump: progress for {}: {err}", task.id);
                 }
@@ -479,7 +519,7 @@ fn start_task(
             let cancel = Arc::new(AtomicBool::new(false));
             let step_cancel = cancel.clone();
             let spawned = off.state.steps.spawn(&task.id, move || {
-                let mut on_progress = |line: &str| {
+                let mut on_progress = |line: &Progress| {
                     if let Err(err) =
                         shared.with(|conn| progress::set_progress(conn, &task_id, line))
                     {
@@ -543,7 +583,10 @@ fn speak_on_turn(
             eprintln!(
                 "pump: turn {} stays silent after a failed model step: {}",
                 task.id,
-                r.failure.as_deref().unwrap_or_default()
+                r.failure
+                    .as_ref()
+                    .map(|f| f.text.as_str())
+                    .unwrap_or_default()
             );
             false
         }
@@ -603,8 +646,16 @@ fn finish_start(
         }
         db.with(|conn| {
             conn.execute(
-                "UPDATE tasks SET get_count = ?1, needs_setup = ?2, failure = COALESCE(?3, failure) WHERE id = ?4",
-                params![reply.get_count as i64, reply.needs_setup, reply.failure, task.id],
+                "UPDATE tasks SET get_count = ?1, needs_setup = ?2, failure = COALESCE(?3, failure),
+                                  failure_data = CASE WHEN ?3 IS NULL THEN failure_data ELSE ?5 END
+                 WHERE id = ?4",
+                params![
+                    reply.get_count as i64,
+                    reply.needs_setup,
+                    reply.failure.as_ref().map(|f| f.text.as_str()),
+                    task.id,
+                    reply.failure.as_ref().map(Failure::json),
+                ],
             )
         })?;
         if let Some(pending) = reply.pending {
@@ -615,10 +666,7 @@ fn finish_start(
                     write_outcome(
                         conn,
                         task,
-                        &Outcome::Failed(format!(
-                            "{}{err}",
-                            robroz_contract::host_text::SAVE_APPROVAL_STATE_FAILED_PREFIX
-                        )),
+                        &Outcome::Failed(Failure::save_approval_state(&err)),
                         reply.get_count as i64,
                         &updated_at,
                         &crate::sandbox::result_rel(&task.id),
@@ -648,9 +696,10 @@ fn finish_start(
                     conn,
                     task,
                     &Outcome::Failed(
-                        reply.failure.clone().unwrap_or_else(|| {
-                            robroz_contract::host_text::OUTBOUND_OVER_QUOTA.into()
-                        }),
+                        reply
+                            .failure
+                            .clone()
+                            .unwrap_or_else(Failure::over_quota_unknown),
                     ),
                     reply.get_count as i64,
                     &updated_at,
@@ -699,9 +748,9 @@ fn finish_start(
     }
     // Key moment: the sandbox is up. The model's own progress line wins.
     // The container run is a step of its own, with a fresh clock.
-    let text = reply_progress.as_deref().unwrap_or(progress::IN_SANDBOX);
+    let line = reply_progress.unwrap_or_else(Progress::in_sandbox);
     db.with(|conn| {
-        progress::set_progress(conn, &task.id, text)?;
+        progress::set_progress(conn, &task.id, &line)?;
         crate::timeouts::start(conn, &task.id, &crate::now_rfc3339())
     })?;
     Ok(())
@@ -730,7 +779,9 @@ fn collect_task(
             if let Some(text) = read_progress(&group_dir, &task.id).filter(|_| !task.routed) {
                 // Keep the Watchdog's hint up until the runner says something new.
                 if !watchdog.is_some_and(|w| w.holds_hint(&task.id, &text)) {
-                    db.with(|conn| progress::set_progress(conn, &task.id, &text))?;
+                    db.with(|conn| {
+                        progress::set_progress(conn, &task.id, &Progress::custom(&text))
+                    })?;
                 }
             }
             return Ok(());
@@ -792,7 +843,7 @@ fn collect_task(
     let outcome = if block {
         Outcome::Blocked(stop)
     } else if let Some(over) = over_quota {
-        Outcome::Failed(over.failure())
+        Outcome::Failed(Failure::over_quota(&over))
     } else if bogus_block || code != 0 || !result_file.is_file() {
         // Container is gone and there is no successful result: a dead run,
         // ended as `done` with 「没写出结果」. Not blocked, not re-queued.
@@ -890,18 +941,21 @@ fn write_outcome(
         }
         Outcome::Failed(failure) => {
             conn.execute(
-                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4, progress = NULL
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4,
+                                  failure_data = ?5, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
-                params![get_count, updated_at, task.id, failure],
+                params![get_count, updated_at, task.id, failure.text, failure.json()],
             )?;
         }
         // Compare-and-set on `running`: a late writer cannot end it twice.
         // No delivery, never re-queued; same shape as `Failed`.
         Outcome::Dead => {
+            let dead = Failure::no_result();
             conn.execute(
-                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4, progress = NULL
+                "UPDATE tasks SET state = 'done', container_up = 0, get_count = ?1, updated_at = ?2, failure = ?4,
+                                  failure_data = ?5, progress = NULL
                  WHERE id = ?3 AND state = 'running'",
-                params![get_count, updated_at, task.id, DEAD_RUN_FAILURE],
+                params![get_count, updated_at, task.id, dead.text, dead.json()],
             )?;
         }
         Outcome::Done => {
@@ -914,10 +968,12 @@ fn write_outcome(
             )?;
             if changed > 0 {
                 tx.execute(
-                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure, needs_setup)
+                    "INSERT INTO deliveries (id, group_id, task_id, summary, path, briefing, created_at, failure, needs_setup,
+                                             failure_data)
                      VALUES (?1, ?2, ?3, ?7, ?4, ?5, ?6,
                              (SELECT failure FROM tasks WHERE id = ?3),
-                             (SELECT needs_setup FROM tasks WHERE id = ?3))",
+                             (SELECT needs_setup FROM tasks WHERE id = ?3),
+                             (SELECT failure_data FROM tasks WHERE id = ?3))",
                     params![
                         delivery_id,
                         task.group_id,
@@ -1005,7 +1061,7 @@ fn write_reply(
     tools: &crate::tools::ToolRegistry,
     route: Route,
     cancel: Option<Arc<AtomicBool>>,
-    on_progress: &mut dyn FnMut(&str),
+    on_progress: &mut dyn FnMut(&Progress),
     on_plan: &mut dyn FnMut(&crate::router::Plan),
 ) -> Reply {
     let path = robroz_runner::reply_path(control_dir);
@@ -1034,8 +1090,7 @@ fn write_reply(
     let mut router_failed = false;
     let (mut text, failure, over_quota, pending) = match plan.as_mut() {
         None => {
-            let mut on_using =
-                |name: &str| on_progress(&robroz_contract::host_text::using_tool(name));
+            let mut on_using = |name: &str| on_progress(&Progress::using_tool(name));
             model_step(
                 model,
                 control_dir,
@@ -1082,7 +1137,10 @@ fn write_reply(
                         "pump: step {} of {} for {task_id} failed: {}",
                         index + 1,
                         plan.steps.len(),
-                        failure.as_deref().unwrap_or_default()
+                        failure
+                            .as_ref()
+                            .map(|f| f.text.as_str())
+                            .unwrap_or_default()
                     );
                     router_failed = true;
                     stopped = Some((String::new(), failure, over, None));
@@ -1104,7 +1162,7 @@ fn write_reply(
     }
     let progress = match &plan {
         Some(plan) => Some(plan.progress(plan.steps.len() - 1)),
-        None => robroz_runner::last_progress(&text).map(str::to_string),
+        None => robroz_runner::last_progress(&text).map(Progress::custom),
     };
     let silent = pending.is_none() && plan.is_none() && crate::turns::is_silent(&text);
     if pending.is_none() && !router_failed {
@@ -1157,7 +1215,7 @@ fn model_step(
     on_using: &mut dyn FnMut(&str),
 ) -> (
     String,
-    Option<String>,
+    Option<Failure>,
     bool,
     Option<crate::tools::PendingApproval>,
 ) {
@@ -1178,20 +1236,17 @@ fn model_step(
                         (String::new(), None, false, Some(*pending))
                     }
                     Err(err) => {
-                        eprintln!("pump: model for {task_id}: {}", err.failure_text());
-                        let text = err.failure_text();
+                        let failure = err.failure();
+                        eprintln!("pump: model for {task_id}: {}", failure.text);
                         let over = matches!(err, crate::tools::CompleteError::OverQuota(_));
-                        (text.clone(), Some(text), over, None)
+                        (failure.text.clone(), Some(failure), over, None)
                     }
                 }
             }
             Err(err) => {
                 eprintln!("pump: resume mcp for {task_id}: {err}");
-                let text = format!(
-                    "{}{err}",
-                    robroz_contract::host_text::RESUME_APPROVED_CALL_FAILED_PREFIX
-                );
-                (text.clone(), Some(text), false, None)
+                let failure = Failure::resume_approved_call(&err);
+                (failure.text.clone(), Some(failure), false, None)
             }
         }
     } else if tools.is_empty() {
@@ -1199,8 +1254,8 @@ fn model_step(
             Ok(text) => (text, None, false, None),
             Err(err) => {
                 eprintln!("pump: model for {task_id}: {err}");
-                let text = format!("{}{err}", robroz_contract::host_text::MODEL_NO_REPLY_PREFIX);
-                (text.clone(), Some(text), false, None)
+                let failure = Failure::model(&err);
+                (failure.text.clone(), Some(failure), false, None)
             }
         }
     } else {
@@ -1210,10 +1265,10 @@ fn model_step(
                 (String::new(), None, false, Some(*pending))
             }
             Err(err) => {
-                eprintln!("pump: model for {task_id}: {}", err.failure_text());
-                let text = err.failure_text();
+                let failure = err.failure();
+                eprintln!("pump: model for {task_id}: {}", failure.text);
                 let over = matches!(err, crate::tools::CompleteError::OverQuota(_));
-                (text.clone(), Some(text), over, None)
+                (failure.text.clone(), Some(failure), over, None)
             }
         }
     }
@@ -1221,8 +1276,8 @@ fn model_step(
 
 /// What [`write_reply`] hands back to pump.
 struct Reply {
-    failure: Option<String>,
-    progress: Option<String>,
+    failure: Option<Failure>,
+    progress: Option<Progress>,
     get_count: u64,
     needs_setup: Option<String>,
     over_quota: bool,
@@ -1241,18 +1296,19 @@ fn block_mcp_task(
     get_count: i64,
 ) -> rusqlite::Result<()> {
     let hash = crate::mcp_tools::intent_hash(&task.id, pending);
-    let line = robroz_contract::host_text::using_tool(&pending.display_name);
+    let line = Progress::using_tool(&pending.display_name);
     let changed = conn.execute(
         "UPDATE tasks SET state = 'blocked', container_up = 0, get_count = ?1, updated_at = ?2, progress = ?4,
-                          intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6
+                          intent_kind = 'mcp', intent_line = ?5, intent_hash = ?6, progress_data = ?7
          WHERE id = ?3 AND state = 'running'",
         params![
             get_count,
             updated_at,
             task.id,
-            line,
+            line.text,
             pending.display_name.as_str(),
             hash.as_str(),
+            line.json(),
         ],
     )?;
     if changed > 0 {

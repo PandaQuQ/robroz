@@ -192,7 +192,7 @@ impl Selector for ModelSelector {
                 ],
                 &[],
             )
-            .map_err(|err| err.0)?;
+            .map_err(|err| err.message().to_string())?;
         match turn {
             AssistantTurn::Text(text) => answer_id(&text).ok_or_else(|| "not strict JSON".into()),
             AssistantTurn::ToolCalls(_) => Err("tool call".into()),

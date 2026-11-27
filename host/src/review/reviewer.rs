@@ -93,7 +93,7 @@ impl Reviewer for ModelReviewer {
                 ],
                 &[],
             )
-            .map_err(|e| e.0)?;
+            .map_err(|e| e.message().to_string())?;
         match turn {
             AssistantTurn::Text(text) => parse_answer(&text),
             AssistantTurn::ToolCalls(_) => Err("审核模型返回了工具调用".into()),

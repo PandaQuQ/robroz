@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Client-visible text the host writes; see the module docs.
 pub mod host_text;
 
+/// Codes for card progress lines and approval reasons (#180).
+pub mod card_codes;
 /// Stable machine codes for task card states, results and failures.
 pub mod codes;
 /// Stable machine `code` for host error bodies.
@@ -10,7 +12,10 @@ pub mod error_codes;
 /// Deprecated Chinese card copy that used to live in `robroz-card`.
 pub mod legacy;
 
-pub use codes::{split_failure, CardStatusCode, DeliveryBadge, FailureCode};
+pub use card_codes::{ApprovalReasonCode, ProgressCode, ProgressData, ProgressParams};
+pub use codes::{
+    split_failure, CardStatusCode, DeliveryBadge, FailureCode, FailureData, FailureParams,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
@@ -168,6 +173,90 @@ pub struct Group {
     pub id: String,
     pub name: String,
     pub tenant_id: String,
+    /// The user who created the group. Only they or an admin may rename or
+    /// delete it. Omitted for groups created before this field existed (then
+    /// only an admin may) and for DMs. `createdBy` alone cannot tell a DM
+    /// from an old group; use [`Self::dm`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// A bro DM (`groups.dm_bot_id` is set). Always serialized, so the
+    /// client can hide rename and delete with
+    /// `!group.dm && (me.role == admin || group.createdBy == me.userId)`.
+    #[serde(default)]
+    pub dm: bool,
+}
+
+/// `PATCH /api/groups/{id}` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameGroup {
+    pub name: String,
+}
+
+/// `GET /api/groups/{id}/members`.
+///
+/// `users` is everyone connected to the group in the data model: the user
+/// who created it, and the owner of every bro in it (users are not members
+/// of a group on their own). For a DM it is the DM's user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembers {
+    pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// Bros in the group, in the order they were added.
+    pub bros: Vec<GroupMemberBro>,
+    /// Users, the creator first, then by name.
+    pub users: Vec<GroupMemberUser>,
+}
+
+/// A bro in [`GroupMembers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberBro {
+    pub bot_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+}
+
+/// A user in [`GroupMembers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberUser {
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// This user created the group.
+    pub creator: bool,
+    /// The bros in this group that this user owns.
+    pub bro_ids: Vec<String>,
+}
+
+/// `GET /api/groups/{id}/search?q=&limit=`: default and largest `limit`.
+pub const GROUP_SEARCH_DEFAULT_LIMIT: usize = 20;
+pub const GROUP_SEARCH_MAX_LIMIT: usize = 100;
+
+/// `GET /api/groups/{id}/search` body, best match first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSearch {
+    pub results: Vec<GroupSearchHit>,
+}
+
+/// One message that matches. `snippet` is plain text around the match (no
+/// markup), cut with 「…」.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSearchHit {
+    pub message_id: String,
+    pub snippet: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
 }
 
 /// `GET /api/groups` body, oldest group first.
@@ -1332,6 +1421,15 @@ pub enum Event {
         /// detail (see [`FailureCode`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_detail: Option<String>,
+        /// #180: the code form of `progress` (see [`ProgressCode`]).
+        /// Present only when `progress` is and the host stored a code for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_code: Option<ProgressCode>,
+        /// #180: the language-neutral parameters of `progressCode`
+        /// (tool, step/steps, minutes, or the bro's own text). Absent when
+        /// the code has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress_params: Option<ProgressParams>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -1431,6 +1529,10 @@ pub enum Event {
         /// The owner's display name ("Waiting for {owner}").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_name: Option<String>,
+        /// #180: the code form of `reason` (see [`ApprovalReasonCode`]).
+        /// Absent when there is no `reason` or from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason_code: Option<ApprovalReasonCode>,
     },
     /// Added with memories: a bro proposed something to remember; the person
     /// keeps it (`POST /api/approvals/{id}/approve`) or not (`/deny`), once.
@@ -1857,6 +1959,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -1902,6 +2005,7 @@ mod tests {
                 expires_at: None,
                 owner_name: None,
                 owner_user_id: None,
+                reason_code: None,
             },
             serde_json::json!({
                 "type": "approval",
@@ -2096,6 +2200,8 @@ mod tests {
                 status_code: None,
                 failure_code: None,
                 failure_detail: None,
+                progress_code: None,
+                progress_params: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -2130,6 +2236,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&blocked).unwrap();
         assert_eq!(json["waitingFor"], "approval");
@@ -2150,6 +2258,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         assert_eq!(
             serde_json::to_value(&takeover).unwrap()["waitingFor"],
@@ -2191,6 +2301,8 @@ mod tests {
             status_code: None,
             failure_code: None,
             failure_detail: None,
+            progress_code: None,
+            progress_params: None,
         };
         let json = serde_json::to_value(&running).unwrap();
         assert_eq!(json["progress"], "在沙箱里跑");
@@ -2298,7 +2410,9 @@ mod tests {
             progress: None,
             status_code: Some(CardStatusCode::Done),
             failure_code: Some(FailureCode::ModelNoReply),
-            failure_detail: Some("模型服务返回 500".into()),
+            failure_detail: Some("500".into()),
+            progress_code: None,
+            progress_params: None,
         };
         assert_round_trip(
             &failed,
@@ -2309,7 +2423,7 @@ mod tests {
                 "updatedAt": "2026-10-03T19:00:02.000Z", "containerUp": false,
                 "failure": "模型没回：模型服务返回 500",
                 "statusCode": "done", "failureCode": "model_no_reply",
-                "failureDetail": "模型服务返回 500"
+                "failureDetail": "500"
             }),
         );
         let old = serde_json::json!({
@@ -2628,11 +2742,15 @@ mod tests {
                     id: "g1".into(),
                     name: "设计群".into(),
                     tenant_id: "local".into(),
+                    created_by: None,
+                    dm: false,
                 },
                 Group {
                     id: "g2".into(),
                     name: "运营群".into(),
                     tenant_id: "local".into(),
+                    created_by: None,
+                    dm: false,
                 },
             ],
         };
@@ -2641,8 +2759,8 @@ mod tests {
             value,
             serde_json::json!({
                 "groups": [
-                    { "id": "g1", "name": "设计群", "tenantId": "local" },
-                    { "id": "g2", "name": "运营群", "tenantId": "local" }
+                    { "id": "g1", "name": "设计群", "tenantId": "local", "dm": false },
+                    { "id": "g2", "name": "运营群", "tenantId": "local", "dm": false }
                 ]
             })
         );
@@ -2721,6 +2839,65 @@ mod tests {
                 "command": "npx",
                 "args": ["-y", "pkg"]
             })
+        );
+    }
+
+    #[test]
+    fn group_management_types_are_camel_case_and_optional() {
+        use serde_json::json;
+        let old: Group =
+            serde_json::from_value(json!({"id":"g","name":"n","tenantId":"local"})).unwrap();
+        assert_eq!(old.created_by, None);
+        assert!(!old.dm, "missing dm defaults to false");
+        let value = serde_json::to_value(&old).unwrap();
+        assert!(value.get("createdBy").is_none());
+        assert_eq!(value["dm"], false, "dm is always serialized");
+        let dm = Group {
+            id: "d".into(),
+            name: "Ada".into(),
+            tenant_id: "local".into(),
+            created_by: None,
+            dm: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&dm).unwrap(),
+            json!({"id":"d","name":"Ada","tenantId":"local","dm":true})
+        );
+        let members = GroupMembers {
+            group_id: "g".into(),
+            created_by: Some("u".into()),
+            bros: vec![GroupMemberBro {
+                bot_id: "b".into(),
+                name: "Ada".into(),
+                owner_user_id: Some("u".into()),
+                owner_name: None,
+            }],
+            users: vec![GroupMemberUser {
+                user_id: "u".into(),
+                name: Some("Mei".into()),
+                creator: true,
+                bro_ids: vec!["b".into()],
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&members).unwrap(),
+            json!({
+                "groupId": "g",
+                "createdBy": "u",
+                "bros": [{"botId": "b", "name": "Ada", "ownerUserId": "u"}],
+                "users": [{"userId": "u", "name": "Mei", "creator": true, "broIds": ["b"]}]
+            })
+        );
+        let hit = GroupSearchHit {
+            message_id: "m".into(),
+            snippet: "…周报…".into(),
+            created_at: "t".into(),
+            author_user_id: None,
+            author_name: None,
+        };
+        assert_eq!(
+            serde_json::to_value(GroupSearch { results: vec![hit] }).unwrap(),
+            json!({"results": [{"messageId": "m", "snippet": "…周报…", "createdAt": "t"}]})
         );
     }
 }
