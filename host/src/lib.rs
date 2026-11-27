@@ -32,6 +32,7 @@ mod model_settings;
 mod progress;
 mod proposals;
 mod pump;
+pub mod responder;
 pub mod review;
 mod router;
 mod routines;
@@ -89,6 +90,11 @@ pub struct Host {
     /// Cancel a step past this ([`timeouts`]). Set by
     /// [`Host::with_offloaded_steps`] and [`Host::with_step_timeout`].
     step_timeout: Option<std::time::Duration>,
+    /// One bro answers a group message that names nobody
+    /// ([`responder`]). On by default; `ROBROZ_SINGLE_RESPONDER=0` turns it off.
+    single_responder: bool,
+    /// Test hook: pick the bro with this instead of a model.
+    selector: Option<Arc<dyn responder::Selector>>,
 }
 
 impl Host {
@@ -113,6 +119,8 @@ impl Host {
             reviewer: None,
             router_with_override: false,
             step_timeout: None,
+            single_responder: true,
+            selector: None,
         })
     }
 
@@ -171,6 +179,20 @@ impl Host {
     /// [`Host::with_offloaded_steps`] sets this from its Watchdog config.
     pub fn with_step_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.step_timeout = timeout;
+        self
+    }
+
+    /// Let one bro answer a group message that names nobody (the default),
+    /// or with `false` give every bro a turn as before ([`responder`]).
+    pub fn with_single_responder(mut self, on: bool) -> Self {
+        self.single_responder = on;
+        self
+    }
+
+    /// Pick the answering bro with `selector` instead of a model. Tests only.
+    #[cfg(test)]
+    pub(crate) fn with_selector(mut self, selector: Arc<dyn responder::Selector>) -> Self {
+        self.selector = Some(selector);
         self
     }
 
@@ -242,6 +264,8 @@ impl Host {
             reviewer: self.reviewer.clone(),
             model: self.model.clone(),
             mcp: self.mcp.clone(),
+            single_responder: self.single_responder,
+            selector: self.selector.clone(),
         })
         .layer(axum::middleware::from_fn(users::identify));
         auth::require_token(router, self.token.clone())
@@ -335,6 +359,9 @@ struct AppState {
     model: Option<Arc<dyn robroz_model::Model>>,
     /// To stop a pooled MCP process when its server is edited or deleted.
     mcp: Arc<dyn crate::mcp_tools::McpRuntime>,
+    /// See [`Host::with_single_responder`] and the test hook behind it.
+    single_responder: bool,
+    selector: Option<Arc<dyn responder::Selector>>,
 }
 
 /// Build the host router. Opens (and creates) the SQLite file at `db_path`
@@ -1788,8 +1815,12 @@ mod tests {
     }
 
     fn app_on(db: &Path, volumes: &Path) -> Router {
+        // These tests cover the turns every bro takes on a message that names
+        // nobody, so they run with the single responder off. Its own tests
+        // are in `responder/tests.rs`.
         super::Host::open(db, volumes, "robroz-runner:local")
             .unwrap()
+            .with_single_responder(false)
             .with_control_root(control_of(volumes))
             .router()
     }
@@ -7528,6 +7559,68 @@ mod tests {
         // Nothing else opens later.
         run_rounds(&path, &volumes, &mut fake, &model, 3);
         assert_eq!(depths(&path).len(), 4);
+    }
+
+    /// The default app: the single responder is on.
+    fn single_app_on(db: &Path, volumes: &Path) -> Router {
+        super::Host::open(db, volumes, "robroz-runner:local")
+            .unwrap()
+            .with_control_root(control_of(volumes))
+            .router()
+    }
+
+    #[tokio::test]
+    async fn one_bro_answers_a_message_that_names_nobody_and_wakes_only_a_bro_it_names() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = single_app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        add_member(&app, &group, "b-cara", "Cara").await;
+        let (_, said) = say_in(&app, &group, "讨论一下用哪个数据库").await;
+        // No model: the first bro by join order answers, and it is visible at once.
+        assert_eq!(said["task"]["assigneeBotId"], "b-ada", "{said}");
+
+        let model = TurnModel::new(&[Ok("@Cara 我投 SQLite，你怎么看？")])
+            .with_bro_answers(&["我也投 SQLite。"]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 12);
+
+        assert_eq!(
+            depths(&path),
+            vec![(0, "b-ada".to_string()), (1, "b-cara".to_string())],
+            "Bob never gets a turn; Ada's reply wakes only Cara, whom it names"
+        );
+        assert_eq!(model.prompts().len(), 1);
+        assert_eq!(model.bro_prompts().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_single_responder_reply_that_names_nobody_wakes_nobody() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = single_app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "讨论一下用哪个数据库").await;
+        let model = TurnModel::new(&[Ok("我投 SQLite。")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 8);
+        assert_eq!(depths(&path), vec![(0, "b-ada".to_string())]);
+        assert_eq!(model.prompts().len(), 1, "exactly one model turn");
+        assert!(model.bro_prompts().is_empty());
+        let events = events_of(&app, &group).await;
+        assert_eq!(statuses(&events).len(), 1);
+        assert_eq!(deliveries(&events).len(), 1);
+
+        // With the flag off the same reply wakes the other bro as before.
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        say_in(&app, &group, "讨论一下用哪个数据库").await;
+        let model = TurnModel::new(&[Ok("我投 SQLite。"), Ok("robroz-silent")]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        run_rounds(&path, &volumes, &mut fake, &model, 8);
+        assert_eq!(model.prompts().len(), 2, "both bros took a turn");
     }
 
     #[tokio::test]

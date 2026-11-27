@@ -417,11 +417,20 @@ Whether a task is dispatched (`robroz_contract::route_mention`):
 
 - In a DM: the whole line is dispatched to that bro; the prompt is the whole line.
 - In a group: a task is dispatched only when the line starts with `@name` or `＠name`, the name is a (global) name of a group member, and the name is followed by whitespace or the end of the line. When more than one name matches, the longest wins (`@bro 2 …` goes to `bro 2`). The prompt is the text after `@name`, trimmed; if that is empty, no task is dispatched.
-- Other cases do not dispatch a task directly, but a group still runs a turn (see below).
+- A group line that names nobody goes to **one** bro picked by the host, and that bro's task is returned in `Said.task` (see "Single responder" below). With `ROBROZ_SINGLE_RESPONDER=0` no task is dispatched directly and a group runs a turn for every member (see below).
 
-**Group turns** (`host/src/turns.rs`): every `/say` in a group (not a DM) gives each bro in the group one turn; a bro may stay silent.
+**Single responder** (`host/src/responder.rs`, on by default; `ROBROZ_SINGLE_RESPONDER=0` turns it off): a group `/say` whose line does not start with a matching `@name` goes to exactly one bro, which is treated like an `@name` bro: its status card is visible at once, the prompt is the whole line, `Said.task` is its task, and no other bro gets a turn. If that bro already has an open task the line is a follow-up (`Said.appendedToTaskId` is set). The bro is picked by the first rule that applies:
 
-- Order: the bro named with `@` goes first (that is the task above, unchanged: the prompt has `@name` stripped, the status card appears immediately, and it is returned in `Said.task`). The other members follow in join order. With no name, `Said.task` is still `null`, and every member takes a turn in join order.
+1. **Follow-up:** exactly one bro is waiting on the person here (it has a visible `queued` / `running` / `blocked` task, or an unanswered choice card). If several are waiting, the rules below pick among them only.
+2. **Only bro:** the group has one bro.
+3. **Model:** the configured model gets a short prompt (each bro's id and name, plus one line from its kept `profile` memory, and the message) and must answer exactly `{"bro":"<id>"}`. It has 5 seconds and a small token cap, and runs without holding the database.
+4. **Fallback** when the model errors, times out, answers anything but a listed id, or no model is set: the bro that most recently delivered a reply in this group, else the first bro by join order.
+
+The choice is logged as ids and the rule only (`responder: group <id> bro <id> by <rule>`), never the message. A bro's reply on such a turn wakes another bro only if the reply starts with `@name` of one (that bro takes a normal hidden turn); otherwise the conversation stops there. `@name` messages and DMs are unchanged, and no contract field was added.
+
+**Group turns** (`host/src/turns.rs`): when the single responder is off, or for an `@name` message, every `/say` in a group (not a DM) gives each bro in the group one turn; a bro may stay silent.
+
+- Order: the bro named with `@` goes first (that is the task above, unchanged: the prompt has `@name` stripped, the status card appears immediately, and it is returned in `Said.task`). The other members follow in join order. With no name and the single responder off, `Said.task` is `null`, and every member takes a turn in join order.
 - One at a time: the host only creates the next bro's task after every earlier turn has left `queued` / `running` (become `done` or `blocked`). That bro's prompt includes the original message and earlier bros' delivered results (at most 2,000 characters each), and tells it to reply with a single line `robroz-silent` if it has nothing to say (`robroz_host::turns::SILENT_REPLY`). Quoted text has every line starting with `robroz-` stripped, so someone else's line cannot trigger an outbound write, a progress update, or silence for this bro.
 - Until the model replies, an unnamed turn is **hidden**: no status card, no unread, and it does not count in `lastActivityAt`. After the model replies:
   - If the reply is `robroz-silent` (that line alone; `robroz-progress:` lines do not count) or empty: the task becomes `done` and stays hidden. The client sees nothing: no message, no status card, no delivery, no unread.
@@ -440,7 +449,7 @@ Whether a task is dispatched (`robroz_contract::route_mention`):
 
 **Follow-ups** (`host/src/follow_ups.rs`): a line in a DM, or a line in a group that names a bro with `@name`, is attached to that bro's newest still-open task in this group (or DM) — `queued` / `running` / `blocked`, not counting hidden turn tasks — instead of starting a new task or a new status card.
 
-- Only these count as a follow-up: that bro in a DM, or the bro named with a leading `@name` in a group, when that bro itself has an open task here. A group message with no name, or one that names a different bro, does not. A `done` task is not open, so a new task is created as usual.
+- Only these count as a follow-up: that bro in a DM, the bro named with a leading `@name` in a group, or (single responder, rule 1) the one bro waiting on the person, when that bro itself has an open task here. A group message with no name that the single responder sends elsewhere, or one that names a different bro, does not. A `done` task is not open, so a new task is created as usual.
 - The follow-up text (after `@name` is stripped) is seen on this task's **next** step:
   - `queued`: `Follow-up:` and the text are appended to the prompt of the step about to run.
   - `running`: the current step finishes and delivers as usual. If it writes a result, the same task returns to `queued` for another step: the prompt includes the previous reply (with `robroz-` lines stripped) and the follow-up. So one status card can have two delivery cards.

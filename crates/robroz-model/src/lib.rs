@@ -287,6 +287,8 @@ pub fn parse_reply(body: &str) -> Result<String, ModelError> {
 pub struct OpenAiCompat {
     config: ModelConfig,
     agent: ureq::Agent,
+    /// Sent as `max_tokens` on every request when set.
+    max_tokens: Option<u32>,
 }
 
 impl OpenAiCompat {
@@ -300,7 +302,18 @@ impl OpenAiCompat {
             .http_status_as_error(false)
             .build()
             .new_agent();
-        Self { config, agent }
+        Self {
+            config,
+            agent,
+            max_tokens: None,
+        }
+    }
+
+    /// Cap the answer length (`max_tokens`) on every request. For short
+    /// answers such as a routing choice.
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
     }
 
     /// Shortest `/chat/completions` request, for `POST /api/settings/model/test`.
@@ -319,7 +332,10 @@ impl OpenAiCompat {
         &self.config
     }
 
-    fn post(&self, body: serde_json::Value) -> Result<String, ModelError> {
+    fn post(&self, mut body: serde_json::Value) -> Result<String, ModelError> {
+        if let (Some(max), Some(obj)) = (self.max_tokens, body.as_object_mut()) {
+            obj.insert("max_tokens".into(), max.into());
+        }
         let url = format!("{}/chat/completions", self.config.base_url);
         let mut request = self
             .agent
@@ -590,6 +606,19 @@ mod tests {
         );
         assert!(request.contains(&format!("Bearer {SECRET}")));
         assert!(request.contains("写周报"));
+    }
+
+    #[test]
+    fn max_tokens_is_sent_only_when_set() {
+        let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"好"}}]}"#);
+        model_at(&url).reply("hi", None).unwrap();
+        assert!(!rx.recv().unwrap().contains("max_tokens"));
+        let (url, rx) = fake_server(200, r#"{"choices":[{"message":{"content":"好"}}]}"#);
+        model_at(&url)
+            .with_max_tokens(48)
+            .reply("hi", None)
+            .unwrap();
+        assert!(rx.recv().unwrap().contains(r#""max_tokens":48"#));
     }
 
     #[test]

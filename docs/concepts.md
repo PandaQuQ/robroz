@@ -25,7 +25,9 @@ A bot's name is global: the same `botId` has the same name in every group. `@nam
 
 ## Group turns
 
-When a person sends a group `/say`, every bro in the group gets a turn. The bro named by a leading `@name` or `＠name` (full-width) goes first, and that task is returned in `Said.task`. The rest go one at a time in join order and may stay silent (no message, no card, no unread; `lastActivityAt` does not change). An un-mentioned turn stays hidden until that bro speaks. If no one is named, `Said.task` is `null` and every member still gets a turn.
+When a person sends a group `/say` that names nobody, **one** bro answers. The host picks it: the bro the person is already talking to (an open task or an unanswered choice card), the only bro in the group, the one a short model call chooses, and failing that the bro that answered last (else the first one who joined). That task is returned in `Said.task`. Set `ROBROZ_SINGLE_RESPONDER=0` to give every bro a turn instead, as before.
+
+When a message does name a bro, every bro in the group gets a turn. The bro named by a leading `@name` or `＠name` (full-width) goes first, and that task is returned in `Said.task`. The rest go one at a time in join order and may stay silent (no message, no card, no unread; `lastActivityAt` does not change). An un-mentioned turn stays hidden until that bro speaks.
 
 If the named bro already has an open task in the group (`queued`, `running` or `blocked`), the message is a follow-up: it attaches to that task instead of starting a new one. `Said.task` is the existing task, and `Said.appendedToTaskId` is set. The same rule applies in a DM, without `@`.
 
