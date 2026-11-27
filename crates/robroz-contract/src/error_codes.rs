@@ -114,6 +114,13 @@ pub const ERROR_CODES: &[(&str, &str)] = &[
     (crate::MCP_COMMAND_NOT_APPROVED, "command_not_approved"),
 ];
 
+/// 503 from `GET /api/groups/{id}/stream` when `ROBROZ_SSE_MAX_STREAMS`
+/// streams are already open across all groups (PR-C2; in the contract since
+/// contract-v0.3.1). The response has `Retry-After` in seconds; wait that
+/// long and reconnect with `Last-Event-ID`. `error` is English host text for
+/// logs only.
+pub const TOO_MANY_STREAMS: &str = "too_many_streams";
+
 /// The code for a fixed host error text, if it has one.
 pub fn code_for_message(message: &str) -> Option<&'static str> {
     ERROR_CODES
@@ -216,6 +223,14 @@ mod tests {
                 "{code} clashes with a host text code"
             );
         }
+    }
+
+    #[test]
+    fn too_many_streams_is_its_own_code() {
+        assert_eq!(TOO_MANY_STREAMS, "too_many_streams");
+        assert!(ERROR_CODES.iter().all(|(_, c)| *c != TOO_MANY_STREAMS));
+        assert!(!rejection::ALL.contains(&TOO_MANY_STREAMS));
+        assert_ne!(fallback_code(503), TOO_MANY_STREAMS);
     }
 
     #[test]

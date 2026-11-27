@@ -15,7 +15,9 @@
 //!
 //! - a decimal id the log still covers: only the cards changed after it;
 //! - a decimal id from before what the log kept, or one the log never handed
-//!   out: a full snapshot, as on a fresh connect;
+//!   out: a `resync` frame ([`robroz_contract::STREAM_RESYNC`], no `id:`),
+//!   then a full snapshot whose last frame carries the new `id:`. A live
+//!   stream that falls behind what the log keeps does the same;
 //! - an RFC 3339 time (the id an older host sent): the cards changed after
 //!   that time, then the stream carries on with decimal ids.
 //!
@@ -61,7 +63,7 @@ pub const MAX_STREAMS: usize = 64;
 /// `Retry-After` on the 503 for one stream too many, in seconds.
 pub const RETRY_AFTER_SECS: u64 = 5;
 /// `code` of that 503.
-pub const TOO_MANY_STREAMS: &str = "too_many_streams";
+pub const TOO_MANY_STREAMS: &str = robroz_contract::error_codes::TOO_MANY_STREAMS;
 
 /// Limits of live streams. Every field falls back to its default when the
 /// variable is missing, zero or not a positive integer.
@@ -170,6 +172,40 @@ fn batch(cards: Vec<TimedEvent>, cursor: i64) -> Vec<SseEvent> {
     cards.iter().zip(ids).map(|(t, id)| to_sse(t, id)).collect()
 }
 
+/// [`batch`], led by a resync frame when the batch is a snapshot sent in
+/// place of a replay the log can no longer give.
+fn frames(resync: bool, cards: Vec<TimedEvent>, cursor: i64) -> Vec<SseEvent> {
+    let mut out = Vec::with_capacity(cards.len() + usize::from(resync));
+    if resync {
+        out.push(resync_frame());
+    }
+    out.extend(batch(cards, cursor));
+    out
+}
+
+/// The `data:` of the resync frame.
+fn resync_data() -> String {
+    serde_json::json!({ "type": robroz_contract::STREAM_RESYNC }).to_string()
+}
+
+/// `event: resync`, `data: {"type":"resync"}`, and no `id:`: the client
+/// clears its cards for the group; the snapshot that follows refills them.
+fn resync_frame() -> SseEvent {
+    SseEvent::default()
+        .event(robroz_contract::STREAM_RESYNC)
+        .data(resync_data())
+}
+
+/// Whether a stream resuming from `resume` must be told to start over: a
+/// decimal cursor the log can no longer replay (pruned past it, or one this
+/// log never handed out). A fresh connect or an RFC 3339 id is not a gap.
+fn needs_resync(conn: &Connection, resume: &Resume) -> rusqlite::Result<bool> {
+    match resume {
+        Resume::Seq(cursor) => Ok(!event_log::replayable(conn, *cursor)?),
+        Resume::Fresh | Resume::Legacy(_) => Ok(false),
+    }
+}
+
 /// The `id:` of each of `n` frames in a batch: only the last has one.
 fn frame_ids(n: usize, cursor: i64) -> Vec<Option<i64>> {
     (0..n).map(|i| (i + 1 == n).then_some(cursor)).collect()
@@ -251,7 +287,10 @@ pub(crate) async fn stream_events(
     let deadline = tokio::time::Instant::now() + config.max_age;
     let first = {
         let conn = lock_db(&state);
-        first_batch(&conn, &group_id, &resume)
+        needs_resync(&conn, &resume).and_then(|resync| {
+            Ok(first_batch(&conn, &group_id, &resume)?
+                .map(|(cards, cursor)| (resync, cards, cursor)))
+        })
     };
     let (pending, cursor): (VecDeque<SseEvent>, i64) = match first {
         Ok(None) => {
@@ -261,7 +300,7 @@ pub(crate) async fn stream_events(
             )
         }
         Err(err) => return crate::db_error(err),
-        Ok(Some((cards, cursor))) => (batch(cards, cursor).into(), cursor),
+        Ok(Some((resync, cards, cursor))) => (frames(resync, cards, cursor).into(), cursor),
     };
 
     let stream = futures_util::stream::unfold(
@@ -286,11 +325,14 @@ pub(crate) async fn stream_events(
                 }
                 let found = {
                     let conn = lock_db(&state);
-                    next_batch(&conn, &group_id, cursor)
+                    needs_resync(&conn, &Resume::Seq(cursor)).and_then(|resync| {
+                        Ok(next_batch(&conn, &group_id, cursor)?
+                            .map(|(cards, next)| (resync, cards, next)))
+                    })
                 };
                 match found {
-                    Ok(Some((cards, next))) => {
-                        pending.extend(batch(cards, next));
+                    Ok(Some((resync, cards, next))) => {
+                        pending.extend(frames(resync, cards, next));
                         cursor = next;
                     }
                     Ok(None) => return None,

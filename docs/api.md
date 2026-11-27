@@ -54,6 +54,7 @@ Every 4xx and 5xx JSON error body has a stable `code` next to `error`. **`error`
   | 400 | `invalid_body` | The body could not be read. |
   | 400 | `invalid_path` | A path segment does not parse (for example not UTF-8 after percent-decoding). |
   | 400 | `invalid_query` | The query string does not parse. |
+- **`too_many_streams`** (503, `robroz_contract::error_codes::TOO_MANY_STREAMS`; in the contract since contract-v0.3.1): `GET /api/groups/{id}/stream` when `ROBROZ_SSE_MAX_STREAMS` streams (64 by default) are already open across all groups. The response has `Retry-After: 5`; wait that many seconds and reconnect with `Last-Event-ID`. `error` is English host text for logs only. See [GET /api/groups/{id}/stream](#get-apigroupsidstream).
 - **Not in this table:** `ok:false` test results (`POST …/test`, `{"ok":false,"error":"…"}`) are 200 responses, not errors, and are unchanged. Card `progress`, approval `reason` and Watchdog hints have a code form on the card itself (`progressCode` / `progressParams`, `reasonCode`); see [progress](#progress) and [Auto-review and expiry](#auto-review-and-expiry).
 
 The fixed host texts and their codes (`robroz_contract::error_codes`). A code is the lower-case name of the `robroz_contract::host_text` constant:
@@ -588,7 +589,7 @@ curl -s "$B/api/groups/<groupId>/events?since=2026-11-21T02:35:00Z"
 | `type` | Always present | Optional | When it appears |
 | --- | --- | --- | --- |
 | `message` | `id` `kind` `body` `createdAt` | `authorUserId` `authorName` | A message stored by `/say` or `/messages`. v0.2: `authorUserId` / `authorName` are the person who sent it (`messages.author_user_id`; v0.1 rows are backfilled to the bootstrap admin). Only people write `message` events (a bro's output is a `delivery`), so both are present on every message from a v0.2 host; they are omitted, not `null`, when unknown, and older clients ignore them. A client should draw a message as its own when `authorUserId` equals `GET /api/me`'s `id`. |
-| `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` `statusCode` `failureCode` `failureDetail` `progressCode` `progressParams` | Exactly one per task; `id` equals `taskId`. v0.2: `statusCode` is always present from a v0.2 host (the code form of `label`); `failureCode` is present exactly when `failure` is, and `failureDetail` is the raw reason without a prefix (see [failure](#failure)). `progressCode` / `progressParams` are the code form of `progress` (see [progress](#progress)). |
+| `status` | `id` `taskId` `botId` `botName` `state` `label` `createdAt` `updatedAt` `containerUp` | `failure` `waitingFor` `progress` `statusCode` `failureCode` `failureDetail` `progressCode` `progressParams` `startedAt` | Exactly one per task; `id` equals `taskId`. v0.2: `statusCode` is always present from a v0.2 host (the code form of `label`); `failureCode` is present exactly when `failure` is, and `failureDetail` is the raw reason without a prefix (see [failure](#failure)). `progressCode` / `progressParams` are the code form of `progress` (see [progress](#progress)). `startedAt` (contract-v0.3.1) is when the current round first ran (see [startedAt](#startedat)). |
 | `delivery` | `id` `summary` `path` `briefing` `createdAt` | `failure` `needsSetup` `taskId` `botId` `botName` `badge` `failureCode` `failureDetail` | One when a task writes a result. `summary` is usually 「已写入结果」; when an MCP tool approval is denied it is 「未执行」 (Didn't run). `path` is the relative path in the group folder, `tasks/{taskId}/result.txt`. `briefing` true means the result of a routine. `taskId`, `botId` and `botName` identify the task and bro that produced it. The host fills them when the task or bro is known, including failed deliveries. All three are omitted when unknown, so older JSON is unchanged. v0.2: `badge` is `"briefing"` exactly when `briefing` is true, and omitted otherwise (the code form of the 「简报」 corner badge). `failureCode` / `failureDetail` are the code form of `failure`, as on `status`. |
 | `choice` | `id` `botId` `botName` `prompt` `options` `multi` `choice` `createdAt` `answeredAt` `answeredBy` | — | A choice card. `options` is `[{"id","label","primary"}]`. `choice` is `null` until answered, then an array of selected `id`s. |
 | `approval` | `id` `botId` `botName` `action` `summary` `path` `decision` `createdAt` `answeredAt` `answeredBy` | `taskId` `mcpServer` `mcpTool` `reason` `expiresAt` `ownerUserId` `ownerName` `reasonCode` | An approval card. `action` is `delete` / `send` / `spend` / `call` / `rule_add` / `rule_delete` (the last two are Allow-rule confirm cards, and `summary` is the rule text). An unknown value is parsed as a generic card; the whole event does not fail. `decision` is `approved` / `denied` or `null`. A card the host issues for a task has `taskId`. A write-tool MCP card has `mcpServer` and `mcpTool`; without those keys it is some other approval card. `reason` is why it was blocked or already settled; on expiry it is the contract constant `APPROVAL_EXPIRED_REASON` (「审批已过期」, Approval expired). `expiresAt` is the expiry time (RFC 3339, same format as `createdAt`). Both are optional and omitted when absent, so older JSON is unchanged. The host fills `expiresAt` on task approval cards, MCP tool approval cards, bro-issued approval cards and Allow-rule confirm cards. A card blocked by auto-review has `reason` (one sentence from the review model). Confirm cards (`confirm`) and a takeover do not expire. `ownerUserId` / `ownerName` (v0.2) are the bro's owner, the only user who may answer the card; omitted on Allow-rule confirm cards (an admin answers those). `reasonCode` is the code form of `reason`, see [Auto-review and expiry](#auto-review-and-expiry). |
@@ -684,6 +685,17 @@ Present only while `running` with `containerUp` true, or while the task is `bloc
 
 `custom` is a line the bro wrote (`robroz-progress:` or the runner's progress file); its `text` is the bro's words, not host copy, so the client shows it as is. A client shows a generic line for a code it does not know.
 
+### startedAt
+
+An optional field on a status card (contract-v0.3.1, `robroz_contract::Event::Status::started_at`), RFC 3339 in the same format as `createdAt`. It is **when the current round of the task first entered `running`**:
+
+- Absent while the task's first round is still `queued`, and from hosts before contract-v0.3.1. A task that was already past its claim when the host was upgraded gets it on its next claim (no backfill).
+- Set by the claim (`queued` → `running`) only if not already set. Blocking, and coming back from `blocked` (approve, `POST /api/tasks/{id}/resume`, an MCP approval), keep it: blocked time is part of the round.
+- A follow-up that queues a `done` task again (see [Follow-ups](#post-apigroupsidsay)) clears it; the next claim sets it again. So it is per round, while `createdAt` (the card's identity and order) never changes.
+- Never earlier than `createdAt`: when a hidden group turn is shown, its `createdAt` moves to that moment and `startedAt` is raised to it if it was earlier.
+
+A client shows the duration as `updatedAt − startedAt` once the task is `done`, and `now − startedAt` while it is not. This is wall-clock time and includes time spent `blocked`, so it stays right after a reconnect. Without `startedAt` (still queued, or an older host) the client keeps its own estimate. **Clients must not read `startedAt` until the `contract-v0.3.1` tag exists.**
+
 ### needsSetup
 
 An optional field on a delivery card. There are two values today, independent of `failure`:
@@ -715,11 +727,35 @@ Server-Sent Events, `text/event-stream`. `host/src/stream.rs:stream_events`
 - The bro's own progress lines (`progressCode` `custom`) are written at most once a second per task (`ROBROZ_PROGRESS_MIN_MS`); the last line always arrives. Coded progress is not delayed.
 - Reconnect with `Last-Event-ID`:
   - a decimal id the log still covers: only the cards changed after it;
-  - a decimal id from before what the log keeps (see `ROBROZ_EVENT_RETENTION_HOURS` in [configuration](configuration.md), 168 hours by default), or one this host never sent (the database was replaced): a full snapshot, exactly as on a fresh connect. Cards are replaced in place by `data.id`, so nothing is lost;
+  - a decimal id from before what the log keeps (see `ROBROZ_EVENT_RETENTION_HOURS` in [configuration](configuration.md), 168 hours by default), or one this host never sent (the database was replaced): a [`resync` frame](#resync), then a full snapshot. Cards are replaced in place by `data.id`, so nothing is lost;
   - an RFC 3339 time (the `id:` hosts before v0.2 sent): the cards changed after that time, then decimal ids from there on.
 - A later change to the same card is pushed again with the same `data.id`. There is no agreed order between different event types; dedupe and replace in place by `id`.
 - 400 「since 不是合法时间」 (neither a decimal id nor an RFC 3339 time); 404 「群不存在」; 503 `too_many_streams` (see above). The stream ends when the group is deleted.
 - Polling `/events?since=<RFC 3339>` is the fallback and is unchanged.
+
+#### resync
+
+contract-v0.3.1 (`robroz_contract::STREAM_RESYNC`). When the `Last-Event-ID` is a decimal cursor the change log can no longer replay (from before `event_log_meta.pruned_through`, or one this host never sent), the stream starts with:
+
+```text
+event: resync
+data: {"type":"resync"}
+```
+
+It has **no `id:`**. The full snapshot of the group follows on the same stream, and its last frame carries the new `id:`. A client clears its local cards for this group when it gets `resync` and lets the snapshot fill them again, so cards that are gone (for example from a replaced database) do not linger. `resync` is not an event `type`: it never appears on `/events` and is not a card. A client from before contract-v0.3.1 skips the unknown frame and replaces cards in place from the snapshot as before, so it loses nothing. A fresh connect, an RFC 3339 id, and a cursor the log still covers never get `resync`. Clients must not depend on `resync` until the `contract-v0.3.1` tag exists.
+
+```sh
+curl -s -N -H 'Last-Event-ID: 12' $B/api/groups/<groupId>/stream
+# event: resync
+# data: {"type":"resync"}
+#
+# event: message
+# data: {"type":"message",…}
+# …
+# event: status
+# id: 1842
+# data: {"type":"status",…,"startedAt":"2026-11-27T08:00:01.000Z"}
+```
 
 ```sh
 curl -s -N $B/api/groups/<groupId>/stream
