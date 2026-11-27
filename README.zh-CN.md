@@ -134,21 +134,19 @@ bro 是界面上对 bot 的叫法：代码、接口和数据库里照旧叫 bot�
 
 ## 状态
 
-最新的发布是预发布版本，见 [Releases](https://github.com/PandaQuQ/robroz/releases) 和 [CHANGELOG.md](CHANGELOG.md)。`main` 是 v0.2 的开发分支，不是正式发版。
+最新的发布是 [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0)，预发布版本，见 [CHANGELOG.md](CHANGELOG.md)。它发布 host：一个 Linux x86_64 压缩包，以及 GHCR 上的 `robroz-host` 和 `robroz-runner` 镜像。桌面和手机客户端从 [robroz-client](https://github.com/PandaQuQ/robroz-client) 发布，需要 `contract-v0.3.1` 或更新。`main` 是 v0.2.0 之后的开发分支。
 
-**v0.2 范围**（2026-11-26 拍板）。带 PR 链接的项，PR 合进去之前都不在 `main` 里。
+v0.2.0 里有：
 
-- 事件流逐步推送进度，断线后能重放；长会话复用同一个容器，不再每条消息新开一个。
-- 一条命令装好：脚本已在 `main`（[#197](https://github.com/PandaQuQ/robroz/pull/197)），但固定用 `v0.2.0`，该版本的 host 镜像还没发布，发版前装不了；客户端从它的 release 下载。
-- 客户端改版，在 [robroz-client](https://github.com/PandaQuQ/robroz-client) 里做。
+- 用 Docker 一条命令安装（[#197](https://github.com/PandaQuQ/robroz/pull/197)、[#204](https://github.com/PandaQuQ/robroz/pull/204)），见[快速开始](#快速开始)。
+- 没有点名任何 bro 的消息只得到一条回复，不再每个 bro 都回（[#198](https://github.com/PandaQuQ/robroz/pull/198)；`ROBROZ_SINGLE_RESPONDER=0` 恢复旧行为）。
+- bro 主人，以及主人挑的可选 bro 头像（[#174](https://github.com/PandaQuQ/robroz/pull/174)、[#194](https://github.com/PandaQuQ/robroz/pull/194)）。
+- 群成员列表、改名、删群和群内搜索（[#195](https://github.com/PandaQuQ/robroz/pull/195)）。
+- 状态、失败和进度用编码表示，客户端把编码转成文字（[#186](https://github.com/PandaQuQ/robroz/pull/186)、[#189](https://github.com/PandaQuQ/robroz/pull/189)）。
+- 事件流断线后按变更日志续上，状态卡带 `startedAt`（`contract-v0.3.1`；[#202](https://github.com/PandaQuQ/robroz/pull/202)、[#208](https://github.com/PandaQuQ/robroz/pull/208)）。
+- stdio MCP 进程在任务之间保持运行，每个群每个 server 一个（[#188](https://github.com/PandaQuQ/robroz/pull/188)、[#190](https://github.com/PandaQuQ/robroz/pull/190)）。
 
-已经合进 `main` 的 v0.2 项（contract 改动打在 `contract-v0.3.0`；`Status.startedAt` 和事件流的 `resync` 帧打在 `contract-v0.3.1`）：
-
-- stdio MCP 进程池，每台服务器每个群一个进程（[#188](https://github.com/PandaQuQ/robroz/pull/188)、[#190](https://github.com/PandaQuQ/robroz/pull/190)）。
-- 失败原因和进度改成编码，由客户端翻译成文字（[#186](https://github.com/PandaQuQ/robroz/pull/186)、[#189](https://github.com/PandaQuQ/robroz/pull/189)）。
-- bro 头像：主人自己选形状和颜色（[#194](https://github.com/PandaQuQ/robroz/pull/194)）。
-- 群成员列表、改群名、删群、群内搜索（[#195](https://github.com/PandaQuQ/robroz/pull/195)）。
-- 消息里没 @ 任何 bro 时，只让一个 bro 回，不再每个 bro 都回一遍（[#198](https://github.com/PandaQuQ/robroz/pull/198)；设 `ROBROZ_SINGLE_RESPONDER=0` 恢复原来的行为）。
+已知问题见 [v0.2.0 发布说明](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0)。长会话复用同一个容器原本在 v0.2 范围里，但没有进 v0.2.0。
 
 **挪到 v0.3：** 分层记忆（常驻一份短笔记，其余按相关度召回）；派活树，子任务都交回后上游任务才算完成；会话级审批档位，以及回合中途提问、答完接着跑。
 

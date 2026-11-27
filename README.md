@@ -134,21 +134,19 @@ Most files under `docs/` are still Chinese-first. They will be switched to Engli
 
 ## Status
 
-The latest release is a pre-release; see [Releases](https://github.com/PandaQuQ/robroz/releases) and [CHANGELOG.md](CHANGELOG.md). `main` is a development branch for v0.2, not a formal release.
+The latest release is [v0.2.0](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0), a pre-release; see [CHANGELOG.md](CHANGELOG.md). It ships the host as a Linux x86_64 tarball and the `robroz-host` and `robroz-runner` images on GHCR. The desktop and mobile clients are released from [robroz-client](https://github.com/PandaQuQ/robroz-client) and need `contract-v0.3.1` or newer. `main` is the development branch after v0.2.0.
 
-**v0.2 scope** (decided 2026-11-26). Items with a PR link are not in `main` until that PR merges.
+In v0.2.0:
 
-- Step-by-step progress over the event stream with replay after a reconnect, and long-lived sessions that reuse one container instead of starting one per message.
-- One-command install: the script is in `main` ([#197](https://github.com/PandaQuQ/robroz/pull/197)) but pins `v0.2.0`, whose host image is not published yet, so it cannot install anything until that release; the client is downloaded from its release.
-- Client redesign, in [robroz-client](https://github.com/PandaQuQ/robroz-client).
-
-Already in `main` for v0.2 (contract changes tagged `contract-v0.3.0`; `Status.startedAt` and the stream `resync` frame in `contract-v0.3.1`):
-
-- Pooled stdio MCP processes, one per server per group ([#188](https://github.com/PandaQuQ/robroz/pull/188), [#190](https://github.com/PandaQuQ/robroz/pull/190)).
-- Typed failure and progress codes; the client turns codes into text ([#186](https://github.com/PandaQuQ/robroz/pull/186), [#189](https://github.com/PandaQuQ/robroz/pull/189)).
-- Bro avatar: the owner picks a shape and a colour ([#194](https://github.com/PandaQuQ/robroz/pull/194)).
-- Group member list, rename, delete and in-group search ([#195](https://github.com/PandaQuQ/robroz/pull/195)).
+- One-command install with Docker ([#197](https://github.com/PandaQuQ/robroz/pull/197), [#204](https://github.com/PandaQuQ/robroz/pull/204)); see [Quick start](#quick-start).
 - A message that mentions no bro gets one reply instead of one from every bro ([#198](https://github.com/PandaQuQ/robroz/pull/198); `ROBROZ_SINGLE_RESPONDER=0` restores the old behaviour).
+- Bro owners and an optional bro avatar picked by the owner ([#174](https://github.com/PandaQuQ/robroz/pull/174), [#194](https://github.com/PandaQuQ/robroz/pull/194)).
+- Group member list, rename, delete and in-group search ([#195](https://github.com/PandaQuQ/robroz/pull/195)).
+- Typed status, failure and progress codes; the client turns codes into text ([#186](https://github.com/PandaQuQ/robroz/pull/186), [#189](https://github.com/PandaQuQ/robroz/pull/189)).
+- The live stream resumes from a change log after a reconnect, and status cards carry `startedAt` (`contract-v0.3.1`; [#202](https://github.com/PandaQuQ/robroz/pull/202), [#208](https://github.com/PandaQuQ/robroz/pull/208)).
+- Stdio MCP processes stay running between tasks, one per server per group ([#188](https://github.com/PandaQuQ/robroz/pull/188), [#190](https://github.com/PandaQuQ/robroz/pull/190)).
+
+Known issues are listed in the [v0.2.0 release notes](https://github.com/PandaQuQ/robroz/releases/tag/v0.2.0). Long-lived sessions that reuse one container were in the v0.2 scope but are not in v0.2.0.
 
 **Moved to v0.3:** layered memory (a short always-loaded note plus recall by relevance), a delegation tree where a parent task finishes only after its subtasks report back, and per-session approval levels with questions answered mid-turn.
 
