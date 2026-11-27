@@ -703,19 +703,24 @@ Server-Sent Events, `text/event-stream`. `host/src/stream.rs:stream_events`
 
 | Input | Notes |
 | --- | --- |
-| Header `Last-Event-ID` | Used on reconnect; only changes after this time are replayed. Wins over `since` when both are present. |
+| Header `Last-Event-ID` | Used on reconnect: the last `id:` the client saw. Wins over `since` when both are present. |
 | Query `since` | Same meaning. |
 
-- Each event: `event:` is the event `type`, `id:` is the time this card changed, `data:` is the event JSON (the same as in `/events`).
-- On connect, a snapshot is pushed first (or only changes after `since`); after that the host checks the database about every 250 milliseconds and pushes only when something changed. With no change, a keepalive comment is sent every 15 seconds.
+- Each event: `event:` is the event `type`, `data:` is the event JSON (the same as in `/events`).
+- `id:` is an **opaque decimal cursor** (for example `id: 1842`): how far through the host's change log the stream has got. Store it as a string and send it back as `Last-Event-ID`; do not parse or compare it, and do not pass it to `/events?since=`. Cards go out in batches (everything that changed since the last check) and only the **last frame of a batch** has an `id:` line, so a client cut off mid-batch keeps its previous id and gets the whole batch again on reconnect.
+- On connect without an id, a full snapshot is pushed first. After that the host checks its change log about every 250 milliseconds and pushes only the cards that changed. With no change, a keepalive comment is sent every 15 seconds.
+- Reconnect with `Last-Event-ID`:
+  - a decimal id the log still covers: only the cards changed after it;
+  - a decimal id from before what the log keeps (see `ROBROZ_EVENT_RETENTION_HOURS` in [configuration](configuration.md), 168 hours by default), or one this host never sent (the database was replaced): a full snapshot, exactly as on a fresh connect. Cards are replaced in place by `data.id`, so nothing is lost;
+  - an RFC 3339 time (the `id:` hosts before v0.2 sent): the cards changed after that time, then decimal ids from there on.
 - A later change to the same card is pushed again with the same `data.id`. There is no agreed order between different event types; dedupe and replace in place by `id`.
-- 400 「since 不是合法时间」; 404 「群不存在」.
-- Polling `/events?since=` is the fallback.
+- 400 「since 不是合法时间」 (neither a decimal id nor an RFC 3339 time); 404 「群不存在」. The stream ends when the group is deleted.
+- Polling `/events?since=<RFC 3339>` is the fallback and is unchanged.
 
 ```sh
 curl -s -N $B/api/groups/<groupId>/stream
 # event: status
-# id: 2026-11-21T02:36:10.421Z
+# id: 1842
 # data: {"type":"status","id":"…","state":"blocked","label":"卡住","waitingFor":"approval",…}
 ```
 

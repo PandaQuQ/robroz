@@ -360,6 +360,7 @@ pub(crate) fn delete_rows(conn: &Connection, id: &str, name: &str) -> rusqlite::
         "group_skills",
         "group_mcp",
         "memberships",
+        "group_changes",
     ] {
         conn.execute(&format!("DELETE FROM {table} WHERE group_id = ?1"), [id])?;
     }

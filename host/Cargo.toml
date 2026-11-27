@@ -28,5 +28,8 @@ robroz-mcp = { path = "../crates/robroz-mcp" }
 libc = "0.2"
 
 [dev-dependencies]
+# `hooks`: the SQLite authorizer, so a test can list the tables the card
+# builders read. Same crate and version as above; tests only.
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
 http-body-util = "0.1"
 robroz-mcp = { path = "../crates/robroz-mcp", features = ["fixture"] }
