@@ -2518,10 +2518,9 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         let (status, _) = resume(
             &app,
-            &statuses(&events_of(&app, &group_id).await)[0]["id"]
+            statuses(&events_of(&app, &group_id).await)[0]["id"]
                 .as_str()
-                .unwrap()
-                .to_string(),
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

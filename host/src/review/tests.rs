@@ -323,12 +323,14 @@ async fn settings_rule_cards_stay_out_of_every_chat() {
         assert_eq!(unread["unread"], 0, "{unread}");
     }
     // The live stream reads the same query as events; check the backlog too.
-    let conn = h.db();
-    for chat in [&dm, &group] {
-        let timed = crate::approvals::timed_events(&conn, chat).unwrap();
-        assert!(timed.iter().all(|t| t.id != id));
+    // The guard lives only in this block, so it is gone before the `.await`.
+    {
+        let conn = h.db();
+        for chat in [&dm, &group] {
+            let timed = crate::approvals::timed_events(&conn, chat).unwrap();
+            assert!(timed.iter().all(|t| t.id != id));
+        }
     }
-    drop(conn);
     assert_eq!(h.card(&id).await["action"], "rule_add");
 }
 
