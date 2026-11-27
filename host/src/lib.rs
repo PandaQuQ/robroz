@@ -651,6 +651,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(memories::SCHEMA)?;
     conn.execute_batch(skills::SCHEMA)?;
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN needs_setup TEXT", []);
+    // PR-C3: `Status.startedAt`, when the current round first ran. No
+    // backfill: a task already past its claim gets it on its next claim.
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN started_at TEXT", []);
     let _ = conn.execute("ALTER TABLE deliveries ADD COLUMN needs_setup TEXT", []);
     crate::settings::migrate(conn)?;
     crate::search::migrate(conn)?;
@@ -1313,7 +1316,7 @@ fn group_cards(
                         SELECT 1 FROM approvals a
                         WHERE a.task_id = t.id AND a.intent_hash = t.intent_hash AND a.decision IS NULL
                     ),
-                    t.progress, t.progress_data, t.failure_data
+                    t.progress, t.progress_data, t.failure_data, t.started_at
              FROM tasks t
              JOIN bots b ON b.id = t.assignee_bot_id
              WHERE {} = ?1 AND t.turn_hidden = 0{}",
@@ -1375,6 +1378,7 @@ fn group_cards(
                     failure_detail,
                     progress_code,
                     progress_params,
+                    started_at: row.get(12)?,
                 },
             })
         })?;
@@ -3052,6 +3056,63 @@ mod tests {
         assert_eq!(sse_take(&mut body, 4, wait).await.len(), 4);
     }
 
+    /// PR-C3: a cursor from before what the change log keeps gets a
+    /// `resync` frame (no id) and then the full snapshot, its last frame
+    /// carrying the id. A cursor the log still covers gets no resync, and a
+    /// client that skips the unknown frame still has every card.
+    #[tokio::test]
+    async fn a_cursor_older_than_the_log_gets_resync_then_the_snapshot() {
+        let path = temp_db();
+        let app = test_app(&path);
+        let group_id = create_group(&app, "重同步").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for text in ["一", "二"] {
+            say(&app, &group_id, text).await;
+        }
+        let wait = std::time::Duration::from_secs(3);
+        let mut body = open_stream(&app, &group_id, None).await.into_body();
+        let snapshot = sse_take(&mut body, 2, wait).await;
+        let old = snapshot[1].1.clone();
+        drop(body);
+        assert!(
+            snapshot.iter().all(|(name, _, _)| name != "resync"),
+            "a fresh connect is not a resync"
+        );
+
+        // Covered by the log: only what changed, no resync.
+        say(&app, &group_id, "三").await;
+        let mut body = open_stream(&app, &group_id, Some(&old)).await.into_body();
+        let replay = sse_take(&mut body, 2, super::stream::POLL * 4).await;
+        assert_eq!(replay.len(), 1, "{replay:?}");
+        assert_eq!(replay[0].2["body"], "三");
+        drop(body);
+
+        // Pruned past `old`.
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE event_log_meta SET pruned_through = (SELECT seq FROM sqlite_sequence WHERE name = 'group_changes')",
+                [],
+            )
+            .unwrap();
+        let mut body = open_stream(&app, &group_id, Some(&old)).await.into_body();
+        let frames = sse_take(&mut body, 4, wait).await;
+        assert_eq!(frames.len(), 4, "{frames:?}");
+        assert_eq!(frames[0].0, robroz_contract::STREAM_RESYNC);
+        assert_eq!(frames[0].1, "", "the resync frame has no id");
+        assert_eq!(frames[0].2, json!({ "type": "resync" }));
+        let cards: Vec<&str> = frames[1..]
+            .iter()
+            .map(|(_, _, data)| data["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(cards, ["一", "二", "三"], "the full snapshot follows");
+        assert_eq!(frames[1].1, "");
+        assert_eq!(frames[2].1, "");
+        assert!(frames[3].1.parse::<i64>().unwrap() > old.parse::<i64>().unwrap());
+    }
+
     #[tokio::test]
     async fn stream_rejects_missing_group_and_bad_cursor() {
         let path = temp_db();
@@ -4508,6 +4569,56 @@ mod tests {
             std::fs::read_to_string(group_dir.join(format!("tasks/{task_id}/result.txt"))).unwrap(),
             "正文"
         );
+    }
+
+    /// PR-C3: `startedAt` is absent while queued, set by the claim, and not
+    /// reset by blocking or by a resume; `createdAt` never moves.
+    #[tokio::test]
+    async fn started_at_is_set_on_claim_and_kept_through_blocked_and_resume() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let (group_id, task_id) = seed_task(&app, "时长", "robroz-action:external\n正文").await;
+        let card = |events: &Value| statuses(events)[0].clone();
+        let queued = card(&events_of(&app, &group_id).await);
+        assert_eq!(queued["state"], "queued");
+        assert!(queued.get("startedAt").is_none(), "{queued}");
+        let created_at = queued["createdAt"].clone();
+
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_db(&path, &volumes, &mut fake);
+        let running = card(&events_of(&app, &group_id).await);
+        assert_eq!(running["state"], "running");
+        let started_at = running["startedAt"]
+            .as_str()
+            .expect("set on claim")
+            .to_string();
+        assert!(started_at.as_str() >= created_at.as_str().unwrap());
+
+        fake.finish(0);
+        pump_db(&path, &volumes, &mut fake);
+        let blocked = card(&events_of(&app, &group_id).await);
+        assert_eq!(blocked["state"], "blocked");
+        assert_eq!(blocked["startedAt"], started_at.as_str());
+
+        assert_eq!(resume(&app, &task_id).await.0, StatusCode::OK);
+        let requeued = card(&events_of(&app, &group_id).await);
+        assert_eq!(requeued["state"], "queued");
+        assert_eq!(
+            requeued["startedAt"],
+            started_at.as_str(),
+            "a resume keeps it"
+        );
+
+        run_once(&path, &volumes, &mut fake);
+        let done = card(&events_of(&app, &group_id).await);
+        assert_eq!(done["state"], "done");
+        assert_eq!(
+            done["startedAt"],
+            started_at.as_str(),
+            "the claim after a resume keeps it"
+        );
+        assert_eq!(done["createdAt"], created_at);
     }
 
     #[tokio::test]
@@ -7645,6 +7756,50 @@ mod tests {
         assert_eq!(
             count(&path, "SELECT COUNT(*) FROM follow_ups WHERE folded = 0"),
             0
+        );
+    }
+
+    /// PR-C3: a follow-up round gets its own `startedAt` (the requeue clears
+    /// it, the next claim sets it again); the card's `createdAt` stays.
+    #[tokio::test]
+    async fn started_at_restarts_for_a_follow_up_round() {
+        let path = temp_db();
+        let volumes = temp_volumes();
+        let app = app_on(&path, &volumes);
+        let group = two_bro_group(&app).await;
+        let (_, first) = say_in(&app, &group, "@Ada 写周报").await;
+        let id = first["task"]["id"].as_str().unwrap().to_string();
+        let model = TurnModel::new(&[
+            Ok("周报初稿。"),
+            Ok("加好了：上周 12 单。"),
+            Ok("robroz-silent"),
+            Ok("robroz-silent"),
+        ]);
+        let mut fake = super::sandbox::FakeSandbox::new();
+        pump_with_model(&path, &volumes, &mut fake, &model);
+        let card = |events: &Value| -> Value {
+            statuses(events)
+                .into_iter()
+                .find(|c| c["id"] == id.as_str())
+                .unwrap()
+                .clone()
+        };
+        let running = card(&events_of(&app, &group).await);
+        assert_eq!(running["state"], "running");
+        let first_start = running["startedAt"].as_str().unwrap().to_string();
+        let created_at = running["createdAt"].clone();
+
+        let (_, said) = say_in(&app, &group, "@Ada 加上上周的数据").await;
+        assert_eq!(said["appendedToTaskId"], id.as_str());
+        fake.finish(0);
+        run_rounds(&path, &volumes, &mut fake, &model, 6);
+        let done = card(&events_of(&app, &group).await);
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["createdAt"], created_at, "same card, same createdAt");
+        let second_start = done["startedAt"].as_str().unwrap();
+        assert!(
+            second_start > first_start.as_str(),
+            "the second round has its own start: {first_start} then {second_start}"
         );
     }
 

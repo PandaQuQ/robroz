@@ -319,3 +319,70 @@ fn poll_cost_with_5k_messages_and_10_streams() {
     );
     assert!(new_idle < old_idle && new_busy < old_busy);
 }
+
+/// PR-C3: a cursor the log can no longer replay is told to start over
+/// before the snapshot; any other resume is not.
+#[test]
+fn only_a_cursor_the_log_cannot_replay_needs_a_resync() {
+    let conn = db();
+    seed_every_card(&conn);
+    let (_, old) = first_batch(&conn, "g1", &Resume::Fresh).unwrap().unwrap();
+    assert!(!needs_resync(&conn, &Resume::Fresh).unwrap());
+    assert!(!needs_resync(&conn, &Resume::Legacy(T0.into())).unwrap());
+    assert!(
+        !needs_resync(&conn, &Resume::Seq(old)).unwrap(),
+        "replayable"
+    );
+    assert!(
+        !needs_resync(&conn, &Resume::Seq(0)).unwrap(),
+        "nothing pruned yet"
+    );
+    conn.execute(
+        "INSERT INTO messages (id, group_id, kind, body, created_at) VALUES ('m2', 'g1', 'text', 'x', ?1)",
+        [T0],
+    )
+    .unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::hours(1);
+    event_log::maintain(&conn, later, Duration::from_secs(1)).unwrap();
+    let floor = event_log::pruned_through(&conn).unwrap();
+    assert!(floor > old);
+    assert!(
+        needs_resync(&conn, &Resume::Seq(old)).unwrap(),
+        "below the floor"
+    );
+    assert!(
+        !needs_resync(&conn, &Resume::Seq(floor)).unwrap(),
+        "at the floor"
+    );
+    let head = event_log::head(&conn).unwrap();
+    assert!(
+        needs_resync(&conn, &Resume::Seq(head + 100)).unwrap(),
+        "an id this log never handed out"
+    );
+}
+
+#[test]
+fn the_resync_frame_data_is_just_its_type() {
+    let data: serde_json::Value = serde_json::from_str(&resync_data()).unwrap();
+    assert_eq!(data, serde_json::json!({ "type": "resync" }));
+    assert_eq!(robroz_contract::STREAM_RESYNC, "resync");
+}
+
+/// PR-C3: a status card carries `startedAt` only once the column is set.
+#[test]
+fn status_cards_carry_started_at_only_when_set() {
+    let conn = db();
+    seed_every_card(&conn);
+    let status = |conn: &Connection| -> serde_json::Value {
+        let (cards, _) = first_batch(conn, "g1", &Resume::Fresh).unwrap().unwrap();
+        let t = cards.into_iter().find(|t| t.id == "t1").unwrap();
+        serde_json::to_value(&t.event).unwrap()
+    };
+    assert!(status(&conn).get("startedAt").is_none(), "queued: absent");
+    conn.execute(
+        "UPDATE tasks SET state = 'running', started_at = '2026-11-27T00:00:01.000Z' WHERE id = 't1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(status(&conn)["startedAt"], "2026-11-27T00:00:01.000Z");
+}

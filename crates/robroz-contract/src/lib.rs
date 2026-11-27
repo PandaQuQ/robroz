@@ -1365,6 +1365,16 @@ impl McpCommandNotApproved {
     }
 }
 
+/// SSE `event:` name of the resync frame on `GET /api/groups/{id}/stream`
+/// (contract-v0.3.1, PR-C3). Its `data:` is `{"type":"resync"}` and it has no
+/// `id:`. The host sends it when `Last-Event-ID` is a cursor its change log
+/// can no longer replay; a full snapshot follows on the same stream, its last
+/// frame carrying the new `id:`. A client clears its local cards for the
+/// group and lets the snapshot fill them again. It is not an [`Event`]
+/// variant and never appears on `/events`; an older client skips the unknown
+/// frame and still replaces cards in place from the snapshot.
+pub const STREAM_RESYNC: &str = "resync";
+
 /// Internally tagged on `type` so message, status, and delivery round-trip
 /// with the JSON already returned by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1430,6 +1440,14 @@ pub enum Event {
         /// the code has none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         progress_params: Option<ProgressParams>,
+        /// contract-v0.3.1 (PR-C3): when the current round first entered
+        /// `running` (RFC 3339, same format as `createdAt`). Blocked time and
+        /// an approval resume do not reset it; a follow-up that queues the
+        /// task again clears it until the next claim, so it is per round.
+        /// Never earlier than `createdAt`. Absent while the first round is
+        /// still queued and from older hosts, so old JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<String>,
     },
     #[serde(rename = "delivery")]
     Delivery {
@@ -2202,6 +2220,7 @@ mod tests {
                 failure_detail: None,
                 progress_code: None,
                 progress_params: None,
+                started_at: None,
             },
             serde_json::json!({
                 "type": "status",
@@ -2215,6 +2234,54 @@ mod tests {
                 "updatedAt": "2026-10-03T19:00:01.000Z",
                 "containerUp": false
             }),
+        );
+    }
+
+    #[test]
+    fn status_started_at_is_optional_and_round_trips() {
+        let running = Event::Status {
+            id: "t1".into(),
+            task_id: "t1".into(),
+            bot_id: "bot-ada".into(),
+            bot_name: "Ada".into(),
+            state: TaskState::Running,
+            label: TaskState::Running.label().into(),
+            created_at: "2026-10-03T19:00:01.000Z".into(),
+            updated_at: "2026-10-03T19:00:03.000Z".into(),
+            container_up: true,
+            failure: None,
+            waiting_for: None,
+            progress: None,
+            status_code: None,
+            failure_code: None,
+            failure_detail: None,
+            progress_code: None,
+            progress_params: None,
+            started_at: Some("2026-10-03T19:00:02.000Z".into()),
+        };
+        let json = serde_json::to_value(&running).unwrap();
+        assert_eq!(json["startedAt"], "2026-10-03T19:00:02.000Z");
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), running);
+
+        let Event::Status { started_at, .. } = serde_json::from_value(serde_json::json!({
+            "type": "status", "id": "t1", "taskId": "t1", "botId": "bot-ada",
+            "botName": "Ada", "state": "queued", "label": "排队",
+            "createdAt": "2026-10-03T19:00:01.000Z",
+            "updatedAt": "2026-10-03T19:00:01.000Z", "containerUp": false
+        }))
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(started_at, None, "JSON from an older host still parses");
+    }
+
+    #[test]
+    fn stream_resync_is_not_an_event_type() {
+        assert_eq!(STREAM_RESYNC, "resync");
+        let frame = serde_json::json!({ "type": STREAM_RESYNC });
+        assert!(
+            serde_json::from_value::<Event>(frame).is_err(),
+            "the resync frame is not a card"
         );
     }
 
@@ -2238,6 +2305,7 @@ mod tests {
             failure_detail: None,
             progress_code: None,
             progress_params: None,
+            started_at: None,
         };
         let json = serde_json::to_value(&blocked).unwrap();
         assert_eq!(json["waitingFor"], "approval");
@@ -2260,6 +2328,7 @@ mod tests {
             failure_detail: None,
             progress_code: None,
             progress_params: None,
+            started_at: None,
         };
         assert_eq!(
             serde_json::to_value(&takeover).unwrap()["waitingFor"],
@@ -2303,6 +2372,7 @@ mod tests {
             failure_detail: None,
             progress_code: None,
             progress_params: None,
+            started_at: None,
         };
         let json = serde_json::to_value(&running).unwrap();
         assert_eq!(json["progress"], "在沙箱里跑");
@@ -2413,6 +2483,7 @@ mod tests {
             failure_detail: Some("500".into()),
             progress_code: None,
             progress_params: None,
+            started_at: None,
         };
         assert_round_trip(
             &failed,

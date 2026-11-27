@@ -66,3 +66,35 @@ fn a_bro_round_prompt_names_the_speaker_and_asks_for_silence_by_default() {
     assert!(text.contains(SILENT_REPLY), "{text}");
     assert!(!text.contains("robroz-action"), "{text}");
 }
+
+/// PR-C3: a revealed turn's `createdAt` moves to the reveal time, so its
+/// `startedAt` is clamped up to keep `startedAt >= createdAt`.
+#[test]
+fn reveal_clamps_started_at_to_the_new_created_at() {
+    use crate::event_log::tests::{db, T0};
+    let conn = db();
+    conn.execute_batch(&format!(
+        "INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at, turn_hidden, started_at)
+             VALUES ('early', 'g1', 'b1', 'p', 'running', '{T0}', '{T0}', 1, '2026-11-27T00:00:01.000Z');
+         INSERT INTO tasks (id, group_id, assignee_bot_id, prompt, state, created_at, updated_at, turn_hidden, started_at)
+             VALUES ('late', 'g1', 'b1', 'p', 'running', '{T0}', '{T0}', 1, '2026-11-27T00:00:09.000Z');"
+    ))
+    .unwrap();
+    let at = "2026-11-27T00:00:05.000Z";
+    reveal(&conn, "early", at).unwrap();
+    reveal(&conn, "late", at).unwrap();
+    let row = |id: &str| -> (String, String) {
+        conn.query_row(
+            "SELECT created_at, started_at FROM tasks WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(row("early"), (at.to_string(), at.to_string()), "clamped up");
+    assert_eq!(
+        row("late"),
+        (at.to_string(), "2026-11-27T00:00:09.000Z".to_string()),
+        "already later: kept"
+    );
+}

@@ -132,7 +132,7 @@ The latest release is a pre-release; see [Releases](https://github.com/PandaQuQ/
 - One-command install: the script is in `main` ([#197](https://github.com/PandaQuQ/robroz/pull/197)) but pins `v0.2.0`, whose host image is not published yet, so it cannot install anything until that release; the client is downloaded from its release.
 - Client redesign, in [robroz-client](https://github.com/PandaQuQ/robroz-client).
 
-Already in `main` for v0.2 (contract changes tagged `contract-v0.3.0`):
+Already in `main` for v0.2 (contract changes tagged `contract-v0.3.0`; `Status.startedAt` and the stream `resync` frame in `contract-v0.3.1`):
 
 - Pooled stdio MCP processes, one per server per group ([#188](https://github.com/PandaQuQ/robroz/pull/188), [#190](https://github.com/PandaQuQ/robroz/pull/190)).
 - Typed failure and progress codes; the client turns codes into text ([#186](https://github.com/PandaQuQ/robroz/pull/186), [#189](https://github.com/PandaQuQ/robroz/pull/189)).
