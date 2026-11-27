@@ -129,7 +129,6 @@ The latest release is a pre-release; see [Releases](https://github.com/PandaQuQ/
 **v0.2 scope** (decided 2026-11-26). Items with a PR link are not in `main` until that PR merges.
 
 - Step-by-step progress over the event stream with replay after a reconnect, and long-lived sessions that reuse one container instead of starting one per message.
-- A message that mentions no bro gets one reply instead of one from every bro.
 - One-command install: the script is in `main` ([#197](https://github.com/PandaQuQ/robroz/pull/197)) but pins `v0.2.0`, whose host image is not published yet, so it cannot install anything until that release; the client is downloaded from its release.
 - Client redesign, in [robroz-client](https://github.com/PandaQuQ/robroz-client).
 
@@ -139,6 +138,7 @@ Already in `main` for v0.2 (contract changes tagged `contract-v0.3.0`):
 - Typed failure and progress codes; the client turns codes into text ([#186](https://github.com/PandaQuQ/robroz/pull/186), [#189](https://github.com/PandaQuQ/robroz/pull/189)).
 - Bro avatar: the owner picks a shape and a colour ([#194](https://github.com/PandaQuQ/robroz/pull/194)).
 - Group member list, rename, delete and in-group search ([#195](https://github.com/PandaQuQ/robroz/pull/195)).
+- A message that mentions no bro gets one reply instead of one from every bro ([#198](https://github.com/PandaQuQ/robroz/pull/198); `ROBROZ_SINGLE_RESPONDER=0` restores the old behaviour).
 
 **Moved to v0.3:** layered memory (a short always-loaded note plus recall by relevance), a delegation tree where a parent task finishes only after its subtasks report back, and per-session approval levels with questions answered mid-turn.
 
